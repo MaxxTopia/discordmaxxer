@@ -56,7 +56,7 @@ const SettingsOptions: Record<string, Array<BooleanSetting | SettingsComponent>>
             key: "screenshareForceWgc",
             title: "Stream cursor on per-window fullscreen captures",
             description:
-                "Forces Windows Graphics Capture for screenshares so the cursor shows up when capturing a single exclusive-fullscreen game window (e.g. Fortnite). LEAVE OFF if your screenshare audio sounds silent to viewers — WGC currently disagrees with Chromium's system-audio loopback on some setups, which is the more common bug. Requires a full app restart.",
+                "Forces Windows Graphics Capture for screenshares so the cursor shows up when capturing a single exclusive-fullscreen game window (e.g. Fortnite). Audio works in both WGC modes — the renderer-side per-window audio swap takes over when WGC is forced. Requires a full app restart.",
             defaultValue: false,
             invisible: () => !isWindows
         }

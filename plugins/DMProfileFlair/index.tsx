@@ -35,7 +35,7 @@ import { createAndAppendStyle } from "@utils/css";
 import definePlugin, { OptionType } from "@utils/types";
 import { Button, React, RestAPI, Toasts, UserStore } from "@webpack/common";
 
-import { getRosterProfileFlair, ProfileFlair } from "../_dm-shared/roster";
+import { getRosterProfileFlair, ProfileFlair, rosterHasAnyAvatarFlair } from "../_dm-shared/roster";
 import { Tier } from "../_dm-shared/vip";
 import { readBinding } from "../_dm-shared/vipClaim";
 
@@ -1279,15 +1279,21 @@ function applyTheme(container: HTMLElement, primary?: string, secondary?: string
 }
 
 function applyAvatar(avatar: HTMLImageElement, url: string) {
-    if (avatar.src !== url) {
-        // Stash the original src so we can restore on plugin stop / setting
-        // change (or if the URL fails — caller would handle that).
-        if (!avatar.dataset.dmFlairOriginalSrc) {
-            avatar.dataset.dmFlairOriginalSrc = avatar.src;
-        }
-        avatar.src = url;
-        avatar.setAttribute("data-dm-flair-avatar-applied", "1");
+    // Idempotency MUST compare against the URL we last applied (stashed on the
+    // element), NOT against `avatar.src`. The browser normalizes/encodes the
+    // src it reads back (dm-media:// scheme, percent-encoding, trailing
+    // normalization), so `avatar.src !== url` is almost always true even on
+    // the very next scan — which re-assigns src → triggers an image reload →
+    // emits a mutation → wakes the observer → re-scans → re-assigns... a
+    // self-sustaining CPU/network loop for as long as the avatar is on screen.
+    if (avatar.dataset.dmFlairAppliedUrl === url) return;
+    // Stash the original src so we can restore on plugin stop / setting change.
+    if (!avatar.dataset.dmFlairOriginalSrc) {
+        avatar.dataset.dmFlairOriginalSrc = avatar.src;
     }
+    avatar.src = url;
+    avatar.dataset.dmFlairAppliedUrl = url;
+    avatar.setAttribute("data-dm-flair-avatar-applied", "1");
 }
 
 /** Background-image variant for call surfaces / Stage tiles that render the
@@ -1347,7 +1353,18 @@ function scanForPopouts(_root: ParentNode = document) {
     // that holds everywhere, including the big circular avatar tile shown
     // when a user is in voice with video off, the floating call window, and
     // the connected-users sidebar under the voice channel.
-    if (!tmActive) {
+    // Cheap gate before the expensive page-wide scans: if neither self nor any
+    // roster user actually has an animated-avatar flair, there is nothing to
+    // apply — skip the O(all-images) + O(all-styled-elements) sweep entirely.
+    // This is the common case (most users in most servers have no flair), and
+    // it's what makes the per-mutation observer affordable.
+    const sa = settings.store;
+    const selfHasAvatarFlair = !!sa.myAvatarAnimatedUrl.trim();
+    const othersAvatarFlair =
+        sa.showOthersFlair && sa.showOthersAvatar && rosterHasAnyAvatarFlair();
+    const anyAvatarFlair = selfHasAvatarFlair || othersAvatarFlair;
+
+    if (!tmActive && anyAvatarFlair) {
         document.querySelectorAll("img").forEach(img => {
             const el = img as HTMLImageElement;
             const src = el.currentSrc || el.src || "";
@@ -1387,7 +1404,7 @@ function scanForPopouts(_root: ParentNode = document) {
             if (flair?.avatarAnimatedUrl) applyAvatar(a, flair.avatarAnimatedUrl);
         }
         // Warn once if the current user has a default avatar.
-        if (me && me.avatar === null && settings.store.myAvatarAnimatedUrl.trim() && !defaultAvatarWarned) {
+        if (me && !me.avatar && settings.store.myAvatarAnimatedUrl.trim() && !defaultAvatarWarned) {
             defaultAvatarWarned = true;
             toast(
                 "⚠ Your Discord avatar is set to the default — your animated avatar will only show on profile popouts + full profile, not member list or chat. Upload any custom Discord avatar to fix.",
@@ -1398,14 +1415,31 @@ function scanForPopouts(_root: ParentNode = document) {
     }
 }
 
+let scanScheduled = false;
+// Coalesce mutation bursts into at most one scan per animation frame. Discord
+// emits hundreds of childList mutations per second while chat scrolls or a
+// call is live; running the full scan on each one was the plugin's dominant
+// CPU cost. rAF batching collapses a burst to a single scan, and because
+// applyAvatar/applyBanner are now idempotent, the scan's own mutations don't
+// re-trigger an endless rescan loop.
+function scheduleScan() {
+    if (scanScheduled) return;
+    scanScheduled = true;
+    requestAnimationFrame(() => {
+        scanScheduled = false;
+        scanForPopouts(document);
+    });
+}
+
 function startObserver() {
     if (observer) return;
-    // MutationObserver kicks off a rescan on ANY DOM mutation under body.
-    // Cheap rescan because scanForPopouts queries by class — no walking.
-    observer = new MutationObserver(() => scanForPopouts(document));
+    observer = new MutationObserver(scheduleScan);
     observer.observe(document.body, { childList: true, subtree: true });
     scanForPopouts(document);
-    rescanTimer = window.setInterval(() => scanForPopouts(document), 1000);
+    // Low-frequency safety net for changes the childList observer can't see
+    // (e.g. an <img src> swapped in place). 2s is plenty for animated-avatar
+    // surfaces and halves the steady-state polling cost vs the old 1s.
+    rescanTimer = window.setInterval(() => scanForPopouts(document), 2000);
 }
 
 function stopObserver() {
@@ -1436,6 +1470,7 @@ function stopObserver() {
         const orig = img.dataset.dmFlairOriginalSrc;
         if (orig) img.src = orig;
         delete img.dataset.dmFlairOriginalSrc;
+        delete img.dataset.dmFlairAppliedUrl;
         img.removeAttribute("data-dm-flair-avatar-applied");
     });
     // Same restore path for background-image call/Stage avatar tiles.

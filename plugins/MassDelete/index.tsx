@@ -68,13 +68,33 @@ async function fetchMyRecentMessages(channelId: string, count: number): Promise<
 }
 
 async function deleteOne(channelId: string, messageId: string): Promise<boolean> {
-    try {
-        await RestAPI.del({ url: Constants.Endpoints.MESSAGE(channelId, messageId) });
-        return true;
-    } catch (e) {
-        console.warn(`[MassDelete] Failed to delete ${messageId}:`, e);
-        return false;
+    // On HTTP 429 (rate limit) Discord returns a `retry_after`. The whole
+    // ban-risk premise of this plugin is "stay under the limit" — so when we
+    // DO hit it, we must back off for retry_after and retry the SAME message,
+    // not drop it and immediately fire the next request. Hammering a throttled
+    // route is precisely the pattern that flags accounts.
+    for (let attempt = 0; attempt < 5; attempt++) {
+        try {
+            await RestAPI.del({ url: Constants.Endpoints.MESSAGE(channelId, messageId) });
+            return true;
+        } catch (e: any) {
+            const status = e?.status ?? e?.response?.status;
+            if (status === 429) {
+                const retrySec = Number(
+                    e?.body?.retry_after ?? e?.response?.body?.retry_after ?? 1
+                );
+                const waitMs = Math.min(Math.max(retrySec * 1000, 1000), 60_000) + 250;
+                console.warn(`[MassDelete] 429 on ${messageId}; backing off ${waitMs}ms then retrying`);
+                await sleep(waitMs);
+                continue; // retry the same message
+            }
+            // 404 (already deleted) / 403 / anything else — not retryable.
+            console.warn(`[MassDelete] Failed to delete ${messageId}:`, e);
+            return false;
+        }
     }
+    console.warn(`[MassDelete] Gave up on ${messageId} after repeated 429s`);
+    return false;
 }
 
 function sleep(ms: number) {

@@ -53,46 +53,66 @@ function doMigrate(): boolean {
         if (!oldEntry || typeof oldEntry !== "object") continue;
         const newEntry = plain[newName];
 
+        // Ensure the destination object exists before writing into it.
+        // Vencord's settings proxy does not reliably auto-vivify a nested
+        // plugin object on first write across versions — without this, every
+        // `settings[newName][key] = …` below throws, the forward-copy silently
+        // fails, and yet we'd still delete the legacy entry → permanent data
+        // loss. `forwardOk` tracks whether the copy actually landed so we only
+        // delete the source when it's safe.
+        let forwardOk = true;
+        try {
+            if (!settings[newName] || typeof settings[newName] !== "object") {
+                settings[newName] = {};
+            }
+        } catch (e) {
+            console.warn(`[migrate] could not initialize ${newName}:`, e);
+            forwardOk = false;
+        }
+
         // Sync `enabled` from old to new. Vencord defaults unseeded plugins
         // to enabled=false which is indistinguishable from a real user
         // "disable" choice — but the user never saw the new DM* plugin name
         // before this migration ran, so the old plugin's enabled state IS
         // their effective choice.
-        if ("enabled" in oldEntry) {
+        if (forwardOk && "enabled" in oldEntry) {
             try {
                 if (settings[newName].enabled !== oldEntry.enabled) {
                     settings[newName].enabled = oldEntry.enabled;
                 }
             } catch (e) {
                 console.warn(`[migrate] ${newName}.enabled write failed:`, e);
+                forwardOk = false;
             }
         }
 
         // Migrate non-enabled keys only when the new plugin entry doesn't
         // yet have user data (avoid clobbering user changes on a re-run).
         const newHasUserData = newEntry && Object.keys(newEntry).filter(k => k !== "enabled").length > 0;
-        if (!newHasUserData) {
+        if (forwardOk && !newHasUserData) {
             for (const [key, value] of Object.entries(oldEntry)) {
                 if (key === "enabled") continue; // handled above
                 try {
                     settings[newName][key] = value;
                 } catch (e) {
                     console.warn(`[migrate] ${newName}.${key} write failed:`, e);
+                    forwardOk = false; // don't delete the source if a key was lost
                 }
             }
         }
 
-        // Delete the legacy entry so future runs skip this pair and the user
-        // can disable the new plugin without the migration re-enabling it
-        // on next launch. Vencord allows delete via the `delete` operator on
-        // the settings proxy; falling through quietly if it doesn't.
-        try {
-            delete settings[oldName];
-        } catch (e) {
-            console.warn(`[migrate] delete ${oldName} failed:`, e);
+        // Delete the legacy entry ONLY once the forward-copy is confirmed, so
+        // future runs skip this pair and the user can disable the new plugin
+        // without the migration re-enabling it. If anything above failed, keep
+        // the old entry as the source of truth — a later launch retries it.
+        if (forwardOk) {
+            try {
+                delete settings[oldName];
+            } catch (e) {
+                console.warn(`[migrate] delete ${oldName} failed:`, e);
+            }
+            copied++;
         }
-
-        copied++;
     }
     if (copied > 0) {
         console.log(`[migrate] migrated ${copied} plugin(s) Discordmaxxer* → DM* and cleaned up legacy entries`);

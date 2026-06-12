@@ -96,32 +96,54 @@ addPatch({
         }
     ],
     patchStreamQuality(opts: any) {
-        const { screenshareQuality } = State.store;
-        if (!screenshareQuality) return opts;
+        // Fail-safe: this runs inline inside Discord's getDefaultGoliveQuality()
+        // during stream/RTC negotiation. A throw here aborts stream setup and
+        // can surface as a stuck connection — so never let this function throw.
+        try {
+            const { screenshareQuality } = State.store;
+            if (!screenshareQuality || !opts) return opts;
 
-        const framerate = Number(screenshareQuality.frameRate);
-        const height = Number(screenshareQuality.resolution);
-        const width = Math.round(height * (16 / 9));
+            // Number(undefined) is NaN. A partially-initialized quality store
+            // would otherwise poison every value below (NaN width/bitrate),
+            // and a NaN encoder bitrate is invalid input that breaks WebRTC
+            // negotiation. Fall back to safe 720p30 defaults.
+            const framerate = Number(screenshareQuality.frameRate) || 30;
+            const height = Number(screenshareQuality.resolution) || 720;
+            const width = Math.round(height * (16 / 9));
 
-        Object.assign(opts, {
-            bitrateMin: 500000,
-            bitrateMax: 8000000,
-            bitrateTarget: 600000
-        });
-        if (opts?.encode) {
-            Object.assign(opts.encode, {
-                framerate,
-                width,
-                height,
-                pixelCount: height * width
+            // bitrateTarget tunes how aggressively WebRTC drives the encoder.
+            // Upstream's 600 Kbps target is VOIP-grade and produces visibly
+            // choppy motion on fast-paced gameplay (Fortnite/Valorant) even at
+            // 1080p60 because the encoder is configured to aim low. Compute a
+            // bits-per-pixel-per-frame budget instead so a 480p15 share stays
+            // light and a 1080p60 share gets real bandwidth.
+            //
+            // bpp 0.15 ≈ Twitch's published target for game footage at the
+            // chosen res/fps. WebRTC adapts down on congestion regardless of
+            // target, so we set bitrateMin to ~60% of target — high enough
+            // that the encoder can't sink to VOIP rates during a motion burst
+            // and get stuck there, low enough that genuinely congested links
+            // can still claw down to a usable stream.
+            const bitrateMax = 8_000_000;
+            const bitrateTarget = Math.max(
+                500_000,
+                Math.min(bitrateMax, Math.round(width * height * framerate * 0.15))
+            );
+            const bitrateMin = Math.round(bitrateTarget * 0.6);
+
+            Object.assign(opts, {
+                bitrateMin,
+                bitrateMax,
+                bitrateTarget
             });
+            const dims = { framerate, width, height, pixelCount: height * width };
+            // Guard both: Discord's quality shape isn't contractually
+            // guaranteed to carry encode/capture on every client build.
+            if (opts.encode) Object.assign(opts.encode, dims);
+            if (opts.capture) Object.assign(opts.capture, dims);
+        } catch (e) {
+            logger.error("patchStreamQuality failed, returning opts unmodified:", e);
         }
-        Object.assign(opts.capture, {
-            framerate,
-            width,
-            height,
-            pixelCount: height * width
-        });
         return opts;
     }
 });

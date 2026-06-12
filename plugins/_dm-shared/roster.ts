@@ -190,3 +190,25 @@ export function getRosterProfileFlair(userId: string): ProfileFlair | undefined 
     if (!entry || isExpired(entry)) return undefined;
     return entry.profile;
 }
+
+let avatarFlairFlag: { fetchedAt: number; value: boolean } | null = null;
+/** Cheap, memoized: does ANY non-expired roster user carry an animated-avatar
+ *  flair? Lets DMProfileFlair's page-wide <img>/background scan early-out
+ *  entirely when nobody (besides possibly self) has avatar flair — the common
+ *  case in most servers. The O(n) roster walk runs only when the underlying
+ *  cache is replaced (~once/hour); every other call is O(1). */
+export function rosterHasAnyAvatarFlair(): boolean {
+    ensureFresh();
+    if (!cache) return false;
+    if (avatarFlairFlag?.fetchedAt === cache.fetchedAt) return avatarFlairFlag.value;
+    let value = false;
+    for (const id in cache.users) {
+        const e = cache.users[id];
+        if (e.profile?.avatarAnimatedUrl && !isExpired(e)) {
+            value = true;
+            break;
+        }
+    }
+    avatarFlairFlag = { fetchedAt: cache.fetchedAt, value };
+    return value;
+}

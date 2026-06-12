@@ -98,7 +98,6 @@ function unregisterFounderBadges() {
 
 let style: HTMLStyleElement | null = null;
 let observer: MutationObserver | null = null;
-let processed = new WeakSet<Element>();
 
 function buildCss() {
     const showRing = settings.store.avatarRing;
@@ -240,11 +239,26 @@ function buildCss() {
 }
 
 function tagElement(el: Element) {
-    if (processed.has(el)) return;
-    processed.add(el);
-
     const userId = el.getAttribute("data-user-id");
-    if (!userId) return;
+    // Discord virtualizes its member/voice lists: it RECYCLES the same row
+    // DOM node for a different user as you scroll, mutating only its
+    // data-user-id. Keying idempotency on element identity (the old WeakSet)
+    // meant a recycled row kept the PREVIOUS user's tier ring/badge. Key on
+    // the userId we last tagged this element for instead, and re-tag whenever
+    // it changes.
+    const node = el as HTMLElement;
+    const taggedFor = node.dataset?.dmTierFor ?? "";
+    if (taggedFor === (userId ?? "")) return;
+
+    // Reset any prior user's tagging before applying the new one (or none).
+    el.removeAttribute("data-dm-tier");
+    el.removeAttribute("data-dm-founder");
+
+    if (!userId) {
+        if (node.dataset) delete node.dataset.dmTierFor;
+        return;
+    }
+    if (node.dataset) node.dataset.dmTierFor = userId;
 
     const tier = getRosterTier(userId);
     if (tier > Tier.FREE) {
@@ -258,14 +272,20 @@ function tagElement(el: Element) {
 }
 
 function scanRoot(root: ParentNode = document) {
-    const els = root.querySelectorAll("[data-user-id]:not([data-dm-tier])");
-    els.forEach(tagElement);
+    // tagElement is now idempotent per-userId, so we can scan all rows (not
+    // just untagged ones) and recycled rows still get corrected.
+    root.querySelectorAll("[data-user-id]").forEach(tagElement);
 }
 
 function startObserver() {
     if (observer) return;
     observer = new MutationObserver(mutations => {
         for (const m of mutations) {
+            if (m.type === "attributes") {
+                // A recycled row whose data-user-id changed in place.
+                if (m.target instanceof Element) tagElement(m.target);
+                continue;
+            }
             for (const node of m.addedNodes) {
                 if (!(node instanceof Element)) continue;
                 if (node.hasAttribute("data-user-id")) tagElement(node);
@@ -273,17 +293,24 @@ function startObserver() {
             }
         }
     });
-    observer.observe(document.body, { childList: true, subtree: true });
+    // attributeFilter keeps the attribute callbacks scoped to the one
+    // attribute we care about — not a firehose of every style/class change.
+    observer.observe(document.body, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ["data-user-id"]
+    });
     scanRoot(document);
 }
 
 function stopObserver() {
     observer?.disconnect();
     observer = null;
-    processed = new WeakSet();
-    document.querySelectorAll("[data-dm-tier], [data-dm-founder]").forEach(el => {
+    document.querySelectorAll<HTMLElement>("[data-dm-tier], [data-dm-founder], [data-dm-tier-for]").forEach(el => {
         el.removeAttribute("data-dm-tier");
         el.removeAttribute("data-dm-founder");
+        delete el.dataset.dmTierFor;
     });
 }
 

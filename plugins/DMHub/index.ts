@@ -437,9 +437,23 @@ function injectButton() {
     buttonsRow.insertBefore(fab, micParent ?? buttonsRow.firstChild);
 }
 
+let injectScheduled = false;
+// Coalesce mutation bursts to one injectButton() per frame. The toolbar only
+// re-renders on focus changes, but the body observer fires on every DOM
+// mutation app-wide — running two querySelectors on each was needless steady
+// overhead during chat scroll / calls.
+function scheduleInject() {
+    if (injectScheduled) return;
+    injectScheduled = true;
+    requestAnimationFrame(() => {
+        injectScheduled = false;
+        injectButton();
+    });
+}
+
 function startObserver() {
     if (observer) return;
-    observer = new MutationObserver(() => injectButton());
+    observer = new MutationObserver(scheduleInject);
     observer.observe(document.body, { childList: true, subtree: true });
     injectButton(); // initial pass
 }

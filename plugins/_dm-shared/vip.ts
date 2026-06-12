@@ -71,11 +71,24 @@ DataStore.get<any>("dm-vip-claim").then(v => {
     if (v && typeof v === "object") claimCache = v;
 }).catch(() => {});
 
+/** Push a freshly-written VipClaim binding into this module's cache so
+ *  getMyTier() reflects a new claim IMMEDIATELY, without an app restart.
+ *  Called by vipClaim.writeBinding() (the existing vipClaim → vip import
+ *  direction, so no circular dependency is introduced). Previously vip.ts's
+ *  claimCache was populated only once at module init, so a just-redeemed code
+ *  left tier-gated features (VideoBackground, DMVotes) locked until relaunch. */
+export function setClaimCache(binding: any): void {
+    claimCache = binding && typeof binding === "object" ? binding : null;
+}
+
 function tierFromClaimCache(): Tier {
     try {
         const b = claimCache;
         if (!b) return Tier.FREE;
         if (typeof b?.tier !== "number") return Tier.FREE;
+        // Honor subscription expiry if the binding carries one (mirrors
+        // vipClaim.tierFromCachedBinding so both readers agree).
+        if (typeof b?.expiresAt === "number" && Date.now() > b.expiresAt) return Tier.FREE;
         const ageMs = Date.now() - (b?.lastValidatedAt ?? 0);
         if (ageMs > 24 * 60 * 60 * 1000) return Tier.FREE; // offline trust window
         return b.tier as Tier;

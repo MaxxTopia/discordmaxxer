@@ -9,6 +9,7 @@ import type { StreamPick } from "renderer/components/ScreenSharePicker";
 import { IpcCommands, IpcEvents } from "shared/IpcEvents";
 
 import { sendRendererCommand } from "./ipcCommands";
+import { Settings } from "./settings";
 import { handle } from "./utils/ipcWrappers";
 
 const isWayland =
@@ -78,7 +79,17 @@ export function registerScreenShareHandler() {
         const streams: Streams = {
             video: source
         };
-        if (choice.audio && process.platform === "win32") streams.audio = "loopback";
+        // On Windows, request system-loopback audio at the main-process layer
+        // ONLY when WGC is not forced. WGC + loopback fight each other in
+        // Chromium — the loopback request silently produces a silent track,
+        // and "Stream With Audio" appears broken. The renderer-side wrapper
+        // in screenShareFixes.ts re-captures audio via chromeMediaSource
+        // independently, so we can safely skip the main-side loopback under
+        // WGC and let the wrapper be the sole audio source.
+        const forceWgc = process.platform === "win32" && Settings.store.screenshareForceWgc;
+        if (choice.audio && process.platform === "win32" && !forceWgc) {
+            streams.audio = "loopback";
+        }
 
         callback(streams);
     });

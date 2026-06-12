@@ -23,7 +23,7 @@
 
 import * as DataStore from "@api/DataStore";
 
-import { Tier } from "./vip";
+import { setClaimCache, Tier } from "./vip";
 
 export const WORKER_URL = "https://optmaxxing-vip.maxxtopia.workers.dev/claim";
 
@@ -245,6 +245,10 @@ export async function readBindingAsync(): Promise<ClaimBinding | null> {
 
 export function writeBinding(b: ClaimBinding | null): void {
     cache = b;
+    // Keep vip.ts's separate claim cache in sync so getMyTier() reflects this
+    // write immediately — otherwise a freshly-claimed code stays locked out of
+    // tier-gated features until the next app restart.
+    setClaimCache(b);
     // Persist async. Errors are logged but not surfaced — callers don't
     // typically await the write, and DataStore failures are rare.
     if (b === null) {

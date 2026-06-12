@@ -10,6 +10,15 @@ import { MediaEngineStore } from "@vencord/types/webpack/common";
 const logger = new Logger("VesktopStreamFixes");
 
 function fixAudioTrackConstraints(constraint: MediaTrackConstraints) {
+    // Legacy Chromium desktop-capture constraints use the non-standard
+    // `mandatory`/`optional` (GoogConstraints) form — e.g. the per-window
+    // screenshare audio swap in screenShareFixes.ts requests
+    // `{ audio: { mandatory: { chromeMediaSource, chromeMediaSourceId } } }`.
+    // Bolting a spec-style `autoGainControl` key alongside `mandatory` makes
+    // Chromium reject the whole getUserMedia call (OverconstrainedError),
+    // which then drops the stream's audio. Leave those constraints untouched.
+    if ((constraint as any).mandatory || (constraint as any).optional) return;
+
     const target = constraint.advanced?.find(opt => Object.hasOwn(opt, "autoGainControl")) ?? constraint;
 
     target.autoGainControl = MediaEngineStore.getAutomaticGainControl();

@@ -180,7 +180,25 @@ export default definePlugin({
     async start() {
         style = createAndAppendStyle("dm-tournament-mode", managedStyleRootNode);
 
-        if (settings.store.enabledOnStart) await setActive(true);
+        if (settings.store.enabledOnStart) {
+            await setActive(true);
+        } else {
+            // The main process persists perf state (process priority, killed
+            // arRPC) ACROSS renderer reloads. If a prior session left TM active
+            // and the renderer reloaded — Ctrl+R, a crash, or CrashHandler
+            // recovery — `active` resets to false here but Discord is still
+            // pinned at BELOW_NORMAL with Rich Presence dead, and nothing would
+            // ever restore it. Proactively clear stale perf state to default on
+            // any non-activating start. Idempotent + silent (no toast).
+            const native = (globalThis as any).VesktopNative;
+            if (native?.performanceMode?.set) {
+                try {
+                    await native.performanceMode.set(false);
+                } catch (e) {
+                    console.warn("[TournamentMode] startup perf-state reset failed:", e);
+                }
+            }
+        }
 
         const native = (globalThis as any).VesktopNative;
         const wantGlobal = settings.store.useGlobalHotkey && native?.globalHotkey?.register;

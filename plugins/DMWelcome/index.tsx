@@ -332,6 +332,10 @@ const CSS = `
 
 let style: HTMLStyleElement | null = null;
 let rootEl: HTMLDivElement | null = null;
+// Auto-open timers, tracked so stop() can cancel them — otherwise a pending
+// timer fires after the plugin (or Discord renderer) is torn down and
+// resurrects the modal, re-appending rootEl to a body we already cleaned up.
+const autoOpenTimers: number[] = [];
 
 // ---- Identity (DMBadge channels A / C / D) -----------------------------------
 
@@ -553,20 +557,26 @@ export default definePlugin({
         // start. Same delay DMPrivacy uses (8s). Skip if the user isn't logged
         // in yet; DMHub etc. handle the same edge case by polling for the
         // user-panel toolbar.
-        setTimeout(() => {
-            const me = UserStore.getCurrentUser();
-            if (!me) {
-                // Still on login screen — try again in another 8s, then give up.
-                setTimeout(() => {
-                    if (UserStore.getCurrentUser() && shouldAutoOpen()) openWelcome();
-                }, 8000);
-                return;
-            }
-            openWelcome();
-        }, 6000);
+        autoOpenTimers.push(
+            window.setTimeout(() => {
+                const me = UserStore.getCurrentUser();
+                if (!me) {
+                    // Still on login screen — try again in another 8s, then give up.
+                    autoOpenTimers.push(
+                        window.setTimeout(() => {
+                            if (UserStore.getCurrentUser() && shouldAutoOpen()) openWelcome();
+                        }, 8000)
+                    );
+                    return;
+                }
+                openWelcome();
+            }, 6000)
+        );
     },
 
     stop() {
+        autoOpenTimers.forEach(clearTimeout);
+        autoOpenTimers.length = 0;
         rootEl?.remove();
         rootEl = null;
         style?.remove();
