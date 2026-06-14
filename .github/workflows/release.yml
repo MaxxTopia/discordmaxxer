@@ -37,10 +37,18 @@ jobs:
             # 11 custom plugins side-loaded into vencord-src/src/userplugins/.
             # The build pipeline (pnpm overlay:vencord) needs vencord-src to
             # exist on disk; it's gitignored and not in our repo, so clone it
-            # here at the pinned tag. If you bump the pinned version, also
-            # update the local vencord-src checkout so patches stay in sync.
-            - name: Clone Vencord at pinned tag (v1.14.13)
-              run: git clone --depth 1 --branch v1.14.13 https://github.com/Vendicated/Vencord.git vencord-src
+            # here at the pinned commit. Vencord moved to a rolling "devbuild":
+            # its semver tags (latest v1.14.13) lag months behind main, where
+            # plugin patches are kept current against Discord's client. Pinning
+            # the old tag is why ShowHiddenChannels / FakeNitro / etc. broke
+            # ("Patch had no effect"). So we pin a main COMMIT, not a tag. To
+            # bump: set this SHA + check out the same in your local vencord-src,
+            # re-run `pnpm overlay:vencord`, and verify the rebrand applies
+            # cleanly. upstream-watch.yml flags when main moves ahead of this pin.
+            - name: Clone Vencord at pinned commit
+              run: |
+                  git clone https://github.com/Vendicated/Vencord.git vencord-src
+                  git -C vencord-src checkout e8415d7c64d421616eb6d9081cc9ac05c6d1fb15
 
             - name: Install Vencord deps
               working-directory: vencord-src

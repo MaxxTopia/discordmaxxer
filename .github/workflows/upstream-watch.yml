@@ -41,17 +41,20 @@ jobs:
                       | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{try{process.stdout.write((JSON.parse(s).devDependencies.electron||''))}catch{process.stdout.write('')}})" \
                       | norm)
 
-                  # Our Vencord pin (the tag release.yml clones) vs latest Vencord release
-                  OUR_VENCORD=$(grep -oE 'Vencord\.git[^\n]*--branch v[0-9.]+' .github/workflows/release.yml | grep -oE 'v[0-9.]+' | head -1 || true)
-                  if [ -z "${OUR_VENCORD:-}" ]; then
-                      OUR_VENCORD=$(grep -oE -- '--branch v[0-9.]+' .github/workflows/release.yml | grep -oE 'v[0-9.]+' | head -1 || echo "unknown")
+                  # Our Vencord pin = the commit SHA release.yml checks out.
+                  OUR_VENCORD=$(grep -oE 'vencord-src checkout [0-9a-f]{7,40}' .github/workflows/release.yml | grep -oE '[0-9a-f]{7,40}' | head -1 || echo "unknown")
+                  # Vencord ships a rolling devbuild (main); its semver tags lag
+                  # months behind main, where plugin patches are kept current vs
+                  # Discord — so we track main commit-AGE drift, not tags.
+                  UP_VENCORD=$(gh api repos/Vendicated/Vencord/commits/main -q '.sha' 2>/dev/null | cut -c1-12 || echo "unknown")
+                  VENCORD_DRIFT_DAYS=0
+                  if [ "$OUR_VENCORD" != "unknown" ] && [ "$UP_VENCORD" != "unknown" ]; then
+                      OUR_DATE=$(gh api "repos/Vendicated/Vencord/commits/$OUR_VENCORD" -q '.commit.committer.date' 2>/dev/null || echo "")
+                      UP_DATE=$(gh api repos/Vendicated/Vencord/commits/main -q '.commit.committer.date' 2>/dev/null || echo "")
+                      if [ -n "$OUR_DATE" ] && [ -n "$UP_DATE" ]; then
+                          VENCORD_DRIFT_DAYS=$(( ( $(date -d "$UP_DATE" +%s) - $(date -d "$OUR_DATE" +%s) ) / 86400 ))
+                      fi
                   fi
-                  # Vencord's `releases/latest` is a rolling "devbuild" tag, not a
-                  # version — comparing to it would flag "behind" forever. Use the
-                  # highest real semver tag instead.
-                  UP_VENCORD=$(gh api 'repos/Vendicated/Vencord/tags?per_page=100' -q '.[].name' 2>/dev/null \
-                      | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1 || true)
-                  [ -z "${UP_VENCORD:-}" ] && UP_VENCORD="unknown"
 
                   echo "our_electron=$OUR_ELECTRON"   >> "$GITHUB_OUTPUT"
                   echo "up_electron=$UP_ELECTRON"     >> "$GITHUB_OUTPUT"
@@ -66,12 +69,11 @@ jobs:
                           BEHIND="${BEHIND}- Electron: ours \`$OUR_ELECTRON\` → upstream Vesktop \`$UP_ELECTRON\`\n"
                       fi
                   fi
-                  if [ "$UP_VENCORD" != "unknown" ] && [ "$OUR_VENCORD" != "$UP_VENCORD" ]; then
-                      # only flag if upstream tag is strictly newer than ours
-                      NEWERV=$(printf '%s\n%s\n' "${OUR_VENCORD#v}" "${UP_VENCORD#v}" | sort -V | tail -1)
-                      if [ "v$NEWERV" = "$UP_VENCORD" ]; then
-                          BEHIND="${BEHIND}- Vencord: ours \`$OUR_VENCORD\` → latest \`$UP_VENCORD\`\n"
-                      fi
+                  # Flag Vencord only when our pin is meaningfully stale (>30d behind
+                  # main) — main moves daily, so this avoids weekly noise while still
+                  # catching the drift that breaks plugin patches (ShowHiddenChannels etc.).
+                  if [ "${VENCORD_DRIFT_DAYS:-0}" -gt 30 ]; then
+                      BEHIND="${BEHIND}- Vencord: pin \`$OUR_VENCORD\` is ${VENCORD_DRIFT_DAYS}d behind main (\`$UP_VENCORD\`) — stale plugin patches likely\n"
                   fi
 
                   if [ -n "$BEHIND" ]; then
