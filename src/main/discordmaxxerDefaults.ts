@@ -69,6 +69,7 @@ const PLUGINS_DEFAULT_ON: string[] = [
     "DMTierFlair", // cross-user status flex: avatar ring, name tint, popout banner, founder gem
     "DMTyping", // MAXXER perk: [VIP]/[VIP+]/[MVP++] prefix in typing indicator
     "DMStreamMute", // local mute toggle for incoming screenshare audio (Ctrl+Shift+M)
+    "DMVoiceGuard", // safeguard: surfaces a banner when voice silently fails (e.g. Discord change the build can't handle)
     "DMBeta", // MAXXER++ perk: opt-in beta channel for prerelease GitHub tags
     "DMVotes" // MAXXER++ perk: panel for voting on candidate features (polls in #vip-chat)
 ];

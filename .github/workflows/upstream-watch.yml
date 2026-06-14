@@ -1,0 +1,110 @@
+name: Upstream watch
+
+# Safeguard against silently falling behind Discord. The build breaking on a
+# Discord server-side change (e.g. mandatory DAVE E2EE + zstd assets that an old
+# Electron can't decode) traces back to the bundled Electron / Vencord drifting
+# behind upstream. This job checks weekly whether upstream Vesktop's Electron pin
+# or the latest Vencord release has moved ahead of ours and, if so, opens a
+# single tracking issue so it gets noticed without anyone watching. Fully
+# autonomous — no maintainer action needed to detect drift.
+
+on:
+    schedule:
+        - cron: "0 14 * * 1" # Mondays 14:00 UTC
+    workflow_dispatch: {}
+
+permissions:
+    contents: read
+    issues: write
+
+jobs:
+    check:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+
+            - name: Compare against upstream
+              id: cmp
+              shell: bash
+              env:
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              run: |
+                  set -euo pipefail
+
+                  norm() { sed -E 's/^[^0-9]*//; s/[^0-9.].*$//'; }
+
+                  # Our Electron pin
+                  OUR_ELECTRON=$(node -p "require('./package.json').devDependencies.electron" | norm)
+
+                  # Upstream Vesktop's Electron pin (main)
+                  UP_ELECTRON=$(curl -fsSL https://raw.githubusercontent.com/Vencord/Vesktop/main/package.json \
+                      | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{try{process.stdout.write((JSON.parse(s).devDependencies.electron||''))}catch{process.stdout.write('')}})" \
+                      | norm)
+
+                  # Our Vencord pin (the tag release.yml clones) vs latest Vencord release
+                  OUR_VENCORD=$(grep -oE 'Vencord\.git[^\n]*--branch v[0-9.]+' .github/workflows/release.yml | grep -oE 'v[0-9.]+' | head -1 || true)
+                  if [ -z "${OUR_VENCORD:-}" ]; then
+                      OUR_VENCORD=$(grep -oE -- '--branch v[0-9.]+' .github/workflows/release.yml | grep -oE 'v[0-9.]+' | head -1 || echo "unknown")
+                  fi
+                  UP_VENCORD=$(gh api repos/Vendicated/Vencord/releases/latest -q .tag_name 2>/dev/null || echo "unknown")
+
+                  echo "our_electron=$OUR_ELECTRON"   >> "$GITHUB_OUTPUT"
+                  echo "up_electron=$UP_ELECTRON"     >> "$GITHUB_OUTPUT"
+                  echo "our_vencord=$OUR_VENCORD"     >> "$GITHUB_OUTPUT"
+                  echo "up_vencord=$UP_VENCORD"       >> "$GITHUB_OUTPUT"
+
+                  BEHIND=""
+                  if [ -n "$UP_ELECTRON" ] && [ "$OUR_ELECTRON" != "$UP_ELECTRON" ]; then
+                      # only flag if upstream is strictly newer
+                      NEWER=$(printf '%s\n%s\n' "$OUR_ELECTRON" "$UP_ELECTRON" | sort -V | tail -1)
+                      if [ "$NEWER" = "$UP_ELECTRON" ]; then
+                          BEHIND="${BEHIND}- Electron: ours \`$OUR_ELECTRON\` → upstream Vesktop \`$UP_ELECTRON\`\n"
+                      fi
+                  fi
+                  if [ "$UP_VENCORD" != "unknown" ] && [ "$OUR_VENCORD" != "$UP_VENCORD" ]; then
+                      BEHIND="${BEHIND}- Vencord: ours \`$OUR_VENCORD\` → latest \`$UP_VENCORD\`\n"
+                  fi
+
+                  if [ -n "$BEHIND" ]; then
+                      { echo "behind=true"; echo "summary<<EOF"; printf '%b' "$BEHIND"; echo "EOF"; } >> "$GITHUB_OUTPUT"
+                  else
+                      echo "behind=false" >> "$GITHUB_OUTPUT"
+                  fi
+
+            - name: Open tracking issue if behind
+              if: steps.cmp.outputs.behind == 'true'
+              shell: bash
+              env:
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+                  REPO: ${{ github.repository }}
+                  SUMMARY: ${{ steps.cmp.outputs.summary }}
+              run: |
+                  set -euo pipefail
+                  TITLE="[upstream] Dependencies behind upstream — review for voice/compat fixes"
+
+                  # Idempotent: don't pile up duplicates while one is open.
+                  EXISTING=$(gh issue list -R "$REPO" --state open --search "in:title \"[upstream] Dependencies behind upstream\"" --json number -q '.[0].number' 2>/dev/null || true)
+                  if [ -n "${EXISTING:-}" ]; then
+                      echo "Open tracking issue #$EXISTING already exists; skipping."
+                      exit 0
+                  fi
+
+                  BODY=$(cat <<EOF
+                  Automated check: Discordmaxxer's bundled dependencies have fallen behind upstream.
+
+                  $SUMMARY
+
+                  **Why this matters:** falling behind Electron/Vencord is what lets Discord
+                  server-side changes silently break the app (e.g. the DAVE E2EE + zstd voice
+                  outage). Review whether an update is needed.
+
+                  **Before bumping Electron, read \`TROUBLESHOOTING.md\` → "stay current".**
+                  After any bump: \`pnpm install && pnpm overlay:vencord && pnpm build\`, then
+                  **test a real voice call** before releasing.
+
+                  _Opened automatically by .github/workflows/upstream-watch.yml. Close when handled._
+                  EOF
+                  )
+
+                  gh issue create -R "$REPO" --title "$TITLE" --body "$BODY" || \
+                      echo "Could not create issue (check Settings → Actions → Workflow permissions = read/write, and that Issues are enabled)."
