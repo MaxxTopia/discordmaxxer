@@ -8,7 +8,7 @@
 import { Logger } from "@vencord/types/utils";
 import { Toasts } from "@vencord/types/webpack/common";
 import { currentSettings, currentSourceId } from "renderer/components/ScreenSharePicker";
-import { State } from "renderer/settings";
+import { Settings, State } from "renderer/settings";
 import { isLinux } from "renderer/utils";
 
 const logger = new Logger("VesktopStreamFixes");
@@ -182,6 +182,15 @@ if (isWindows) {
         });
 
         if (!currentSettings?.audio) return stream;
+
+        // Per-window audio swap is opt-in (default off). The desktop-audio
+        // getUserMedia below crashes the renderer on some Windows audio setups,
+        // so unless the user explicitly enables the anti-echo swap we keep the
+        // system-loopback audio the main process already attached and bail.
+        if (!Settings.store.screensharePerWindowAudio) {
+            debug("per-window audio swap disabled — using system loopback audio");
+            return stream;
+        }
 
         const originalTracks = stream.getAudioTracks();
         debug(`original audio track count: ${originalTracks.length}`);

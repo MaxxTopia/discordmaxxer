@@ -59,6 +59,14 @@ const SettingsOptions: Record<string, Array<BooleanSetting | SettingsComponent>>
                 "Forces Windows Graphics Capture for screenshares so the cursor shows up when capturing a single exclusive-fullscreen game window (e.g. Fortnite). Audio works in both WGC modes — the renderer-side per-window audio swap takes over when WGC is forced. Requires a full app restart.",
             defaultValue: false,
             invisible: () => !isWindows
+        },
+        {
+            key: "screensharePerWindowAudio",
+            title: "Per-window stream audio (anti-echo)",
+            description:
+                "Re-captures audio from the shared window instead of the whole system, to stop viewers hearing themselves echoed. OFF by default because on some Windows audio setups this capture crashes the screenshare — with it off, stream audio uses normal system loopback (works fine; only echoes if you're on speakers, not headphones). Requires a full app restart.",
+            defaultValue: false,
+            invisible: () => !isWindows
         }
     ],
     "User Interface": [

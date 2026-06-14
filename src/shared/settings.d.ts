@@ -39,6 +39,13 @@ export interface Settings {
     // for that reason. Requires a full app restart to take effect.
     screenshareForceWgc?: boolean;
 
+    // When ON, screenshare audio re-captures per-window audio (anti-echo swap
+    // in screenShareFixes.ts). OFF by default: the swap runs a desktop-audio
+    // getUserMedia that can crash the renderer on some Windows audio setups, so
+    // stream audio just uses plain system loopback (which works and only echoes
+    // if you're listening on speakers, not headphones). Requires a restart.
+    screensharePerWindowAudio?: boolean;
+
     spellCheckLanguages?: string[];
 
     audio?: {

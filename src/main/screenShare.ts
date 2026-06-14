@@ -87,7 +87,11 @@ export function registerScreenShareHandler() {
         // independently, so we can safely skip the main-side loopback under
         // WGC and let the wrapper be the sole audio source.
         const forceWgc = process.platform === "win32" && Settings.store.screenshareForceWgc;
-        if (choice.audio && process.platform === "win32" && !forceWgc) {
+        // Skip the main-side loopback ONLY when the renderer per-window swap
+        // will actually take over — i.e. WGC forced AND the swap enabled. If the
+        // swap is off (default), loopback must stay on or stream audio is silent.
+        const swapTakesOver = forceWgc && Settings.store.screensharePerWindowAudio === true;
+        if (choice.audio && process.platform === "win32" && !swapTakesOver) {
             streams.audio = "loopback";
         }
 
