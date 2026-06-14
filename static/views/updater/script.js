@@ -1,13 +1,32 @@
 const { update, version: currentVersion } = await VesktopUpdaterNative.getData();
 
+// Tool-authorship attribution that should never surface to users in the
+// changelog. Release notes are sourced from GitHub release bodies, which can
+// inherit commit-message trailers ("Co-Authored-By: Claude …", "🤖 Generated
+// with Claude Code"). Strip those lines defensively so the update popup shows
+// only real changelog content regardless of what a release body contains.
+const AUTHORSHIP_LINE = /(?:co-authored-by:?\s*)?(?:🤖\s*)?(?:generated with\s+)?(?:authored by\s+)?claude\b[^\n<]*|🤖\s*generated with[^\n<]*|co-authored-by:[^\n<]*/gi;
+
+function stripAuthorship(html) {
+    if (!html) return "";
+    return (
+        html
+            // drop whole list items / paragraphs that are purely an attribution
+            .replace(/<li[^>]*>\s*(?:🤖\s*)?(?:co-authored-by|generated with|authored by)[^<]*<\/li>/gi, "")
+            .replace(/<p[^>]*>\s*(?:🤖\s*)?(?:co-authored-by|generated with|authored by)[^<]*<\/p>/gi, "")
+            // then clean any remaining inline mentions
+            .replace(AUTHORSHIP_LINE, "")
+    );
+}
+
 document.getElementById("current-version").textContent = currentVersion;
 document.getElementById("new-version").textContent = update.version;
-document.getElementById("release-notes").innerHTML = update.releaseNotes
+document.getElementById("release-notes").innerHTML = (update.releaseNotes ?? [])
     .map(
         ({ version, note: html }) => `
             <section>
                 <h3>Version ${version}</h3>
-                <div>${html.replace(/<\/?h([1-3])/g, (m, level) => m.replace(level, Number(level) + 3))}</div>
+                <div>${stripAuthorship(html).replace(/<\/?h([1-3])/g, (m, level) => m.replace(level, Number(level) + 3))}</div>
             </section>
         `
     )
@@ -21,6 +40,15 @@ document.querySelectorAll("a").forEach(a => {
 document.querySelectorAll("h3, h4, h5, h6").forEach(h => {
     if (h.textContent.trim().toLowerCase() === "what's changed") {
         h.remove();
+    }
+});
+
+// belt-and-suspenders: remove any element left whose text is just a tool
+// authorship credit (catches markdown shapes the regex pass above missed)
+document.querySelectorAll("#release-notes li, #release-notes p").forEach(el => {
+    const t = el.textContent.trim().toLowerCase();
+    if (/^(?:🤖\s*)?(?:co-authored-by|generated with|authored by)\b/.test(t) || /\bclaude\b/.test(t) && t.includes("anthropic")) {
+        el.remove();
     }
 });
 

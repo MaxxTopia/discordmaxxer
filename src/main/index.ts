@@ -21,6 +21,7 @@ import { app, BrowserWindow, nativeTheme } from "electron";
 import { DATA_DIR } from "./constants";
 import { seedDiscordmaxxerDefaults } from "./discordmaxxerDefaults";
 import { createFirstLaunchTour } from "./firstLaunch";
+import { registerZstdDecodingFix } from "./fixZstdDecoding";
 import { createWindows, mainWin } from "./mainWindow";
 import { registerMediaPermissionsHandler } from "./mediaPermissions";
 import { registerScreenShareHandler } from "./screenShare";
@@ -152,6 +153,10 @@ function init() {
 
     app.whenReady().then(async () => {
         if (process.platform === "win32") app.setAppUserModelId("dev.diggy.discordmaxxer");
+
+        // Must run before any Discord window loads so the very first asset
+        // fetches (incl. the DAVE E2EE wasm) negotiate br/gzip, not zstd.
+        registerZstdDecodingFix();
 
         registerScreenShareHandler();
         registerMediaPermissionsHandler();
