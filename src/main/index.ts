@@ -21,7 +21,6 @@ import { app, BrowserWindow, nativeTheme } from "electron";
 import { DATA_DIR } from "./constants";
 import { seedDiscordmaxxerDefaults } from "./discordmaxxerDefaults";
 import { createFirstLaunchTour } from "./firstLaunch";
-import { registerZstdDecodingFix } from "./fixZstdDecoding";
 import { createWindows, mainWin } from "./mainWindow";
 import { registerMediaPermissionsHandler } from "./mediaPermissions";
 import { registerScreenShareHandler } from "./screenShare";
@@ -119,6 +118,23 @@ function init() {
     disabledFeatures.add("OpaqueResponseBlockingV02");
     disabledFeatures.add("CrossOriginOpenerPolicyByDefault");
 
+    // Fix voice calls looping "Authenticating -> Disconnected" (RTC close code
+    // 4017, "E2EE/DAVE protocol required"). Discord made its DAVE end-to-end
+    // voice encryption mandatory; the DAVE WebAssembly module (plus some JS
+    // chunks/fonts) is served Content-Encoding: zstd. Electron's
+    // webRequest-intercepted response path (Vencord hooks onHeadersReceived for
+    // CSP) cannot decode zstd, so those assets fail net::ERR_CONTENT_DECODING_
+    // FAILED -> "[LibDaveManager] Failed to initialize DAVE" -> the voice server
+    // rejects every connection with 4017 and the client reconnect-loops forever
+    // (mic captured, but no RTCPeerConnection ever forms). Disabling the
+    // ZstdContentEncoding feature stops Chromium advertising zstd in
+    // Accept-Encoding (which can't be done from onBeforeSendHeaders — that
+    // header isn't exposed there), so Discord's CDN falls back to brotli/gzip,
+    // which Electron decodes. Remove once on an Electron whose intercepted
+    // response path decodes zstd (track upstream Vesktop's Electron bump).
+    disabledFeatures.add("ZstdContentEncoding");
+    disabledFeatures.add("SharedZstd");
+
     if (isLinux) {
         // Support TTS on Linux using https://wiki.archlinux.org/title/Speech_dispatcher
         app.commandLine.appendSwitch("enable-speech-dispatcher");
@@ -153,10 +169,6 @@ function init() {
 
     app.whenReady().then(async () => {
         if (process.platform === "win32") app.setAppUserModelId("dev.diggy.discordmaxxer");
-
-        // Must run before any Discord window loads so the very first asset
-        // fetches (incl. the DAVE E2EE wasm) negotiate br/gzip, not zstd.
-        registerZstdDecodingFix();
 
         registerScreenShareHandler();
         registerMediaPermissionsHandler();
