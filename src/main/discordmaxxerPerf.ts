@@ -65,13 +65,33 @@ function setAllRendererFrameRates(fps: number) {
 }
 
 function trySetProcessPriority(priority: number): boolean {
+    // Lower EVERY Discordmaxxer process, not just main. The renderer + GPU
+    // child processes are the real CPU/GPU consumers that contend with a game
+    // for cores and the GPU queue — lowering only the (mostly idle) main
+    // process barely moved input latency. app.getAppMetrics() enumerates all
+    // of them (main, gpu, renderer(s), utility/audio); os.setPriority accepts a
+    // pid, so we can drop them all to BELOW_NORMAL while gaming and restore on
+    // toggle-off. Per-pid try/catch because a child can exit mid-iteration.
+    const pids = new Set<number>([process.pid]);
     try {
-        setPriority(0, priority); // 0 = current process
-        return true;
+        for (const m of app.getAppMetrics()) {
+            if (typeof m.pid === "number") pids.add(m.pid);
+        }
     } catch (e) {
-        console.warn("[Discordmaxxer] setPriority failed:", (e as Error).message);
-        return false;
+        console.warn("[Discordmaxxer] getAppMetrics failed:", (e as Error).message);
     }
+
+    let count = 0;
+    for (const pid of pids) {
+        try {
+            setPriority(pid, priority);
+            count++;
+        } catch {
+            // transient/exited child process — skip it
+        }
+    }
+    if (count === 0) console.warn("[Discordmaxxer] setPriority: no processes updated");
+    return count > 0;
 }
 
 handle(IpcEvents.DM_SET_PERFORMANCE_MODE, (_e, on: boolean) => {
