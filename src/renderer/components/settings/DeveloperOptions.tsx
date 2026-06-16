@@ -16,6 +16,7 @@ import {
     useForceUpdater
 } from "@vencord/types/utils";
 import { Toasts } from "@vencord/types/webpack/common";
+import { Settings as SettingsStore, State } from "renderer/settings";
 import { Settings } from "shared/settings";
 
 import { cl, SettingsComponent } from "./Settings";
@@ -48,10 +49,62 @@ function openDeveloperOptionsModal(settings: Settings) {
                             Open chrome://webrtc-internals
                         </Button>
                     </div>
+
+                    <StreamHealthSection />
                 </div>
             </ModalContent>
         </ModalRoot>
     ));
+}
+
+// Self-serve diagnostics for the recurring screenshare/voice complaints
+// (echo, lag/choppiness, the grey-screen-on-Go-Live audio crash). Reads only
+// settings/state — no WebRTC patching — and points at chrome://webrtc-internals
+// for the live encoder stat. Reachable via Settings → Discordmaxxer → Open
+// Developer Settings.
+function StreamHealthSection() {
+    const s = SettingsStore.store as any;
+    const q = (State.store as any).screenshareQuality;
+    const report = [
+        "Discordmaxxer — stream & voice health",
+        `Hardware acceleration:        ${s.hardwareAcceleration !== false ? "ON" : "OFF"}`,
+        `Hardware video acceleration:  ${s.hardwareVideoAcceleration ? "ON" : "OFF"}`,
+        `Stream quality:               ${q?.resolution ?? 720}p${q?.frameRate ?? 30}`,
+        `Stream audio mode:            ${s.screensharePerWindowAudio ? "Per-window (anti-echo)" : "System loopback (whole desktop)"}`,
+        `Force WGC (cursor in games):  ${s.screenshareForceWgc ? "ON" : "OFF"}`
+    ].join("\n");
+
+    return (
+        <>
+            <Heading tag="h5" className={Margins.top16}>Stream &amp; Voice Health</Heading>
+            <div style={{ background: "var(--background-secondary)", borderRadius: 6, padding: "8px 10px", margin: "6px 0" }}>
+                <pre style={{ whiteSpace: "pre-wrap", margin: 0, fontFamily: "var(--font-code, monospace)", fontSize: 12 }}>{report}</pre>
+            </div>
+            <Paragraph>
+                <b>Viewers hear themselves (echo):</b> your audio mode is system-loopback, which captures their voice playing back through your output. Fix: share <b>video-only</b> (uncheck “Stream With Audio”). Per-window audio avoids it but crashes on some setups.
+            </Paragraph>
+            <Paragraph>
+                <b>Choppy / laggy to viewers:</b> open chrome://webrtc-internals (above) <i>while sharing</i> → find the outbound video stream → read <b>qualityLimitationReason</b>: <code>cpu</code> = encoder-bound (lower resolution/fps), <code>bandwidth</code> = network, <code>none</code> = fine. Try 720p30 first.
+            </Paragraph>
+            <Paragraph>
+                <b>Grey screen / stuck on Go Live:</b> that’s per-window audio crashing — keep “Per-window stream audio” OFF.
+            </Paragraph>
+            <div className={cl("button-grid")}>
+                <Button
+                    onClick={() => {
+                        try {
+                            navigator.clipboard.writeText(report);
+                        } catch {
+                            /* ignore */
+                        }
+                        Toasts.show({ message: "Stream health copied", type: Toasts.Type.SUCCESS, id: Toasts.genId() });
+                    }}
+                >
+                    Copy health report
+                </Button>
+            </div>
+        </>
+    );
 }
 
 const VencordLocationPicker: SettingsComponent = ({ settings }) => {
