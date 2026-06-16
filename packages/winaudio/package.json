@@ -1,0 +1,15 @@
+{
+    "name": "winaudio",
+    "main": "index.js",
+    "types": "index.d.ts",
+    "description": "Per-output-device WASAPI loopback capture for Windows screenshare. Discordmaxxer's Windows-side equivalent of venmic. Picks any audio output endpoint by ID, not just the system default — fixes screenshare audio for users with Voicemeeter / VB-Cable / EqualizerAPO routing where the default output is a virtual mix.",
+    "devDependencies": {
+        "node-addon-api": "^8.5.0",
+        "node-gyp": "^11.4.2"
+    },
+    "scripts": {
+        "build": "node-gyp configure build",
+        "clean": "node-gyp clean",
+        "test": "npm run build && node test.js"
+    }
+}

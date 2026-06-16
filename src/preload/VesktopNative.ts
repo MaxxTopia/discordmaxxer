@@ -133,5 +133,57 @@ export const VesktopNative = {
     beta: {
         getAllowPrerelease: () => invoke<boolean>(IpcEvents.DM_GET_ALLOW_PRERELEASE),
         setAllowPrerelease: (on: boolean) => invoke<void>(IpcEvents.DM_SET_ALLOW_PRERELEASE, on)
+    },
+    /**
+     * Windows-only — per-output-device + per-process WASAPI loopback capture
+     * (native packages/winaudio). Lets screenshare source audio from a chosen
+     * output device or app process tree instead of whatever Windows says is
+     * the default. Fixes screenshare for users with Voicemeeter / VB-Cable /
+     * EqualizerAPO routing, and the process-exclude path keeps the streamer's
+     * own Discord voice playback out of the outgoing stream (no echo).
+     * `list()` returns `{ ok: false, error }` on other platforms.
+     */
+    winAudio: {
+        list: () =>
+            invoke<
+                { ok: false; error: string }
+                | { ok: true; devices: Array<{ id: string; name: string; isDefault: boolean }> }
+            >(IpcEvents.DM_WIN_AUDIO_LIST),
+        start: (deviceId: string) =>
+            invoke<
+                { ok: false; error: string }
+                | { ok: true; format: { sampleRate: number; channels: number; bitsPerSample: number; isFloat: boolean } }
+            >(IpcEvents.DM_WIN_AUDIO_START, deviceId),
+        stop: () => invoke<{ ok: true } | { ok: false; error: string }>(IpcEvents.DM_WIN_AUDIO_STOP),
+        onChunk: (cb: (chunk: { data: Buffer; frameCount: number; timestamp100ns: string; silent: boolean }) => void) => {
+            const handler = (_e: unknown, chunk: any) => cb(chunk);
+            ipcRenderer.on(IpcEvents.DM_WIN_AUDIO_CHUNK, handler);
+            return () => ipcRenderer.off(IpcEvents.DM_WIN_AUDIO_CHUNK, handler);
+        },
+        listSessions: () =>
+            invoke<
+                { ok: false; error: string }
+                | {
+                      ok: true;
+                      sessions: Array<{
+                          pid: number;
+                          processName: string;
+                          displayName: string;
+                          isActive: boolean;
+                      }>;
+                  }
+            >(IpcEvents.DM_WIN_AUDIO_SESSIONS),
+        startProcess: (targetPid: number, mode: "include" | "exclude") =>
+            invoke<
+                { ok: false; error: string }
+                | { ok: true; format: { sampleRate: number; channels: number; bitsPerSample: number; isFloat: boolean } }
+            >(IpcEvents.DM_WIN_AUDIO_START_PROCESS, targetPid, mode),
+        // Capture everything except our own process tree (no PID arg — main
+        // uses process.pid). Keeps Discord's voice playback out of the stream.
+        startExcludeSelf: () =>
+            invoke<
+                { ok: false; error: string }
+                | { ok: true; format: { sampleRate: number; channels: number; bitsPerSample: number; isFloat: boolean } }
+            >(IpcEvents.DM_WIN_AUDIO_START_EXCLUDE_SELF)
     }
 };

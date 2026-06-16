@@ -1,6 +1,6 @@
 {
     "name": "discordmaxxer",
-    "version": "0.7.37",
+    "version": "0.7.38",
     "private": true,
     "description": "Discord, optimized. 7th project in the maxxer suite. Forked from Vesktop.",
     "keywords": [
@@ -30,6 +30,7 @@
         "overlay:vencord": "node overlay-scripts/build-vencord.mjs",
         "overlay:full": "pnpm overlay:vencord && pnpm build:dev",
         "buildLibVesktop": "pnpm -C packages/libvesktop install && pnpm -C packages/libvesktop run build",
+        "buildWinAudio": "pnpm -C packages/winaudio install && pnpm -C packages/winaudio run build",
         "package": "pnpm build && electron-builder",
         "package:dir": "pnpm build && electron-builder --dir",
         "package:win": "pnpm build && electron-builder --windows",
@@ -52,7 +53,8 @@
         "electron-updater": "^6.6.2"
     },
     "optionalDependencies": {
-        "@vencord/venmic": "^6.1.0"
+        "@vencord/venmic": "^6.1.0",
+        "winaudio": "link:packages/winaudio"
     },
     "devDependencies": {
         "@fal-works/esbuild-plugin-global-externals": "^2.1.2",
@@ -109,6 +111,10 @@
             {
                 "from": "build/shortcut-icon.ico",
                 "to": "shortcut-icon.ico"
+            },
+            {
+                "from": "packages/winaudio/build/Release/winaudio.node",
+                "to": "winaudio.node"
             }
         ],
         "protocols": {

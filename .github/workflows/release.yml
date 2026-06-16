@@ -67,6 +67,9 @@ jobs:
             - name: Build
               run: pnpm build
 
+            - name: Build winaudio native module
+              run: pnpm buildWinAudio
+
             - name: Run Electron Builder
               run: pnpm electron-builder --windows --publish always
               env:

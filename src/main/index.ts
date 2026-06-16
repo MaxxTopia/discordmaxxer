@@ -11,6 +11,7 @@ import "./discordmaxxerHotkeys";
 import "./discordmaxxerPerf";
 import "./discordmaxxerHwid";
 import "./userAssets";
+import "./winaudio";
 import "./vesktopProtocol";
 // dmMediaProxy MUST be imported before app.whenReady fires — its module
 // side effect registers `dm-media://` as a privileged scheme.
