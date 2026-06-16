@@ -102,6 +102,27 @@ function StreamHealthSection() {
                 >
                     Copy health report
                 </Button>
+                <Button
+                    onClick={() => {
+                        try {
+                            navigator.clipboard.writeText(report);
+                        } catch {
+                            /* ignore */
+                        }
+                        try {
+                            window.open("https://discord.gg/S78eecbWdx", "_blank");
+                        } catch {
+                            /* ignore */
+                        }
+                        Toasts.show({
+                            message: "Report copied — paste it in the Maxxtopia Discord to send it.",
+                            type: Toasts.Type.SUCCESS,
+                            id: Toasts.genId()
+                        });
+                    }}
+                >
+                    Report on Discord
+                </Button>
             </div>
         </>
     );

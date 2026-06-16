@@ -30,6 +30,11 @@ const FAIL_WINDOW_MS = 30_000;
 const FAIL_THRESHOLD = 3; // repeated generic voice-socket closes within the window
 const RING_MAX = 80;
 
+// Where users send reports. Opening this is user-initiated (a button click) and
+// the report only ever lives on their clipboard — nothing is sent automatically.
+// Keeps the "zero outbound calls" promise; just gives the manual report a home.
+const MAXXTOPIA_DISCORD = "https://discord.gg/S78eecbWdx";
+
 // Definitive "voice is broken, the build is behind" signals — fire immediately.
 const FATAL_RE = /Failed to initialize DAVE|DAVE preload failed|E2EE\/DAVE protocol required/i;
 // Generic abnormal voice-gateway closes (4xxx) — fire only if repeated in-call.
@@ -194,20 +199,28 @@ function showBanner() {
 
         const copy = document.createElement("button");
         copy.className = "dm-vg-copy";
-        copy.textContent = "Copy report";
+        copy.textContent = "Report a bug";
+        copy.title =
+            "Copies a diagnostics report to your clipboard and opens the Maxxtopia Discord so you can paste it. Nothing is sent automatically.";
         copy.onclick = () => {
             const report = buildReport();
-            const done = () =>
+            const go = () => {
+                try {
+                    window.open(MAXXTOPIA_DISCORD, "_blank");
+                } catch {
+                    /* ignore */
+                }
                 Toasts.show({
-                    message: "Voice report copied — paste it in your bug report.",
+                    message: "Report copied — paste it in the Maxxtopia Discord to send it.",
                     type: Toasts.Type.SUCCESS,
                     id: Toasts.genId(),
-                    options: { duration: 2600, position: Toasts.Position.BOTTOM }
+                    options: { duration: 4000, position: Toasts.Position.BOTTOM }
                 });
+            };
             try {
-                navigator.clipboard.writeText(report).then(done, done);
+                navigator.clipboard.writeText(report).then(go, go);
             } catch {
-                done();
+                go();
             }
         };
 
