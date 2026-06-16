@@ -1,0 +1,129 @@
+name: Vencord SHC auto-rebump
+
+# Watches Vencord bug #4256 — "[ShowHiddenChannels] Hidden channels no longer
+# show names and permission overrides" — the open upstream break that currently
+# stops locked-channel names from rendering. We're already pinned to the latest
+# Vencord main, but main itself still has the bug, so there's nothing to bump TO
+# yet. The moment Vencord CLOSES #4256 (i.e. ships a fix), this:
+#   1. re-pins our Vencord to current main,
+#   2. VERIFIES the rebrand still applies with 0 warnings AND the build passes,
+#   3. ships a new release ONLY if that gate is green,
+#   4. otherwise opens an issue for manual review and ships nothing.
+# So a broken bump can never auto-reach users. Diggy opted into auto-re-bump
+# (2026-06-14). Disable anytime in the Actions tab. Manual run: workflow_dispatch.
+
+on:
+    schedule:
+        - cron: "0 16 * * *" # daily 16:00 UTC — cheap check; heavy job only runs when the fix lands
+    workflow_dispatch: {}
+
+permissions:
+    contents: write
+    issues: write
+
+env:
+    VENCORD_ISSUE: "4256"
+
+jobs:
+    gate:
+        runs-on: ubuntu-latest
+        outputs:
+            go: ${{ steps.c.outputs.go }}
+            sha: ${{ steps.c.outputs.sha }}
+            version: ${{ steps.c.outputs.version }}
+        steps:
+            - uses: actions/checkout@v4
+            - id: c
+              env:
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              shell: bash
+              run: |
+                  set -e
+                  STATE=$(gh api "repos/Vendicated/Vencord/issues/${VENCORD_ISSUE}" -q .state 2>/dev/null || echo "open")
+                  UP=$(gh api repos/Vendicated/Vencord/commits/main -q .sha 2>/dev/null || echo "")
+                  OUR=$(grep -oE 'vencord-src checkout [0-9a-f]{40}' .github/workflows/release.yml | grep -oE '[0-9a-f]{40}' | head -1)
+                  echo "issue #${VENCORD_ISSUE} state=$STATE  our=$OUR  up=$UP"
+                  if [ "$STATE" = "closed" ] && [ -n "$UP" ] && [ "$UP" != "$OUR" ]; then
+                      VER=$(node -p "const v=require('./package.json').version.split('.'); v[2]=(+v[2]+1); v.join('.')")
+                      echo "go=true"        >> "$GITHUB_OUTPUT"
+                      echo "sha=$UP"        >> "$GITHUB_OUTPUT"
+                      echo "version=$VER"   >> "$GITHUB_OUTPUT"
+                      echo "→ #${VENCORD_ISSUE} is fixed; will re-bump to $UP as v$VER"
+                  else
+                      echo "go=false" >> "$GITHUB_OUTPUT"
+                      echo "→ not fixed yet (or already current); nothing to do"
+                  fi
+
+    rebump:
+        needs: gate
+        if: needs.gate.outputs.go == 'true'
+        runs-on: windows-latest
+        steps:
+            - uses: actions/checkout@v4
+            - uses: pnpm/action-setup@v4
+            - uses: actions/setup-node@v4
+              with:
+                  node-version: 20
+                  cache: "pnpm"
+
+            - name: Re-pin Vencord + bump version
+              shell: bash
+              run: |
+                  set -e
+                  SHA="${{ needs.gate.outputs.sha }}"
+                  VER="${{ needs.gate.outputs.version }}"
+                  sed -i -E "s/vencord-src checkout [0-9a-f]{40}/vencord-src checkout ${SHA}/" .github/workflows/release.yml
+                  node -e "const f='package.json';const p=require('./'+f);p.version='${VER}';require('fs').writeFileSync(f, JSON.stringify(p,null,4)+'\n')"
+                  echo "Re-pinned Vencord → ${SHA}; version → ${VER}"
+
+            - name: Install dependencies
+              run: pnpm install --frozen-lockfile
+
+            - name: Clone Vencord at new commit
+              shell: bash
+              run: |
+                  git clone https://github.com/Vendicated/Vencord.git vencord-src
+                  git -C vencord-src checkout "${{ needs.gate.outputs.sha }}"
+
+            - name: Install Vencord deps
+              working-directory: vencord-src
+              run: pnpm install --frozen-lockfile
+
+            - name: Apply rebrand + build overlay — GATE on 0 rebrand warnings
+              shell: bash
+              run: |
+                  set -o pipefail
+                  pnpm overlay:vencord 2>&1 | tee overlay.log
+                  WARN=$(grep -oE 'warnings=[0-9]+' overlay.log | grep -oE '[0-9]+' | tail -1 || echo "99")
+                  echo "rebrand warnings = $WARN"
+                  if [ "$WARN" != "0" ]; then
+                      echo "::error::Rebrand produced $WARN warning(s) on the new Vencord — a patch needs updating. Aborting auto-ship."
+                      exit 1
+                  fi
+
+            - name: Build
+              run: pnpm build
+
+            - name: Commit re-pin to main
+              shell: bash
+              run: |
+                  git config user.name "github-actions[bot]"
+                  git config user.email "github-actions[bot]@users.noreply.github.com"
+                  git add package.json .github/workflows/release.yml
+                  git commit -m "release: v${{ needs.gate.outputs.version }} — auto re-bump Vencord (ShowHiddenChannels fix #${VENCORD_ISSUE} landed)"
+                  git push origin HEAD:main
+
+            - name: Publish release
+              run: pnpm electron-builder --windows --publish always
+              env:
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+            - name: On failure — open a manual-review issue, ship nothing
+              if: failure()
+              shell: bash
+              env:
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              run: |
+                  gh issue create -R "${{ github.repository }}" \
+                      --title "[auto-rebump] Vencord re-bump needs manual review" \
+                      --body "Vencord #${VENCORD_ISSUE} closed, so the auto-rebump tried to move our pin to main \`${{ needs.gate.outputs.sha }}\` (v${{ needs.gate.outputs.version }}) — but the rebrand or build did NOT verify clean, so **nothing shipped**. A rebrand patch likely needs updating against the new Vencord. Do it manually: check out that SHA in vencord-src, run \`pnpm overlay:vencord\`, fix any warning find-strings, then release. See the v0.7.34 commit + TROUBLESHOOTING.md." || true
