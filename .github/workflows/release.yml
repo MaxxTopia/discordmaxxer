@@ -67,8 +67,11 @@ jobs:
             - name: Build
               run: pnpm build
 
-            - name: Build winaudio native module
-              run: pnpm buildWinAudio
+            # winaudio.node is shipped as a committed N-API prebuilt
+            # (packages/winaudio/prebuilds/winaudio-x64.node) — same pattern as
+            # libvesktop. We do NOT compile it here: node-gyp can't parse the
+            # runner's VS 18 install, and N-API binaries are ABI-stable so the
+            # prebuilt loads in Electron without a per-runtime rebuild.
 
             - name: Run Electron Builder
               run: pnpm electron-builder --windows --publish always

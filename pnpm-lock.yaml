@@ -104,6 +104,9 @@ importers:
       typescript-eslint:
         specifier: ^8.57.2
         version: 8.57.2(eslint@10.1.0(jiti@2.6.1))(typescript@6.0.2)
+      winaudio:
+        specifier: link:packages/winaudio
+        version: link:packages/winaudio
       xml-formatter:
         specifier: ^3.6.7
         version: 3.6.7
@@ -111,9 +114,6 @@ importers:
       '@vencord/venmic':
         specifier: ^6.1.0
         version: 6.1.0
-      winaudio:
-        specifier: link:packages/winaudio
-        version: link:packages/winaudio
 
 packages:
 

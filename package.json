@@ -53,8 +53,7 @@
         "electron-updater": "^6.6.2"
     },
     "optionalDependencies": {
-        "@vencord/venmic": "^6.1.0",
-        "winaudio": "link:packages/winaudio"
+        "@vencord/venmic": "^6.1.0"
     },
     "devDependencies": {
         "@fal-works/esbuild-plugin-global-externals": "^2.1.2",
@@ -84,6 +83,7 @@
         "type-fest": "^5.5.0",
         "typescript": "^6.0.2",
         "typescript-eslint": "^8.57.2",
+        "winaudio": "link:packages/winaudio",
         "xml-formatter": "^3.6.7"
     },
     "packageManager": "pnpm@10.7.1",
@@ -113,7 +113,7 @@
                 "to": "shortcut-icon.ico"
             },
             {
-                "from": "packages/winaudio/build/Release/winaudio.node",
+                "from": "packages/winaudio/prebuilds/winaudio-x64.node",
                 "to": "winaudio.node"
             }
         ],

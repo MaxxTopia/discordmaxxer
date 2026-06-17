@@ -1,3 +1,4 @@
 build/
 node_modules/
-*.node
+# prebuilds/*.node ARE committed (N-API binary, ABI-stable across Node/Electron)
+# — same pattern as packages/libvesktop/prebuilds. Only build/ output is ignored.
