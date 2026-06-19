@@ -166,12 +166,18 @@ export function getEffectiveFlairForUser(
     let flair: ProfileFlair | null = null;
     const me = UserStore.getCurrentUser?.();
     if (me?.id === userId) {
-        const local: ProfileFlair = {};
-        const b = s.myBannerUrl.trim(); if (b) local.bannerUrl = b;
-        const a = s.myAvatarAnimatedUrl.trim(); if (a) local.avatarAnimatedUrl = a;
-        const p = s.myThemeColorPrimary.trim(); if (p) local.themeColorPrimary = p;
-        const sc = s.myThemeColorSecondary.trim(); if (sc) local.themeColorSecondary = sc;
-        if (Object.keys(local).length) flair = local;
+        // Per-field merge: start from your saved roster flair, then let any
+        // non-empty LOCAL field override it. This matches the documented
+        // intent — an empty local field falls through to your roster value
+        // (e.g. a banner you saved earlier but never re-typed locally) instead
+        // of being masked to nothing. Filled local fields still preview
+        // instantly, no save/worker roundtrip needed.
+        const merged: ProfileFlair = { ...(getRosterProfileFlair(userId) ?? {}) };
+        const b = s.myBannerUrl.trim(); if (b) merged.bannerUrl = b;
+        const a = s.myAvatarAnimatedUrl.trim(); if (a) merged.avatarAnimatedUrl = a;
+        const p = s.myThemeColorPrimary.trim(); if (p) merged.themeColorPrimary = p;
+        const sc = s.myThemeColorSecondary.trim(); if (sc) merged.themeColorSecondary = sc;
+        if (Object.keys(merged).length) flair = merged;
     }
     if (!flair) flair = getRosterProfileFlair(userId) ?? null;
     if (!flair) return null;
@@ -1175,12 +1181,17 @@ function resolveFlairForUserId(userId: string | null, kind: "banner" | "avatar" 
     let flair: ProfileFlair | null = null;
     const me = UserStore.getCurrentUser?.();
     if (userId && me?.id === userId) {
-        const local: ProfileFlair = {};
-        const b = s.myBannerUrl.trim(); if (b) local.bannerUrl = b;
-        const a = s.myAvatarAnimatedUrl.trim(); if (a) local.avatarAnimatedUrl = a;
-        const p = s.myThemeColorPrimary.trim(); if (p) local.themeColorPrimary = p;
-        const sc = s.myThemeColorSecondary.trim(); if (sc) local.themeColorSecondary = sc;
-        if (Object.keys(local).length) flair = local;
+        // Per-field merge (see getEffectiveFlairForUser): roster is the base,
+        // non-empty local fields override. An empty local field falls back to
+        // your saved roster value rather than masking it to nothing — which is
+        // why an empty local banner used to render nothing for you even though
+        // others saw your saved roster banner.
+        const merged: ProfileFlair = { ...(getRosterProfileFlair(userId) ?? {}) };
+        const b = s.myBannerUrl.trim(); if (b) merged.bannerUrl = b;
+        const a = s.myAvatarAnimatedUrl.trim(); if (a) merged.avatarAnimatedUrl = a;
+        const p = s.myThemeColorPrimary.trim(); if (p) merged.themeColorPrimary = p;
+        const sc = s.myThemeColorSecondary.trim(); if (sc) merged.themeColorSecondary = sc;
+        if (Object.keys(merged).length) flair = merged;
     } else if (userId) {
         flair = getRosterProfileFlair(userId) ?? null;
     }
@@ -1287,10 +1298,23 @@ function applyAvatar(avatar: HTMLImageElement, url: string) {
     // emits a mutation → wakes the observer → re-scans → re-assigns... a
     // self-sustaining CPU/network loop for as long as the avatar is on screen.
     if (avatar.dataset.dmFlairAppliedUrl === url) return;
+    // Already proven dead this session — don't reapply a URL that 404s / serves
+    // a host's "removed" stub (e.g. a deleted imgur link returns a 503-byte
+    // image/png egg). Reapplying would just flash the broken icon every scan.
+    if (avatar.dataset.dmFlairFailedUrl === url) return;
     // Stash the original src so we can restore on plugin stop / setting change.
     if (!avatar.dataset.dmFlairOriginalSrc) {
         avatar.dataset.dmFlairOriginalSrc = avatar.src;
     }
+    // If the flair URL fails to load, restore the real Discord avatar instead
+    // of leaving a broken-image icon. Marks the URL failed so the page-wide
+    // scan won't re-apply it on the next mutation/interval pass.
+    avatar.onerror = () => {
+        avatar.onerror = null;
+        avatar.dataset.dmFlairFailedUrl = url;
+        const orig = avatar.dataset.dmFlairOriginalSrc;
+        if (orig && avatar.src !== orig) avatar.src = orig;
+    };
     avatar.src = url;
     avatar.dataset.dmFlairAppliedUrl = url;
     avatar.setAttribute("data-dm-flair-avatar-applied", "1");
@@ -1320,10 +1344,16 @@ function scanForPopouts(_root: ParentNode = document) {
         const container = findProfileContainerFromBanner(banner);
         if (!container) continue;
         // Identify whose popout this is by extracting userId from an avatar
-        // img inside. Falls back to self-preview when we can't (default-avatar
-        // user or extremely fast popout open) so the setter UX still works.
-        let userId = getUserIdFromContainer(container);
-        if (!userId && me?.id) userId = me.id;
+        // img inside (CDN `/avatars/<id>/` URL). We deliberately do NOT fall
+        // back to the current user's id when that fails: a target on a DEFAULT
+        // Discord avatar yields no CDN id, and the old "no id = me" assumption
+        // painted OUR banner + gradient onto THEIR popout — a real flair-leak
+        // bug. No id → skip banner/theme for this container. Self-preview still
+        // works in the common case because flair users have a custom avatar
+        // (the member-list/chat swap requires one anyway), so the lookup
+        // returns their real id.
+        const userId = getUserIdFromContainer(container);
+        if (!userId) continue;
 
         const bannerFlair = resolveFlairForUserId(userId, "banner");
         if (bannerFlair?.bannerUrl) {
@@ -1467,10 +1497,12 @@ function stopObserver() {
     // leave broken images sitting around.
     document.querySelectorAll("[data-dm-flair-avatar-applied]").forEach(el => {
         const img = el as HTMLImageElement;
+        img.onerror = null;
         const orig = img.dataset.dmFlairOriginalSrc;
         if (orig) img.src = orig;
         delete img.dataset.dmFlairOriginalSrc;
         delete img.dataset.dmFlairAppliedUrl;
+        delete img.dataset.dmFlairFailedUrl;
         img.removeAttribute("data-dm-flair-avatar-applied");
     });
     // Same restore path for background-image call/Stage avatar tiles.
