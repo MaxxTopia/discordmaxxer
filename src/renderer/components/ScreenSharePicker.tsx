@@ -37,12 +37,7 @@ import type { Dispatch, SetStateAction } from "react";
 import { addPatch } from "renderer/patches/shared";
 import { State, useSettings, useVesktopState } from "renderer/settings";
 import { isLinux, isWindows } from "renderer/utils";
-import {
-    getActiveWinAudioSession,
-    replaceScreenShareAudioTrack,
-    startWinAudioExcludeSelfSession,
-    startWinAudioProcessSession
-} from "renderer/winaudioBridge";
+import { getActiveWinAudioSession } from "renderer/winaudioBridge";
 
 import { SimpleErrorBoundary } from "./SimpleErrorBoundary";
 
@@ -90,119 +85,6 @@ export let currentSettings: StreamSettings | null = null;
 export let currentSourceId: string | null = null;
 
 const logger = new Logger("VesktopScreenShare");
-
-interface WinAudioSessionLite {
-    pid: number;
-    processName: string;
-    displayName: string;
-    isActive: boolean;
-}
-
-// Auto-detect the audio session that owns a shared window. Matches official
-// Discord behavior: capture audio per-shared-app instead of system-wide, so
-// Discord's own voice playback isn't included in the outgoing screenshare
-// audio track (= no self-echo for the listener). Heuristic match — window
-// titles and process names overlap loosely (e.g. window "Fortnite" vs process
-// "FortniteClient-Win64-Shipping.exe"). Returns null if no confident match;
-// caller then falls back to exclude-self capture.
-function findAudioSessionForWindow(
-    sessions: WinAudioSessionLite[],
-    windowName: string
-): WinAudioSessionLite | null {
-    const normalize = (s: string) => s.toLowerCase().replace(/\.exe$/, "").replace(/[^a-z0-9]/g, "");
-    const target = normalize(windowName);
-    if (!target) return null;
-
-    // Score every session against the window title. Process name match is
-    // weighted higher than display name because process names are stable
-    // across runs while display names can be empty / generic.
-    const scored = sessions
-        .map(s => {
-            const proc = normalize(s.processName);
-            const disp = normalize(s.displayName);
-            let score = 0;
-            if (proc === target) score += 10;
-            else if (proc && (proc.includes(target) || target.includes(proc))) score += 4;
-            if (disp === target) score += 6;
-            else if (disp && (disp.includes(target) || target.includes(disp))) score += 2;
-            if (s.isActive) score += 1; // tie-breaker: currently playing audio
-            return { session: s, score };
-        })
-        .filter(x => x.score > 0)
-        .sort((a, b) => b.score - a.score);
-
-    if (scored.length > 0) return scored[0].session;
-
-    // No name match. Last-resort: if exactly one session is actively playing
-    // audio, that's almost certainly what the streamer wants to share.
-    const activeOnly = sessions.filter(s => s.isActive);
-    if (activeOnly.length === 1) return activeOnly[0];
-
-    return null;
-}
-
-// Windows-only screenshare audio fix. After Go Live, Electron's default path
-// has already attached a SYSTEM-LOOPBACK audio track to the outgoing stream —
-// that loopback contains the streamer's incoming Discord voice, so listeners
-// hear themselves echoed. We capture cleaner audio via the native winaudio
-// module and swap it onto the screenshare audio sender:
-//   1. Window share whose owning app we can identify → capture ONLY that app
-//      (process-include). Matches official Discord: game audio, no voice.
-//   2. Otherwise (full screen / no match) → capture everything EXCEPT our own
-//      process tree (exclude-self) → game audio, Discord voice excluded.
-// On any failure we leave the stock loopback track in place (audio still
-// works, just with the pre-existing echo) — never worse than before.
-async function startWindowsScreenShareAudio(windowName: string) {
-    try {
-        let session = getActiveWinAudioSession();
-        if (session) {
-            // Stale session from a prior share — tear it down first.
-            await session.stop().catch(() => {});
-        }
-
-        let mode = "exclude-self";
-        const sessionsResp = await VesktopNative.winAudio.listSessions();
-        if (sessionsResp.ok) {
-            const match = findAudioSessionForWindow(sessionsResp.sessions, windowName);
-            if (match) {
-                logger.info(
-                    `[winaudio] matched window "${windowName}" → ${match.processName} (pid ${match.pid}); ` +
-                        "capturing that app only"
-                );
-                session = await startWinAudioProcessSession(match.pid, "include");
-                mode = `include:${match.processName}`;
-            }
-        } else {
-            logger.warn("[winaudio] listSessions failed:", sessionsResp.error);
-        }
-
-        if (!session) {
-            logger.info(`[winaudio] no app match for "${windowName}" → capturing system audio minus Discord`);
-            session = await startWinAudioExcludeSelfSession();
-        }
-
-        // The screenshare audio sender may not exist immediately after Go Live —
-        // retry the track swap for a few seconds while RTC finishes negotiating.
-        const me = UserStore.getCurrentUser().id;
-        const track = session.track;
-        for (let attempt = 0; attempt < 12; attempt++) {
-            const ok = await replaceScreenShareAudioTrack(me, track).catch(() => false);
-            if (ok) {
-                logger.info(`[winaudio] screenshare audio live (${mode})`);
-                return;
-            }
-            await new Promise(r => setTimeout(r, 500));
-        }
-        logger.warn(
-            "[winaudio] could not locate the screenshare audio sender after 6s — " +
-                "audio is still streaming via Electron's default loopback (may echo). " +
-                "Capture is running; stopping it to avoid a leaked WASAPI session."
-        );
-        await session.stop().catch(() => {});
-    } catch (e) {
-        logger.error("[winaudio] start failed — leaving default loopback audio in place:", e);
-    }
-}
 
 addPatch({
     patches: [
@@ -949,14 +831,13 @@ function ModalComponent({
                                 ...settings
                             });
 
-                            // Windows: swap the echo-prone system-loopback audio
-                            // track for a clean per-app / exclude-self winaudio
-                            // capture once RTC has negotiated. Fire-and-forget —
-                            // it retries internally and falls back gracefully.
-                            if (isWindows && settings.audio) {
-                                const windowName = screens.find(s => s.id === selected)?.name ?? "";
-                                startWindowsScreenShareAudio(windowName);
-                            }
+                            // NOTE: on Windows the echo-free audio swap happens
+                            // earlier, at getDisplayMedia time, in
+                            // patches/screenShareFixes.ts (winaudio exclude-self
+                            // injection) — before Discord ingests the stream. We
+                            // intentionally do NOT swap the RTC sender's track
+                            // here: Discord's MediaEngine hides its
+                            // RTCPeerConnection, so a sender-side swap never fired.
 
                             setTimeout(async () => {
                                 const conn = [...MediaEngineStore.getMediaEngine().connections].find(

@@ -15,7 +15,8 @@ import {
     openModal,
     useForceUpdater
 } from "@vencord/types/utils";
-import { Toasts } from "@vencord/types/webpack/common";
+import { React, Toasts } from "@vencord/types/webpack/common";
+import { getOutboundVideoStats, OutboundVideoStat } from "renderer/patches/rtcStats";
 import { Settings as SettingsStore, State } from "renderer/settings";
 import { Settings } from "shared/settings";
 
@@ -58,21 +59,79 @@ function openDeveloperOptionsModal(settings: Settings) {
 }
 
 // Self-serve diagnostics for the recurring screenshare/voice complaints
-// (echo, lag/choppiness, the grey-screen-on-Go-Live audio crash). Reads only
-// settings/state — no WebRTC patching — and points at chrome://webrtc-internals
-// for the live encoder stat. Reachable via Settings → Discordmaxxer → Open
-// Developer Settings.
+// (echo, lag/choppiness). The "Live encoder" block is the important part: it
+// polls the real sender-side WebRTC stats (encoder implementation + quality
+// limitation reason + fps) WHILE you're sharing, so the long-unanswerable
+// "is my stream actually smooth, and why not?" finally has a one-glance answer.
+// Reachable via Settings → Discordmaxxer → Open Developer Settings.
 function StreamHealthSection() {
     const s = SettingsStore.store as any;
     const q = (State.store as any).screenshareQuality;
+
+    const [live, setLive] = React.useState<OutboundVideoStat | null>(null);
+    React.useEffect(() => {
+        let alive = true;
+        const tick = () => getOutboundVideoStats().then(r => alive && setLive(r));
+        tick();
+        const iv = setInterval(tick, 1000);
+        return () => {
+            alive = false;
+            clearInterval(iv);
+        };
+    }, []);
+
+    const liveLines = live
+        ? [
+              `Encoder:                      ${live.encoderImplementation} [${live.encoderKind.toUpperCase()}]`,
+              `Quality limitation:           ${live.qualityLimitationReason}`,
+              `Sending:                      ${live.frameWidth}x${live.frameHeight} @ ${live.framesPerSecond}fps  ${live.kbps}kbps`,
+              `Frames dropped at encoder:    ${live.dropPct}%`
+          ].join("\n")
+        : "Live encoder:                 (start a screenshare to read it)";
+
     const report = [
         "Discordmaxxer — stream & voice health",
         `Hardware acceleration:        ${s.hardwareAcceleration !== false ? "ON" : "OFF"}`,
         `Hardware video acceleration:  ${s.hardwareVideoAcceleration ? "ON" : "OFF"}`,
         `Stream quality:               ${q?.resolution ?? 720}p${q?.frameRate ?? 30}`,
-        `Stream audio mode:            ${s.screensharePerWindowAudio ? "Per-window (anti-echo)" : "System loopback (whole desktop)"}`,
-        `Force WGC (cursor in games):  ${s.screenshareForceWgc ? "ON" : "OFF"}`
+        `Force WGC (cursor in games):  ${s.screenshareForceWgc ? "ON" : "OFF"}`,
+        liveLines
     ].join("\n");
+
+    // Verdict line driven by the live encoder read.
+    let verdict: React.ReactNode = null;
+    if (live) {
+        if (live.encoderKind === "software") {
+            verdict = (
+                <Paragraph>
+                    <b style={{ color: "var(--text-danger)" }}>⚠ Software encoder in use ({live.encoderImplementation}).</b>{" "}
+                    This is the usual cause of "smooth for me, choppy for viewers" on fast motion — the CPU can't encode
+                    60fps of game motion in real time, so frames are dropped. Fix below (re-enable hardware encode).
+                </Paragraph>
+            );
+        } else if (live.qualityLimitationReason === "cpu") {
+            verdict = (
+                <Paragraph>
+                    <b style={{ color: "var(--text-warning)" }}>Encoder is CPU-limited.</b> The GPU encoder is engaged but
+                    still can't keep up — drop to 720p30, close background CPU load, or check the optimizer tweaks below.
+                </Paragraph>
+            );
+        } else if (live.qualityLimitationReason === "bandwidth") {
+            verdict = (
+                <Paragraph>
+                    <b>Bandwidth-limited.</b> The network (not your PC) is the bottleneck — lower resolution/fps or check
+                    upload.
+                </Paragraph>
+            );
+        } else {
+            verdict = (
+                <Paragraph>
+                    <b style={{ color: "var(--text-positive)" }}>✓ Hardware encoder, no limitation.</b> The sender side is
+                    healthy — any choppiness a viewer sees is on their end or the network.
+                </Paragraph>
+            );
+        }
+    }
 
     return (
         <>
@@ -80,14 +139,22 @@ function StreamHealthSection() {
             <div style={{ background: "var(--background-secondary)", borderRadius: 6, padding: "8px 10px", margin: "6px 0" }}>
                 <pre style={{ whiteSpace: "pre-wrap", margin: 0, fontFamily: "var(--font-code, monospace)", fontSize: 12 }}>{report}</pre>
             </div>
+            {verdict}
             <Paragraph>
-                <b>Viewers hear themselves (echo):</b> your audio mode is system-loopback, which captures their voice playing back through your output. Fix: share <b>video-only</b> (uncheck “Stream With Audio”). Per-window audio avoids it but crashes on some setups.
+                <b>Viewers hear themselves (echo):</b> fixed in this build — stream audio is now captured as your
+                game/desktop audio <i>minus</i> Discordmaxxer's own playback (winaudio exclude-self), so a viewer's voice
+                can't loop back. If you ever still hear echo, share <b>video-only</b> as a fallback and report it.
             </Paragraph>
             <Paragraph>
-                <b>Choppy / laggy to viewers:</b> open chrome://webrtc-internals (above) <i>while sharing</i> → find the outbound video stream → read <b>qualityLimitationReason</b>: <code>cpu</code> = encoder-bound (lower resolution/fps), <code>bandwidth</code> = network, <code>none</code> = fine. Try 720p30 first.
+                <b>Choppy / laggy to viewers — the fix order (for your RTX 2070, NVENC should engage):</b>
             </Paragraph>
             <Paragraph>
-                <b>Grey screen / stuck on Go Live:</b> that’s per-window audio crashing — keep “Per-window stream audio” OFF.
+                1. Read the <b>Encoder</b> line above while sharing. <code>SOFTWARE</code> or limitation <code>cpu</code>
+                = the problem is encode, not your settings (that's why no slider changed it). 2. Re-enable{" "}
+                <b>Hardware-Accelerated GPU Scheduling</b> (your optimizer turned it OFF) — Settings → Display → Graphics,
+                then restart. 3. Make sure the NVIDIA driver is a stable build (avoid the 577.00 branch). 4. In your
+                optimizer, restore <b>NetworkThrottlingIndex</b> to default (it's set to an aggressive 1) and re-check. 5.
+                Re-read the Encoder line: success = a hardware encoder string and limitation <code>none</code>.
             </Paragraph>
             <div className={cl("button-grid")}>
                 <Button
