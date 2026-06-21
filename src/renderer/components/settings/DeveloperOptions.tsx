@@ -89,13 +89,39 @@ function StreamHealthSection() {
           ].join("\n")
         : "Live encoder:                 (start a screenshare to read it)";
 
+    // Auto-captured ~6s into the most recent Go Live (patches/streamHealthAuto.ts),
+    // persisted to settings.json so it's here even after the stream ends.
+    const last = (s.lastStreamHealth ?? null) as
+        | null
+        | {
+              ts: number;
+              encoderImplementation: string;
+              encoderKind: string;
+              qualityLimitationReason: string;
+              framesPerSecond: number;
+              frameWidth: number;
+              frameHeight: number;
+              echoFix: string;
+              verdict: string;
+          };
+    const lastLines = last
+        ? [
+              `Last stream (${new Date(last.ts).toLocaleString()}):`,
+              `  encoder:   ${last.encoderImplementation} [${String(last.encoderKind).toUpperCase()}]`,
+              `  limited:   ${last.qualityLimitationReason}   sending ${last.frameWidth}x${last.frameHeight}@${last.framesPerSecond}`,
+              `  echo fix:  ${last.echoFix}`,
+              `  verdict:   ${last.verdict}`
+          ].join("\n")
+        : "Last stream:                  (none captured yet — go live once)";
+
     const report = [
         "Discordmaxxer — stream & voice health",
         `Hardware acceleration:        ${s.hardwareAcceleration !== false ? "ON" : "OFF"}`,
         `Hardware video acceleration:  ${s.hardwareVideoAcceleration ? "ON" : "OFF"}`,
         `Stream quality:               ${q?.resolution ?? 720}p${q?.frameRate ?? 30}`,
         `Force WGC (cursor in games):  ${s.screenshareForceWgc ? "ON" : "OFF"}`,
-        liveLines
+        liveLines,
+        lastLines
     ].join("\n");
 
     // Verdict line driven by the live encoder read.

@@ -111,6 +111,19 @@ if (isLinux) {
 const ECHO_LOG: any[] = [];
 (globalThis as any).__dmEcho = ECHO_LOG;
 
+// Records how the most recent screenshare resolved its audio, so the
+// auto-capture (patches/streamHealthAuto.ts) can report whether the echo fix
+// actually engaged without re-deriving it.
+//   "winaudio"          → clean exclude-self capture injected (no echo)
+//   "loopback-fallback" → winaudio unavailable/non-float, kept system loopback (may echo)
+//   "video-only"        → audio not requested
+//   "none"              → no share since launch
+export type EchoInjectionResult = "winaudio" | "loopback-fallback" | "video-only" | "none";
+let lastEchoInjection: EchoInjectionResult = "none";
+export function getLastEchoInjection(): EchoInjectionResult {
+    return lastEchoInjection;
+}
+
 function debug(...args: any[]) {
     logger.info("[echo]", ...args);
     ECHO_LOG.push(args.map(a => (typeof a === "object" ? JSON.parse(JSON.stringify(a)) : a)));
@@ -135,7 +148,10 @@ if (isWindows) {
         debug("getDisplayMedia called", { audioRequested: !!currentSettings?.audio });
 
         // Video-only share, or audio not requested → nothing to de-echo.
-        if (!currentSettings?.audio) return stream;
+        if (!currentSettings?.audio) {
+            lastEchoInjection = "video-only";
+            return stream;
+        }
 
         const loopbackTracks = stream.getAudioTracks();
         debug(`original (loopback) audio track count: ${loopbackTracks.length}`);
@@ -169,11 +185,13 @@ if (isWindows) {
             });
             stream.addTrack(cleanTrack);
 
+            lastEchoInjection = "winaudio";
             debug("VERDICT: winaudio exclude-self audio injected — no Discord voice in the mix");
             toast("Stream audio: capturing game/desktop audio without your call (no echo).", Toasts.Type.MESSAGE);
         } catch (e) {
             // Keep the stock loopback track exactly as it was — audio works,
             // may echo. Strictly never worse than not having this patch.
+            lastEchoInjection = "loopback-fallback";
             debug("winaudio injection failed — keeping system loopback audio (may echo)", String(e));
         }
 
