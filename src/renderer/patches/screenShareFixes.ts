@@ -178,7 +178,19 @@ if (isWindows) {
                 throw new Error("winaudio produced no live track");
             }
 
-            // Swap: drop the echoing loopback track(s), add the clean one.
+            // A "live" track can still be SILENT (suspended AudioContext, native
+            // capture returning silence on this rig, broken IPC feed). That's
+            // strictly worse than the echo we're trying to remove — viewers hear
+            // nothing. So before committing, confirm real audio is reaching the
+            // track. Crucially we DON'T stop the loopback yet, so if the clean
+            // capture is silent we can fall back to it (audible, may echo).
+            const flowing = await session.waitForSignal(1500);
+            if (!flowing) {
+                await session.stop().catch(() => {});
+                throw new Error("winaudio track had no signal within 1.5s — keeping audible loopback");
+            }
+
+            // Confirmed audible. NOW it's safe to drop the echoing loopback.
             loopbackTracks.forEach(t => {
                 stream.removeTrack(t);
                 t.stop();
@@ -186,7 +198,7 @@ if (isWindows) {
             stream.addTrack(cleanTrack);
 
             lastEchoInjection = "winaudio";
-            debug("VERDICT: winaudio exclude-self audio injected — no Discord voice in the mix");
+            debug("VERDICT: winaudio exclude-self audio injected (signal confirmed) — no Discord voice in the mix");
             toast("Stream audio: capturing game/desktop audio without your call (no echo).", Toasts.Type.MESSAGE);
         } catch (e) {
             // Keep the stock loopback track exactly as it was — audio works,

@@ -118,6 +118,15 @@ export interface WinAudioSession {
     track: MediaStreamTrack;
     /** Format of the underlying capture (for diagnostics / sample-rate info). */
     format: CaptureFormat;
+    /**
+     * Resolve true as soon as a real (non-silent) audio signal is observed
+     * reaching the OUTPUT track within `ms`, else false. Measured at the
+     * feeder output (post-worklet), so it catches every silent-track cause:
+     * native capture returning silence, a suspended AudioContext that never
+     * drains the worklet, or a broken IPC feed. Lets the caller fall back to
+     * the audible system-loopback track instead of broadcasting silence.
+     */
+    waitForSignal(ms: number): Promise<boolean>;
 }
 
 let activeSession: WinAudioSession | null = null;
@@ -195,6 +204,20 @@ async function startSessionFromInit(
     const dest = ctx.createMediaStreamDestination();
     feeder.connect(dest);
 
+    // Tap the feeder output with an analyser so we can verify real audio is
+    // actually reaching the destination track (not just arriving over IPC).
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 2048;
+    feeder.connect(analyser);
+
+    // A freshly constructed AudioContext can start in the "suspended" state
+    // (browser/Electron autoplay gating). While suspended the worklet's
+    // process() is NEVER called, so the destination track is silent even
+    // though PCM keeps streaming in over IPC — this was the "winaudio injected
+    // but viewers hear nothing" bug. Resume explicitly; the app already sets
+    // autoplay-policy=no-user-gesture-required so this is allowed.
+    await ctx.resume().catch(() => {});
+
     // Subscribe to PCM chunks from the main process. winaudio.cc emits
     // interleaved float32 (typical Win10/11 mix format) — confirmed via
     // the format probe at startCapture time. If the rig is on a non-float
@@ -228,10 +251,30 @@ async function startSessionFromInit(
     const session: WinAudioSession = {
         track,
         format,
+        async waitForSignal(ms: number): Promise<boolean> {
+            const buf = new Float32Array(analyser.fftSize);
+            const deadline = Date.now() + ms;
+            // ~0.0005 peak ignores dither/denormal noise but catches any real
+            // program audio. Poll every 100ms until signal or timeout.
+            while (Date.now() < deadline) {
+                analyser.getFloatTimeDomainData(buf);
+                let peak = 0;
+                for (let i = 0; i < buf.length; i++) {
+                    const a = Math.abs(buf[i]);
+                    if (a > peak) peak = a;
+                }
+                if (peak > 0.0005) return true;
+                await new Promise(r => setTimeout(r, 100));
+            }
+            return false;
+        },
         async stop() {
             offChunk();
             try {
                 feeder.disconnect();
+            } catch { /* ok */ }
+            try {
+                analyser.disconnect();
             } catch { /* ok */ }
             try {
                 await ctx.close();
