@@ -137,6 +137,40 @@ function toast(message: string, type: number) {
     }
 }
 
+// Cap the captured screenshare video to the user's chosen quality + hint the
+// encoder toward motion. WHY: on Windows the WebRTC screenshare encoder runs in
+// SOFTWARE (Chromium doesn't use NVENC for screen-share send), so feeding it the
+// monitor's native resolution (e.g. 1920x1080) of a fast game collapses to a few
+// fps — choppy to viewers regardless of the app's hardware-acceleration toggle.
+// The Linux branch already constrains its track; the Windows branch historically
+// did not, so quality settings were silently ignored (set 720p, still sent
+// 1080p). Downscaling to 720p cuts the pixel load ~2.25x, and contentHint
+// "motion" tells the encoder to hold framerate and trade away per-frame detail —
+// both make gameplay visibly smoother with HW accel ON or OFF.
+function applyVideoQualityConstraints(stream: MediaStream) {
+    const track = stream.getVideoTracks()[0];
+    if (!track) return;
+
+    track.contentHint = currentSettings?.contentHint ? String(currentSettings.contentHint) : "motion";
+
+    const frameRate = Number(State.store.screenshareQuality?.frameRate ?? 30);
+    const height = Number(State.store.screenshareQuality?.resolution ?? 720);
+    const width = Math.round(height * (16 / 9));
+
+    const constraints = {
+        ...track.getConstraints(),
+        frameRate: { ideal: frameRate, max: frameRate },
+        width: { ideal: width, max: width },
+        height: { ideal: height, max: height },
+        resizeMode: "none"
+    };
+
+    track
+        .applyConstraints(constraints)
+        .then(() => debug("applied video quality constraints", track.getConstraints()))
+        .catch(e => debug("failed to apply video constraints", String(e)));
+}
+
 if (isWindows) {
     debug("screenShareFixes patch loaded — getDisplayMedia wrapper installed (winaudio exclude-self)");
 
@@ -146,6 +180,15 @@ if (isWindows) {
         const stream = await original.call(this, opts);
 
         debug("getDisplayMedia called", { audioRequested: !!currentSettings?.audio });
+
+        // Cap resolution/framerate so the software encoder isn't fed native
+        // 1080p of a fast game (the choppiness fix). Applies to every share,
+        // audio or not.
+        try {
+            applyVideoQualityConstraints(stream);
+        } catch (e) {
+            debug("video quality constraint pass failed", String(e));
+        }
 
         // Video-only share, or audio not requested → nothing to de-echo.
         if (!currentSettings?.audio) {
@@ -184,10 +227,15 @@ if (isWindows) {
             // nothing. So before committing, confirm real audio is reaching the
             // track. Crucially we DON'T stop the loopback yet, so if the clean
             // capture is silent we can fall back to it (audible, may echo).
-            const flowing = await session.waitForSignal(1500);
+            // Give the WASAPI capture + IPC feed time to ramp before deciding
+            // it's silent. A too-short window false-negatives during startup and
+            // falls back to the echoing loopback — the very thing we're removing.
+            // 3s is comfortably past the observed ramp without a long quiet gap
+            // at Go-Live (the loopback stays until this resolves anyway).
+            const flowing = await session.waitForSignal(3000);
             if (!flowing) {
                 await session.stop().catch(() => {});
-                throw new Error("winaudio track had no signal within 1.5s — keeping audible loopback");
+                throw new Error("winaudio track had no signal within 3s — keeping audible loopback");
             }
 
             // Confirmed audible. NOW it's safe to drop the echoing loopback.
