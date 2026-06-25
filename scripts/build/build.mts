@@ -9,6 +9,7 @@ import { copyFile } from "fs/promises";
 
 import vencordDep from "./vencordDep.mjs";
 import { includeDirPlugin } from "./includeDirPlugin.mts";
+import { rawPlugin } from "./rawPlugin.mts";
 
 const isDev = process.argv.includes("--dev");
 
@@ -116,7 +117,10 @@ await Promise.all([
         jsxFactory: "VencordCreateElement",
         jsxFragment: "VencordFragment",
         external: ["@vencord/types/*"],
-        plugins: [vencordDep, includeDirPlugin("patches", "src/renderer/patches")],
+        // .wasm → Uint8Array (RNNoise model, bundled inline so it lands in the
+        // asar). ?raw text imports → inline AudioWorklet processor source.
+        loader: { ".wasm": "binary" },
+        plugins: [vencordDep, includeDirPlugin("patches", "src/renderer/patches"), rawPlugin()],
         footer: { js: "//# sourceURL=VesktopRenderer" }
     })
 ]);

@@ -1,6 +1,6 @@
 {
     "name": "discordmaxxer",
-    "version": "0.7.42",
+    "version": "0.7.43",
     "private": true,
     "description": "Discord, optimized. 7th project in the maxxer suite. Forked from Vesktop.",
     "keywords": [
@@ -49,6 +49,7 @@
         "postinstall": "pnpm updateArrpcDB"
     },
     "dependencies": {
+        "@sapphi-red/web-noise-suppressor": "^0.3.5",
         "arrpc": "github:OpenAsar/arrpc#2234e9c9111f4c42ebcc3aa6a2215bfd979eef77",
         "electron-updater": "^6.6.2"
     },

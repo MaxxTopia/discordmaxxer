@@ -16,6 +16,9 @@ importers:
 
   .:
     dependencies:
+      '@sapphi-red/web-noise-suppressor':
+        specifier: ^0.3.5
+        version: 0.3.5
       arrpc:
         specifier: github:OpenAsar/arrpc#2234e9c9111f4c42ebcc3aa6a2215bfd979eef77
         version: https://codeload.github.com/OpenAsar/arrpc/tar.gz/2234e9c9111f4c42ebcc3aa6a2215bfd979eef77(patch_hash=4313fe844324a52ef0453078a86f5d1ee2d4f406331201211020d9fa243323c4)
@@ -569,6 +572,9 @@ packages:
 
   '@rtsao/scc@1.1.0':
     resolution: {integrity: sha512-zt6OdqaDoOnJ1ZYsCYGt9YmWzDXl4vQdKTyJev62gFhRGKdx7mcT54V9KIjg+d2wi9EXsPvAPKe7i7WjfVWB8g==}
+
+  '@sapphi-red/web-noise-suppressor@0.3.5':
+    resolution: {integrity: sha512-jh3+V9yM+zxLriQexoGm0GatoPaJWjs6ypFIbFYwQp+AoUb55eUXrjKtKQyuC5zShzzeAQUl0M5JzqB7SSrsRA==}
 
   '@sindresorhus/is@4.6.0':
     resolution: {integrity: sha512-t09vSN3MdfsyCHoFcTRCH/iUtG7OJ0CsjzB8cjAmKc/va/kIgeDI/TxsigdncE/4be734m0cvIYwNaV4i2XqAw==}
@@ -3841,6 +3847,8 @@ snapshots:
       - supports-color
 
   '@rtsao/scc@1.1.0': {}
+
+  '@sapphi-red/web-noise-suppressor@0.3.5': {}
 
   '@sindresorhus/is@4.6.0': {}
 

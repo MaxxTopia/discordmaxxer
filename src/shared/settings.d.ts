@@ -46,6 +46,13 @@ export interface Settings {
     // if you're listening on speakers, not headphones). Requires a restart.
     screensharePerWindowAudio?: boolean;
 
+    // When ON, run the microphone through an in-app RNNoise (WebAssembly)
+    // noise-suppression filter before Discord receives it. Discord's own Krisp
+    // is a native module that can't load in a Vesktop-based client, so this is
+    // the standalone-client replacement for background-noise removal. Off by
+    // default; takes effect the next time the mic is acquired (reconnect voice).
+    micNoiseSuppression?: boolean;
+
     spellCheckLanguages?: string[];
 
     audio?: {
