@@ -61,11 +61,23 @@ jobs:
             # vencord-dist/.  Without this step the app falls back to
             # downloading stock unpatched Vencord at runtime — which is what
             # broke v0.1.0-rc1.
+            # DM_STRICT_REBRAND=1 makes rebrand-vencord.mjs FAIL (not just warn)
+            # if any rebrand patch went stale — so a release can't silently ship
+            # with un-rebranded "Vencord" surfaces or broken plugin patches.
             - name: Apply rebrand + build Vencord overlay
               run: pnpm overlay:vencord
+              env:
+                  DM_STRICT_REBRAND: "1"
 
             - name: Build
               run: pnpm build
+
+            # Integrity gate (audit 2026-06-26): refuse to publish a hollow build
+            # — confirms the overlaid Vencord dist exists, our custom plugins
+            # actually compiled in, and the shell bundle built. Catches a silent
+            # overlay/build failure before it reaches users.
+            - name: Verify build artifacts
+              run: node overlay-scripts/verify-build.mjs
 
             # winaudio.node is shipped as a committed N-API prebuilt
             # (packages/winaudio/prebuilds/winaudio-x64.node) — same pattern as
@@ -110,3 +122,19 @@ jobs:
                            --arg installerUrl "https://github.com/MaxxTopia/discordmaxxer/releases/download/${TAG}/Discordmaxxer-Setup-${VERSION}.exe" \
                            --arg releasePageUrl "https://github.com/MaxxTopia/discordmaxxer/releases/tag/${TAG}" \
                            '{event_type: "discordmaxxer-released", client_payload: {version: $version, installerUrl: $installerUrl, releasePageUrl: $releasePageUrl}}')"
+
+    # Maxx-bot alert (audit 2026-06-26): if a release run fails for ANY reason
+    # (stale-rebrand gate, integrity gate, build, publish), DM Diggy so a broken
+    # or missing release is never silent. No-op if MAXX_BOT_TOKEN isn't set.
+    notify-failure:
+        needs: release
+        if: failure()
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+            - name: DM Diggy via Maxx bot
+              shell: bash
+              env:
+                  MAXX_BOT_TOKEN: ${{ secrets.MAXX_BOT_TOKEN }}
+              run: |
+                  bash scripts/notify-maxx.sh "[Discordmaxxer] RELEASE FAILED for ${GITHUB_REF_NAME} -- nothing published. Check the run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"

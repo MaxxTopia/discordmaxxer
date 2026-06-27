@@ -7,10 +7,13 @@ name: Vencord SHC auto-rebump
 # yet. The moment Vencord CLOSES #4256 (i.e. ships a fix), this:
 #   1. re-pins our Vencord to current main,
 #   2. VERIFIES the rebrand still applies with 0 warnings AND the build passes,
-#   3. ships a new release ONLY if that gate is green,
-#   4. otherwise opens an issue for manual review and ships nothing.
-# So a broken bump can never auto-reach users. Diggy opted into auto-re-bump
-# (2026-06-14). Disable anytime in the Actions tab. Manual run: workflow_dispatch.
+#   3. ships a CANARY (prerelease, -beta.1) ONLY if that gate is green — so only
+#      beta-opted (DMBeta) users auto-update to it, NOT everyone — and DMs Diggy
+#      to test a voice call + promote to stable,
+#   4. otherwise opens an issue + DMs for manual review and ships nothing.
+# So a broken OR unverified bump can never auto-reach the whole user base (audit
+# 2026-06-26 H1). Diggy opted into auto-re-bump (2026-06-14). Disable anytime in
+# the Actions tab. Manual run: workflow_dispatch.
 
 on:
     schedule:
@@ -73,8 +76,12 @@ jobs:
                   SHA="${{ needs.gate.outputs.sha }}"
                   VER="${{ needs.gate.outputs.version }}"
                   sed -i -E "s/vencord-src checkout [0-9a-f]{40}/vencord-src checkout ${SHA}/" .github/workflows/release.yml
-                  node -e "const f='package.json';const p=require('./'+f);p.version='${VER}';require('fs').writeFileSync(f, JSON.stringify(p,null,4)+'\n')"
-                  echo "Re-pinned Vencord → ${SHA}; version → ${VER}"
+                  # CANARY: build a PRERELEASE version so electron-builder marks
+                  # the GitHub release as a prerelease — only DMBeta (allowPrerelease)
+                  # users auto-update to it. The base version stays clean on main;
+                  # Diggy promotes to stable by tagging vX.Y.Z after a voice test.
+                  node -e "const f='package.json';const p=require('./'+f);p.version='${VER}-beta.1';require('fs').writeFileSync(f, JSON.stringify(p,null,4)+'\n')"
+                  echo "Re-pinned Vencord → ${SHA}; CANARY version → ${VER}-beta.1 (prerelease)"
 
             - name: Install dependencies
               run: pnpm install --frozen-lockfile
@@ -109,21 +116,38 @@ jobs:
               run: |
                   git config user.name "github-actions[bot]"
                   git config user.email "github-actions[bot]@users.noreply.github.com"
-                  git add package.json .github/workflows/release.yml
-                  git commit -m "release: v${{ needs.gate.outputs.version }} — auto re-bump Vencord (ShowHiddenChannels fix #${VENCORD_ISSUE} landed)"
+                  # Commit ONLY the Vencord re-pin (the durable fix). Do NOT commit
+                  # the -beta.1 version — main keeps its clean base version so the
+                  # eventual stable promotion is a normal tag, not a beta string.
+                  git add .github/workflows/release.yml
+                  git commit -m "chore: re-pin Vencord (ShowHiddenChannels fix #${VENCORD_ISSUE} landed); canary v${{ needs.gate.outputs.version }}-beta.1 shipped for verification"
                   git push origin HEAD:main
 
-            - name: Publish release
+            # Integrity gate before publish (same as the primary release path).
+            - name: Verify build artifacts
+              run: node overlay-scripts/verify-build.mjs
+
+            - name: Publish CANARY (prerelease) release
               run: pnpm electron-builder --windows --publish always
               env:
                   GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-            - name: On failure — open a manual-review issue, ship nothing
+            - name: DM Diggy — canary shipped, needs verify + promote
+              if: success()
+              shell: bash
+              env:
+                  MAXX_BOT_TOKEN: ${{ secrets.MAXX_BOT_TOKEN }}
+              run: |
+                  bash scripts/notify-maxx.sh "[Discordmaxxer] auto-rebump shipped CANARY prerelease v${{ needs.gate.outputs.version }}-beta.1 (Vencord #${VENCORD_ISSUE} fix). Only beta-opted users get it. TEST a voice call, then promote to stable: bump package.json to ${{ needs.gate.outputs.version }}, tag v${{ needs.gate.outputs.version }}, push."
+
+            - name: On failure — open a manual-review issue + DM, ship nothing
               if: failure()
               shell: bash
               env:
                   GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+                  MAXX_BOT_TOKEN: ${{ secrets.MAXX_BOT_TOKEN }}
               run: |
                   gh issue create -R "${{ github.repository }}" \
                       --title "[auto-rebump] Vencord re-bump needs manual review" \
-                      --body "Vencord #${VENCORD_ISSUE} closed, so the auto-rebump tried to move our pin to main \`${{ needs.gate.outputs.sha }}\` (v${{ needs.gate.outputs.version }}) — but the rebrand or build did NOT verify clean, so **nothing shipped**. A rebrand patch likely needs updating against the new Vencord. Do it manually: check out that SHA in vencord-src, run \`pnpm overlay:vencord\`, fix any warning find-strings, then release. See the v0.7.34 commit + TROUBLESHOOTING.md." || true
+                      --body "Vencord #${VENCORD_ISSUE} closed, so the auto-rebump tried to move our pin to main \`${{ needs.gate.outputs.sha }}\` (canary v${{ needs.gate.outputs.version }}-beta.1) — but the rebrand, integrity check, or build did NOT verify clean, so **nothing shipped**. A rebrand patch likely needs updating against the new Vencord. Do it manually: check out that SHA in vencord-src, run \`pnpm overlay:vencord\`, fix any warning find-strings, then release. See the v0.7.34 commit + TROUBLESHOOTING.md." || true
+                  bash scripts/notify-maxx.sh "[Discordmaxxer] auto-rebump FAILED to verify clean -- nothing shipped. A rebrand patch likely needs updating vs the new Vencord. See the manual-review issue + TROUBLESHOOTING.md."

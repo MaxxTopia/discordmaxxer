@@ -110,6 +110,52 @@ Verify after: `gh release view vX.Y.Z -R MaxxTopia/discordmaxxer` should list
 
 ---
 
+## Self-maintenance: what runs automatically + how to respond
+
+Discordmaxxer is built to keep itself alive and **tell a human when it can't** —
+so it survives without the original author. A Vesktop fork rides three moving
+externals (Discord's web client, Vencord `main`, Electron); novel breakage still
+needs a code fix, but detection, recovery, and alerting are automated.
+
+**Always-on safety nets (no action needed):**
+- **Auto-update:** `src/main/updater.ts` checks GitHub on launch **and every 6h**,
+  and applies a downloaded update on next quit. So a shipped fix reaches users
+  even if they never restart deliberately.
+- **In-app failure banner:** `DMVoiceGuard` shows a banner + "Copy report" when
+  voice fails (see top of this doc).
+- **Graceful fallbacks:** winaudio→system loopback, RNNoise mic→raw mic, zstd
+  disabled, screenshare quality cap. A failed feature degrades, never crashes.
+
+**CI gates (a bad build can't publish):**
+- **Strict rebrand** — `release.yml` runs the overlay with `DM_STRICT_REBRAND=1`,
+  so `rebrand-vencord.mjs` FAILS the release if any rebrand patch went stale
+  (un-rebranded "Vencord" surfaces / stale plugin patch).
+- **Artifact integrity** — `overlay-scripts/verify-build.mjs` fails the release
+  if the Vencord dist is hollow or our custom plugins didn't compile in.
+- A failed gate = the release stops and you get a **Maxx-bot DM** (below).
+
+**Maxx-bot alerts (DMs to Diggy via the Maxxtopia bot — `scripts/notify-maxx.sh`).**
+Requires repo secret `MAXX_BOT_TOKEN` (the bot token). Set once:
+`gh secret set MAXX_BOT_TOKEN -R MaxxTopia/discordmaxxer`. If unset, alerts just
+no-op (nothing breaks). What each DM means and what to do:
+
+| DM you receive | What happened | Your move |
+|---|---|---|
+| "RELEASE FAILED for vX.Y.Z" | A tag-push release hit a gate/build/publish error; nothing shipped | Open the linked run, read the failing step. Stale-rebrand → fix find-strings (see "stay current"). Integrity → the overlay produced a bad bundle, re-run. |
+| "upstream drift detected" | A dependency (Electron/Vencord) fell behind upstream | Review the tracking issue; decide if an Electron/Vencord bump is needed. Bump → test voice → release. |
+| "auto-rebump shipped CANARY ...-beta.1" | The ShowHiddenChannels fix landed; a **prerelease** auto-shipped to beta users only | Update on a beta-opted client, test a voice call, then promote: bump `package.json` to the base version, tag it, push. |
+| "auto-rebump FAILED to verify" | The auto re-pin didn't verify clean; nothing shipped | A rebrand patch needs updating vs new Vencord (see the manual-review issue). |
+
+**Canary auto-rebump:** `vencord-shc-autobump.yml` watches Vencord bug #4256; when
+it closes, it re-pins Vencord and ships a **`-beta.1` prerelease** (only DMBeta /
+`allowPrerelease` users auto-update) — never straight to everyone. Promote to
+stable manually after a voice test. This is the audit-2026-06-26 H1 safeguard.
+
+**Drift detection:** `upstream-watch.yml` (weekly) opens a tracking issue **and**
+DMs when Electron/Vencord move ahead of our pins.
+
+---
+
 ## Where things live
 
 | What | Where |
@@ -120,3 +166,8 @@ Verify after: `gh release view vX.Y.Z -R MaxxTopia/discordmaxxer` should list
 | Auto-updater | `src/main/updater.ts` (electron-updater → GitHub Releases) |
 | In-app updater UI | `static/views/updater/` |
 | Voice failure watcher | `plugins/DMVoiceGuard/` |
+| Maxx-bot CI alerts | `scripts/notify-maxx.sh` (needs secret `MAXX_BOT_TOKEN`) |
+| Release integrity gate | `overlay-scripts/verify-build.mjs` |
+| Strict-rebrand gate | `overlay-scripts/rebrand-vencord.mjs` (`DM_STRICT_REBRAND=1`) |
+| Auto-rebump (canary) | `.github/workflows/vencord-shc-autobump.yml` |
+| Upstream drift watch | `.github/workflows/upstream-watch.yml` |

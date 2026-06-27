@@ -618,3 +618,18 @@ for (const p of PATCHES) {
 
 console.log(`\n[rebrand] applied=${patched} skipped(idempotent)=${skipped} warnings=${warnings.length}`);
 for (const w of warnings) console.warn(`[rebrand] ⚠ ${w}`);
+
+// HARD GATE (audit 2026-06-26): a rebrand warning means a patch find-string no
+// longer matches the current Vencord — i.e. a brand surface ("Vencord" labels,
+// the donate card, etc.) silently un-rebranded, OR a plugin patch went stale.
+// Locally we only WARN (so iteration isn't blocked), but in the release pipeline
+// we FAIL the build so a silently-broken bundle can never publish. release.yml
+// sets DM_STRICT_REBRAND=1 for exactly this. The auto-rebump path already gates
+// on warnings; this closes the same hole on the primary tag-push release.
+if (warnings.length > 0 && process.env.DM_STRICT_REBRAND === "1") {
+    console.error(
+        `\n[rebrand] ✗ STRICT MODE: ${warnings.length} warning(s) — refusing to build a release with stale ` +
+            `rebrand patches. Fix the find-strings against the current Vencord (see TROUBLESHOOTING.md), then retry.`
+    );
+    process.exit(1);
+}
