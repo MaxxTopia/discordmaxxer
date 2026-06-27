@@ -163,3 +163,41 @@ End-to-end on Diggy's daily Windows machine:
 10. Compare RAM idle vs official Discord (target: ≥30% reduction) → real number for landing page
 
 Pass = ship to private beta of ~3 trusted testers before public release.
+
+---
+
+# Operational facts (current — everything ABOVE is the v1 PLAN; this is how it actually builds/ships now)
+
+> The spec above is pre-build intent (it says "six custom plugins"; reality is ~22, and it's at v0.7.x). Live version + per-release detail live in `RESUME.md`, `src/data/discordmaxxer-release.json`, and auto-memory `project_discordmaxxer*`. This section is the durable build/ship/verify layer — don't hardcode the live version here.
+
+## Stack reality
+Vesktop fork (Electron + bundled Vencord) using **pnpm**. Vencord is pinned to a **main COMMIT** (not a tag), cloned at build time into `vencord-src/` (gitignored); `pnpm overlay:vencord` rebrands it (60+ webpack patches) + overlays our `plugins/` → `vencord-dist/` → into the installer. Default-on plugin list in `src/main/discordmaxxerDefaults.ts`. Native per-app audio in `packages/winaudio/` (N-API; prebuilt committed at `packages/winaudio/prebuilds/winaudio-x64.node` — CI does NOT compile it).
+
+## Run (dev)
+- `pnpm build:dev && electron .` — fast unminified iteration.
+- `pnpm start:dev:debug` — + DevTools on port 9222 (Puppeteer).
+- `pnpm overlay:full` — full clean rebuild (Vencord + overlay + bundle; slow).
+
+## Build & ship
+- Local smoke: `pnpm package:dir` (→ `dist/win-unpacked/`) or `pnpm package:win` (NSIS).
+- **Release is CI-driven on a tag push:** `git tag v0.7.X && git push origin v0.7.X` → `.github/workflows/release.yml` installs `--frozen-lockfile`, clones+overlays Vencord, builds, runs `electron-builder --windows --publish always` → auto-creates the GitHub Release (installer + blockmap + `latest.yml`) + dispatches maxxtopia. So **tagging IS publishing** — don't tag until verified.
+- Distribution: GitHub Releases (primary) + in-app **electron-updater** (polls GitHub latest ~12h; user can snooze/skip) + maxxtopia button (`src/data/discordmaxxer-release.json`). Unsigned → SmartScreen warns.
+
+## Verify (self-check before handing back)
+- Automated: `pnpm test` = `pnpm lint && pnpm testTypes` (ESLint + `tsc --noEmit`). No runtime/unit suite.
+- Winaudio changes: re-run `packages/winaudio/test-loopback.js` (measures PEAK/RMS, not just chunk count) — silent capture = the native `IAgileObject` QueryInterface got dropped again.
+- **Human-only — don't claim it works without Diggy:** live voice + screenshare-with-audio (needs a real friend / 2nd PC); confirm no Discord-voice bleed + the encoder verdict in the Stream & Voice Health panel.
+
+## Top gotchas (durable)
+- **zstd voice break:** Discord's mandatory DAVE (E2EE voice) wasm is served `Content-Encoding: zstd`, which Electron 41 can't decode through the CSP hook → RTC 4017 loop → voice dead for everyone. Fixed via `--disable-features ZstdContentEncoding,SharedZstd` in `src/main/index.ts`. **Re-test voice after ANY Electron bump** (drop the flag once Electron handles zstd).
+- **winaudio = graveyard** (built+reverted 5x; Win10 lacks PROCESS_LOOPBACK, Win11 22H2+ only). Re-test via test-loopback.js after any `winaudio.cc` change.
+- **Vencord pin is a COMMIT not a tag** — tags lag months and patches go stale ("Patch had no effect"). Before shipping, `pnpm overlay:vencord` must show 0 patch-skip warnings; `upstream-watch.yml` flags >30 days behind.
+- **`--frozen-lockfile` CI:** adding any dep needs `pnpm install --lockfile-only` committed first, or CI fails.
+- Screenshare echo is **sender-side** ([[reference_screenshare_echo_fix_sender_side]]) — ask the SENDER's DM version; both need v0.7.25+.
+
+## Git / safety
+- Remote `git@github.com:MaxxTopia/discordmaxxer.git`. **GPL-3.0-or-later → repo is public** (source must ship; NOTICE.md + LICENSE preserved).
+- No Claude authorship in release notes (auto-stripped v0.7.30+) — keep it that way.
+
+## Cold-resume pointer
+`RESUME.md` + auto-memory `project_discordmaxxer_voice_resume_2026_06_13` (freshest), then `src/main/index.ts`, `packages/winaudio/src/winaudio.cc`, `.github/workflows/release.yml`.

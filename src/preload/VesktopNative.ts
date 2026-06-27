@@ -125,7 +125,12 @@ export const VesktopNative = {
         }
     },
     performanceMode: {
-        set: (on: boolean) => invoke<{ priorityChanged: boolean; frameRateLimited: boolean; arRpcDisabled: boolean }>(IpcEvents.DM_SET_PERFORMANCE_MODE, on)
+        set: (on: boolean) => invoke<{ priorityChanged: boolean; frameRateLimited: boolean; arRpcDisabled: boolean }>(IpcEvents.DM_SET_PERFORMANCE_MODE, on),
+        // Tell the perf bridge whether we're in a voice call so TournamentMode
+        // can keep the renderer + GPU at full priority during calls/streaming
+        // (Opus voice encode/decode runs in the renderer) while still throttling
+        // them when solo.
+        setVoiceActive: (active: boolean) => invoke<{ reapplied: boolean }>(IpcEvents.DM_SET_VOICE_ACTIVE, active)
     },
     hwid: {
         get: () => invoke<{ ok: boolean; hwid?: string; error?: string }>(IpcEvents.DM_GET_HWID)

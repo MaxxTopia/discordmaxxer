@@ -3,19 +3,29 @@
  * Copyright (c) 2026 Diggy
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * Real CPU/GPU savings for TournamentMode. Three knobs:
+ * Real CPU/GPU savings for TournamentMode. Two working knobs + one deferred:
  *
- *   1. Process priority — main + renderer dropped to BELOW_NORMAL on Windows
- *      (priority 10 in Node's mapping). Frees scheduling slots for the game.
+ *   1. Process priority — drop the heavy processes (renderer + GPU + main) to
+ *      BELOW_NORMAL on Windows so the game wins CPU/GPU scheduling. CRITICAL
+ *      EXCEPTIONS (never throttled): the audio + network utility processes
+ *      (local audio I/O + RTC transport), and — while the user is in a voice
+ *      call or streaming — the renderer and GPU too, because the WebRTC Opus
+ *      encode/decode + NetEq jitter buffer run on threads INSIDE the renderer
+ *      and HW screenshare encode uses the GPU. This is what stops TournamentMode
+ *      from sacrificing in-game voice/stream quality. (audit 2026-06-26)
  *
- *   2. Renderer frame-rate cap — webContents.setFrameRate(30). Halves GPU load
- *      from compositing while in performance mode. Default is 60 (or display
- *      refresh, whichever is lower).
- *
- *   3. arRPC worker — terminate the Rich Presence server worker thread when
+ *   2. arRPC worker — terminate the Rich Presence server worker thread when
  *      perf mode is on. Saves a worker thread + IPC server + game-process
- *      polling overhead. We toggle the user's existing Settings.store.arRPC
- *      flag (saved + restored on toggle off).
+ *      polling. Toggles the user's existing Settings.store.arRPC flag (saved +
+ *      restored on toggle off).
+ *
+ *   (deferred) Renderer frame-rate cap — webContents.setFrameRate(30) only takes
+ *      effect under offscreen rendering, which this app does NOT use, so on a
+ *      normal windowed BrowserWindow it is a SILENT NO-OP. It is left as a
+ *      harmless best-effort call but is NOT reported as a GPU saving. The real
+ *      "throttle the hidden window" lever is backgroundThrottling, which is
+ *      force-disabled elsewhere for voice reasons and needs a live voice test
+ *      before it can be conditionally re-enabled. See AUDIT-2026-06-26.md (H3).
  *
  * Cosmetic-only changes (animation strips, badge hiding) live in the
  * TournamentMode plugin's CSS — not here. This file is system-level only,
@@ -39,55 +49,89 @@ const PRIORITY_NORMAL = 0;
 const FRAME_RATE_PERF = 30;
 const FRAME_RATE_NORMAL = 60;
 
+// Utility processes we must NEVER throttle while gaming. Starving these under
+// full game-CPU load is a way TournamentMode could "sacrifice audio":
+//   - Audio Service does the audio device I/O (WASAPI capture/render).
+//   - Network Service carries the RTC media (UDP) packets.
+// Matched against ProcessMetric.name + serviceName for type === "Utility".
+const PROTECTED_UTILITY_RE = /audio|network/i;
+
 interface PerfState {
-    priorAppliedPriority: number | null;
     priorArRpc: boolean | null;
     on: boolean;
 }
 
 const state: PerfState = {
-    priorAppliedPriority: null,
     priorArRpc: null,
     on: false
 };
 
+// Whether the user is currently in a voice channel (and therefore possibly
+// talking or streaming). Pushed from the renderer (TournamentMode plugin
+// subscribes to VOICE_CHANNEL_SELECT). When true AND perf mode is on, we keep
+// the renderer + GPU at NORMAL priority so voice/stream encode isn't starved.
+let voiceActive = false;
+
 function setAllRendererFrameRates(fps: number) {
-    let touched = 0;
+    // NOTE: no-op on windowed BrowserWindows (setFrameRate needs offscreen
+    // rendering). Kept best-effort; intentionally NOT surfaced as a perf win.
     for (const wc of webContents.getAllWebContents()) {
         try {
             wc.setFrameRate(fps);
-            touched++;
         } catch {
             // some webContents (devtools, internal) reject setFrameRate
         }
     }
-    return touched;
 }
 
-function trySetProcessPriority(priority: number): boolean {
-    // Lower EVERY Discordmaxxer process, not just main. The renderer + GPU
-    // child processes are the real CPU/GPU consumers that contend with a game
-    // for cores and the GPU queue — lowering only the (mostly idle) main
-    // process barely moved input latency. app.getAppMetrics() enumerates all
-    // of them (main, gpu, renderer(s), utility/audio); os.setPriority accepts a
-    // pid, so we can drop them all to BELOW_NORMAL while gaming and restore on
-    // toggle-off. Per-pid try/catch because a child can exit mid-iteration.
-    const pids = new Set<number>([process.pid]);
+// The target priority for a single process given the current perf + voice state.
+function priorityTargetFor(type: string, name: string, serviceName: string): number {
+    if (!state.on) return PRIORITY_NORMAL;
+    // Audio + network utility: never throttle (local audio I/O + RTC transport).
+    if (type === "Utility" && PROTECTED_UTILITY_RE.test(`${name} ${serviceName}`)) {
+        return PRIORITY_NORMAL;
+    }
+    // In a voice call / streaming: keep the renderer (Opus encode/decode + NetEq
+    // run here) and the GPU (HW screenshare encode) at NORMAL too.
+    if (voiceActive && (type === "GPU" || type === "Tab")) {
+        return PRIORITY_NORMAL;
+    }
+    return PRIORITY_BELOW_NORMAL;
+}
+
+// Set every Discordmaxxer process to its correct priority for the current
+// (state.on, voiceActive) combination. Idempotent — safe to call on perf
+// toggle, on voice-state change, and on new-window creation. app.getAppMetrics()
+// enumerates main, gpu, renderer(s), and utility processes; os.setPriority takes
+// a pid. Per-pid try/catch because a child can exit mid-iteration.
+function applyProcessPriorities(): boolean {
+    let metrics: ReturnType<typeof app.getAppMetrics> = [];
     try {
-        for (const m of app.getAppMetrics()) {
-            if (typeof m.pid === "number") pids.add(m.pid);
-        }
+        metrics = app.getAppMetrics();
     } catch (e) {
         console.warn("[Discordmaxxer] getAppMetrics failed:", (e as Error).message);
     }
 
     let count = 0;
-    for (const pid of pids) {
+    let sawMain = false;
+    for (const m of metrics) {
+        if (typeof m.pid !== "number") continue;
+        if (m.pid === process.pid) sawMain = true;
+        const target = priorityTargetFor(m.type, m.name ?? "", m.serviceName ?? "");
         try {
-            setPriority(pid, priority);
+            setPriority(m.pid, target);
             count++;
         } catch {
             // transient/exited child process — skip it
+        }
+    }
+    // Fallback: ensure our own (main) process is set even if metrics was empty.
+    if (!sawMain) {
+        try {
+            setPriority(process.pid, state.on ? PRIORITY_BELOW_NORMAL : PRIORITY_NORMAL);
+            count++;
+        } catch {
+            // ignore
         }
     }
     if (count === 0) console.warn("[Discordmaxxer] setPriority: no processes updated");
@@ -99,18 +143,12 @@ handle(IpcEvents.DM_SET_PERFORMANCE_MODE, (_e, on: boolean) => {
         return { priorityChanged: false, frameRateLimited: false, arRpcDisabled: false };
     }
 
-    let priorityChanged = false;
-    let frameRateLimited = false;
+    state.on = on;
+    const priorityChanged = applyProcessPriorities();
+    setAllRendererFrameRates(on ? FRAME_RATE_PERF : FRAME_RATE_NORMAL);
+
     let arRpcDisabled = false;
-
     if (on) {
-        // Activate
-        priorityChanged = trySetProcessPriority(PRIORITY_BELOW_NORMAL);
-        if (priorityChanged) state.priorAppliedPriority = PRIORITY_NORMAL;
-
-        const touched = setAllRendererFrameRates(FRAME_RATE_PERF);
-        frameRateLimited = touched > 0;
-
         if (Settings.store.arRPC === true) {
             state.priorArRpc = true;
             Settings.store.arRPC = false; // change-listener in arrpc/index.ts handles teardown
@@ -118,40 +156,39 @@ handle(IpcEvents.DM_SET_PERFORMANCE_MODE, (_e, on: boolean) => {
         } else {
             state.priorArRpc = false;
         }
-
-        state.on = true;
-        console.log(`[Discordmaxxer] PerfMode ON — priority=${priorityChanged} fps=${frameRateLimited} arRpc=${arRpcDisabled}`);
     } else {
-        // Deactivate — restore prior state
-        if (state.priorAppliedPriority !== null) {
-            priorityChanged = trySetProcessPriority(state.priorAppliedPriority);
-            state.priorAppliedPriority = null;
-        }
-
-        const touched = setAllRendererFrameRates(FRAME_RATE_NORMAL);
-        frameRateLimited = touched > 0;
-
         if (state.priorArRpc === true) {
             Settings.store.arRPC = true; // change-listener restarts the worker
             arRpcDisabled = true; // semantics: "we touched arRpc"
         }
         state.priorArRpc = null;
-
-        state.on = false;
-        console.log(`[Discordmaxxer] PerfMode OFF — restored`);
     }
 
-    return { priorityChanged, frameRateLimited, arRpcDisabled };
+    console.log(
+        `[Discordmaxxer] PerfMode ${on ? "ON" : "OFF"} — priority=${priorityChanged} voiceActive=${voiceActive} arRpc=${arRpcDisabled}`
+    );
+
+    // frameRateLimited is intentionally always false: the cap is a no-op on
+    // windowed mode, so we don't claim a GPU saving we aren't delivering.
+    return { priorityChanged, frameRateLimited: false, arRpcDisabled };
 });
 
-// Apply current frame rate cap to any new BrowserWindow that comes online
-// while perf mode is on (prevents an unfocus → new-window opening from
-// resetting back to 60).
-app.on("browser-window-created", (_e, win: BrowserWindow) => {
+// Renderer reports voice-channel join/leave. While perf mode is on, joining a
+// call restores renderer+GPU to NORMAL (protect voice/stream encode); leaving
+// drops them back to BELOW_NORMAL for the full perf win.
+handle(IpcEvents.DM_SET_VOICE_ACTIVE, (_e, active: boolean) => {
+    const next = !!active;
+    if (next === voiceActive) return { reapplied: false };
+    voiceActive = next;
+    const reapplied = state.on ? applyProcessPriorities() : false;
+    if (reapplied) console.log(`[Discordmaxxer] voiceActive=${voiceActive} — re-balanced priorities`);
+    return { reapplied };
+});
+
+// A new window/renderer coming online while perf mode is on needs its priority
+// set so it inherits the right class (e.g. unfocus → new-window). Best-effort:
+// if the child isn't in getAppMetrics yet, the next perf/voice event catches it.
+app.on("browser-window-created", (_e, _win: BrowserWindow) => {
     if (!state.on) return;
-    try {
-        win.webContents.setFrameRate(FRAME_RATE_PERF);
-    } catch {
-        // ignore
-    }
+    applyProcessPriorities();
 });

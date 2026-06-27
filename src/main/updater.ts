@@ -69,6 +69,23 @@ const isOutdated = autoUpdater
         return false;
     });
 
+// H2 (audit 2026-06-26): the checkForUpdates() above runs exactly ONCE at
+// startup. A client left open for days/weeks would never discover a fix release
+// until restart — and "ship the next build" is the entire recovery model (the
+// zstd voice outage relied on users getting the next version). Re-check every
+// 6h. Skip while the updater prompt is already open or a download is in flight
+// so we never stack windows or interrupt an install.
+let updateDownloading = false;
+autoUpdater.on("download-progress", () => (updateDownloading = true));
+autoUpdater.on("update-downloaded", () => (updateDownloading = false));
+
+setInterval(() => {
+    if (updaterWindow || updateDownloading) return;
+    autoUpdater
+        .checkForUpdates()
+        .catch(err => console.warn("[Discordmaxxer updater] periodic checkForUpdates failed:", err));
+}, 6 * Millis.HOUR);
+
 handle(IpcEvents.UPDATER_IS_OUTDATED, () => isOutdated);
 handle(IpcEvents.UPDATER_OPEN, async () => {
     const res = await autoUpdater.checkForUpdates();

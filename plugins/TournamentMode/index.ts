@@ -41,7 +41,7 @@ import { definePluginSettings } from "@api/Settings";
 import { managedStyleRootNode } from "@api/Styles";
 import { createAndAppendStyle } from "@utils/css";
 import definePlugin, { OptionType } from "@utils/types";
-import { Toasts } from "@webpack/common";
+import { FluxDispatcher, SelectedChannelStore, Toasts } from "@webpack/common";
 
 const HOTKEY_ID = "discordmaxxer.TournamentMode";
 
@@ -49,6 +49,19 @@ let style: HTMLStyleElement;
 let active = false;
 let hotkeyHandler: ((e: KeyboardEvent) => void) | null = null;
 let globalRegistered = false;
+let voiceSub: ((e: any) => void) | null = null;
+
+// Report voice-channel join/leave to the perf bridge. While Tournament Mode is
+// on, this keeps the renderer + GPU at full priority during a call/stream (the
+// WebRTC Opus encode/decode runs in the renderer) instead of starving voice.
+function reportVoiceActive(inVoice: boolean) {
+    const native = (globalThis as any).VesktopNative;
+    try {
+        native?.performanceMode?.setVoiceActive?.(inVoice);
+    } catch (e) {
+        console.warn("[TournamentMode] setVoiceActive failed:", e);
+    }
+}
 
 // CPU-saving CSS only. Pauses (not hides) animations that decode/run every
 // frame. Cosmetic elements stay fully visible.
@@ -163,7 +176,7 @@ async function setActive(next: boolean) {
 
     Toasts.show({
         message: active
-            ? `🎮 Tournament Mode: ON — priority↓ fps→30 ${result?.arRpcDisabled ? "rpc✕" : ""}`
+            ? `🎮 Tournament Mode: ON — priority↓ ${result?.arRpcDisabled ? "rpc✕" : ""}`
             : "Tournament Mode: OFF — restored",
         type: active ? Toasts.Type.SUCCESS : Toasts.Type.MESSAGE,
         id: Toasts.genId(),
@@ -179,6 +192,17 @@ export default definePlugin({
 
     async start() {
         style = createAndAppendStyle("dm-tournament-mode", managedStyleRootNode);
+
+        // Track voice-channel state so the perf bridge can protect renderer+GPU
+        // priority during calls/streaming. Report the current state once (in case
+        // we launched already in a call), then on every join/leave.
+        try {
+            reportVoiceActive(!!SelectedChannelStore.getVoiceChannelId());
+        } catch {
+            // store may not be ready at startup — the subscription will catch up
+        }
+        voiceSub = (e: any) => reportVoiceActive(!!e?.channelId);
+        FluxDispatcher.subscribe("VOICE_CHANNEL_SELECT", voiceSub);
 
         if (settings.store.enabledOnStart) {
             await setActive(true);
@@ -239,6 +263,14 @@ export default definePlugin({
         if (active) {
             // Restore system state before unloading
             await setActive(false);
+        }
+        if (voiceSub) {
+            try {
+                FluxDispatcher.unsubscribe("VOICE_CHANNEL_SELECT", voiceSub);
+            } catch {
+                // ignore
+            }
+            voiceSub = null;
         }
         if (globalRegistered) {
             (globalThis as any).VesktopNative?.globalHotkey?.unregister?.(HOTKEY_ID);
