@@ -74,8 +74,8 @@ const SettingsOptions: Record<string, Array<BooleanSetting | SettingsComponent>>
             key: "micNoiseSuppression",
             title: "Microphone noise suppression (RNNoise)",
             description:
-                "Removes background noise (fans, hum, hiss, keyboard) from your mic using an in-app AI filter. This is Discordmaxxer's replacement for Discord's Krisp, which can't run in a non-official client. Set Discord's own Noise Suppression to None to avoid double-processing. Takes effect next time you connect to voice.",
-            defaultValue: false
+                "Removes background noise (fans, hum, hiss, keyboard) from your mic using an in-app AI filter. This is Discordmaxxer's replacement for Discord's Krisp, which can't run in a non-official client. On by default; it automatically disables the browser's own noise suppression so the two don't double-process. Takes effect next time you connect to voice.",
+            defaultValue: true
         }
     ],
     "User Interface": [

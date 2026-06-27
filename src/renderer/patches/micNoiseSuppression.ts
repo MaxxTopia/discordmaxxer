@@ -126,19 +126,46 @@ function isPlainMicRequest(constraints: MediaStreamConstraints | undefined): boo
 
 const originalGetUserMedia = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
 
-navigator.mediaDevices.getUserMedia = async function (constraints) {
-    const stream = await originalGetUserMedia(constraints);
+// When RNNoise is engaged, disable the BROWSER's own noise suppression on the
+// capture request so the two don't stack. Double-processing (Discord's
+// "Standard" noise suppression on top of RNNoise) muddies the voice and adds
+// artefacts — this is the "auto turn off the other one" so the user can't leave
+// it fighting RNNoise by mistake. We deliberately leave echoCancellation alone
+// (RNNoise has no echo canceller) and don't touch autoGainControl.
+function withBrowserNoiseSuppressionOff(constraints: MediaStreamConstraints): MediaStreamConstraints {
+    const audio = constraints.audio;
+    const audioObj = typeof audio === "object" && audio ? { ...audio } : {};
+    (audioObj as any).noiseSuppression = false;
+    return { ...constraints, audio: audioObj };
+}
 
-    if (!Settings.store.micNoiseSuppression || !isPlainMicRequest(constraints)) {
-        return stream;
+navigator.mediaDevices.getUserMedia = async function (constraints) {
+    const useRnnoise = Settings.store.micNoiseSuppression && isPlainMicRequest(constraints);
+    if (!useRnnoise) return originalGetUserMedia(constraints);
+
+    // Acquire with the browser's noise suppression off so RNNoise is the ONLY
+    // suppressor. If the modified request is rejected for any reason, honour the
+    // original constraints.
+    let stream: MediaStream;
+    try {
+        stream = await originalGetUserMedia(withBrowserNoiseSuppressionOff(constraints as MediaStreamConstraints));
+    } catch {
+        return originalGetUserMedia(constraints);
     }
     if (!stream.getAudioTracks().length) return stream;
 
     try {
         return await applyRnnoise(stream);
     } catch (e) {
-        // Never break the mic — hand back the untouched stream.
-        logger.error("RNNoise filter failed, using raw mic", e);
-        return stream;
+        // RNNoise failed — don't leave the user with NO suppression. Drop the
+        // NS-off stream and re-acquire with Discord's original constraints so its
+        // own (browser) noise suppression is back in play.
+        logger.error("RNNoise filter failed; re-acquiring mic with original constraints", e);
+        try {
+            stream.getTracks().forEach(t => t.stop());
+        } catch {
+            /* ok */
+        }
+        return originalGetUserMedia(constraints);
     }
 };
