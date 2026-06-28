@@ -272,8 +272,11 @@ function validateLocal(profile: Partial<ProfileFlair>): string | null {
 }
 
 // ─── Vanilla-Discord broadcast (Path A) ────────────────────────────────
-// Optional, opt-in, one-shot: PATCH the user's REAL Discord profile so that
-// flair becomes visible to non-Discordmaxxer users too. Three independent
+// Optional, opt-in, one-shot: PATCH the user's REAL Discord profile. NOTE on
+// vanilla visibility: only a STATIC avatar truly renders for everyone on free;
+// the theme GRADIENT is Nitro-gated at the render layer (vanilla/non-Nitro
+// viewers see default), and BANNERS need Nitro to upload at all. In-app flair
+// (the roster path) is always Discordmaxxer-users-only. Three independent
 // fields, three independent buttons — colors, avatar, banner — each gated
 // behind a confirm modal.
 //
@@ -286,7 +289,7 @@ function validateLocal(profile: Partial<ProfileFlair>): string | null {
 //     Discord normally).
 //
 // Endpoint shape (verified via DMBadge — same pattern):
-//   PATCH /users/@me/profile  body: { theme_colors: [int, int] }     → free
+//   PATCH /users/@me/profile  body: { theme_colors: [int, int] }     → write may succeed, but Discord NITRO-GATES the render (vanilla / non-Nitro viewers see default, NOT your gradient)
 //   PATCH /users/@me/profile  body: { avatar: "data:image/...;base64,..." } → static free, GIF requires Nitro
 //   PATCH /users/@me/profile  body: { banner: "data:image/...;base64,..." } → requires Nitro
 //
@@ -357,7 +360,7 @@ async function broadcastThemeColors(primaryHex: string, secondaryHex: string): P
             url: "/users/@me/profile",
             body: { theme_colors: [p, s] }
         });
-        toast("✅ Theme colors broadcast — visible to everyone (vanilla Discord included).", Toasts.Type.SUCCESS, 5000);
+        toast("✅ Theme colors written to your Discord profile. Note: Discord only RENDERS profile gradients for Nitro accounts, so non-Nitro / vanilla viewers won't see it. Other Discordmaxxer users see it in-app regardless.", Toasts.Type.SUCCESS, 8000);
         return true;
     } catch (e: any) {
         const { label } = classifyDiscordError(e);
@@ -591,7 +594,7 @@ async function broadcastBanner(url: string): Promise<boolean> {
         console.warn("[DMProfileFlair] broadcastBanner failed:", e);
         if (nitroRequired) {
             toast(
-                "⚠ Nitro required for a Discord banner upload. (Theme colors broadcast works on free — try that for a free-tier color identity.)",
+                "⚠ Nitro required for a Discord banner upload. For a no-Nitro identity, set your flair in Discordmaxxer — other Discordmaxxer users see your banner + gradient in-app.",
                 Toasts.Type.FAILURE, 8000
             );
         } else {
@@ -673,7 +676,7 @@ function FlairEditor() {
     // ambiguous which field caused the failure.
     const broadcastConfirmCopy = (kind: "theme colors" | "avatar" | "banner", extra = "") =>
         `Broadcast your ${kind} to your REAL Discord profile?\n\n` +
-        `This sets the value on your actual Discord account — everyone (vanilla Discord users included) will see it on your profile.\n\n` +
+        `This sets the value on your actual Discord account. Whether non-modded ("vanilla") Discord users actually SEE it depends on the field — read the per-field note below.\n\n` +
         `We only PATCH once when you click. We never re-assert if you change it back via Discord Settings → Profiles.\n\n` +
         (extra ? `${extra}\n\n` : "") +
         `⚠ Heads up: this technically crosses the same TOS gray-area line as DMBadge's bio/pronouns toggles (Discord forbids third-party clients automating account-level actions). One-click-on-your-consent + no re-assert is what we believe keeps it on the 'tool' side vs 'self-bot'. Enforcement against personal use is rare, but flip with eyes open.`;
@@ -685,7 +688,7 @@ function FlairEditor() {
             toast("Set both primary + secondary theme colors before broadcasting.", Toasts.Type.FAILURE, 5000);
             return;
         }
-        if (!confirm(broadcastConfirmCopy("theme colors", "✅ Works on FREE Discord — no Nitro needed."))) return;
+        if (!confirm(broadcastConfirmCopy("theme colors", "⚠ Discord only RENDERS profile gradients for Nitro accounts. Without Nitro the write may go through, but vanilla / non-Nitro viewers still see your default — they will NOT see this gradient. Other Discordmaxxer users always see it in-app (no Nitro needed)."))) return;
         setBusy(true);
         await broadcastThemeColors(p, sec);
         setBusy(false);
@@ -727,7 +730,7 @@ function FlairEditor() {
             toast("Set a banner URL above before broadcasting.", Toasts.Type.FAILURE, 5000);
             return;
         }
-        if (!confirm(broadcastConfirmCopy("banner", "⚠ Discord banners require Nitro for any user. Without Nitro this PATCH will fail (we'll show a clear error). Theme colors broadcast works without Nitro — try that first."))) return;
+        if (!confirm(broadcastConfirmCopy("banner", "⚠ Discord banners require Nitro for any user. Without Nitro this PATCH will fail (we'll show a clear error). For a no-Nitro identity, set your flair in Discordmaxxer instead — other Discordmaxxer users see your banner + gradient in-app."))) return;
         setBusy(true);
         await broadcastBanner(u);
         setBusy(false);
@@ -942,17 +945,17 @@ const settings = definePluginSettings({
         description:
             "[Channel G · MAXXER++] Primary theme color — TOP of the profile gradient. " +
             "Accepts #RRGGBB, RRGGBB (no #), or 0xRRGGBB — auto-normalized. " +
-            "Default = '#4d1c12' (deep blood red) so you can see the gradient effect on first launch. " +
+            "Empty by default (no gradient) — pick a preset in the welcome screen or set your own here. " +
             "Clear to remove your gradient.",
-        default: "#4d1c12"
+        default: ""
     },
     myThemeColorSecondary: {
         type: OptionType.STRING,
         description:
             "[Channel G · MAXXER++] Secondary theme color — BOTTOM of the profile gradient. " +
             "Accepts #RRGGBB, RRGGBB (no #), or 0xRRGGBB — auto-normalized. " +
-            "Default = '#ff0034' (vivid red). Paired with the default primary above for a nice red gradient demo.",
-        default: "#ff0034"
+            "Empty by default (no gradient) — paired with the primary above once both are set.",
+        default: ""
     },
     manualClaimCode: {
         type: OptionType.STRING,

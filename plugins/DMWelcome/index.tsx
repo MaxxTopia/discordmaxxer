@@ -24,12 +24,13 @@ import { Toasts, UserStore } from "@webpack/common";
 
 import { BUNDLES } from "../_dm-shared/bundles";
 import { FEATURED_PLUGINS } from "../_dm-shared/featured";
+import { GRADIENT_PRESETS } from "../_dm-shared/gradientPresets";
 import { hasTier, Tier, TIER_LABELS } from "../_dm-shared/vip";
 
 // Bump this when new featured plugins are added to force the modal to re-show
 // on launch so existing users see the additions. Major content updates only —
 // not tiny copy tweaks.
-const WELCOME_VERSION = 1;
+const WELCOME_VERSION = 2;
 
 const ROOT_ID = "dm-welcome-root";
 const MODAL_ID = "dm-welcome-modal";
@@ -91,6 +92,17 @@ function getPluginSetting(plugin: string, key: string): boolean {
 }
 
 function setPluginSetting(plugin: string, key: string, value: boolean) {
+    const v = vencord();
+    if (!v?.Settings?.plugins?.[plugin]) return;
+    v.Settings.plugins[plugin][key] = value;
+}
+
+function getPluginSettingString(plugin: string, key: string): string {
+    const v = vencord()?.PlainSettings?.plugins?.[plugin]?.[key];
+    return typeof v === "string" ? v : "";
+}
+
+function setPluginSettingString(plugin: string, key: string, value: string) {
     const v = vencord();
     if (!v?.Settings?.plugins?.[plugin]) return;
     v.Settings.plugins[plugin][key] = value;
@@ -328,6 +340,48 @@ const CSS = `
         opacity: 0.9;
         margin-top: 3px;
     }
+
+    /* Profile gradient preset swatches */
+    .dmw-grads {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 8px;
+        margin-top: 8px;
+    }
+    @media (max-width: 540px) { .dmw-grads { grid-template-columns: repeat(2, 1fr); } }
+    .dmw-grad {
+        height: 54px;
+        border: 1px solid rgba(226,91,255,0.25);
+        border-radius: 8px;
+        padding: 0;
+        position: relative;
+        overflow: hidden;
+        cursor: pointer;
+        font-family: inherit;
+        transition: transform 0.12s, filter 0.12s, box-shadow 0.12s;
+    }
+    .dmw-grad:hover { transform: translateY(-2px); filter: brightness(1.1); box-shadow: 0 6px 16px rgba(0,0,0,0.35); }
+    .dmw-grad.sel { outline: 2px solid #fbefff; outline-offset: 1px; }
+    .dmw-grad-label {
+        position: absolute;
+        left: 0; right: 0; bottom: 0;
+        font-size: 10px;
+        font-weight: 700;
+        color: #fff;
+        background: rgba(0,0,0,0.42);
+        padding: 2px 5px;
+        text-align: left;
+        text-shadow: 0 1px 2px rgba(0,0,0,0.7);
+    }
+    .dmw-grad.sel .dmw-grad-label::after { content: " ✓"; }
+    .dmw-grad-hint {
+        font-size: 11px;
+        color: #ddb1ff;
+        opacity: 0.88;
+        margin-top: 9px;
+        line-height: 1.45;
+    }
+    .dmw-grad-hint a { color: #f3af19; cursor: pointer; text-decoration: underline; }
 `;
 
 let style: HTMLStyleElement | null = null;
@@ -358,6 +412,21 @@ const IDENTITY_ROWS: Array<{
 
 function bundleEnabledCount(plugins: string[]): number {
     return plugins.reduce((n, p) => n + (isPluginEnabled(p) ? 1 : 0), 0);
+}
+
+function gradientSectionHTML(): string {
+    const curP = getPluginSettingString("DMProfileFlair", "myThemeColorPrimary").toLowerCase();
+    const curS = getPluginSettingString("DMProfileFlair", "myThemeColorSecondary").toLowerCase();
+    const swatches = GRADIENT_PRESETS.map(g => {
+        const sel = g.primary.toLowerCase() === curP && g.secondary.toLowerCase() === curS;
+        return `<button class="dmw-grad ${sel ? "sel" : ""}" data-grad="${g.id}"
+            style="background:linear-gradient(180deg, ${g.primary} 0%, ${g.secondary} 100%)"
+            title="${g.label}">
+            <span class="dmw-grad-label">${g.label}</span>
+        </button>`;
+    }).join("");
+    return `<div class="dmw-grads">${swatches}</div>
+        <div class="dmw-grad-hint">Primary on top, accent on bottom. Picking one sets your gradient — then <a data-action="open-flair">open Profile Flair</a> to save it or choose your own custom colors. Heads up: profile gradients show to other <b>Discordmaxxer</b> users, not to people on vanilla Discord.</div>`;
 }
 
 function renderModalHTML(): string {
@@ -427,6 +496,9 @@ function renderModalHTML(): string {
         <div class="dmw-section">Identity (optional)</div>
         <div class="dmw-identity">${identityRows}</div>
 
+        <div class="dmw-section">Profile gradient</div>
+        ${gradientSectionHTML()}
+
         <div class="dmw-section">Quick-enable bundles</div>
         <div class="dmw-bundles">${bundleHTML}</div>
 
@@ -474,6 +546,22 @@ function handleClick(e: Event) {
             closeModal(true);
             return;
         }
+        if (action === "open-flair") {
+            toast("Settings → Discordmaxxer → DMProfileFlair to save your gradient or pick custom colors", Toasts.Type.MESSAGE);
+            return;
+        }
+    }
+
+    const gradEl = rawTarget.closest<HTMLElement>("[data-grad]");
+    if (gradEl) {
+        const preset = GRADIENT_PRESETS.find(g => g.id === gradEl.dataset.grad);
+        if (preset) {
+            setPluginSettingString("DMProfileFlair", "myThemeColorPrimary", preset.primary);
+            setPluginSettingString("DMProfileFlair", "myThemeColorSecondary", preset.secondary);
+            toast(`Gradient "${preset.label}" set — save it in Profile Flair to share it ✨`);
+            if (rootEl) rootEl.innerHTML = renderModalHTML();
+        }
+        return;
     }
 
     const bundleEl = rawTarget.closest<HTMLElement>("[data-bundle]");
