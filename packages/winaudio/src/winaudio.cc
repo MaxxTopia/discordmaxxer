@@ -18,8 +18,10 @@
 // Architecture:
 //   - Single capture allowed at a time (Discord screenshares one stream).
 //   - Capture thread does its own COM init (MTA), runs the WASAPI loop,
-//     and emits PCM via Napi::ThreadSafeFunction.NonBlockingCall so the
-//     audio thread is never blocked on the JS event loop.
+//     and PARKS PCM in a bounded queue (g_chunkQueue). The JS side PULLS it
+//     via drainChunks() on a timer. NOTE: a ThreadSafeFunction push path was
+//     tried but its queued callback is never drained in the Electron MAIN
+//     process (works in plain node), so delivery is pull-based instead.
 //   - Per-device: returns the device's mix format (typically float32
 //     stereo @ 48kHz on Win10/11).
 //   - Per-process: format is fixed at float32 stereo @ 48kHz (the
@@ -31,6 +33,7 @@
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
+
 
 #include <napi.h>
 
@@ -57,6 +60,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -141,6 +145,18 @@ struct CaptureState {
 
 CaptureState g_capture;
 std::mutex g_captureMutex; // serializes start/stop calls from JS thread
+
+// ─── Pull-based chunk delivery (Electron main-process safe) ────────────
+// Napi::ThreadSafeFunction.NonBlockingCall succeeds in the Electron main
+// process (status=napi_ok) but its queued callback is NEVER drained there —
+// Electron's main-process libuv doesn't service the TSFN's async handle even
+// while ordinary JS timers run. (Confirmed: native capture + Start + GetBuffer
+// + NonBlockingCall all succeed, yet the JS callback never fires; works fine
+// in standalone node.) So instead of pushing via TSFN, the capture thread
+// parks PCM in this bounded queue and the JS side PULLS it on a timer
+// (drainChunks), which IS serviced in main.
+std::mutex g_chunkMutex;
+std::deque<std::shared_ptr<AudioChunkPayload>> g_chunkQueue;
 
 // Distinguishes the capture-thread main between per-device loopback and
 // per-process loopback paths. Set before spawning the capture thread.
@@ -593,29 +609,14 @@ void CaptureThreadMain() {
 
             capture->ReleaseBuffer(framesRead);
 
-            napi_status status = g_capture.tsfn.NonBlockingCall(
-                [payload](Napi::Env env, Napi::Function jsCallback) {
-                    // Hand off PCM bytes to a Buffer with a finalizer that
-                    // releases our heap vector on GC. Keeps it zero-copy.
-                    auto* heap = new std::vector<uint8_t>(std::move(payload->data));
-                    Napi::Buffer<uint8_t> buf = Napi::Buffer<uint8_t>::New(
-                        env, heap->data(), heap->size(),
-                        [](Napi::Env, uint8_t*, std::vector<uint8_t>* v) { delete v; },
-                        heap);
-
-                    Napi::Object chunk = Napi::Object::New(env);
-                    chunk.Set("data", buf);
-                    chunk.Set("frameCount", Napi::Number::New(env, payload->frameCount));
-                    chunk.Set("timestamp100ns", Napi::BigInt::New(env, payload->timestamp100ns));
-                    chunk.Set("silent", Napi::Boolean::New(env, payload->silent));
-
-                    jsCallback.Call({ chunk });
-                });
-            if (status != napi_ok) {
-                // JS side closed the queue or it's full — bail; capture
-                // packets dropped on the floor when JS can't keep up.
-                g_capture.running.store(false, std::memory_order_release);
-                break;
+            // Park the chunk for the JS poller (DrainChunks). Bounded so a
+            // stalled JS side drops the OLDEST audio rather than growing
+            // unbounded or back-pressuring the capture thread. ~50 chunks is
+            // ~0.5s of latency headroom.
+            {
+                std::lock_guard<std::mutex> lk(g_chunkMutex);
+                g_chunkQueue.push_back(payload);
+                while (g_chunkQueue.size() > 50) g_chunkQueue.pop_front();
             }
         }
     }
@@ -785,11 +786,44 @@ Napi::Value StopCapture(const Napi::CallbackInfo& info) {
     g_capture.running.store(false, std::memory_order_release);
     if (g_capture.thread.joinable()) g_capture.thread.join();
 
+    // Discard any chunks the poller never drained.
+    {
+        std::lock_guard<std::mutex> lk(g_chunkMutex);
+        g_chunkQueue.clear();
+    }
+
     return env.Undefined();
 }
 
 Napi::Value IsCapturing(const Napi::CallbackInfo& info) {
     return Napi::Boolean::New(info.Env(), g_capture.running.load());
+}
+
+// Pull all PCM chunks parked by the capture thread since the last call.
+// Returns an array of { data: Buffer, frameCount, timestamp100ns: BigInt,
+// silent: bool }. The JS side polls this on a timer (the Electron-main-safe
+// delivery path that replaces the never-drained ThreadSafeFunction).
+Napi::Value DrainChunks(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    std::deque<std::shared_ptr<AudioChunkPayload>> local;
+    {
+        std::lock_guard<std::mutex> lk(g_chunkMutex);
+        local.swap(g_chunkQueue);
+    }
+    Napi::Array arr = Napi::Array::New(env, local.size());
+    uint32_t i = 0;
+    for (auto& p : local) {
+        Napi::Object chunk = Napi::Object::New(env);
+        Napi::Buffer<uint8_t> buf = p->data.empty()
+            ? Napi::Buffer<uint8_t>::New(env, 0)
+            : Napi::Buffer<uint8_t>::Copy(env, p->data.data(), p->data.size());
+        chunk.Set("data", buf);
+        chunk.Set("frameCount", Napi::Number::New(env, p->frameCount));
+        chunk.Set("timestamp100ns", Napi::BigInt::New(env, p->timestamp100ns));
+        chunk.Set("silent", Napi::Boolean::New(env, p->silent));
+        arr.Set(i++, chunk);
+    }
+    return arr;
 }
 
 Napi::Object Init(Napi::Env env, Napi::Object exports) {
@@ -799,6 +833,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("isCapturing", Napi::Function::New(env, IsCapturing));
     exports.Set("enumerateAudioSessions", Napi::Function::New(env, EnumerateAudioSessions));
     exports.Set("startProcessLoopback", Napi::Function::New(env, StartProcessLoopback));
+    exports.Set("drainChunks", Napi::Function::New(env, DrainChunks));
     return exports;
 }
 

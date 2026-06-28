@@ -221,22 +221,25 @@ if (isWindows) {
                 throw new Error("winaudio produced no live track");
             }
 
-            // A "live" track can still be SILENT (suspended AudioContext, native
-            // capture returning silence on this rig, broken IPC feed). That's
-            // strictly worse than the echo we're trying to remove — viewers hear
-            // nothing. So before committing, confirm real audio is reaching the
-            // track. Crucially we DON'T stop the loopback yet, so if the clean
-            // capture is silent we can fall back to it (audible, may echo).
-            // Give the WASAPI capture + IPC feed time to ramp before deciding
-            // it's silent. A too-short window false-negatives during startup and
-            // falls back to the echoing loopback — the very thing we're removing.
-            // 3s is comfortably past the observed ramp without a long quiet gap
-            // at Go-Live (the loopback stays until this resolves anyway).
-            const flowing = await session.waitForSignal(3000);
-            if (!flowing) {
+            // Gate on PIPELINE READINESS (AudioContext running), NOT loudness.
+            // A running context outputs the exclude-self mix — game audio when
+            // it plays, silence when the game is quiet — and never Discord's own
+            // voice, so it's echo-free regardless of whether sound happens to be
+            // playing at Go-Live. Requiring audible audio here would wrongly fall
+            // back to the echoing loopback whenever you go live during a quiet/
+            // loading moment (WASAPI emits no packets during true silence). The
+            // real failure we DO guard against — a context that never resumes
+            // (silent forever) — returns false and falls back. The loopback
+            // track is held until this resolves, so fallback stays audible.
+            const ready = await session.waitUntilReady(3000);
+            if (!ready) {
                 await session.stop().catch(() => {});
-                throw new Error("winaudio track had no signal within 3s — keeping audible loopback");
+                throw new Error("winaudio AudioContext never reached running within 3s — keeping loopback");
             }
+            // Informational only — was audible program audio present right at
+            // swap time? Does NOT gate the swap; just a breadcrumb in __dmEcho.
+            const audibleAtSwap = await session.waitForSignal(400);
+            debug("winaudio pipeline ready (ctx running); audible-at-swap =", audibleAtSwap);
 
             // Confirmed audible. NOW it's safe to drop the echoing loopback.
             loopbackTracks.forEach(t => {
@@ -246,7 +249,7 @@ if (isWindows) {
             stream.addTrack(cleanTrack);
 
             lastEchoInjection = "winaudio";
-            debug("VERDICT: winaudio exclude-self audio injected (signal confirmed) — no Discord voice in the mix");
+            debug("VERDICT: winaudio exclude-self audio injected (pipeline flowing) — no Discord voice in the mix");
             toast("Stream audio: capturing game/desktop audio without your call (no echo).", Toasts.Type.MESSAGE);
         } catch (e) {
             // Keep the stock loopback track exactly as it was — audio works,

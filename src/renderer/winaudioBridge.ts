@@ -127,6 +127,16 @@ export interface WinAudioSession {
      * the audible system-loopback track instead of broadcasting silence.
      */
     waitForSignal(ms: number): Promise<boolean>;
+    /**
+     * Resolve true as soon as the AudioContext is RUNNING within `ms` (the
+     * worklet is draining → the output track carries the exclude-self mix).
+     * Does NOT require audible audio: WASAPI emits no packets during true
+     * silence, so requiring them would wrongly fall back to the echoing
+     * loopback on a quiet/loading Go-Live. A context that never resumes
+     * (the real silent-track failure) returns false → caller falls back.
+     * This is the keep-vs-fallback gate; waitForSignal stays for loudness.
+     */
+    waitUntilReady(ms: number): Promise<boolean>;
 }
 
 let activeSession: WinAudioSession | null = null;
@@ -265,6 +275,25 @@ async function startSessionFromInit(
                 }
                 if (peak > 0.0005) return true;
                 await new Promise(r => setTimeout(r, 100));
+            }
+            return false;
+        },
+        async waitUntilReady(ms: number): Promise<boolean> {
+            // Ready = the AudioContext is RUNNING (worklet is draining). That's
+            // the only thing that matters for echo-safety: a running context
+            // outputs the exclude-self mix — game audio when it plays, silence
+            // when the game is quiet — and NEVER Discord's own voice. We do NOT
+            // require audible chunks: WASAPI delivers no packets during true
+            // silence, so requiring them would wrongly fall back to the echoing
+            // loopback whenever you go live during a quiet/loading moment. A
+            // suspended context (the real silent-track failure) returns false
+            // here and correctly falls back. ctx.resume() already ran; this
+            // mostly returns immediately.
+            const deadline = Date.now() + ms;
+            while (Date.now() < deadline) {
+                if (ctx.state === "running") return true;
+                await ctx.resume().catch(() => {});
+                await new Promise(r => setTimeout(r, 50));
             }
             return false;
         },

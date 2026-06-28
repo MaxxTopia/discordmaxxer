@@ -36,6 +36,47 @@ interface WinAudioModule {
         mode: "include" | "exclude",
         onChunk: (chunk: { data: Buffer; frameCount: number; timestamp100ns: bigint; silent: boolean }) => void,
     ) => { sampleRate: number; channels: number; bitsPerSample: number; isFloat: boolean };
+    // Pull PCM chunks parked by the native capture thread. Polled by the JS
+    // side because the ThreadSafeFunction push path is never serviced in the
+    // Electron main process.
+    drainChunks: () => Array<{ data: Buffer; frameCount: number; timestamp100ns: bigint; silent: boolean }>;
+}
+
+// The native onChunk callback (ThreadSafeFunction) NEVER fires in the Electron
+// main process (Electron doesn't service the TSFN's async handle, even while JS
+// timers run — verified end-to-end). So we ignore that callback and instead
+// POLL mod.drainChunks() on a timer, which IS serviced, and forward each chunk
+// to the renderer. One poller at a time (captures are single-instance).
+const NOOP_CHUNK = () => { /* unused — delivery is via the drainChunks poller */ };
+let chunkPoller: ReturnType<typeof setInterval> | null = null;
+
+function startChunkForwarding(mod: WinAudioModule, win: BrowserWindow | null) {
+    stopChunkForwarding();
+    if (!win || win.isDestroyed()) return;
+    chunkPoller = setInterval(() => {
+        if (!win || win.isDestroyed()) { stopChunkForwarding(); return; }
+        let chunks;
+        try {
+            chunks = mod.drainChunks();
+        } catch {
+            return;
+        }
+        for (const chunk of chunks) {
+            win.webContents.send(IpcEvents.DM_WIN_AUDIO_CHUNK, {
+                data: chunk.data,
+                frameCount: chunk.frameCount,
+                timestamp100ns: chunk.timestamp100ns.toString(),
+                silent: chunk.silent,
+            });
+        }
+    }, 10);
+}
+
+function stopChunkForwarding() {
+    if (chunkPoller) {
+        clearInterval(chunkPoller);
+        chunkPoller = null;
+    }
 }
 
 // Lazy-load — winaudio only ships on Windows, and we don't want missing-module
@@ -77,19 +118,8 @@ ipcMain.handle(IpcEvents.DM_WIN_AUDIO_START, async (event, deviceId: string) => 
     if (!mod) return { ok: false, error: loadError ?? "winaudio unavailable" };
     try {
         const win = BrowserWindow.fromWebContents(event.sender);
-        const format = mod.startCapture(deviceId, chunk => {
-            // Forward to the renderer that requested the start. If the
-            // window's been destroyed mid-capture, drop silently.
-            if (!win || win.isDestroyed()) return;
-            win.webContents.send(IpcEvents.DM_WIN_AUDIO_CHUNK, {
-                data: chunk.data,
-                frameCount: chunk.frameCount,
-                // BigInt → string over IPC (Electron serializer handles it but
-                // some downstream code is happier with strings).
-                timestamp100ns: chunk.timestamp100ns.toString(),
-                silent: chunk.silent,
-            });
-        });
+        const format = mod.startCapture(deviceId, NOOP_CHUNK);
+        startChunkForwarding(mod, win);
         return { ok: true, format };
     } catch (e: any) {
         return { ok: false, error: String(e?.message || e) };
@@ -100,6 +130,7 @@ ipcMain.handle(IpcEvents.DM_WIN_AUDIO_STOP, async () => {
     const mod = load();
     if (!mod) return { ok: false, error: loadError ?? "winaudio unavailable" };
     try {
+        stopChunkForwarding();
         mod.stopCapture();
         return { ok: true };
     } catch (e: any) {
@@ -124,15 +155,8 @@ ipcMain.handle(
         if (!mod) return { ok: false, error: loadError ?? "winaudio unavailable" };
         try {
             const win = BrowserWindow.fromWebContents(event.sender);
-            const format = mod.startProcessLoopback(targetPid, mode, chunk => {
-                if (!win || win.isDestroyed()) return;
-                win.webContents.send(IpcEvents.DM_WIN_AUDIO_CHUNK, {
-                    data: chunk.data,
-                    frameCount: chunk.frameCount,
-                    timestamp100ns: chunk.timestamp100ns.toString(),
-                    silent: chunk.silent,
-                });
-            });
+            const format = mod.startProcessLoopback(targetPid, mode, NOOP_CHUNK);
+            startChunkForwarding(mod, win);
             return { ok: true, format };
         } catch (e: any) {
             return { ok: false, error: String(e?.message || e) };
@@ -151,15 +175,8 @@ ipcMain.handle(IpcEvents.DM_WIN_AUDIO_START_EXCLUDE_SELF, async event => {
     if (!mod) return { ok: false, error: loadError ?? "winaudio unavailable" };
     try {
         const win = BrowserWindow.fromWebContents(event.sender);
-        const format = mod.startProcessLoopback(process.pid, "exclude", chunk => {
-            if (!win || win.isDestroyed()) return;
-            win.webContents.send(IpcEvents.DM_WIN_AUDIO_CHUNK, {
-                data: chunk.data,
-                frameCount: chunk.frameCount,
-                timestamp100ns: chunk.timestamp100ns.toString(),
-                silent: chunk.silent,
-            });
-        });
+        const format = mod.startProcessLoopback(process.pid, "exclude", NOOP_CHUNK);
+        startChunkForwarding(mod, win);
         return { ok: true, format };
     } catch (e: any) {
         return { ok: false, error: String(e?.message || e) };
