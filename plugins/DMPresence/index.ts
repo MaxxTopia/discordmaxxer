@@ -88,11 +88,20 @@ function setActivity(activity: any | null) {
 // gateway expects `assets.large_image` to be a snowflake, not the dev-portal
 // asset name — sending the name renders ? on the activity card. LastFM does
 // the same lookup via fetchAssetIds.
+//
+// Cache the resolved id: the asset snowflake for a fixed (app, name) never
+// changes, but buildActivity() runs on every 60s refresh — without the cache
+// that's a network round-trip per tick for a constant value.
+const assetIdCache = new Map<string, string>();
 async function resolveAssetId(name: string): Promise<string | undefined> {
     if (!name || !DM_APPLICATION_ID) return undefined;
+    const cached = assetIdCache.get(name);
+    if (cached) return cached;
     try {
         const ids = await ApplicationAssetUtils.fetchAssetIds(DM_APPLICATION_ID, [name]);
-        return ids?.[0];
+        const id = ids?.[0];
+        if (id) assetIdCache.set(name, id);
+        return id;
     } catch (e) {
         console.warn("[DiscordmaxxerPresence] resolveAssetId failed:", name, e);
         return undefined;

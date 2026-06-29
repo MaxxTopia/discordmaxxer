@@ -532,14 +532,10 @@ export function themeFlairCss(theme: Theme): string {
                 box-shadow: inset 2px 0 0 ${p.brand};
                 position: relative;
             }
-            /* Slow ominous fade-in on new messages */
-            body.${cls} [class*="messageListItem_"] {
-                animation: dm-message-fade-dmc 420ms ease-out;
-            }
-            @keyframes dm-message-fade-dmc {
-                from { opacity: 0; filter: blur(2px); transform: translateY(2px); }
-                to { opacity: 1; filter: blur(0); transform: translateY(0); }
-            }
+            /* (Removed per-message fade-in: Discord recycles message nodes on
+               scroll, so the animation re-fired on every recycled row →
+               continuous repaint cost, ironically fighting TournamentMode. Pure
+               CSS can't distinguish a genuinely new message from a recycled one.) */
             body.${cls} [class*="typing_"] [class*="dot_"] {
                 background-color: ${p.brand} !important;
                 animation: dm-typing-${theme.id} 1.6s ease-in-out infinite;
@@ -608,12 +604,8 @@ export function themeFlairCss(theme: Theme): string {
                 font-family: ${theme.headingFont || "'Cinzel', Georgia, serif"};
                 letter-spacing: 0.04em; text-transform: uppercase;
             }
-            /* Slow ominous fade-in on new messages */
-            body.${cls} [class*="messageListItem_"] { animation: dm-message-fade-akatsuki 480ms ease-out; }
-            @keyframes dm-message-fade-akatsuki {
-                from { opacity: 0; filter: blur(1px); transform: translateX(-2px); }
-                to { opacity: 1; filter: blur(0); transform: translateX(0); }
-            }
+            /* (Removed per-message fade-in — see dmc note: recycled message
+               nodes re-fired it on every scroll, a needless repaint cost.) */
             /* Bloody dripping typing dots */
             body.${cls} [class*="typing_"] [class*="dot_"] {
                 background-color: ${p.brand} !important;

@@ -39,6 +39,20 @@ import { FluxDispatcher, Toasts } from "@webpack/common";
 // other path (Discord's per-stream volume slider, system audio mixer, etc.).
 const touchedTracks = new WeakSet<MediaStreamTrack>();
 let appliedMuted = false;
+// True between start() and stop(). Deferred timeouts check this so a timer that
+// fires after the plugin is disabled can't re-mute (and leave audio stuck muted
+// with no listener left to restore it).
+let pluginActive = false;
+// Outstanding deferred apply-timers, cleared on stop().
+const pendingTimers = new Set<ReturnType<typeof setTimeout>>();
+function deferApply(muted: boolean, delayMs: number) {
+    const id = setTimeout(() => {
+        pendingTimers.delete(id);
+        if (!pluginActive) return;
+        applyMuteState(muted);
+    }, delayMs);
+    pendingTimers.add(id);
+}
 
 function getEngine(): any {
     const w = (globalThis as any).Vencord;
@@ -91,15 +105,28 @@ function applyMuteState(muted: boolean): ApplyResult {
         for (const receiver of pc.getReceivers()) {
             const track = receiver.track;
             if (!track || track.kind !== "audio") continue;
-            // Only flip tracks whose enabled state differs from the target —
-            // avoids triggering Discord's own track-state listeners with
-            // redundant changes.
             const targetEnabled = !muted;
-            if (track.enabled !== targetEnabled) {
-                track.enabled = targetEnabled;
-                affected++;
+            if (muted) {
+                // Mute: flip if needed, and record that WE touched it.
+                if (track.enabled !== targetEnabled) {
+                    track.enabled = false;
+                    affected++;
+                }
+                touchedTracks.add(track);
+            } else {
+                // Unmute: ONLY restore tracks we previously muted. A track
+                // disabled by some other path (Discord's per-stream volume,
+                // system mixer) must not be force-enabled by us. This is the
+                // safety the header promises — previously touchedTracks was
+                // written but never read, so unmute clobbered everything.
+                if (touchedTracks.has(track)) {
+                    if (track.enabled !== targetEnabled) {
+                        track.enabled = true;
+                        affected++;
+                    }
+                    touchedTracks.delete(track);
+                }
             }
-            touchedTracks.add(track);
         }
     }
     appliedMuted = muted;
@@ -107,10 +134,27 @@ function applyMuteState(muted: boolean): ApplyResult {
 }
 
 function showToggleToast(muted: boolean, res: ApplyResult) {
+    // Honesty guard: if there ARE active screenshares but we flipped nothing,
+    // the mute did not actually engage — Discord hides the RTCPeerConnection
+    // behind a native wrapper on some builds (the same reason the sender-side
+    // track-replace path in screenShareFixes was abandoned). Never claim
+    // success when affected === 0 with streams present.
+    if (muted && res.streamCount > 0 && res.affected === 0) {
+        Toasts.show({
+            message:
+                "⚠️ Couldn't mute screenshare audio — Discord didn't expose the stream's audio on this build. " +
+                "Ask the streamer to update Discordmaxxer (sender-side fix) instead.",
+            type: Toasts.Type.FAILURE,
+            id: Toasts.genId(),
+            options: { duration: 5000, position: Toasts.Position.TOP }
+        });
+        return;
+    }
+
     const msg = muted
         ? res.streamCount === 0
             ? "🔇 Screenshare audio muted — no active screenshares right now, new ones will mute on join"
-            : `🔇 Screenshare audio muted (${res.streamCount} active stream${res.streamCount === 1 ? "" : "s"})`
+            : `🔇 Screenshare audio muted (${res.affected} track${res.affected === 1 ? "" : "s"} across ${res.streamCount} stream${res.streamCount === 1 ? "" : "s"})`
         : res.streamCount === 0
           ? "🔊 Screenshare audio unmuted"
           : `🔊 Screenshare audio unmuted (${res.streamCount} stream${res.streamCount === 1 ? "" : "s"})`;
@@ -129,10 +173,9 @@ function onStreamCreate() {
     if (!settings.store.muted) return;
     // Discord wires the RTCPeerConnection asynchronously after the Flux
     // event fires. 300ms is the sweet spot from testing — most negotiations
-    // complete <100ms but a buffer absorbs slow rigs.
-    setTimeout(() => {
-        applyMuteState(true);
-    }, 300);
+    // complete <100ms but a buffer absorbs slow rigs. Tracked + plugin-active
+    // guarded so it can't fire after stop().
+    deferApply(true, 300);
 }
 
 const settings = definePluginSettings({
@@ -181,13 +224,14 @@ export default definePlugin({
     settings,
 
     start() {
+        pluginActive = true;
         window.addEventListener("keydown", onKeyDown, true);
         FluxDispatcher.subscribe("STREAM_CREATE", onStreamCreate);
         // Re-apply persisted state on launch so a saved mute survives restart.
         // 500ms gives Discord's media engine time to come up before we
         // poke at its connections list.
         if (settings.store.muted) {
-            setTimeout(() => applyMuteState(true), 500);
+            deferApply(true, 500);
         }
         if (settings.store.showHotkeyHint) {
             console.log(
@@ -198,6 +242,11 @@ export default definePlugin({
     },
 
     stop() {
+        pluginActive = false;
+        // Cancel any pending deferred applies so a timer can't re-mute after
+        // we restore below (which would strand audio muted with no listener).
+        for (const id of pendingTimers) clearTimeout(id);
+        pendingTimers.clear();
         window.removeEventListener("keydown", onKeyDown, true);
         FluxDispatcher.unsubscribe("STREAM_CREATE", onStreamCreate);
         // On unload, un-mute everything we muted — leaves the user's audio

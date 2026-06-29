@@ -88,9 +88,12 @@ async function applyRnnoise(inputStream: MediaStream): Promise<MediaStream> {
         if (!cleaned) throw new Error("RNNoise destination produced no audio track");
 
         // Tear the whole graph down when Discord stops the mic track, so we
-        // don't leak an AudioContext per voice session.
+        // don't leak an AudioContext + a live raw mic per voice session.
         const original = inputStream.getAudioTracks()[0];
+        let torn = false;
         const teardown = () => {
+            if (torn) return;
+            torn = true;
             try {
                 rnnoise.destroy();
             } catch { /* ok */ }
@@ -102,6 +105,15 @@ async function applyRnnoise(inputStream: MediaStream): Promise<MediaStream> {
                 original?.stop();
             } catch { /* ok */ }
         };
+        // CRITICAL: MediaStreamTrack 'ended' does NOT fire when stop() is called
+        // manually (only when the underlying source ends). Discord ends a mic by
+        // calling stop() on the track it holds (`cleaned`), so relying on 'ended'
+        // alone leaked the AudioContext, the worklet, and the still-running raw
+        // mic (`original`) on every reconnect / device change. Wrap stop() so it
+        // also tears down. Keep the 'ended' listeners as a backstop (device
+        // unplug). teardown is idempotent.
+        const originalCleanedStop = cleaned.stop.bind(cleaned);
+        cleaned.stop = () => { teardown(); originalCleanedStop(); };
         cleaned.addEventListener("ended", teardown);
         original?.addEventListener("ended", teardown);
 

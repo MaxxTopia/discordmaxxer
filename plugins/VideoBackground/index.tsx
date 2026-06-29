@@ -22,16 +22,18 @@ import { createAndAppendStyle } from "@utils/css";
 import definePlugin, { OptionType } from "@utils/types";
 import { Button, React, Toasts } from "@webpack/common";
 
+import { makePersistentValue } from "../_dm-shared/persist";
 import { getMyTier, hasTier, Tier, TIER_LABELS, tierGateMessage } from "../_dm-shared/vip";
 
 const REQUIRED_TIER = Tier.MAXXER_PLUS;
 const VIDEO_ID = "dm-video-bg";
 
-// Saved video bg slots — persisted in localStorage as JSON. Tier-gated max:
+// Saved video bg slots — persisted via DataStore (IndexedDB). Tier-gated max:
 //   FREE = 1 (funnel: gives a taste, friction to swap pushes upgrade)
 //   MAXXER = 5 · MAXXER+ = 20 · MAXXER++ = unlimited
 // Local file uploads (blob: URLs) stay runtime-only — those are scratchpad
 // content, can't survive relaunch anyway, so they don't count toward slots.
+// (Was localStorage, which modern Discord nukes → slots silently never saved.)
 const SLOTS_KEY = "dm-video-bg-slots";
 
 interface SavedSlot {
@@ -53,21 +55,17 @@ function tierSlotCap(tier: Tier): number {
     }
 }
 
+const slotStore = makePersistentValue<SavedSlot[]>(SLOTS_KEY, [], raw => {
+    if (!Array.isArray(raw)) return null;
+    return raw.filter(s => s && typeof s.id === "string" && typeof s.url === "string" && s.url.length > 0);
+});
+
 function readSlots(): SavedSlot[] {
-    try {
-        const raw = localStorage.getItem(SLOTS_KEY);
-        if (!raw) return [];
-        const arr = JSON.parse(raw);
-        if (!Array.isArray(arr)) return [];
-        return arr.filter(s => s && typeof s.id === "string" && typeof s.url === "string" && s.url.length > 0);
-    } catch {
-        return [];
-    }
+    return slotStore.get();
 }
 
 function writeSlots(slots: SavedSlot[]): void {
-    try { localStorage.setItem(SLOTS_KEY, JSON.stringify(slots)); }
-    catch (e) { console.warn("[VideoBackground] writeSlots failed:", e); }
+    slotStore.set(slots);
 }
 
 function newSlotId(): string {
@@ -78,7 +76,7 @@ function newSlotId(): string {
 const SAMPLE_VIDEO_URL = "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4";
 
 let videoEl: HTMLVideoElement | null = null;
-let style: HTMLStyleElement;
+let style: HTMLStyleElement | null = null;
 // Runtime-only blob URL when the user picks a local file. NOT persisted.
 let localBlobUrl: string | null = null;
 // Set true while we're intentionally pulling the src out from under the
@@ -220,7 +218,11 @@ function tearDownVideo() {
         videoEl.load();
         videoEl.remove();
         videoEl = null;
-        tearingDown = false;
+        // Reset asynchronously: the `error` event from src removal fires after
+        // this synchronous block, so clearing the flag synchronously would let
+        // a stray error slip past the onerror guard. (Detaching onerror above
+        // is the primary safeguard; this keeps the flag honest as a backstop.)
+        queueMicrotask(() => { tearingDown = false; });
     }
     if (style) style.textContent = "";
 }
@@ -272,9 +274,11 @@ function refresh() {
                 URL.revokeObjectURL(localBlobUrl);
                 localBlobUrl = null;
             }
-            // Clearing videoUrl re-triggers refresh() via onChange, which
-            // silently tears down because activeUrl() is now empty.
-            settings.store.videoUrl = "";
+            // Only clear the typed videoUrl when the typed URL is what failed.
+            // When a local blob failed, activeUrl() was the blob (it wins over
+            // videoUrl) — wiping videoUrl would destroy a perfectly good saved
+            // remote URL. Dropping the blob lets refresh() fall back to it.
+            if (!wasBlob) settings.store.videoUrl = "";
             tearDownVideo();
             const sourceLabel = wasBlob
                 ? "(local file)"
@@ -383,6 +387,14 @@ function toast(message: string, type: any = Toasts.Type.MESSAGE, durationMs = 30
 function SavedSlotsPanel() {
     const [slots, setSlots] = React.useState<SavedSlot[]>(() => readSlots());
     const [name, setName] = React.useState("");
+
+    // DataStore loads async; the initial get() may be empty on first paint.
+    // Re-read once the store is ready so saved slots appear without a reload.
+    React.useEffect(() => {
+        let alive = true;
+        slotStore.ready.then(() => { if (alive) setSlots(readSlots()); });
+        return () => { alive = false; };
+    }, []);
 
     const tier = getMyTier();
     const cap = tierSlotCap(tier);
@@ -575,7 +587,12 @@ const settings = definePluginSettings({
         default: 35,
         markers: [10, 25, 35, 50, 75, 100],
         onChange: () => {
-            if (style) style.textContent = buildCss();
+            // Only rewrite the transparency CSS when a video is actually
+            // playing. Otherwise dragging a slider with the feature off (or as
+            // a non-entitled user) would make Discord's chrome see-through with
+            // nothing behind it — looks like a crash. refresh() re-evaluates
+            // tier/enable/url so it tears down vs rebuilds correctly.
+            if (style && videoEl) style.textContent = buildCss();
         }
     },
     blur: {
@@ -584,7 +601,12 @@ const settings = definePluginSettings({
         default: 0,
         markers: [0, 4, 8, 16, 24, 40],
         onChange: () => {
-            if (style) style.textContent = buildCss();
+            // Only rewrite the transparency CSS when a video is actually
+            // playing. Otherwise dragging a slider with the feature off (or as
+            // a non-entitled user) would make Discord's chrome see-through with
+            // nothing behind it — looks like a crash. refresh() re-evaluates
+            // tier/enable/url so it tears down vs rebuilds correctly.
+            if (style && videoEl) style.textContent = buildCss();
         }
     },
     sidebarOpacity: {
@@ -594,7 +616,12 @@ const settings = definePluginSettings({
         default: 70,
         markers: [0, 25, 50, 70, 100],
         onChange: () => {
-            if (style) style.textContent = buildCss();
+            // Only rewrite the transparency CSS when a video is actually
+            // playing. Otherwise dragging a slider with the feature off (or as
+            // a non-entitled user) would make Discord's chrome see-through with
+            // nothing behind it — looks like a crash. refresh() re-evaluates
+            // tier/enable/url so it tears down vs rebuilds correctly.
+            if (style && videoEl) style.textContent = buildCss();
         }
     },
     savedSlots: {
@@ -641,5 +668,8 @@ export default definePlugin({
             localBlobUrl = null;
         }
         style?.remove();
+        // Null the ref so post-stop slider onChange handlers (which check
+        // `if (style)`) don't write into an orphaned, detached <style> node.
+        style = null;
     }
 });

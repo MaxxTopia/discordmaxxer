@@ -89,6 +89,46 @@ let inFlight: Promise<void> | null = null;
  *  haven't taught the client yet. */
 const SUPPORTED_VERSION = 2;
 
+// The roster is remote data — even though it comes from our own worker, the
+// client must not trust its shape. Validate URLs (https only) and colors at the
+// single ingest point so every downstream consumer (DMProfileFlair injects
+// these straight into element src / CSS) gets already-sanitized values. A
+// non-https URL would otherwise bypass the dm-media:// proxy and a malformed
+// one could break out of a CSS value.
+const URL_RE = /^https:\/\/[^\s"']+$/i;
+const COLOR_RE = /^#[0-9a-fA-F]{6}$/;
+const VALID_TIERS = new Set<number>([Tier.FREE, Tier.MAXXER, Tier.MAXXER_PLUS, Tier.MAXXER_PLUS_PLUS]);
+
+function sanitizeProfile(p: any): ProfileFlair | undefined {
+    if (!p || typeof p !== "object") return undefined;
+    const out: ProfileFlair = {};
+    if (typeof p.bannerUrl === "string" && URL_RE.test(p.bannerUrl)) out.bannerUrl = p.bannerUrl;
+    if (typeof p.avatarAnimatedUrl === "string" && URL_RE.test(p.avatarAnimatedUrl)) out.avatarAnimatedUrl = p.avatarAnimatedUrl;
+    if (typeof p.themeColorPrimary === "string" && COLOR_RE.test(p.themeColorPrimary)) out.themeColorPrimary = p.themeColorPrimary;
+    if (typeof p.themeColorSecondary === "string" && COLOR_RE.test(p.themeColorSecondary)) out.themeColorSecondary = p.themeColorSecondary;
+    return Object.keys(out).length ? out : undefined;
+}
+
+function sanitizeUsers(raw: Record<string, any>): Record<string, RosterEntry> {
+    const out: Record<string, RosterEntry> = {};
+    for (const id in raw) {
+        const e = raw[id];
+        if (!e || typeof e !== "object") continue;
+        const tierNum = typeof e.tier === "number" ? e.tier : Number(e.tier);
+        const tier: Tier = VALID_TIERS.has(tierNum) ? tierNum : Tier.FREE;
+        const entry: RosterEntry = { tier };
+        if (typeof e.expiresAt === "string" || e.expiresAt === null) entry.expiresAt = e.expiresAt;
+        if (typeof e.grantedAt === "string") entry.grantedAt = e.grantedAt;
+        if (typeof e.grantedBy === "string") entry.grantedBy = e.grantedBy;
+        if (typeof e.via === "string") entry.via = e.via;
+        if (typeof e.founderNumber === "number") entry.founderNumber = e.founderNumber;
+        const prof = sanitizeProfile(e.profile);
+        if (prof) entry.profile = prof;
+        out[id] = entry;
+    }
+    return out;
+}
+
 function isExpired(entry: RosterEntry): boolean {
     if (!entry.expiresAt) return false; // null / undefined = never expires
     const t = Date.parse(entry.expiresAt);
@@ -122,7 +162,7 @@ async function doFetch(): Promise<void> {
             cache = { fetchedAt: Date.now(), users: cache?.users ?? {} };
             return;
         }
-        cache = { fetchedAt: Date.now(), users: payload.users };
+        cache = { fetchedAt: Date.now(), users: sanitizeUsers(payload.users) };
     } catch (e) {
         // Network error / abort / parse fail — keep prior cache if any, just
         // refresh the timestamp so we don't hammer the URL on every read.

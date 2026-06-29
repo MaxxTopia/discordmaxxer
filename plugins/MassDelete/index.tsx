@@ -21,6 +21,22 @@ import { Alerts, Constants, Menu, RestAPI, Toasts, UserStore } from "@webpack/co
 const HARD_CAP = 100;
 const RATE_LIMIT_MS = 1000;
 
+// Single-flight guard. The 1-msg/sec pace is the whole ban-risk guarantee, so
+// it must hold ACROSS invocations: without this, confirming a second run while
+// the first is still sleeping through its targets would double the delete rate
+// (N concurrent loops → N/sec). `cancelRequested` is the in-run kill switch.
+let running = false;
+let cancelRequested = false;
+
+function toast(message: string, type: any = Toasts.Type.MESSAGE) {
+    Toasts.show({
+        message,
+        type,
+        id: Toasts.genId(),
+        options: { duration: 3000, position: Toasts.Position.TOP }
+    });
+}
+
 const settings = definePluginSettings({
     enableContextMenu: {
         type: OptionType.BOOLEAN,
@@ -45,6 +61,7 @@ interface DiscordMessage {
 
 async function fetchMyRecentMessages(channelId: string, count: number): Promise<DiscordMessage[]> {
     const me = UserStore.getCurrentUser();
+    if (!me) return [];
     const collected: DiscordMessage[] = [];
     let before: string | undefined;
     // Up to 5 pages of 100 = 500 messages scanned for up to N belonging to me.
@@ -102,49 +119,75 @@ function sleep(ms: number) {
 }
 
 async function massDeleteFlow(channel: Channel, requestedCount: number) {
+    // Secondary guard — promptAndDelete already blocks a concurrent start, but
+    // never let two flows run at once even if invoked another way.
+    if (running) {
+        toast("A mass-delete is already in progress.");
+        return;
+    }
+    if (!UserStore.getCurrentUser()) {
+        toast("You're not logged in.", Toasts.Type.FAILURE);
+        return;
+    }
+
     const count = Math.min(Math.max(1, Math.floor(requestedCount)), HARD_CAP);
     console.log(`[MassDelete] Starting flow: channel=${channel.id} requestedCount=${count}`);
 
-    Toasts.show({
-        message: `🔍 Scanning last 500 messages for up to ${count} of yours...`,
-        type: Toasts.Type.MESSAGE,
-        id: Toasts.genId(),
-        options: { duration: 2500, position: Toasts.Position.TOP }
-    });
+    running = true;
+    cancelRequested = false;
+    try {
+        toast(`🔍 Scanning last 500 messages for up to ${count} of yours...`);
 
-    const targets = await fetchMyRecentMessages(channel.id, count);
-    if (!targets.length) {
+        const targets = await fetchMyRecentMessages(channel.id, count);
+        if (!targets.length) {
+            toast("No recent messages of yours found in this channel.");
+            return;
+        }
+
+        let deleted = 0;
+        let failed = 0;
+        let cancelled = false;
+        for (const msg of targets) {
+            if (cancelRequested) { cancelled = true; break; }
+            const ok = await deleteOne(channel.id, msg.id);
+            if (ok) deleted++;
+            else failed++;
+            await sleep(RATE_LIMIT_MS);
+        }
+
+        console.log(
+            `[MassDelete] channel=${channel.id} deleted=${deleted} failed=${failed} ` +
+            `requested=${count} cancelled=${cancelled}`
+        );
+
+        const prefix = cancelled ? "Cancelled — " : "";
         Toasts.show({
-            message: "No recent messages of yours found in this channel.",
-            type: Toasts.Type.MESSAGE,
+            message: failed
+                ? `${prefix}Deleted ${deleted}, ${failed} failed (rate-limit or already gone). Check console.`
+                : `${prefix}✅ Deleted ${deleted} messages.`,
+            type: failed ? Toasts.Type.FAILURE : Toasts.Type.SUCCESS,
             id: Toasts.genId(),
-            options: { duration: 3000, position: Toasts.Position.TOP }
+            options: { duration: 4000, position: Toasts.Position.TOP }
+        });
+    } finally {
+        running = false;
+    }
+}
+
+function promptAndDelete(channel: Channel) {
+    // If a run is already in progress, the menu becomes a kill switch instead
+    // of starting a second (rate-doubling) flow.
+    if (running) {
+        Alerts.show({
+            title: "Mass-delete in progress",
+            body: "A mass-delete is currently running. Cancel it?",
+            confirmText: "Cancel the run",
+            cancelText: "Keep going",
+            onConfirm: () => { cancelRequested = true; }
         });
         return;
     }
 
-    let deleted = 0;
-    let failed = 0;
-    for (const msg of targets) {
-        const ok = await deleteOne(channel.id, msg.id);
-        if (ok) deleted++;
-        else failed++;
-        await sleep(RATE_LIMIT_MS);
-    }
-
-    console.log(`[MassDelete] channel=${channel.id} deleted=${deleted} failed=${failed} requested=${count}`);
-
-    Toasts.show({
-        message: failed
-            ? `Deleted ${deleted}, ${failed} failed (rate-limit or already gone). Check console.`
-            : `✅ Deleted ${deleted} messages.`,
-        type: failed ? Toasts.Type.FAILURE : Toasts.Type.SUCCESS,
-        id: Toasts.genId(),
-        options: { duration: 4000, position: Toasts.Position.TOP }
-    });
-}
-
-function promptAndDelete(channel: Channel) {
     // window.prompt is unreliable inside Electron-loaded Discord renderers (often
     // returns null silently). Use the configurable defaultCount + Alerts.show as
     // the single confirmation. Users can change defaultCount in plugin settings.

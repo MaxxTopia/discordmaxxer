@@ -37,6 +37,9 @@ import { Tier, TIER_LABELS } from "../_dm-shared/vip";
 
 const PREFIX_CLASS = "dm-typing-prefix";
 const PREFIX_DATA_ATTR = "data-dm-typing-prefix";
+// Tracks WHICH userId a node was decorated for, so a recycled typing element
+// reused for a different user gets re-evaluated instead of keeping a stale tag.
+const USER_DATA_ATTR = "data-dm-typing-user";
 
 // Brackets follow the same Hypixel-style mapping used by TierFlair / VipCard.
 const TIER_BRACKETS: Record<Tier, string> = {
@@ -83,11 +86,23 @@ function userIdFromAvatarUrl(url: string | null): string | null {
 }
 
 function decorateTypingUser(strong: HTMLElement) {
-    if (strong.dataset[toCamel(PREFIX_DATA_ATTR)]) return; // already done
-
     const img = strong.querySelector("img[src*='/avatars/']") as HTMLImageElement | null;
     const userId = userIdFromAvatarUrl(img?.src ?? null);
-    if (!userId) return;
+
+    const camelUser = toCamel(USER_DATA_ATTR);
+    const decoratedFor = strong.dataset[camelUser] ?? "";
+    // Already decorated for THIS exact user — nothing to do.
+    if (decoratedFor === (userId ?? "")) return;
+
+    // Node was recycled for a different user (or none): strip our prior bracket
+    // and tags before re-evaluating, so we never leave the wrong tier showing.
+    strong.querySelector(`span.${PREFIX_CLASS}`)?.remove();
+    delete strong.dataset[toCamel(PREFIX_DATA_ATTR)];
+    if (!userId) {
+        delete strong.dataset[camelUser];
+        return;
+    }
+    strong.dataset[camelUser] = userId;
 
     const tier = getRosterTier(userId);
     if (tier === Tier.FREE) return;
@@ -133,9 +148,10 @@ function startObserver() {
 function stopObserver() {
     observer?.disconnect();
     observer = null;
-    document.querySelectorAll<HTMLElement>(`[${PREFIX_DATA_ATTR}]`).forEach(el => {
+    document.querySelectorAll<HTMLElement>(`[${PREFIX_DATA_ATTR}], [${USER_DATA_ATTR}]`).forEach(el => {
         el.querySelector(`.${PREFIX_CLASS}`)?.remove();
         delete el.dataset[toCamel(PREFIX_DATA_ATTR)];
+        delete el.dataset[toCamel(USER_DATA_ATTR)];
     });
 }
 

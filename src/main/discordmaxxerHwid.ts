@@ -21,10 +21,10 @@
 
 import { execFile } from "child_process";
 import { createHash } from "crypto";
-import { ipcMain } from "electron";
 import { promisify } from "util";
 
 import { IpcEvents } from "../shared/IpcEvents";
+import { handle } from "./utils/ipcWrappers";
 
 const execFileAsync = promisify(execFile);
 
@@ -71,7 +71,7 @@ async function computeHwid(): Promise<string> {
     }
 }
 
-ipcMain.handle(IpcEvents.DM_GET_HWID, async () => {
+handle(IpcEvents.DM_GET_HWID, async () => {
     try {
         return { ok: true, hwid: await computeHwid() };
     } catch (e: any) {

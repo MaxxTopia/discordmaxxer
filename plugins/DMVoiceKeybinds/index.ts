@@ -92,21 +92,32 @@ function matches(e: KeyboardEvent, hk: ParsedHotkey): boolean {
     );
 }
 
+// Re-register hotkeys after a settings edit. Without this, changing a hotkey
+// or toggling OS-level mode did nothing until the plugin was toggled off/on.
+function reapplyKeybinds() {
+    teardownKeybinds()
+        .then(setupKeybinds)
+        .catch(e => console.warn("[DMVoiceKeybinds] reapply failed:", e));
+}
+
 const settings = definePluginSettings({
     muteHotkey: {
         type: OptionType.STRING,
         description: "Toggle self-mute (format: ctrl+alt+m). Works in-game when 'Use OS-level hotkeys' is on.",
-        default: "ctrl+alt+m"
+        default: "ctrl+alt+m",
+        onChange: reapplyKeybinds
     },
     deafenHotkey: {
         type: OptionType.STRING,
         description: "Toggle self-deafen (format: ctrl+alt+d). Works in-game when 'Use OS-level hotkeys' is on.",
-        default: "ctrl+alt+d"
+        default: "ctrl+alt+d",
+        onChange: reapplyKeybinds
     },
     useGlobalHotkey: {
         type: OptionType.BOOLEAN,
         description: "Use OS-level hotkeys (fire while you're in a fullscreen game with Discord unfocused). Recommended ON for competitive use.",
-        default: true
+        default: true,
+        onChange: reapplyKeybinds
     }
 });
 
@@ -123,6 +134,54 @@ async function tryRegisterGlobal(id: string, hotkey: string, cb: () => void): Pr
     return false;
 }
 
+async function setupKeybinds() {
+    muteGlobalRegistered = await tryRegisterGlobal(MUTE_ID, settings.store.muteHotkey, toggleMute);
+    deafenGlobalRegistered = await tryRegisterGlobal(DEAFEN_ID, settings.store.deafenHotkey, toggleDeafen);
+
+    // Window-focused fallback for whichever hotkey didn't register globally
+    // (so the feature still works when the window is focused).
+    if (!muteGlobalRegistered || !deafenGlobalRegistered) {
+        const mute = parseHotkey(settings.store.muteHotkey);
+        const deafen = parseHotkey(settings.store.deafenHotkey);
+        windowHandler = (e: KeyboardEvent) => {
+            const t = e.target as HTMLElement | null;
+            const tag = t?.tagName?.toUpperCase();
+            if (tag === "INPUT" || tag === "TEXTAREA" || t?.isContentEditable) return;
+            if (!muteGlobalRegistered && matches(e, mute)) {
+                e.preventDefault();
+                e.stopPropagation();
+                toggleMute();
+            } else if (!deafenGlobalRegistered && matches(e, deafen)) {
+                e.preventDefault();
+                e.stopPropagation();
+                toggleDeafen();
+            }
+        };
+        window.addEventListener("keydown", windowHandler, true);
+    }
+
+    console.log(
+        `[DMVoiceKeybinds] mute=${settings.store.muteHotkey} deafen=${settings.store.deafenHotkey} ` +
+            `(global: mute=${muteGlobalRegistered} deafen=${deafenGlobalRegistered})`
+    );
+}
+
+async function teardownKeybinds() {
+    const native = (globalThis as any).VesktopNative;
+    if (muteGlobalRegistered) {
+        native?.globalHotkey?.unregister?.(MUTE_ID);
+        muteGlobalRegistered = false;
+    }
+    if (deafenGlobalRegistered) {
+        native?.globalHotkey?.unregister?.(DEAFEN_ID);
+        deafenGlobalRegistered = false;
+    }
+    if (windowHandler) {
+        window.removeEventListener("keydown", windowHandler, true);
+        windowHandler = null;
+    }
+}
+
 export default definePlugin({
     name: "DMVoiceKeybinds",
     description:
@@ -130,51 +189,11 @@ export default definePlugin({
     authors: [{ name: "Diggy", id: 0n }],
     settings,
 
-    async start() {
-        muteGlobalRegistered = await tryRegisterGlobal(MUTE_ID, settings.store.muteHotkey, toggleMute);
-        deafenGlobalRegistered = await tryRegisterGlobal(DEAFEN_ID, settings.store.deafenHotkey, toggleDeafen);
-
-        // Window-focused fallback for whichever hotkey didn't register globally
-        // (so the feature still works when the window is focused).
-        if (!muteGlobalRegistered || !deafenGlobalRegistered) {
-            const mute = parseHotkey(settings.store.muteHotkey);
-            const deafen = parseHotkey(settings.store.deafenHotkey);
-            windowHandler = (e: KeyboardEvent) => {
-                const t = e.target as HTMLElement | null;
-                const tag = t?.tagName?.toUpperCase();
-                if (tag === "INPUT" || tag === "TEXTAREA" || t?.isContentEditable) return;
-                if (!muteGlobalRegistered && matches(e, mute)) {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    toggleMute();
-                } else if (!deafenGlobalRegistered && matches(e, deafen)) {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    toggleDeafen();
-                }
-            };
-            window.addEventListener("keydown", windowHandler, true);
-        }
-
-        console.log(
-            `[DMVoiceKeybinds] mute=${settings.store.muteHotkey} deafen=${settings.store.deafenHotkey} ` +
-                `(global: mute=${muteGlobalRegistered} deafen=${deafenGlobalRegistered})`
-        );
+    start() {
+        return setupKeybinds();
     },
 
     stop() {
-        const native = (globalThis as any).VesktopNative;
-        if (muteGlobalRegistered) {
-            native?.globalHotkey?.unregister?.(MUTE_ID);
-            muteGlobalRegistered = false;
-        }
-        if (deafenGlobalRegistered) {
-            native?.globalHotkey?.unregister?.(DEAFEN_ID);
-            deafenGlobalRegistered = false;
-        }
-        if (windowHandler) {
-            window.removeEventListener("keydown", windowHandler, true);
-            windowHandler = null;
-        }
+        return teardownKeybinds();
     }
 });

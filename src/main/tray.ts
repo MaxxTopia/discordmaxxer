@@ -13,12 +13,14 @@ import { resolveAssetPath } from "./userAssets";
 import { clearData } from "./utils/clearData";
 import { downloadVencordFiles } from "./utils/vencordLoader";
 
-let tray: Tray;
+let tray: Tray | null = null;
 let trayVariant: "tray" | "trayUnread" = "tray";
 
 AppEvents.on("userAssetChanged", async asset => {
     if (tray && (asset === "tray" || asset === "trayUnread")) {
-        tray.setImage(await resolveAssetPath(trayVariant));
+        const img = await resolveAssetPath(trayVariant);
+        // tray may have been destroyed during the await
+        if (tray && !tray.isDestroyed()) tray.setImage(img);
     }
 });
 
@@ -28,11 +30,15 @@ AppEvents.on("setTrayVariant", async variant => {
     trayVariant = variant;
     if (!tray) return;
 
-    tray.setImage(await resolveAssetPath(trayVariant));
+    const img = await resolveAssetPath(trayVariant);
+    if (tray && !tray.isDestroyed()) tray.setImage(img);
 });
 
 export function destroyTray() {
     tray?.destroy();
+    // Null the reference — the listeners above guard on `tray`, but a
+    // destroyed-but-non-null Tray would still reach setImage() and throw.
+    tray = null;
 }
 
 export async function initTray(win: BrowserWindow, setIsQuitting: (val: boolean) => void) {

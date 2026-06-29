@@ -9,6 +9,7 @@ import { ipcMain } from "electron";
 import { IpcEvents } from "shared/IpcEvents";
 
 import { mainWin } from "./mainWindow";
+import { validateSender } from "./utils/ipcWrappers";
 
 const resolvers = new Map<string, Record<"resolve" | "reject", (data: any) => void>>();
 
@@ -47,9 +48,12 @@ export function sendRendererCommand<T = any>(message: string, data?: any) {
     return promise;
 }
 
-ipcMain.on(IpcEvents.IPC_COMMAND, (_event, { nonce, ok, data }: IpcResponse) => {
+ipcMain.on(IpcEvents.IPC_COMMAND, (event, { nonce, ok, data }: IpcResponse) => {
+    validateSender(event.senderFrame, IpcEvents.IPC_COMMAND);
     const resolver = resolvers.get(nonce);
-    if (!resolver) throw new Error(`Unknown message: ${nonce}`);
+    // A stale/duplicate reply (each nonce is consumed once) or a spoofed nonce
+    // must be ignored, not thrown — an uncaught throw here crashes the listener.
+    if (!resolver) return;
 
     if (ok) {
         resolver.resolve(data);

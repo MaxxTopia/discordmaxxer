@@ -35,9 +35,10 @@ import { createAndAppendStyle } from "@utils/css";
 import definePlugin, { OptionType } from "@utils/types";
 import { Button, React, RestAPI, Toasts, UserStore } from "@webpack/common";
 
+import { makePersistentValue } from "../_dm-shared/persist";
 import { getRosterProfileFlair, ProfileFlair, rosterHasAnyAvatarFlair } from "../_dm-shared/roster";
 import { Tier } from "../_dm-shared/vip";
-import { readBinding } from "../_dm-shared/vipClaim";
+import { normalizeCode, readBinding } from "../_dm-shared/vipClaim";
 
 const WORKER_PROFILE_URL = "https://optmaxxing-vip.maxxtopia.workers.dev/profile";
 
@@ -114,21 +115,20 @@ export function isTournamentModeActive(): boolean {
     return !!(globalThis as any).Vencord?.PlainSettings?.plugins?.TournamentMode?.manuallyActive;
 }
 
-/** Local hide list — userIds whose flair the viewer has muted. Stored in
- *  localStorage so a right-click "hide flair" survives restarts. */
+/** Local hide list — userIds whose flair the viewer has muted. Persisted via
+ *  DataStore (IndexedDB) so a right-click "hide flair" survives restarts.
+ *  (Was localStorage, which modern Discord nukes → the hide list never
+ *  persisted AND never stuck within a session.) The 2s rescan timer re-reads
+ *  this, so the ~10ms async load is invisible after the first scan. */
 const HIDE_LIST_KEY = "dm-profile-flair-hidden";
+const hideStore = makePersistentValue<string[]>(HIDE_LIST_KEY, [], raw =>
+    Array.isArray(raw) ? raw.filter(x => typeof x === "string") : null
+);
 function readHideList(): Set<string> {
-    try {
-        const raw = localStorage.getItem(HIDE_LIST_KEY);
-        if (!raw) return new Set();
-        const arr = JSON.parse(raw);
-        return new Set(Array.isArray(arr) ? arr.filter(x => typeof x === "string") : []);
-    } catch {
-        return new Set();
-    }
+    return new Set(hideStore.get());
 }
 function writeHideList(set: Set<string>): void {
-    try { localStorage.setItem(HIDE_LIST_KEY, JSON.stringify([...set])); } catch {}
+    hideStore.set([...set]);
 }
 export function isFlairHiddenForUser(userId: string): boolean {
     return readHideList().has(userId);
@@ -207,7 +207,10 @@ async function postFlairUpdate(profile: Partial<ProfileFlair>, replace: boolean)
     if (binding?.code) {
         claimCode = binding.code;
     } else if (settings.store.manualClaimCode?.trim()) {
-        claimCode = settings.store.manualClaimCode.trim().toUpperCase().replace(/-/g, "");
+        // Use the shared normalizer so a pasted "MAXX-AAAA-BBBB-CCCC-DDDD"
+        // becomes the canonical 16-char code. The ad-hoc strip here only
+        // removed dashes, leaving the MAXX prefix → a 20-char mismatch.
+        claimCode = normalizeCode(settings.store.manualClaimCode);
     }
     if (!claimCode) {
         toast(

@@ -41,6 +41,12 @@ export class SettingsStore<T extends object> {
         const self = this;
 
         return new Proxy(object, {
+            // NOTE: arrays are returned UNPROXIED, so in-place mutation of an
+            // array setting (e.g. `store.list.push(x)`) does NOT fire change
+            // listeners or persist — always REASSIGN the whole array
+            // (`store.list = [...store.list, x]`). Also, each nested-object get
+            // returns a FRESH proxy, so `store.a !== store.a`; don't rely on
+            // nested-object reference identity for memoization.
             get(target, key: string) {
                 const v = target[key];
 

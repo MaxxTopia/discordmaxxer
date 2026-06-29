@@ -24,6 +24,7 @@ import { definePluginSettings } from "@api/Settings";
 import { React, Toasts } from "@webpack/common";
 import definePlugin, { OptionType } from "@utils/types";
 
+import { makePersistentValue } from "../_dm-shared/persist";
 import { hasTier, Tier, tierGateMessage } from "../_dm-shared/vip";
 
 declare global {
@@ -95,18 +96,22 @@ const CANDIDATES: Candidate[] = [
     }
 ];
 
+// Persisted via DataStore (IndexedDB). Was localStorage, which modern Discord
+// nukes → the "✓ Voted" state was lost every restart. (Server HWID-dedups, so
+// this is UX only — but it should still stick.) The validator also fixes the
+// old `new Set(JSON.parse(raw))` footgun where a non-array payload became a
+// Set of characters.
 const VOTED_LS_KEY = "dm-votes-voted";
+const votedStore = makePersistentValue<string[]>(VOTED_LS_KEY, [], raw =>
+    Array.isArray(raw) ? raw.filter(x => typeof x === "string") : null
+);
 
 function getVotedSet(): Set<string> {
-    try {
-        const raw = localStorage.getItem(VOTED_LS_KEY);
-        if (!raw) return new Set();
-        return new Set(JSON.parse(raw));
-    } catch { return new Set(); }
+    return new Set(votedStore.get());
 }
 
 function persistVoted(set: Set<string>) {
-    try { localStorage.setItem(VOTED_LS_KEY, JSON.stringify([...set])); } catch {}
+    votedStore.set([...set]);
 }
 
 async function fetchTally(): Promise<Record<string, number>> {
@@ -159,6 +164,9 @@ function VotesPanel() {
             }
         };
         refresh();
+        // DataStore loads async — re-read the voted set once it's ready so the
+        // "✓ Voted" markers appear without needing a reload.
+        votedStore.ready.then(() => { if (alive) setVoted(getVotedSet()); });
         const id = setInterval(refresh, TALLY_REFRESH_MS);
         return () => { alive = false; clearInterval(id); };
     }, []);

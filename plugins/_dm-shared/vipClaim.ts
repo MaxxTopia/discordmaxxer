@@ -57,7 +57,9 @@ export interface ClaimBinding {
 export const OFFLINE_TRUST_MS = 24 * 60 * 60 * 1000; // 24 hours
 export const RE_VALIDATE_AFTER_MS = 60 * 60 * 1000; // 1 hour
 
-const CODE_RE = /^[0-9A-HJKMNP-Z]{16}$/;
+// Crockford base32 alphabet excludes I, L, O, AND U. The old class (…P-Z)
+// admitted U; tighten to P-T,V-Z so the validator matches the alphabet exactly.
+const CODE_RE = /^[0-9A-HJKMNP-TV-Z]{16}$/;
 
 /** Strip MAXX- prefix + dashes, uppercase. Matches worker normalization. */
 export function normalizeCode(input: string): string {

@@ -17,26 +17,42 @@ import { definePluginSettings } from "@api/Settings";
 import definePlugin, { OptionType } from "@utils/types";
 import { Alerts, RestAPI, Toasts } from "@webpack/common";
 
+let promptTimer: ReturnType<typeof setTimeout> | null = null;
+
+// Discord's user-settings privacy flags. ONLY the two that map to what the
+// consent dialog promises and are unambiguously privacy-hardening. (The old
+// body also set allow_activity_party_privacy_* = true, which ENABLES activity
+// visibility — the opposite of privacy — and friend_source_flags:{all:true},
+// which is maximally permissive. Both removed: a privacy preset must not flip
+// settings the wrong way or touch things it doesn't advertise.)
 const PRIVACY_PATCH_BODY = {
-    // Discord's user-settings flags. Names verified against the Settings
-    // payload returned by GET /users/@me/settings (Discord client v0.0.x+).
-    allow_activity_party_privacy_friends: true,
-    allow_activity_party_privacy_voice_channel: true,
     detect_platform_accounts: false,         // Auto-detect installed games
-    contact_sync_enabled: false,             // Phone contact sync
-    friend_source_flags: { all: true }       // (kept permissive — user can tighten later)
+    contact_sync_enabled: false              // Phone contact sync
 };
 
+// Analytics + personalization live on the CONSENT endpoint, not user settings.
+// The previous body never sent these, so the dialog's promise to disable
+// "analytics / personalization" was unfulfilled. Revoke them here.
+const CONSENT_REVOKE = ["usage_statistics", "personalization"];
+
 async function applyPrivacyPreset(): Promise<{ ok: boolean; err?: string }> {
+    const errs: string[] = [];
+    // 1) User settings — installed-game detection + contact sync off.
     try {
-        await RestAPI.patch({
-            url: "/users/@me/settings",
-            body: PRIVACY_PATCH_BODY
-        });
-        return { ok: true };
+        await RestAPI.patch({ url: "/users/@me/settings", body: PRIVACY_PATCH_BODY });
     } catch (e: any) {
-        return { ok: false, err: e?.message ?? String(e) };
+        errs.push(`settings: ${e?.message ?? e}`);
     }
+    // 2) Consent — revoke analytics (usage_statistics) + personalization.
+    try {
+        await RestAPI.post({
+            url: "/users/@me/consent",
+            body: { grant: [], revoke: CONSENT_REVOKE }
+        });
+    } catch (e: any) {
+        errs.push(`consent: ${e?.message ?? e}`);
+    }
+    return errs.length ? { ok: false, err: errs.join("; ") } : { ok: true };
 }
 
 const settings = definePluginSettings({
@@ -96,14 +112,22 @@ export default definePlugin({
     authors: [{ name: "Diggy", id: 0n }],
     settings,
 
-    async start() {
+    start() {
         // Defer until app fully loaded — RestAPI / UserStore not available immediately
-        setTimeout(() => {
+        promptTimer = setTimeout(() => {
+            promptTimer = null;
             if (!settings.store.applied || settings.store.showOnNextLaunch) {
                 showConsentPrompt();
             }
         }, 8000);
     },
 
-    stop() { /* no teardown needed */ }
+    stop() {
+        // Clear the deferred prompt so it can't fire (and PATCH account settings)
+        // after the plugin was disabled within the 8s window.
+        if (promptTimer) {
+            clearTimeout(promptTimer);
+            promptTimer = null;
+        }
+    }
 });

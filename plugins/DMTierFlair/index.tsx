@@ -30,7 +30,7 @@ import { managedStyleRootNode } from "@api/Styles";
 import { createAndAppendStyle } from "@utils/css";
 import definePlugin, { OptionType } from "@utils/types";
 
-import { getRosterFounderNumber, getRosterTier, refreshRoster } from "../_dm-shared/roster";
+import { getRosterFounderNumber, getRosterStatus, getRosterTier, refreshRoster } from "../_dm-shared/roster";
 import { Tier, TIER_LABELS } from "../_dm-shared/vip";
 
 // Hypixel-aligned tier colors. MAXXER+ uses one bracket color; MAXXER++ has
@@ -98,6 +98,7 @@ function unregisterFounderBadges() {
 
 let style: HTMLStyleElement | null = null;
 let observer: MutationObserver | null = null;
+let rescanTimer: ReturnType<typeof setInterval> | null = null;
 
 function buildCss() {
     const showRing = settings.store.avatarRing;
@@ -247,8 +248,15 @@ function tagElement(el: Element) {
     // the userId we last tagged this element for instead, and re-tag whenever
     // it changes.
     const node = el as HTMLElement;
+    // Stamp the idempotency key with the roster's fetch time. The roster loads
+    // asynchronously and returns FREE until the fetch resolves; without the
+    // stamp, a row tagged FREE pre-load would never re-evaluate (its userId
+    // hasn't changed). When the cache is replaced, the stamp changes and the
+    // next scan re-tags every row with the now-correct tier.
+    const rosterStamp = String(getRosterStatus().fetchedAt ?? 0);
+    const wantTag = userId ? `${userId}:${rosterStamp}` : "";
     const taggedFor = node.dataset?.dmTierFor ?? "";
-    if (taggedFor === (userId ?? "")) return;
+    if (taggedFor === wantTag) return;
 
     // Reset any prior user's tagging before applying the new one (or none).
     el.removeAttribute("data-dm-tier");
@@ -258,7 +266,7 @@ function tagElement(el: Element) {
         if (node.dataset) delete node.dataset.dmTierFor;
         return;
     }
-    if (node.dataset) node.dataset.dmTierFor = userId;
+    if (node.dataset) node.dataset.dmTierFor = wantTag;
 
     const tier = getRosterTier(userId);
     if (tier > Tier.FREE) {
@@ -302,11 +310,19 @@ function startObserver() {
         attributeFilter: ["data-user-id"]
     });
     scanRoot(document);
+    // Low-frequency rescan so rows tagged before the async roster load (or after
+    // a manual "Refresh roster") self-correct. The stamped key makes this a
+    // cheap no-op when nothing changed.
+    if (!rescanTimer) rescanTimer = setInterval(() => scanRoot(document), 5000);
 }
 
 function stopObserver() {
     observer?.disconnect();
     observer = null;
+    if (rescanTimer) {
+        clearInterval(rescanTimer);
+        rescanTimer = null;
+    }
     document.querySelectorAll<HTMLElement>("[data-dm-tier], [data-dm-founder], [data-dm-tier-for]").forEach(el => {
         el.removeAttribute("data-dm-tier");
         el.removeAttribute("data-dm-founder");

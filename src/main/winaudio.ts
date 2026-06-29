@@ -16,9 +16,10 @@
  * see src/renderer/components/ScreenSharePicker.tsx.
  */
 
-import { BrowserWindow, ipcMain } from "electron";
+import { BrowserWindow } from "electron";
 
 import { IpcEvents } from "../shared/IpcEvents";
+import { handle } from "./utils/ipcWrappers";
 
 interface WinAudioModule {
     listOutputDevices: () => { devices: Array<{ id: string; name: string; isDefault: boolean }> };
@@ -103,7 +104,7 @@ function load(): WinAudioModule | null {
     }
 }
 
-ipcMain.handle(IpcEvents.DM_WIN_AUDIO_LIST, async () => {
+handle(IpcEvents.DM_WIN_AUDIO_LIST, async () => {
     const mod = load();
     if (!mod) return { ok: false, error: loadError ?? "winaudio unavailable" };
     try {
@@ -113,11 +114,14 @@ ipcMain.handle(IpcEvents.DM_WIN_AUDIO_LIST, async () => {
     }
 });
 
-ipcMain.handle(IpcEvents.DM_WIN_AUDIO_START, async (event, deviceId: string) => {
+handle(IpcEvents.DM_WIN_AUDIO_START, async (event, deviceId: string) => {
     const mod = load();
     if (!mod) return { ok: false, error: loadError ?? "winaudio unavailable" };
+    const win = BrowserWindow.fromWebContents(event.sender);
+    // Don't start native capture if there's no live window to drain it — the
+    // native ring buffer would grow unbounded with nothing forwarding chunks.
+    if (!win || win.isDestroyed()) return { ok: false, error: "no live window" };
     try {
-        const win = BrowserWindow.fromWebContents(event.sender);
         const format = mod.startCapture(deviceId, NOOP_CHUNK);
         startChunkForwarding(mod, win);
         return { ok: true, format };
@@ -126,7 +130,7 @@ ipcMain.handle(IpcEvents.DM_WIN_AUDIO_START, async (event, deviceId: string) => 
     }
 });
 
-ipcMain.handle(IpcEvents.DM_WIN_AUDIO_STOP, async () => {
+handle(IpcEvents.DM_WIN_AUDIO_STOP, async () => {
     const mod = load();
     if (!mod) return { ok: false, error: loadError ?? "winaudio unavailable" };
     try {
@@ -138,7 +142,7 @@ ipcMain.handle(IpcEvents.DM_WIN_AUDIO_STOP, async () => {
     }
 });
 
-ipcMain.handle(IpcEvents.DM_WIN_AUDIO_SESSIONS, async () => {
+handle(IpcEvents.DM_WIN_AUDIO_SESSIONS, async () => {
     const mod = load();
     if (!mod) return { ok: false, error: loadError ?? "winaudio unavailable" };
     try {
@@ -148,13 +152,14 @@ ipcMain.handle(IpcEvents.DM_WIN_AUDIO_SESSIONS, async () => {
     }
 });
 
-ipcMain.handle(
+handle(
     IpcEvents.DM_WIN_AUDIO_START_PROCESS,
     async (event, targetPid: number, mode: "include" | "exclude") => {
         const mod = load();
         if (!mod) return { ok: false, error: loadError ?? "winaudio unavailable" };
+        const win = BrowserWindow.fromWebContents(event.sender);
+        if (!win || win.isDestroyed()) return { ok: false, error: "no live window" };
         try {
-            const win = BrowserWindow.fromWebContents(event.sender);
             const format = mod.startProcessLoopback(targetPid, mode, NOOP_CHUNK);
             startChunkForwarding(mod, win);
             return { ok: true, format };
@@ -170,11 +175,12 @@ ipcMain.handle(
 // outgoing stream (= viewers don't hear themselves). The PID is resolved
 // here in main from process.pid; the renderer never supplies it, so it can't
 // be tricked into excluding the wrong tree.
-ipcMain.handle(IpcEvents.DM_WIN_AUDIO_START_EXCLUDE_SELF, async event => {
+handle(IpcEvents.DM_WIN_AUDIO_START_EXCLUDE_SELF, async event => {
     const mod = load();
     if (!mod) return { ok: false, error: loadError ?? "winaudio unavailable" };
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (!win || win.isDestroyed()) return { ok: false, error: "no live window" };
     try {
-        const win = BrowserWindow.fromWebContents(event.sender);
         const format = mod.startProcessLoopback(process.pid, "exclude", NOOP_CHUNK);
         startChunkForwarding(mod, win);
         return { ok: true, format };

@@ -229,6 +229,14 @@ function applySkin(skin: CursorSkin | "off") {
         return;
     }
 
+    // Never hide the OS cursor before we know we can append a replacement —
+    // if document.body is somehow absent, bail rather than leave the user with
+    // no visible cursor at all.
+    if (!document.body) {
+        deactivate();
+        return;
+    }
+
     document.documentElement.classList.add("anime-cursor-active");
     // Belt-and-suspenders: set inline cursor:none with !important on root
     // and body. Beats any Discord rule that matches with higher specificity.

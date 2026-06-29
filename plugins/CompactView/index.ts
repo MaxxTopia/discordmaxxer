@@ -182,5 +182,8 @@ export default definePlugin({
         }
         style?.remove();
         active = false;
+        // Clear the persisted "on" mirror so the Hub toggle doesn't render ON
+        // while the feature is actually OFF after a disable/restart.
+        try { settings.store.manuallyActive = false; } catch { /* settings not init */ }
     }
 });

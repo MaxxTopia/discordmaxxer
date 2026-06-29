@@ -5,7 +5,7 @@
 > `CLAUDE.md` ("Operational facts" section). Those three are enough to build,
 > ship, and maintain without prior context.
 
-## Current state — v0.7.45 (LIVE, latest published release)
+## Current state — v0.7.48 (LIVE, latest published release)
 
 Mature, shipping Vesktop fork (Electron 41 + bundled Vencord, pinned to a main
 COMMIT). ~30+ Vencord plugins enabled by default + ~24 custom plugins. Repo:
@@ -19,6 +19,13 @@ Recent shipped work (2026-06-26/27):
   global mute/deafen keybinds (`DMVoiceKeybinds`, Ctrl+Alt+M / Ctrl+Alt+D).
 - **v0.7.45** — mic noise suppression DEFAULT ON + auto-disables the browser's own
   noise suppression (no double-processing). Diggy confirmed it sounds better.
+- **v0.7.48** — full bug-audit hardening pass (~30 fixes, no new features). Highlights:
+  winaudio/venmic/HWID/ipcCommands IPC now sender-validated; dmMediaProxy SSRF closed
+  via pinned-DNS fetch (banners verified still load); MassDelete single-flight (1 msg/sec
+  rule was bypassable); localStorage->DataStore for VideoBackground slots + ProfileFlair
+  hide-list + Votes (these never persisted before); micNoiseSuppression AudioContext+mic
+  leak fixed; DMPrivacy now actually revokes analytics/personalization; DMStreamMute no
+  longer claims success when it muted nothing; updater double-open + tray-destroy crashes.
 
 ## Self-maintenance (built 2026-06-27 — see TROUBLESHOOTING.md "Self-maintenance")
 

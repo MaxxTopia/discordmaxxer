@@ -418,7 +418,11 @@ function togglePanel() {
 // LEFT of the mic mute button. The toolbar re-renders on focus changes, so we
 // re-inject from a MutationObserver.
 function injectButton() {
-    const mic = document.querySelector('button[aria-label*="ute" i]') as HTMLButtonElement | null;
+    // Match the mic mute/unmute button specifically. The old `*="ute" i` matched
+    // ANY button whose aria-label contains "ute" (could anchor the FAB to the
+    // wrong control); require "mute" and scope to the user-panel toolbar.
+    const mic = (document.querySelector('[class*="panels_"] button[aria-label*="mute" i]')
+        ?? document.querySelector('button[aria-label*="mute" i]')) as HTMLButtonElement | null;
     if (!mic) return;
     const micParent = mic.parentElement; // audioButtonParent__5e764
     const buttonsRow = micParent?.parentElement; // buttons__37e49
@@ -438,6 +442,7 @@ function injectButton() {
 }
 
 let injectScheduled = false;
+let injectRaf = 0;
 // Coalesce mutation bursts to one injectButton() per frame. The toolbar only
 // re-renders on focus changes, but the body observer fires on every DOM
 // mutation app-wide — running two querySelectors on each was needless steady
@@ -445,8 +450,9 @@ let injectScheduled = false;
 function scheduleInject() {
     if (injectScheduled) return;
     injectScheduled = true;
-    requestAnimationFrame(() => {
+    injectRaf = requestAnimationFrame(() => {
         injectScheduled = false;
+        injectRaf = 0;
         injectButton();
     });
 }
@@ -461,6 +467,13 @@ function startObserver() {
 function stopObserver() {
     observer?.disconnect();
     observer = null;
+    // Cancel any queued rAF so a coalesced injectButton() can't fire AFTER
+    // teardown and resurrect a ghost FAB. Reset the flag too.
+    if (injectRaf) {
+        cancelAnimationFrame(injectRaf);
+        injectRaf = 0;
+    }
+    injectScheduled = false;
     document.getElementById(FAB_ID)?.remove();
     panelRoot?.remove();
     panelRoot = null;

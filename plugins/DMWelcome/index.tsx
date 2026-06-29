@@ -91,10 +91,11 @@ function getPluginSetting(plugin: string, key: string): boolean {
     return !!vencord()?.PlainSettings?.plugins?.[plugin]?.[key];
 }
 
-function setPluginSetting(plugin: string, key: string, value: boolean) {
+function setPluginSetting(plugin: string, key: string, value: boolean): boolean {
     const v = vencord();
-    if (!v?.Settings?.plugins?.[plugin]) return;
+    if (!v?.Settings?.plugins?.[plugin]) return false;
     v.Settings.plugins[plugin][key] = value;
+    return true;
 }
 
 function getPluginSettingString(plugin: string, key: string): string {
@@ -102,10 +103,11 @@ function getPluginSettingString(plugin: string, key: string): string {
     return typeof v === "string" ? v : "";
 }
 
-function setPluginSettingString(plugin: string, key: string, value: string) {
+function setPluginSettingString(plugin: string, key: string, value: string): boolean {
     const v = vencord();
-    if (!v?.Settings?.plugins?.[plugin]) return;
+    if (!v?.Settings?.plugins?.[plugin]) return false;
     v.Settings.plugins[plugin][key] = value;
+    return true;
 }
 
 const CSS = `
@@ -556,10 +558,17 @@ function handleClick(e: Event) {
     if (gradEl) {
         const preset = GRADIENT_PRESETS.find(g => g.id === gradEl.dataset.grad);
         if (preset) {
-            setPluginSettingString("DMProfileFlair", "myThemeColorPrimary", preset.primary);
-            setPluginSettingString("DMProfileFlair", "myThemeColorSecondary", preset.secondary);
-            toast(`Gradient "${preset.label}" set — save it in Profile Flair to share it ✨`);
-            if (rootEl) rootEl.innerHTML = renderModalHTML();
+            // Gate the success toast on the write actually landing — if
+            // DMProfileFlair's settings bag isn't initialized the setters no-op,
+            // and a "set ✨" toast would be a lie.
+            const okA = setPluginSettingString("DMProfileFlair", "myThemeColorPrimary", preset.primary);
+            const okB = setPluginSettingString("DMProfileFlair", "myThemeColorSecondary", preset.secondary);
+            if (okA && okB) {
+                toast(`Gradient "${preset.label}" set — save it in Profile Flair to share it ✨`);
+                if (rootEl) rootEl.innerHTML = renderModalHTML();
+            } else {
+                toast("Couldn't set gradient — open Profile Flair once, then retry.", Toasts.Type.FAILURE);
+            }
         }
         return;
     }

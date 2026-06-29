@@ -166,9 +166,18 @@ handle(IpcEvents.FLASH_FRAME, (_, flag: boolean) => {
     mainWin.flashFrame(flag);
 });
 
+function escapeHtmlAttr(s: string) {
+    return s
+        .replaceAll("&", "&amp;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#39;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;");
+}
+
 handle(IpcEvents.CLIPBOARD_COPY_IMAGE, async (_, buf: ArrayBuffer, src: string) => {
     clipboard.write({
-        html: `<img src="${src.replaceAll('"', '\\"')}">`,
+        html: `<img src="${escapeHtmlAttr(src)}">`,
         image: nativeImage.createFromBuffer(Buffer.from(buf))
     });
 });

@@ -52,6 +52,10 @@ let voiceSelectHandler: ((e: any) => void) | null = null;
 
 type ConsoleMethod = "log" | "info" | "warn" | "error";
 const originals: Partial<Record<ConsoleMethod, (...a: any[]) => void>> = {};
+// The exact wrapper we installed, per method — so restoreConsole only unwraps
+// when OURS is still the active console method. If another plugin wrapped on
+// top of us, blindly writing back `orig` would clobber their wrapper.
+const wrappers: Partial<Record<ConsoleMethod, (...a: any[]) => void>> = {};
 
 function flatten(args: any[]): string {
     try {
@@ -102,7 +106,7 @@ function wrapConsole() {
         if (originals[m]) return;
         const orig = (console as any)[m].bind(console);
         originals[m] = orig;
-        (console as any)[m] = (...args: any[]) => {
+        const wrapped = (...args: any[]) => {
             try {
                 observe(flatten(args));
             } catch {
@@ -110,16 +114,22 @@ function wrapConsole() {
             }
             return orig(...args);
         };
+        wrappers[m] = wrapped;
+        (console as any)[m] = wrapped;
     });
 }
 
 function restoreConsole() {
     (Object.keys(originals) as ConsoleMethod[]).forEach(m => {
         const orig = originals[m];
-        if (orig) {
+        // Only restore if OUR wrapper is still the active method. If another
+        // plugin wrapped console after us, leave the chain intact rather than
+        // clobber their wrapper with our saved original.
+        if (orig && (console as any)[m] === wrappers[m]) {
             (console as any)[m] = orig;
-            delete originals[m];
         }
+        delete originals[m];
+        delete wrappers[m];
     });
 }
 

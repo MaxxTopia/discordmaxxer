@@ -31,7 +31,7 @@ import {
     useForceUpdater
 } from "@vencord/types/utils";
 import { onceReady } from "@vencord/types/webpack";
-import { FluxDispatcher, MediaEngineStore, Select, UserStore, useState } from "@vencord/types/webpack/common";
+import { FluxDispatcher, MediaEngineStore, Select, useEffect, UserStore, useState } from "@vencord/types/webpack/common";
 import { Node } from "@vencord/venmic";
 import type { Dispatch, SetStateAction } from "react";
 import { addPatch } from "renderer/patches/shared";
@@ -762,16 +762,26 @@ function ModalComponent({
     close: () => void;
     skipPicker: boolean;
 }) {
-    const [selected, setSelected] = useState<string | undefined>(skipPicker ? screens[0].id : void 0);
+    // Guard screens[0] — skipPicker with an empty source list would throw on
+    // .id and crash the modal render instead of showing the picker.
+    const [selected, setSelected] = useState<string | undefined>(
+        skipPicker && screens.length ? screens[0].id : void 0
+    );
     const [settings, setSettings] = useState<StreamSettings>({
         contentHint: "motion",
         audio: true,
         includeSources: "None"
     });
-    const qualitySettings = (useVesktopState().screenshareQuality ??= {
-        resolution: "720",
-        frameRate: "30"
-    });
+    // Read the persisted quality without mutating State during render (writing
+    // the proxy here triggers a localStorage write + re-render as a render side
+    // effect). Initialize the persisted default in an effect instead.
+    const vesktopState = useVesktopState();
+    const qualitySettings = vesktopState.screenshareQuality ?? { resolution: "720", frameRate: "30" };
+    useEffect(() => {
+        if (!vesktopState.screenshareQuality) {
+            vesktopState.screenshareQuality = { resolution: "720", frameRate: "30" };
+        }
+    }, []);
 
     const hwAccelOn = VesktopNative.app.getEnableHardwareAcceleration();
 

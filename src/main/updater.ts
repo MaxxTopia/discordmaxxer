@@ -107,6 +107,15 @@ handle(IpcEvents.DM_SET_ALLOW_PRERELEASE, async (_e, on: boolean) => {
 });
 
 function openUpdater(update: UpdateInfo) {
+    // Guard against double-open: a manual check (UPDATER_OPEN) or beta-toggle
+    // (DM_SET_ALLOW_PRERELEASE) can fire while the updater window is already
+    // open. Re-registering the UpdaterIpcEvents handlers below would throw
+    // ("second handler") and orphan a window. Just focus the existing one.
+    if (updaterWindow && !updaterWindow.isDestroyed()) {
+        updaterWindow.focus();
+        return;
+    }
+
     updaterWindow = new BrowserWindow({
         title: "Discordmaxxer Updater",
         autoHideMenuBar: true,

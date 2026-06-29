@@ -109,8 +109,10 @@ function rebuildKnownIds() {
 async function loadRemoteList() {
     const url = settings.store.remoteListUrl?.trim();
     if (!url) return;
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 8000);
     try {
-        const res = await fetch(url, { cache: "no-store" });
+        const res = await fetch(url, { cache: "no-store", signal: ctrl.signal });
         if (!res.ok) {
             console.warn(`[DiscordmaxxerBadge] remote list fetch ${res.status}`);
             return;
@@ -130,6 +132,8 @@ async function loadRemoteList() {
         console.log(`[DiscordmaxxerBadge] remote list loaded: +${added} new (${knownIds.size} total)`);
     } catch (e) {
         console.warn("[DiscordmaxxerBadge] remote list load failed:", e);
+    } finally {
+        clearTimeout(timer);
     }
 }
 

@@ -14,8 +14,10 @@
  * The `enabled` field IS copied so user's on/off choice survives the rename.
  * The discordmaxxerDefaults seed only runs on first launch — for upgrading
  * users, the new DM* plugin names start unset (Vencord default = off) unless
- * we forward the old enabled state. The old record is left in place as a
- * rollback safety net (cheap; tiny JSON).
+ * we forward the old enabled state. The legacy entry is DELETED once the
+ * forward-copy is confirmed (forwardOk), so future runs skip the pair and the
+ * user can disable the new plugin without the migration re-enabling it. If the
+ * copy fails, the source is kept and a later launch retries it.
  *
  * Plugins that were renamed import this module via side-effect:
  *     import "../_dm-shared/migrateLegacySettings";
@@ -120,10 +122,20 @@ function doMigrate(): boolean {
     return true;
 }
 
+// Cap the retries so a permanent failure (Vencord never exposes settings)
+// can't leave a forever-rearming 100ms timer. ~30s of attempts is far longer
+// than the <100ms Vencord normally takes to boot.
+let migrateAttempts = 0;
+const MAX_MIGRATE_ATTEMPTS = 300;
+
 function scheduleMigrate(): void {
     if (migrated) return;
     if (doMigrate()) {
         migrated = true;
+        return;
+    }
+    if (++migrateAttempts >= MAX_MIGRATE_ATTEMPTS) {
+        console.warn("[migrate] gave up waiting for Vencord settings after", MAX_MIGRATE_ATTEMPTS, "attempts");
         return;
     }
     // Vencord settings not initialized yet — back off and retry. Plugin start

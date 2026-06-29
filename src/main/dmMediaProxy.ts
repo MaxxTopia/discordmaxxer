@@ -37,8 +37,9 @@
  */
 
 import { lookup } from "dns/promises";
-import { app, net, protocol } from "electron";
-import { isIP } from "net";
+import { app, protocol } from "electron";
+import { request as httpsRequest } from "https";
+import { isIP, type LookupFunction } from "net";
 
 // Main-process memory guard: refuse to buffer more than this from any single
 // proxied response. Banner videos are ~3MB, avatars far less; 50MB is generous
@@ -77,68 +78,126 @@ function ipIsPrivate(ipRaw: string): boolean {
     return true; // not a valid IP literal where one was expected → block
 }
 
-/** Resolve a hostname and block it if it is, or maps to, a private address.
- *  Resolving (not just name-matching) defeats DNS-rebinding to internal IPs. */
-async function hostIsBlocked(hostname: string): Promise<boolean> {
+/** Resolve a hostname to a SINGLE concrete address that we then PIN the
+ *  connection to. Blocks if the host is, or any of its addresses map to, a
+ *  private range. Returning the resolved address (and connecting to exactly
+ *  it via a custom `lookup`) is what actually defeats DNS-rebinding: the prior
+ *  approach resolved during validation but let the network stack re-resolve
+ *  at connect time, leaving a TOCTOU window where DNS could flip to an
+ *  internal IP between the two resolves. Throws on any block/failure. */
+async function resolvePinnedAddress(hostname: string): Promise<{ address: string; family: number }> {
     const h = hostname.toLowerCase().replace(/^\[|\]$/g, "");
-    if (isIP(h)) return ipIsPrivate(h);
-    if (h === "localhost" || h.endsWith(".localhost") || h.endsWith(".local") ||
-        h.endsWith(".internal") || h.endsWith(".home.arpa")) return true;
-    try {
-        const addrs = await lookup(h, { all: true });
-        if (!addrs.length) return true;
-        return addrs.some(a => ipIsPrivate(a.address));
-    } catch {
-        return true; // unresolvable → block rather than risk it
+    if (isIP(h)) {
+        if (ipIsPrivate(h)) throw new Error("target host is not allowed");
+        return { address: h, family: isIP(h) };
     }
+    if (h === "localhost" || h.endsWith(".localhost") || h.endsWith(".local") ||
+        h.endsWith(".internal") || h.endsWith(".home.arpa")) throw new Error("target host is not allowed");
+    let addrs;
+    try {
+        addrs = await lookup(h, { all: true });
+    } catch {
+        throw new Error("target host is not allowed"); // unresolvable → block
+    }
+    if (!addrs.length) throw new Error("target host is not allowed");
+    // Strict: if ANY resolved address is private, block the host entirely
+    // (defends against a host that returns mixed public+private records).
+    if (addrs.some(a => ipIsPrivate(a.address))) throw new Error("target host is not allowed");
+    return { address: addrs[0].address, family: addrs[0].family };
 }
 
-/** Validate scheme + host of a URL string. Returns null if OK, else an error. */
+/** Validate scheme + host of a URL string. Returns null if OK, else an error.
+ *  Used as a fast pre-check for nice 400/403 errors; the authoritative SSRF
+ *  guard is the pinned connect in fetchValidated. */
 async function validateTarget(urlStr: string): Promise<string | null> {
     let parsed: URL;
     try { parsed = new URL(urlStr); } catch { return "malformed URL"; }
     if (parsed.protocol !== "https:") return "only https:// targets allowed";
-    if (await hostIsBlocked(parsed.hostname)) return "target host is not allowed";
+    try {
+        await resolvePinnedAddress(parsed.hostname);
+    } catch {
+        return "target host is not allowed";
+    }
     return null;
 }
 
-/** Fetch a URL via Electron's low-level net.request with MANUAL redirect
- *  handling so every hop is re-validated against the private-IP block, plus a
- *  hard byte cap. Returns the final response buffered (bounded by MAX_PROXY_BYTES). */
-function fetchValidated(
-    initialUrl: string,
-    rangeHeader: string | null
-): Promise<{ status: number; headers: Record<string, string | string[]>; body: Buffer }> {
+interface ProxyResponse {
+    status: number;
+    headers: Record<string, string | string[] | undefined>;
+    body: Buffer;
+    location?: string;
+}
+
+/** One HTTPS GET pinned to a pre-validated address. The custom `lookup`
+ *  forces the socket to connect to `pinned.address` while `servername`/the
+ *  Host header stay the real hostname so TLS SNI + cert validation succeed. */
+function fetchOnce(parsed: URL, rangeHeader: string | null, pinned: { address: string; family: number }): Promise<ProxyResponse> {
     return new Promise((resolve, reject) => {
-        const request = net.request({ method: "GET", url: initialUrl, redirect: "manual" });
-        let hops = 0;
-        request.on("redirect", (_status, _method, redirectUrl) => {
-            (async () => {
-                if (++hops > MAX_REDIRECTS) { request.abort(); return reject(new Error("too many redirects")); }
-                const err = await validateTarget(redirectUrl);
-                if (err) { request.abort(); return reject(new Error(`redirect blocked: ${err}`)); }
-                request.followRedirect();
-            })();
-        });
-        request.on("response", response => {
-            const chunks: Buffer[] = [];
-            let total = 0;
-            response.on("data", (c: Buffer) => {
-                total += c.length;
-                if (total > MAX_PROXY_BYTES) { request.abort(); reject(new Error("response exceeds size cap")); return; }
-                chunks.push(c);
-            });
-            response.on("end", () => resolve({
-                status: response.statusCode,
-                headers: response.headers as Record<string, string | string[]>,
-                body: Buffer.concat(chunks)
-            }));
-            response.on("error", (e: Error) => reject(e));
-        });
-        request.on("error", e => reject(e));
-        if (rangeHeader) request.setHeader("range", rangeHeader);
-        request.end();
+        // Node's net stack calls this with `{ all: true }`, which REQUIRES the
+        // callback to return an ARRAY of {address,family}. Returning the 3-arg
+        // (address, family) form there yields "Invalid IP address: undefined"
+        // and the connection never opens. Honour both call shapes.
+        const pinnedLookup: LookupFunction = (_hn, opts, cb) => {
+            const anyCb = cb as any;
+            if ((opts as any)?.all) {
+                anyCb(null, [{ address: pinned.address, family: pinned.family }]);
+            } else {
+                anyCb(null, pinned.address, pinned.family);
+            }
+        };
+        const req = httpsRequest(
+            {
+                protocol: "https:",
+                hostname: parsed.hostname,
+                servername: parsed.hostname,
+                port: parsed.port || 443,
+                path: (parsed.pathname || "/") + parsed.search,
+                method: "GET",
+                lookup: pinnedLookup,
+                headers: rangeHeader ? { range: rangeHeader } : {}
+            },
+            res => {
+                const status = res.statusCode ?? 0;
+                // Redirect — drain and hand the Location back up for re-validation.
+                if (status >= 300 && status < 400 && res.headers.location) {
+                    res.resume();
+                    resolve({ status, headers: res.headers, body: Buffer.alloc(0), location: res.headers.location });
+                    return;
+                }
+                const chunks: Buffer[] = [];
+                let total = 0;
+                res.on("data", (c: Buffer) => {
+                    total += c.length;
+                    if (total > MAX_PROXY_BYTES) { req.destroy(); reject(new Error("response exceeds size cap")); return; }
+                    chunks.push(c);
+                });
+                res.on("end", () => resolve({ status, headers: res.headers, body: Buffer.concat(chunks) }));
+                res.on("error", (e: Error) => reject(e));
+            }
+        );
+        req.on("error", e => reject(e));
+        req.end();
     });
+}
+
+/** Fetch a URL with MANUAL redirect handling so every hop is independently
+ *  re-resolved and pinned against the private-IP block, plus a hard byte cap. */
+async function fetchValidated(initialUrl: string, rangeHeader: string | null): Promise<ProxyResponse> {
+    let current = initialUrl;
+    for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+        let parsed: URL;
+        try { parsed = new URL(current); } catch { throw new Error("malformed URL"); }
+        if (parsed.protocol !== "https:") throw new Error("only https:// targets allowed");
+        // Resolve + validate + pin in one step — no second resolve at connect.
+        const pinned = await resolvePinnedAddress(parsed.hostname);
+        const res = await fetchOnce(parsed, rangeHeader, pinned);
+        if (res.location && res.status >= 300 && res.status < 400) {
+            current = new URL(res.location, current).toString();
+            continue;
+        }
+        return res;
+    }
+    throw new Error("too many redirects");
 }
 
 // MUST be called BEFORE app.whenReady() — that's why this file is

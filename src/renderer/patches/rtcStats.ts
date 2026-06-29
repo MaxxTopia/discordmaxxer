@@ -111,6 +111,20 @@ function classifyEncoder(impl: string): "hardware" | "software" | "unknown" {
 // Track last bytesSent per PC so we can compute a bitrate from the delta.
 const lastSample = new Map<string, { bytes: number; ts: number }>();
 
+// Stable per-PC id so the bitrate-sample key survives PC_REGISTRY compaction.
+// Keying by the live array index (the old approach) meant a splice renumbered
+// indices and every PC's kbps delta reset to 0 for a cycle.
+let pcIdCounter = 0;
+const pcIds = new WeakMap<RTCPeerConnection, number>();
+function pcIdFor(pc: RTCPeerConnection): number {
+    let id = pcIds.get(pc);
+    if (id === undefined) {
+        id = ++pcIdCounter;
+        pcIds.set(pc, id);
+    }
+    return id;
+}
+
 /**
  * Poll every tracked RTCPeerConnection's getStats() and return the most active
  * outbound video stream's encoder telemetry, or null if nothing is streaming
@@ -123,6 +137,7 @@ export async function getOutboundVideoStats(): Promise<OutboundVideoStat | null>
     for (let idx = 0; idx < PC_REGISTRY.length; idx++) {
         const pc = PC_REGISTRY[idx].deref();
         if (!pc || pc.connectionState === "closed") continue;
+        const pcKey = pcIdFor(pc);
 
         let report: RTCStatsReport;
         try {
@@ -140,7 +155,7 @@ export async function getOutboundVideoStats(): Promise<OutboundVideoStat | null>
             if (framesEncoded <= bestFrames) return;
             bestFrames = framesEncoded;
 
-            const key = `${idx}:${s.ssrc ?? s.id}`;
+            const key = `${pcKey}:${s.ssrc ?? s.id}`;
             const now = s.timestamp ?? Date.now();
             const bytes = s.bytesSent ?? 0;
             let kbps = 0;
@@ -167,6 +182,10 @@ export async function getOutboundVideoStats(): Promise<OutboundVideoStat | null>
             };
         });
     }
+
+    // Bound the delta map — keys accumulate as ssrcs churn over a long session.
+    // Clearing costs one cycle of kbps=0 on the next poll, which is harmless.
+    if (lastSample.size > 256) lastSample.clear();
 
     return best;
 }

@@ -282,5 +282,9 @@ export default definePlugin({
         }
         style?.remove();
         active = false;
+        // Ensure the persisted "on" mirror is cleared even if we started this
+        // session inactive (enabledOnStart=false) with a stale saved value —
+        // otherwise the Hub toggle shows ON while the feature is OFF.
+        try { settings.store.manuallyActive = false; } catch { /* settings not init */ }
     }
 });

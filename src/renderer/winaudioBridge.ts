@@ -240,12 +240,20 @@ async function startSessionFromInit(
             return;
         }
         const buf = chunk.data;
-        // Build a Float32Array view backed by the chunk's bytes. Buffer is
-        // a Uint8Array subclass; .buffer/.byteOffset are compatible.
-        const samples = new Float32Array(
-            buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength)
-        );
-        feeder.port.postMessage({ samples }, [samples.buffer]);
+        // float32 samples are 4 bytes each; a truncated/misaligned chunk would
+        // make the Float32Array ctor throw (RangeError) on every chunk. Guard
+        // the alignment and wrap defensively so one bad chunk can't spam errors.
+        if (buf.byteLength % 4 !== 0) return;
+        try {
+            // Build a Float32Array view backed by the chunk's bytes. Buffer is
+            // a Uint8Array subclass; .buffer/.byteOffset are compatible.
+            const samples = new Float32Array(
+                buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength)
+            );
+            feeder.port.postMessage({ samples }, [samples.buffer]);
+        } catch {
+            /* malformed chunk — drop it rather than throw in the hot path */
+        }
     });
 
     const audioTracks = dest.stream.getAudioTracks();
@@ -304,6 +312,12 @@ async function startSessionFromInit(
             } catch { /* ok */ }
             try {
                 analyser.disconnect();
+            } catch { /* ok */ }
+            // Explicitly stop the destination track. ctx.close() usually ends it,
+            // but the track is handed to replaceTrack() and may outlive the
+            // context — stopping it is the idempotent, leak-safe contract.
+            try {
+                track.stop();
             } catch { /* ok */ }
             try {
                 await ctx.close();

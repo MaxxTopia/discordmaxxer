@@ -43,11 +43,21 @@ export function createFirstLaunchTour() {
         if (msg === "cancel") return app.exit();
 
         if (!msg.startsWith("form:")) return;
-        const data = JSON.parse(msg.slice(5)) as Data;
+        let data: Data;
+        try {
+            data = JSON.parse(msg.slice(5)) as Data;
+        } catch (e) {
+            console.error("[Discordmaxxer] first-launch form parse failed:", e);
+            return;
+        }
 
         State.store.firstLaunch = false;
         State.store.discordmaxxerSkipTips = !!data.skipTips;
-        Settings.store.discordBranch = data.discordBranch;
+        // Validate the branch against the known set — it later becomes the
+        // Discord subdomain in loadUrl(), so a bad value yields a broken load.
+        Settings.store.discordBranch = ["stable", "canary", "ptb"].includes(data.discordBranch)
+            ? data.discordBranch
+            : "stable";
         Settings.store.minimizeToTray = !!data.minimizeToTray;
         Settings.store.arRPC = !!data.richPresence;
 

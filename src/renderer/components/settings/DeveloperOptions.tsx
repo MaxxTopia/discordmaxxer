@@ -185,33 +185,38 @@ function StreamHealthSection() {
             <div className={cl("button-grid")}>
                 <Button
                     onClick={() => {
-                        try {
-                            navigator.clipboard.writeText(report);
-                        } catch {
-                            /* ignore */
-                        }
-                        Toasts.show({ message: "Stream health copied", type: Toasts.Type.SUCCESS, id: Toasts.genId() });
+                        // writeText returns a Promise — a sync try/catch can't
+                        // catch its rejection (unhandled rejection + a false
+                        // "copied" toast). Gate the toast on the result.
+                        navigator.clipboard.writeText(report).then(
+                            () => Toasts.show({ message: "Stream health copied", type: Toasts.Type.SUCCESS, id: Toasts.genId() }),
+                            () => Toasts.show({ message: "Copy failed — clipboard blocked", type: Toasts.Type.FAILURE, id: Toasts.genId() })
+                        );
                     }}
                 >
                     Copy health report
                 </Button>
                 <Button
                     onClick={() => {
-                        try {
-                            navigator.clipboard.writeText(report);
-                        } catch {
-                            /* ignore */
-                        }
+                        // Catch the async rejection so it can't surface as an
+                        // unhandled rejection; toast reflects the real outcome.
+                        navigator.clipboard.writeText(report).then(
+                            () => Toasts.show({
+                                message: "Report copied — paste it in the Maxxtopia Discord to send it.",
+                                type: Toasts.Type.SUCCESS,
+                                id: Toasts.genId()
+                            }),
+                            () => Toasts.show({
+                                message: "Copy failed — opening Discord anyway; paste manually.",
+                                type: Toasts.Type.FAILURE,
+                                id: Toasts.genId()
+                            })
+                        );
                         try {
                             window.open("https://discord.gg/S78eecbWdx", "_blank");
                         } catch {
                             /* ignore */
                         }
-                        Toasts.show({
-                            message: "Report copied — paste it in the Maxxtopia Discord to send it.",
-                            type: Toasts.Type.SUCCESS,
-                            id: Toasts.genId()
-                        });
                     }}
                 >
                     Report on Discord
