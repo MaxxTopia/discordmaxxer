@@ -46,14 +46,45 @@ const Native = VencordNative.pluginHelpers.DMWidget as PluginNative<typeof impor
 interface WidgetIdentity {
     appId: string;
     configId: string;
+    heroAssetKey: string; // last uploaded hero asset, so refreshes reuse it
 }
-const EMPTY_IDENTITY: WidgetIdentity = { appId: "", configId: "" };
+const EMPTY_IDENTITY: WidgetIdentity = { appId: "", configId: "", heroAssetKey: "" };
 const identity = makePersistentValue<WidgetIdentity>("dm-widget-identity", EMPTY_IDENTITY, raw => {
     if (typeof raw !== "object" || raw === null) return null;
-    return { appId: String(raw.appId ?? ""), configId: String(raw.configId ?? "") };
+    return { appId: String(raw.appId ?? ""), configId: String(raw.configId ?? ""), heroAssetKey: String(raw.heroAssetKey ?? "") };
 });
 
 let lastResult = "";
+
+// ---- game templates (auto-stat cards) --------------------------------------
+// Latest fetched Fortnite overall stats (null until first refresh). Kept in a
+// module var — NOT in the user's manual stat fields — so a live refresh never
+// clobbers hand-entered stats and buildSurfaces can read whichever is active.
+let fnStats: Record<string, number> | null = null;
+let fnRefreshTimer: ReturnType<typeof setInterval> | null = null;
+
+const fmtNum = (n: number | undefined): string => {
+    if (n === undefined || n === null || Number.isNaN(n)) return "—";
+    if (n >= 1000) return (n / 1000).toFixed(n >= 10000 ? 1 : 2).replace(/\.0$/, "") + "K";
+    return String(n);
+};
+
+// Map the 6 stat slots for the Fortnite template: two manual prestige stats
+// (Unreal rank + earnings — no free API) then four live ones from fnStats.
+function fortniteStatLines(): string[] {
+    const s = settings.store as any;
+    const o = fnStats ?? {};
+    const rank = String(s.fnUnrealRank ?? "").trim() || "Unranked";
+    const earn = String(s.fnEarnings ?? "").trim() || "$0";
+    return [
+        `Unreal Rank | ${rank}`,
+        `Earnings | ${earn}`,
+        `Wins | ${fmtNum(o.wins)}`,
+        `K/D | ${o.kd !== undefined ? Number(o.kd).toFixed(2) : "—"}`,
+        `Kills | ${fmtNum(o.kills)}`,
+        `Win Rate | ${o.winRate !== undefined ? Number(o.winRate).toFixed(1) + "%" : "—"}`
+    ];
+}
 
 // ---- helpers ---------------------------------------------------------------
 function toast(msg: string, type: any = Toasts.Type.SUCCESS, durationMs = 5000) {
@@ -180,12 +211,17 @@ function buildSurfaces(imageKey: string | null) {
     // so a fake multi-line header via "\n" just produces a mangled run-on. The
     // card already has natural tiers (app-name header + this title + the stat
     // grid), so the title stays one short line and extra lines go in the stats.
-    const title = String(s.widgetTitle ?? "").trim() || "My Widget";
+    // Fortnite template overrides the title (IGN) + stat grid (live + manual).
+    const fnMode = s.gameTemplate === "fortnite";
+    const title = fnMode
+        ? (String(s.fnIgn ?? "").trim() || "Fortnite")
+        : (String(s.widgetTitle ?? "").trim() || "My Widget");
 
+    const rawStats = fnMode ? fortniteStatLines() : [1, 2, 3, 4, 5, 6].map(i => String(s[`stat${i}`] ?? ""));
     const stats: Record<string, any> = {};
     let firstStat = "";
     for (let i = 1; i <= 6; i++) {
-        const raw = String(s[`stat${i}`] ?? "").trim();
+        const raw = String(rawStats[i - 1] ?? "").trim();
         let label = "", value = "";
         if (raw) { const p = raw.indexOf("|"); if (p >= 0) { label = raw.slice(0, p).trim(); value = raw.slice(p + 1).trim(); } else value = raw; if (!firstStat) firstStat = label ? `${label}: ${value}` : value; }
         stats[`stat_${i}`] = { fields: { value: tf(value), label: tf(label) } };
@@ -196,7 +232,7 @@ function buildSurfaces(imageKey: string | null) {
     // asset — we reuse the hero) + name, and progress.current as a 0..1 fraction,
     // so it falls back to stats when there's no hero image to borrow.
     let widget_bottom: any;
-    if (s.bottomLayout === "progress" && imageKey) {
+    if (s.bottomLayout === "progress" && imageKey && !fnMode) {
         const pct = Math.max(0, Math.min(100, Number(s.progressPercent ?? 50))) / 100;
         widget_bottom = {
             layout: "widget_bottom_progress",
@@ -253,8 +289,56 @@ async function finalizeIdentity(appId: string, userId: string): Promise<string |
     try { token = (await apiPost(`/applications/${appId}/bot/reset`, {})).token; }
     catch (e) { return "couldn't mint bot token — " + classifyDiscordError(e) + " (2FA must be enabled on this account)"; }
     if (!token) return "bot token reset returned nothing";
+    // Persist the token (encrypted, main-process only) so live stat refreshes
+    // don't re-prompt 2FA. Non-fatal if storage fails.
+    try { await Native.storeWidgetToken(token); } catch (e) { console.warn("[DMWidget] token store (non-fatal):", e); }
     const r = await Native.setWidgetProfile(appId, userId, token, JSON.stringify({ data: { dynamic: [] } }));
     return "error" in r ? "identity claim failed — " + r.error : null;
+}
+
+// Re-publish the widget config with current settings (used by live refresh —
+// reuses the already-uploaded hero asset, no re-upload). Mechanism A: proven,
+// no token needed. Returns null on success or an error message.
+async function republishConfig(): Promise<string | null> {
+    await identity.ready;
+    const id = identity.get();
+    if (!SNOWFLAKE.test(id.appId) || !SNOWFLAKE.test(id.configId)) return "no widget deployed yet";
+    try {
+        // Recover the already-uploaded hero asset if we didn't record its key
+        // (widget created before heroAssetKey existed) so a refresh keeps the image.
+        let assetKey = id.heroAssetKey;
+        if (!assetKey) {
+            try {
+                const list = await apiGet(`/applications/${id.appId}/assets`);
+                const arr: any[] = Array.isArray(list) ? list : list?.assets ?? [];
+                const found = arr.map(a => String(a.key ?? a.name ?? "")).find(k => k.startsWith("hero"));
+                if (found) { assetKey = found; id.heroAssetKey = found; identity.set(id); }
+            } catch { /* fall through with none */ }
+        }
+        await apiPatch(`/applications/${id.appId}/widget-configs/${id.configId}`, buildSurfaces(assetKey || null));
+        await apiPost(`/applications/${id.appId}/widget-configs/${id.configId}/publish`, {});
+        return null;
+    } catch (e) { return classifyDiscordError(e); }
+}
+
+// Fetch live Fortnite stats (native, no CORS) and re-publish the card.
+async function refreshFortnite(announce = false): Promise<void> {
+    const s = settings.store as any;
+    if (s.gameTemplate !== "fortnite") return;
+    const ign = String(s.fnIgn ?? "").trim();
+    const key = String(s.fnApiKey ?? "").trim();
+    if (!ign || !key) { if (announce) toast("Set your Epic IGN + fortnite-api.com key first.", Toasts.Type.FAILURE); return; }
+    await identity.ready;
+    if (!SNOWFLAKE.test(identity.get().appId)) { if (announce) toast("Create the widget first, then refresh stats.", Toasts.Type.FAILURE); return; }
+
+    const res = await Native.fetchFortniteStats(ign, key, String(s.fnAccountType ?? "epic"));
+    if ("error" in res) { toast(`Fortnite stats: ${res.error}`, Toasts.Type.FAILURE, 8000); return; }
+    fnStats = res.overall;
+    const err = await republishConfig();
+    if (announce) {
+        if (err) toast(`Stats fetched but publish failed: ${err}`, Toasts.Type.FAILURE, 8000);
+        else toast(`Fortnite stats updated — ${fmtNum(res.overall.wins)} wins, ${res.overall.kd?.toFixed?.(2) ?? "—"} K/D.`, Toasts.Type.SUCCESS, 6000);
+    }
 }
 
 // ---- the whole flow --------------------------------------------------------
@@ -281,6 +365,7 @@ async function deployWidget(): Promise<void> {
         // Optional top-left logo (non-fatal; falls back to the default icon).
         await setAppIcon(id.appId, String((settings.store as any).appIconUrl ?? "").trim());
         const imageKey = await uploadHeroAsset(id.appId, String((settings.store as any).heroImageUrl ?? "").trim());
+        if (imageKey) { id.heroAssetKey = imageKey; identity.set(id); }
         if ((settings.store as any).bottomLayout === "progress" && !imageKey)
             toast("Progress-bar mode needs a hero image (it doubles as the goal icon) — showing the stat grid instead. Add a Hero image URL to use the bar.", Toasts.Type.MESSAGE, 8000);
         await apiPatch(`/applications/${id.appId}/widget-configs/${id.configId}`, buildSurfaces(imageKey));
@@ -336,7 +421,7 @@ function ImgPreview({ url, label, round }: { url: string; label: string; round?:
 function WidgetEditor() {
     const [busy, setBusy] = React.useState(false);
     const [, force] = React.useState(0);
-    const live = settings.use(["appIconUrl", "heroImageUrl"]);
+    const live = settings.use(["appIconUrl", "heroImageUrl", "gameTemplate"]);
     React.useEffect(() => { identity.ready.then(() => force(x => x + 1)); }, []);
     const id = identity.get();
     const created = !!id.appId;
@@ -373,8 +458,19 @@ function WidgetEditor() {
                 </div>
             )}
 
+            {live.gameTemplate === "fortnite" && (
+                <div style={{ border: "1px solid var(--background-modifier-accent)", borderRadius: 8, padding: "8px 12px", fontSize: 12.5, lineHeight: 1.5, color: "var(--text-muted)" }}>
+                    <b style={{ color: "var(--text-normal)" }}>🎮 Fortnite live stats</b> — Wins / K-D / Kills / Win-Rate auto-refresh from your public
+                    career stats (needs your Epic career stats set <b>public</b> + your API key). Unreal rank + earnings are the two you fill in.
+                    Auto-updates on launch and every 30 min while open.
+                </div>
+            )}
+
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                 <Button disabled={busy} onClick={() => run(deployWidget)}>{created ? "Update my widget" : "Create my widget"}</Button>
+                {created && live.gameTemplate === "fortnite" && (
+                    <Button disabled={busy} color={Button.Colors.BRAND} onClick={() => run(() => refreshFortnite(true))}>Refresh Fortnite stats now</Button>
+                )}
                 {created && <Button disabled={busy} color={Button.Colors.RED} onClick={() => run(removeFromProfile)}>Remove from profile</Button>}
             </div>
         </div>
@@ -382,6 +478,27 @@ function WidgetEditor() {
 }
 
 const settings = definePluginSettings({
+    gameTemplate: {
+        type: OptionType.SELECT,
+        description: "Auto-fill the card from a game's live stats. 'Fortnite' pulls your Wins/K-D/Kills/Win-Rate from your public career stats and lays out a competitive card (title = your IGN); you fill Unreal rank + earnings by hand.",
+        options: [
+            { label: "None (manual card)", value: "none", default: true },
+            { label: "Fortnite live stats", value: "fortnite" }
+        ]
+    },
+    fnIgn: { type: OptionType.STRING, description: "Fortnite: your EXACT Epic display name (case + spaces + special characters matter). Your career stats must be set to PUBLIC in Fortnite.", default: "" },
+    fnApiKey: { type: OptionType.STRING, description: "Fortnite: your free fortnite-api.com key (log in with Discord at dash.fortnite-api.com). Stored locally; treat it like a password.", default: "" },
+    fnAccountType: {
+        type: OptionType.SELECT,
+        description: "Fortnite: which platform your Epic account primarily signs in through.",
+        options: [
+            { label: "Epic", value: "epic", default: true },
+            { label: "PlayStation", value: "psn" },
+            { label: "Xbox", value: "xbl" }
+        ]
+    },
+    fnUnrealRank: { type: OptionType.STRING, description: "Fortnite (manual — no free API): your ranked/Unreal rank, e.g. 'Unreal #1,234' or just 'Unreal'.", default: "" },
+    fnEarnings: { type: OptionType.STRING, description: "Fortnite (manual — no free API): total career earnings, e.g. '$8,500'. Leave '$0' if none.", default: "$0" },
     appName: {
         type: OptionType.STRING,
         description: "Widget app name — shows as the widget's attribution. Pick something you own; do NOT name it after a real brand (Discord/Steam/etc.), that's a bannable impersonation.",
@@ -428,5 +545,16 @@ export default definePlugin({
     description:
         "One-click custom Discord PROFILE BOARD widget (widgets v2 / Social SDK) — free, local, no paid widget-maker. Fill in your content, hit Create, and it builds an app you own, uploads your image, publishes the widget (board card + popout cutout) and claims it to your profile. Experimental / pre-GA; needs 2FA for the public claim; who sees it depends on Discord's rollout.",
     authors: [{ name: "Diggy", id: 0n }],
-    settings
+    settings,
+
+    // Live game-stat refresh: once on start (after the client settles) + every
+    // 30 min while running. Guards inside refreshFortnite make it a no-op unless
+    // the Fortnite template is on and a widget exists.
+    start() {
+        setTimeout(() => { refreshFortnite(false); }, 20_000);
+        fnRefreshTimer = setInterval(() => { refreshFortnite(false); }, 30 * 60_000);
+    },
+    stop() {
+        if (fnRefreshTimer) { clearInterval(fnRefreshTimer); fnRefreshTimer = null; }
+    }
 });
