@@ -49,10 +49,40 @@ interface WidgetIdentity {
     heroAssetKey: string; // last uploaded hero asset, so refreshes reuse it
 }
 const EMPTY_IDENTITY: WidgetIdentity = { appId: "", configId: "", heroAssetKey: "" };
-const identity = makePersistentValue<WidgetIdentity>("dm-widget-identity", EMPTY_IDENTITY, raw => {
+const parseId = (raw: any): WidgetIdentity => ({ appId: String(raw?.appId ?? ""), configId: String(raw?.configId ?? ""), heroAssetKey: String(raw?.heroAssetKey ?? "") });
+
+// Multiple widgets = one Discord app per game template ("slot"). The slot key
+// IS the gameTemplate value ("fortnite" / "valorant" / "none"), so the template
+// picker doubles as "which widget am I editing", each deploys its own app, and
+// all stay pinned on the board at once.
+type Slots = Record<string, WidgetIdentity>;
+const slots = makePersistentValue<Slots>("dm-widget-slots", {}, raw => {
     if (typeof raw !== "object" || raw === null) return null;
-    return { appId: String(raw.appId ?? ""), configId: String(raw.configId ?? ""), heroAssetKey: String(raw.heroAssetKey ?? "") };
+    const out: Slots = {};
+    for (const k of Object.keys(raw)) out[k] = parseId((raw as any)[k]);
+    return out;
 });
+// Legacy single-widget store — migrated into a slot on first load.
+const legacyIdentity = makePersistentValue<WidgetIdentity>("dm-widget-identity", EMPTY_IDENTITY, raw => (raw && typeof raw === "object" ? parseId(raw) : null));
+
+let slotsMigrated = false;
+async function ensureSlots(): Promise<void> {
+    await slots.ready; await legacyIdentity.ready;
+    if (slotsMigrated) return;
+    slotsMigrated = true;
+    if (Object.keys(slots.get()).length === 0) {
+        const legacy = legacyIdentity.get();
+        if (SNOWFLAKE.test(legacy.appId)) {
+            const key = String((settings.store as any).gameTemplate ?? "none") || "none";
+            slots.set({ [key]: legacy });
+        }
+    }
+}
+const getSlot = (key: string): WidgetIdentity => ({ ...EMPTY_IDENTITY, ...(slots.get()[key] ?? {}) });
+const setSlot = (key: string, v: WidgetIdentity): void => slots.set({ ...slots.get(), [key]: v });
+const slotKeyOf = (): string => String((settings.store as any).gameTemplate ?? "none") || "none";
+// Game slots that currently have a deployed app (for auto-refresh).
+const deployedGameSlots = (): string[] => Object.entries(slots.get()).filter(([k, v]) => (k === "fortnite" || k === "valorant") && SNOWFLAKE.test(v.appId)).map(([k]) => k);
 
 let lastResult = "";
 
@@ -215,7 +245,7 @@ async function setAppIcon(appId: string, url: string): Promise<void> {
     }
 }
 
-function buildSurfaces(imageKey: string | null) {
+function buildSurfaces(tpl: string, imageKey: string | null) {
     const s = settings.store as any;
     const img = imageKey
         ? { presentation_type: "image", value_type: "application_asset", value: imageKey }
@@ -225,8 +255,8 @@ function buildSurfaces(imageKey: string | null) {
     // so a fake multi-line header via "\n" just produces a mangled run-on. The
     // card already has natural tiers (app-name header + this title + the stat
     // grid), so the title stays one short line and extra lines go in the stats.
-    // Game templates override the title + stat grid with live/mapped stats.
-    const tpl = s.gameTemplate;
+    // `tpl` (the slot's game template) decides title + stat source, so a slot
+    // can be rebuilt independently of whichever template the picker shows.
     const fnMode = tpl === "fortnite" || tpl === "valorant"; // "game mode" (forces stat grid)
     const title = tpl === "fortnite"
         ? (String(s.fnIgn ?? "").trim() || "Fortnite")
@@ -318,9 +348,9 @@ async function finalizeIdentity(appId: string, userId: string): Promise<string |
 // Re-publish the widget config with current settings (used by live refresh —
 // reuses the already-uploaded hero asset, no re-upload). Mechanism A: proven,
 // no token needed. Returns null on success or an error message.
-async function republishConfig(): Promise<string | null> {
-    await identity.ready;
-    const id = identity.get();
+async function republishConfig(slotKey: string): Promise<string | null> {
+    await ensureSlots();
+    const id = getSlot(slotKey);
     if (!SNOWFLAKE.test(id.appId) || !SNOWFLAKE.test(id.configId)) return "no widget deployed yet";
     try {
         // Recover the already-uploaded hero asset if we didn't record its key
@@ -331,23 +361,21 @@ async function republishConfig(): Promise<string | null> {
                 const list = await apiGet(`/applications/${id.appId}/assets`);
                 const arr: any[] = Array.isArray(list) ? list : list?.assets ?? [];
                 const found = arr.map(a => String(a.key ?? a.name ?? "")).find(k => k.startsWith("hero"));
-                if (found) { assetKey = found; id.heroAssetKey = found; identity.set(id); }
+                if (found) { assetKey = found; setSlot(slotKey, { ...id, heroAssetKey: found }); }
             } catch { /* fall through with none */ }
         }
-        await apiPatch(`/applications/${id.appId}/widget-configs/${id.configId}`, buildSurfaces(assetKey || null));
+        await apiPatch(`/applications/${id.appId}/widget-configs/${id.configId}`, buildSurfaces(slotKey, assetKey || null));
         await apiPost(`/applications/${id.appId}/widget-configs/${id.configId}/publish`, {});
         return null;
     } catch (e) { return classifyDiscordError(e); }
 }
 
-// Fetch live game stats (native, no CORS) and re-publish the card. Handles
-// whichever game template is active; a no-op for "none".
-async function refreshGame(announce = false): Promise<void> {
-    const s = settings.store as any;
-    const tpl = s.gameTemplate;
+// Fetch a specific game slot's live stats (native, no CORS) and re-publish it.
+async function refreshGameSlot(tpl: string, announce = false): Promise<void> {
     if (tpl !== "fortnite" && tpl !== "valorant") return;
-    await identity.ready;
-    if (!SNOWFLAKE.test(identity.get().appId)) { if (announce) toast("Create the widget first, then refresh stats.", Toasts.Type.FAILURE); return; }
+    const s = settings.store as any;
+    await ensureSlots();
+    if (!SNOWFLAKE.test(getSlot(tpl).appId)) { if (announce) toast("Create this widget first, then refresh stats.", Toasts.Type.FAILURE); return; }
 
     if (tpl === "fortnite") {
         const ign = String(s.fnIgn ?? "").trim(); const key = String(s.fnApiKey ?? "").trim();
@@ -364,12 +392,21 @@ async function refreshGame(announce = false): Promise<void> {
         valStats = res.overall;
     }
 
-    const err = await republishConfig();
+    const err = await republishConfig(tpl);
     if (announce) {
         if (err) toast(`Stats fetched but publish failed: ${err}`, Toasts.Type.FAILURE, 8000);
         else if (tpl === "fortnite") toast(`Fortnite stats updated — ${fmtNum(fnStats?.wins)} wins, ${fnStats?.kd?.toFixed?.(2) ?? "—"} K/D.`, Toasts.Type.SUCCESS, 6000);
         else toast(`Valorant stats updated — ${valStats?.rank ?? "—"}, main ${valStats?.mainAgent ?? "—"}.`, Toasts.Type.SUCCESS, 6000);
     }
+}
+
+// Manual "Refresh now" button — refreshes the slot the picker is on.
+const refreshGame = (announce = false) => refreshGameSlot(slotKeyOf(), announce);
+
+// Timer — refresh EVERY deployed game slot (so FN + Valorant both stay live).
+async function refreshAllGames(): Promise<void> {
+    await ensureSlots();
+    for (const key of deployedGameSlots()) await refreshGameSlot(key, false);
 }
 
 // ---- the whole flow --------------------------------------------------------
@@ -380,26 +417,27 @@ async function deployWidget(): Promise<void> {
     const nameErr = impersonationError(appName);
     if (nameErr) { toast(nameErr, Toasts.Type.FAILURE, 8000); return; }
 
-    await identity.ready;
-    const id: WidgetIdentity = { ...identity.get() };
+    await ensureSlots();
+    const slotKey = slotKeyOf();
+    const id: WidgetIdentity = getSlot(slotKey);
 
     try {
         if (!SNOWFLAKE.test(id.appId)) {
             toast("Creating your widget app…", Toasts.Type.MESSAGE, 2500);
             const app = await apiPost("/applications", { name: appName, team_id: null });
-            id.appId = String(app.id); identity.set(id);
+            id.appId = String(app.id); setSlot(slotKey, id);
             await apiPost(`/applications/${id.appId}/social-sdk/enable`, socialSdkBody(appName));
         }
-        if (!SNOWFLAKE.test(id.configId)) { id.configId = await resolveConfigId(id.appId, appName); identity.set(id); }
+        if (!SNOWFLAKE.test(id.configId)) { id.configId = await resolveConfigId(id.appId, appName); setSlot(slotKey, id); }
 
         toast("Uploading image + publishing layout…", Toasts.Type.MESSAGE, 3000);
         // Optional top-left logo (non-fatal; falls back to the default icon).
         await setAppIcon(id.appId, String((settings.store as any).appIconUrl ?? "").trim());
         const imageKey = await uploadHeroAsset(id.appId, String((settings.store as any).heroImageUrl ?? "").trim());
-        if (imageKey) { id.heroAssetKey = imageKey; identity.set(id); }
-        if ((settings.store as any).bottomLayout === "progress" && !imageKey)
+        if (imageKey) { id.heroAssetKey = imageKey; setSlot(slotKey, id); }
+        if ((settings.store as any).bottomLayout === "progress" && !imageKey && slotKey === "none")
             toast("Progress-bar mode needs a hero image (it doubles as the goal icon) — showing the stat grid instead. Add a Hero image URL to use the bar.", Toasts.Type.MESSAGE, 8000);
-        await apiPatch(`/applications/${id.appId}/widget-configs/${id.configId}`, buildSurfaces(imageKey));
+        await apiPatch(`/applications/${id.appId}/widget-configs/${id.configId}`, buildSurfaces(slotKey, imageKey));
         await apiPost(`/applications/${id.appId}/widget-configs/${id.configId}/publish`, {});
 
         await authorizeApp(id.appId);
@@ -420,14 +458,16 @@ async function deployWidget(): Promise<void> {
 }
 
 async function removeFromProfile(): Promise<void> {
-    await identity.ready;
+    await ensureSlots();
     const me = UserStore.getCurrentUser();
-    const id = identity.get();
+    const slotKey = slotKeyOf();
+    const id = getSlot(slotKey);
     if (!id.appId) { toast("No widget to remove.", Toasts.Type.MESSAGE); return; }
     try {
         let widgets: any[] = [];
         try { const prof = await apiGet(`/users/${me.id}/profile`); widgets = Array.isArray(prof?.widgets) ? prof.widgets : []; } catch { widgets = []; }
         await apiPut("/users/@me/widgets", { widgets: widgets.filter(w => w?.data?.application_id !== id.appId) });
+        setSlot(slotKey, { ...EMPTY_IDENTITY }); // forget this slot so status resets
         toast("Widget removed from your profile board. (Your app stays in the Developer Portal — delete it there if you want.)", Toasts.Type.MESSAGE, 7000);
     } catch (e: any) {
         toast(`Remove failed: ${classifyDiscordError(e)}`, Toasts.Type.FAILURE, 7000);
@@ -449,13 +489,18 @@ function ImgPreview({ url, label, round }: { url: string; label: string; round?:
     );
 }
 
+const SLOT_LABEL: Record<string, string> = { fortnite: "Fortnite", valorant: "Valorant", none: "Custom" };
+
 function WidgetEditor() {
     const [busy, setBusy] = React.useState(false);
     const [, force] = React.useState(0);
     const live = settings.use(["appIconUrl", "heroImageUrl", "gameTemplate"]);
-    React.useEffect(() => { identity.ready.then(() => force(x => x + 1)); }, []);
-    const id = identity.get();
+    React.useEffect(() => { ensureSlots().then(() => force(x => x + 1)); }, []);
+    const slotKey = String(live.gameTemplate ?? "none") || "none";
+    const id = getSlot(slotKey);
     const created = !!id.appId;
+    // Summary of every deployed widget (so multi-widget is legible).
+    const allSlots = Object.entries(slots.get()).filter(([, v]) => !!v.appId).map(([k]) => SLOT_LABEL[k] ?? k);
 
     const run = async (fn: () => Promise<void>) => {
         setBusy(true);
@@ -472,8 +517,10 @@ function WidgetEditor() {
             </div>
 
             <div style={{ fontSize: 13, color: "var(--text-muted)" }}>
-                Status: {created ? <b style={{ color: "var(--text-normal)" }}>widget app created ✓</b> : "no widget yet"}
+                Editing the <b style={{ color: "var(--text-normal)" }}>{SLOT_LABEL[slotKey] ?? slotKey}</b> widget:{" "}
+                {created ? <b style={{ color: "var(--text-normal)" }}>created ✓</b> : "not created yet"}
                 {created && <span> — app id <code>{id.appId}</code></span>}
+                {allSlots.length > 0 && <div style={{ marginTop: 3 }}>On your board: {allSlots.join(" · ")} — switch the <i>Game template</i> above to add/edit another.</div>}
             </div>
 
             {(live.appIconUrl?.trim() || live.heroImageUrl?.trim()) && (
@@ -603,8 +650,8 @@ export default definePlugin({
     // 30 min while running. Guards inside refreshFortnite make it a no-op unless
     // the Fortnite template is on and a widget exists.
     start() {
-        setTimeout(() => { refreshGame(false); }, 20_000);
-        fnRefreshTimer = setInterval(() => { refreshGame(false); }, 30 * 60_000);
+        setTimeout(() => { refreshAllGames(); }, 20_000);
+        fnRefreshTimer = setInterval(() => { refreshAllGames(); }, 30 * 60_000);
     },
     stop() {
         if (fnRefreshTimer) { clearInterval(fnRefreshTimer); fnRefreshTimer = null; }
