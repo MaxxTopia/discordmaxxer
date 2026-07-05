@@ -174,11 +174,12 @@ function buildSurfaces(imageKey: string | null) {
     const img = imageKey
         ? { presentation_type: "image", value_type: "application_asset", value: imageKey }
         : { presentation_type: "image", value_type: "custom_string", value: "" };
-    // widget_top's `title` component only has a single `text` field, so the
-    // multi-line header (like Marvel Rivals' name / season / top-hero) is done
-    // by newline-joining the title + two optional subtitle lines into one text.
-    const titleMain = String(s.widgetTitle ?? "").trim() || "My Widget";
-    const title = [titleMain, String(s.widgetSubtitle ?? "").trim(), String(s.widgetSubtitle2 ?? "").trim()].filter(Boolean).join("\n");
+    // widget_top's `title` is a SINGLE-line text field — verified live (2026-07):
+    // Discord collapses newlines to spaces and truncates a long title with "…",
+    // so a fake multi-line header via "\n" just produces a mangled run-on. The
+    // card already has natural tiers (app-name header + this title + the stat
+    // grid), so the title stays one short line and extra lines go in the stats.
+    const title = String(s.widgetTitle ?? "").trim() || "My Widget";
 
     const stats: Record<string, any> = {};
     let firstStat = "";
@@ -195,7 +196,7 @@ function buildSurfaces(imageKey: string | null) {
             widget_bottom: { layout: "widget_bottom_stats", components: stats },
             add_widget_preview: { layout: "add_widget_preview_hero", components: { hero_image: { fields: { image: img } } } },
             // Drives the profile-popout cutout: hero image + one stat line.
-            mini_profile: { layout: "mini_profile_hero_stat", components: { hero_image: { fields: { image: img } }, stat: { fields: { text: tf(firstStat || titleMain) } } } }
+            mini_profile: { layout: "mini_profile_hero_stat", components: { hero_image: { fields: { image: img } }, stat: { fields: { text: tf(firstStat || title) } } } }
         }
     };
 }
@@ -358,9 +359,7 @@ const settings = definePluginSettings({
         description: "Widget app name — shows as the widget's attribution. Pick something you own; do NOT name it after a real brand (Discord/Steam/etc.), that's a bannable impersonation.",
         default: "My Widget"
     },
-    widgetTitle: { type: OptionType.STRING, description: "Big title (first header line), e.g. your username.", default: "My Widget" },
-    widgetSubtitle: { type: OptionType.STRING, description: "Second header line (e.g. 'Season 8.5: Gold'). Blank to skip.", default: "" },
-    widgetSubtitle2: { type: OptionType.STRING, description: "Third header line (e.g. 'Top Hero: Doctor Strange'). Blank to skip.", default: "" },
+    widgetTitle: { type: OptionType.STRING, description: "Big title on the card — keep it SHORT (one line; Discord truncates long titles and ignores line breaks). For season / rank / top-hero, use the Stat rows below — they stack as a clean grid. Your app name shows as a smaller header line above this.", default: "My Widget" },
     appIconUrl: { type: OptionType.STRING, description: "Optional app icon — the small logo shown top-left on the widget card (like a game's icon). Direct image link; use a square image for best results. Blank keeps Discord's default.", default: "" },
     heroImageUrl: { type: OptionType.STRING, description: "Direct image URL for the hero image — it gets uploaded to your app. Use a direct link (e.g. https://i.imgur.com/…png / a Discord CDN link), not a webpage.", default: "" },
     stat1: { type: OptionType.STRING, description: "Stat 1 — format 'Label | Value' (e.g. 'Rank | Diamond III'). Blank to skip.", default: "" },
