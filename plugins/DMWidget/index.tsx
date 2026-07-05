@@ -136,6 +136,7 @@ async function uploadHeroAsset(appId: string, url: string): Promise<string | nul
 }
 
 const tf = (v: string) => ({ presentation_type: "text", value_type: "custom_string", value: String(v ?? "") });
+const nf = (v: number | string) => ({ presentation_type: "number", value_type: "custom_string", value: String(v) });
 
 // Read an image URL into a base64 data URI (for the application icon PATCH,
 // which — unlike the widget hero — takes an inline data URI, not an asset key).
@@ -190,13 +191,31 @@ function buildSurfaces(imageKey: string | null) {
         stats[`stat_${i}`] = { fields: { value: tf(value), label: tf(label) } };
     }
 
+    // widget_bottom is a SINGLE slot: either the stat grid OR a progress bar
+    // (verified live 2026-07). Progress needs an objective IMAGE (an uploaded
+    // asset — we reuse the hero) + name, and progress.current as a 0..1 fraction,
+    // so it falls back to stats when there's no hero image to borrow.
+    let widget_bottom: any;
+    if (s.bottomLayout === "progress" && imageKey) {
+        const pct = Math.max(0, Math.min(100, Number(s.progressPercent ?? 50))) / 100;
+        widget_bottom = {
+            layout: "widget_bottom_progress",
+            components: {
+                progress: { fields: { current: nf(pct) } },
+                objective: { fields: { image: img, name: tf(String(s.progressLabel ?? "").trim() || "Progress") } }
+            }
+        };
+    } else {
+        widget_bottom = { layout: "widget_bottom_stats", components: stats };
+    }
+
     return {
         surfaces: {
             widget_top: { layout: "widget_top_hero", components: { hero_image: { fields: { image: img } }, title: { fields: { text: tf(title) } } } },
-            widget_bottom: { layout: "widget_bottom_stats", components: stats },
+            widget_bottom,
             add_widget_preview: { layout: "add_widget_preview_hero", components: { hero_image: { fields: { image: img } } } },
             // Drives the profile-popout cutout: hero image + one stat line.
-            mini_profile: { layout: "mini_profile_hero_stat", components: { hero_image: { fields: { image: img } }, stat: { fields: { text: tf(firstStat || title) } } } }
+            mini_profile: { layout: "mini_profile_hero_stat", components: { hero_image: { fields: { image: img } }, stat: { fields: { text: tf(firstStat || (s.bottomLayout === "progress" ? String(s.progressLabel ?? "").trim() : "") || title) } } } }
         }
     };
 }
@@ -255,6 +274,8 @@ async function deployWidget(): Promise<void> {
         // Optional top-left logo (non-fatal; falls back to the default icon).
         await setAppIcon(id.appId, String((settings.store as any).appIconUrl ?? "").trim());
         const imageKey = await uploadHeroAsset(id.appId, String((settings.store as any).heroImageUrl ?? "").trim());
+        if ((settings.store as any).bottomLayout === "progress" && !imageKey)
+            toast("Progress-bar mode needs a hero image (it doubles as the goal icon) — showing the stat grid instead. Add a Hero image URL to use the bar.", Toasts.Type.MESSAGE, 8000);
         await apiPatch(`/applications/${id.appId}/widget-configs/${id.configId}`, buildSurfaces(imageKey));
         await apiPost(`/applications/${id.appId}/widget-configs/${id.configId}/publish`, {});
 
@@ -362,12 +383,28 @@ const settings = definePluginSettings({
     widgetTitle: { type: OptionType.STRING, description: "Big title on the card — keep it SHORT (one line; Discord truncates long titles and ignores line breaks). For season / rank / top-hero, use the Stat rows below — they stack as a clean grid. Your app name shows as a smaller header line above this.", default: "My Widget" },
     appIconUrl: { type: OptionType.STRING, description: "Optional app icon — the small logo shown top-left on the widget card (like a game's icon). Direct image link; use a square image for best results. Blank keeps Discord's default.", default: "" },
     heroImageUrl: { type: OptionType.STRING, description: "Direct image URL for the hero image — it gets uploaded to your app. Use a direct link (e.g. https://i.imgur.com/…png / a Discord CDN link), not a webpage.", default: "" },
-    stat1: { type: OptionType.STRING, description: "Stat 1 — format 'Label | Value' (e.g. 'Rank | Diamond III'). Blank to skip.", default: "" },
-    stat2: { type: OptionType.STRING, description: "Stat 2 — 'Label | Value'.", default: "" },
-    stat3: { type: OptionType.STRING, description: "Stat 3 — 'Label | Value'.", default: "" },
-    stat4: { type: OptionType.STRING, description: "Stat 4 — 'Label | Value'.", default: "" },
-    stat5: { type: OptionType.STRING, description: "Stat 5 — 'Label | Value'.", default: "" },
-    stat6: { type: OptionType.STRING, description: "Stat 6 — 'Label | Value'.", default: "" },
+    bottomLayout: {
+        type: OptionType.SELECT,
+        description: "Bottom section of the card: a grid of stats, or a single progress bar (like a season-pass / rank bar). Progress-bar mode reuses your hero image as the goal icon.",
+        options: [
+            { label: "Stat grid (up to 6)", value: "stats", default: true },
+            { label: "Progress bar", value: "progress" }
+        ]
+    },
+    stat1: { type: OptionType.STRING, description: "Stat 1 — format 'Label | Value' (e.g. 'Rank | Diamond III'). Blank to skip. (Stat-grid mode.)", default: "" },
+    stat2: { type: OptionType.STRING, description: "Stat 2 — 'Label | Value'. (Stat-grid mode.)", default: "" },
+    stat3: { type: OptionType.STRING, description: "Stat 3 — 'Label | Value'. (Stat-grid mode.)", default: "" },
+    stat4: { type: OptionType.STRING, description: "Stat 4 — 'Label | Value'. (Stat-grid mode.)", default: "" },
+    stat5: { type: OptionType.STRING, description: "Stat 5 — 'Label | Value'. (Stat-grid mode.)", default: "" },
+    stat6: { type: OptionType.STRING, description: "Stat 6 — 'Label | Value'. (Stat-grid mode.)", default: "" },
+    progressLabel: { type: OptionType.STRING, description: "Progress-bar mode: the goal label next to the bar (e.g. 'Level 5', 'Season Pass Tier 42', 'Champion').", default: "Level 1" },
+    progressPercent: {
+        type: OptionType.SLIDER,
+        description: "Progress-bar mode: how full the bar is (0–100%).",
+        default: 50,
+        markers: [0, 25, 50, 75, 100],
+        stickToMarkers: false
+    },
     editor: { type: OptionType.COMPONENT, description: "", component: WidgetEditor }
 });
 
