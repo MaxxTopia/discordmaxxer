@@ -137,12 +137,48 @@ async function uploadHeroAsset(appId: string, url: string): Promise<string | nul
 
 const tf = (v: string) => ({ presentation_type: "text", value_type: "custom_string", value: String(v ?? "") });
 
+// Read an image URL into a base64 data URI (for the application icon PATCH,
+// which — unlike the widget hero — takes an inline data URI, not an asset key).
+async function urlToDataUri(url: string): Promise<string | null> {
+    if (!url) return null;
+    try {
+        const r = await fetch(url, { credentials: "omit" });
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        const blob = await r.blob();
+        return await new Promise<string | null>(resolve => {
+            const fr = new FileReader();
+            fr.onload = () => resolve(typeof fr.result === "string" ? fr.result : null);
+            fr.onerror = () => resolve(null);
+            fr.readAsDataURL(blob);
+        });
+    } catch {
+        return null;
+    }
+}
+
+// The app icon is the small top-left logo on the widget card (like the game
+// icon on a Marvel Rivals widget). Standard documented endpoint — best-effort:
+// a bad/oversized image just leaves the default icon, never fails the deploy.
+async function setAppIcon(appId: string, url: string): Promise<void> {
+    const dataUri = await urlToDataUri(url);
+    if (!dataUri) return;
+    try {
+        await apiPatch(`/applications/${appId}`, { icon: dataUri });
+    } catch (e) {
+        console.warn("[DMWidget] app icon (non-fatal):", e);
+    }
+}
+
 function buildSurfaces(imageKey: string | null) {
     const s = settings.store as any;
     const img = imageKey
         ? { presentation_type: "image", value_type: "application_asset", value: imageKey }
         : { presentation_type: "image", value_type: "custom_string", value: "" };
-    const title = String(s.widgetTitle ?? "").trim() || "My Widget";
+    // widget_top's `title` component only has a single `text` field, so the
+    // multi-line header (like Marvel Rivals' name / season / top-hero) is done
+    // by newline-joining the title + two optional subtitle lines into one text.
+    const titleMain = String(s.widgetTitle ?? "").trim() || "My Widget";
+    const title = [titleMain, String(s.widgetSubtitle ?? "").trim(), String(s.widgetSubtitle2 ?? "").trim()].filter(Boolean).join("\n");
 
     const stats: Record<string, any> = {};
     let firstStat = "";
@@ -159,7 +195,7 @@ function buildSurfaces(imageKey: string | null) {
             widget_bottom: { layout: "widget_bottom_stats", components: stats },
             add_widget_preview: { layout: "add_widget_preview_hero", components: { hero_image: { fields: { image: img } } } },
             // Drives the profile-popout cutout: hero image + one stat line.
-            mini_profile: { layout: "mini_profile_hero_stat", components: { hero_image: { fields: { image: img } }, stat: { fields: { text: tf(firstStat || title) } } } }
+            mini_profile: { layout: "mini_profile_hero_stat", components: { hero_image: { fields: { image: img } }, stat: { fields: { text: tf(firstStat || titleMain) } } } }
         }
     };
 }
@@ -215,6 +251,8 @@ async function deployWidget(): Promise<void> {
         if (!SNOWFLAKE.test(id.configId)) { id.configId = await resolveConfigId(id.appId, appName); identity.set(id); }
 
         toast("Uploading image + publishing layout…", Toasts.Type.MESSAGE, 3000);
+        // Optional top-left logo (non-fatal; falls back to the default icon).
+        await setAppIcon(id.appId, String((settings.store as any).appIconUrl ?? "").trim());
         const imageKey = await uploadHeroAsset(id.appId, String((settings.store as any).heroImageUrl ?? "").trim());
         await apiPatch(`/applications/${id.appId}/widget-configs/${id.configId}`, buildSurfaces(imageKey));
         await apiPost(`/applications/${id.appId}/widget-configs/${id.configId}/publish`, {});
@@ -252,9 +290,24 @@ async function removeFromProfile(): Promise<void> {
 }
 
 // ---- settings UI -----------------------------------------------------------
+function ImgPreview({ url, label, round }: { url: string; label: string; round?: boolean; }) {
+    const [ok, setOk] = React.useState(true);
+    const src = url.trim();
+    if (!src) return null;
+    return (
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+            {ok
+                ? <img src={src} onError={() => setOk(false)} style={{ width: round ? 48 : 96, height: 48, objectFit: "cover", borderRadius: round ? "50%" : 6, border: "1px solid var(--background-modifier-accent)", background: "var(--background-secondary)" }} />
+                : <div style={{ width: round ? 48 : 96, height: 48, display: "grid", placeItems: "center", borderRadius: round ? "50%" : 6, border: "1px dashed var(--text-danger, #f23f43)", color: "var(--text-danger, #f23f43)", fontSize: 11, textAlign: "center", padding: 2 }}>can't load</div>}
+            <span style={{ fontSize: 11, color: "var(--text-muted)" }}>{label}</span>
+        </div>
+    );
+}
+
 function WidgetEditor() {
     const [busy, setBusy] = React.useState(false);
     const [, force] = React.useState(0);
+    const live = settings.use(["appIconUrl", "heroImageUrl"]);
     React.useEffect(() => { identity.ready.then(() => force(x => x + 1)); }, []);
     const id = identity.get();
     const created = !!id.appId;
@@ -278,6 +331,13 @@ function WidgetEditor() {
                 {created && <span> — app id <code>{id.appId}</code></span>}
             </div>
 
+            {(live.appIconUrl?.trim() || live.heroImageUrl?.trim()) && (
+                <div style={{ display: "flex", gap: 14, alignItems: "flex-end", flexWrap: "wrap" }}>
+                    <ImgPreview url={live.appIconUrl ?? ""} label="app icon" round />
+                    <ImgPreview url={live.heroImageUrl ?? ""} label="hero image" />
+                </div>
+            )}
+
             {lastResult && (
                 <div style={{ fontSize: 13, lineHeight: 1.4, color: lastResult.startsWith("⚠") ? "var(--text-danger, #f23f43)" : "var(--text-positive, #23a55a)", wordBreak: "break-word" }}>
                     {lastResult}
@@ -298,7 +358,10 @@ const settings = definePluginSettings({
         description: "Widget app name — shows as the widget's attribution. Pick something you own; do NOT name it after a real brand (Discord/Steam/etc.), that's a bannable impersonation.",
         default: "My Widget"
     },
-    widgetTitle: { type: OptionType.STRING, description: "Big title shown on the widget's hero (top) section.", default: "My Widget" },
+    widgetTitle: { type: OptionType.STRING, description: "Big title (first header line), e.g. your username.", default: "My Widget" },
+    widgetSubtitle: { type: OptionType.STRING, description: "Second header line (e.g. 'Season 8.5: Gold'). Blank to skip.", default: "" },
+    widgetSubtitle2: { type: OptionType.STRING, description: "Third header line (e.g. 'Top Hero: Doctor Strange'). Blank to skip.", default: "" },
+    appIconUrl: { type: OptionType.STRING, description: "Optional app icon — the small logo shown top-left on the widget card (like a game's icon). Direct image link; use a square image for best results. Blank keeps Discord's default.", default: "" },
     heroImageUrl: { type: OptionType.STRING, description: "Direct image URL for the hero image — it gets uploaded to your app. Use a direct link (e.g. https://i.imgur.com/…png / a Discord CDN link), not a webpage.", default: "" },
     stat1: { type: OptionType.STRING, description: "Stat 1 — format 'Label | Value' (e.g. 'Rank | Diamond III'). Blank to skip.", default: "" },
     stat2: { type: OptionType.STRING, description: "Stat 2 — 'Label | Value'.", default: "" },
