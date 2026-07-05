@@ -209,9 +209,16 @@ function buildSurfaces(imageKey: string | null) {
         widget_bottom = { layout: "widget_bottom_stats", components: stats };
     }
 
+    // widget_top: hero (image bleeds off the right edge, banner-style) OR
+    // contained (image boxed beside the title) — verified live 2026-07. The
+    // preview + popout stay on the hero layout (proven; independent surfaces).
+    const widget_top = s.topLayout === "contained"
+        ? { layout: "widget_top_contained", components: { contained_image: { fields: { image: img } }, title: { fields: { text: tf(title) } } } }
+        : { layout: "widget_top_hero", components: { hero_image: { fields: { image: img } }, title: { fields: { text: tf(title) } } } };
+
     return {
         surfaces: {
-            widget_top: { layout: "widget_top_hero", components: { hero_image: { fields: { image: img } }, title: { fields: { text: tf(title) } } } },
+            widget_top,
             widget_bottom,
             add_widget_preview: { layout: "add_widget_preview_hero", components: { hero_image: { fields: { image: img } } } },
             // Drives the profile-popout cutout: hero image + one stat line.
@@ -383,6 +390,14 @@ const settings = definePluginSettings({
     widgetTitle: { type: OptionType.STRING, description: "Big title on the card — keep it SHORT (one line; Discord truncates long titles and ignores line breaks). For season / rank / top-hero, use the Stat rows below — they stack as a clean grid. Your app name shows as a smaller header line above this.", default: "My Widget" },
     appIconUrl: { type: OptionType.STRING, description: "Optional app icon — the small logo shown top-left on the widget card (like a game's icon). Direct image link; use a square image for best results. Blank keeps Discord's default.", default: "" },
     heroImageUrl: { type: OptionType.STRING, description: "Direct image URL for the hero image — it gets uploaded to your app. Use a direct link (e.g. https://i.imgur.com/…png / a Discord CDN link), not a webpage.", default: "" },
+    topLayout: {
+        type: OptionType.SELECT,
+        description: "Top section image style: Hero = image bleeds off the right edge (banner look); Contained = image sits in a box beside the title.",
+        options: [
+            { label: "Hero image (edge-bleed banner)", value: "hero", default: true },
+            { label: "Contained image (boxed beside title)", value: "contained" }
+        ]
+    },
     bottomLayout: {
         type: OptionType.SELECT,
         description: "Bottom section of the card: a grid of stats, or a single progress bar (like a season-pass / rank bar). Progress-bar mode reuses your hero image as the goal icon.",
