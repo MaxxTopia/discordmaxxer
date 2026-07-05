@@ -60,6 +60,64 @@ export async function hasWidgetToken(): Promise<boolean> {
     return readWidgetToken() !== null;
 }
 
+// Small GET-JSON helper (native = no CORS) shared by the stat fetchers.
+function httpsJson(host: string, path: string, headers: Record<string, string>): Promise<{ status: number; json: any; }> {
+    return new Promise(resolve => {
+        const req = request({ method: "GET", host, path, headers: { "User-Agent": USER_AGENT, ...headers } }, res => {
+            let buf = "";
+            res.on("data", d => (buf += d));
+            res.on("end", () => { let json: any = null; try { json = JSON.parse(buf); } catch { /* leave null */ } resolve({ status: res.statusCode ?? 0, json }); });
+        });
+        req.setTimeout(12000, () => req.destroy(new Error("request timed out")));
+        req.on("error", () => resolve({ status: 0, json: null }));
+        req.end();
+    });
+}
+
+// ---- Valorant stats (HenrikDev — MMR is v3, matches are v4) -----------------
+export async function fetchValorantStats(
+    _: IpcMainInvokeEvent, name: string, tag: string, region: string, platform: string, apiKey: string
+): Promise<{ ok: true; name: string; overall: Record<string, any>; } | { error: string; }> {
+    if (!name || !tag || !apiKey) return { error: "missing Riot ID (Name#Tag) or API key" };
+    const auth = { Authorization: apiKey };
+    const enc = encodeURIComponent;
+    const plat = platform || "pc";
+    const reg = region || "na";
+
+    const mmr = await httpsJson("api.henrikdev.xyz", `/valorant/v3/mmr/${enc(reg)}/${plat}/${enc(name)}/${enc(tag)}`, auth);
+    if (mmr.status !== 200 || !mmr.json?.data) {
+        const msg = mmr.json?.errors?.[0]?.message ?? (typeof mmr.json?.status === "string" ? mmr.json.status : `HTTP ${mmr.status}`);
+        return { error: `Valorant MMR: ${msg} (check Riot ID, region + that the key is valid)` };
+    }
+    const cur = mmr.json.data.current ?? {};
+    const peak = mmr.json.data.peak ?? {};
+    const overall: Record<string, any> = { rank: cur.tier?.name ?? "Unrated", rr: cur.rr, peak: peak.tier?.name ?? "—" };
+
+    // Matches (v4) → most-used agent + recent win-rate + avg K/D (best-effort).
+    const m = await httpsJson("api.henrikdev.xyz", `/valorant/v4/matches/${enc(reg)}/${plat}/${enc(name)}/${enc(tag)}?size=10`, auth);
+    if (m.status === 200 && Array.isArray(m.json?.data)) {
+        const agents: Record<string, number> = {};
+        let wins = 0, games = 0, kills = 0, deaths = 0;
+        for (const mm of m.json.data) {
+            const players: any[] = Array.isArray(mm?.players) ? mm.players : (mm?.players?.all_players ?? []);
+            const me = players.find(p => String(p?.name).toLowerCase() === name.toLowerCase() && String(p?.tag).toLowerCase() === tag.toLowerCase());
+            if (!me) continue;
+            games++;
+            const ag = me.agent?.name ?? me.character;
+            if (ag) agents[ag] = (agents[ag] ?? 0) + 1;
+            kills += me.stats?.kills ?? 0;
+            deaths += me.stats?.deaths ?? 0;
+            const myTeam = (Array.isArray(mm?.teams) ? mm.teams : []).find((t: any) => t?.team_id === me.team_id);
+            if (myTeam?.won) wins++;
+        }
+        const top = Object.entries(agents).sort((a, b) => b[1] - a[1])[0];
+        overall.mainAgent = top ? top[0] : "—";
+        if (games) overall.recentWR = Math.round((wins / games) * 100);
+        if (deaths) overall.avgKD = +(kills / deaths).toFixed(2);
+    }
+    return { ok: true, name: `${name}#${tag}`, overall };
+}
+
 // ---- Fortnite stats fetch (native = no CORS, no browser fingerprint) -------
 export async function fetchFortniteStats(
     _: IpcMainInvokeEvent, name: string, apiKey: string, accountType: string

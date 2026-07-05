@@ -61,6 +61,7 @@ let lastResult = "";
 // module var — NOT in the user's manual stat fields — so a live refresh never
 // clobbers hand-entered stats and buildSurfaces can read whichever is active.
 let fnStats: Record<string, number> | null = null;
+let valStats: Record<string, any> | null = null;
 let fnRefreshTimer: ReturnType<typeof setInterval> | null = null;
 
 const fmtNum = (n: number | undefined): string => {
@@ -83,6 +84,19 @@ function fortniteStatLines(): string[] {
         `K/D | ${o.kd !== undefined ? Number(o.kd).toFixed(2) : "—"}`,
         `Kills | ${fmtNum(o.kills)}`,
         `Win Rate | ${o.winRate !== undefined ? Number(o.winRate).toFixed(1) + "%" : "—"}`
+    ];
+}
+
+// Valorant template map (all live from HenrikDev — rank/RR/peak/agent/WR/KD).
+function valorantStatLines(): string[] {
+    const o = valStats ?? {};
+    return [
+        `Rank | ${o.rank ?? "—"}`,
+        `RR | ${o.rr !== undefined ? o.rr + " RR" : "—"}`,
+        `Peak Rank | ${o.peak ?? "—"}`,
+        `Main Agent | ${o.mainAgent ?? "—"}`,
+        `Recent WR | ${o.recentWR !== undefined ? o.recentWR + "%" : "—"}`,
+        `K/D | ${o.avgKD !== undefined ? o.avgKD : "—"}`
     ];
 }
 
@@ -211,13 +225,18 @@ function buildSurfaces(imageKey: string | null) {
     // so a fake multi-line header via "\n" just produces a mangled run-on. The
     // card already has natural tiers (app-name header + this title + the stat
     // grid), so the title stays one short line and extra lines go in the stats.
-    // Fortnite template overrides the title (IGN) + stat grid (live + manual).
-    const fnMode = s.gameTemplate === "fortnite";
-    const title = fnMode
+    // Game templates override the title + stat grid with live/mapped stats.
+    const tpl = s.gameTemplate;
+    const fnMode = tpl === "fortnite" || tpl === "valorant"; // "game mode" (forces stat grid)
+    const title = tpl === "fortnite"
         ? (String(s.fnIgn ?? "").trim() || "Fortnite")
-        : (String(s.widgetTitle ?? "").trim() || "My Widget");
+        : tpl === "valorant"
+            ? (String(s.valRiotId ?? "").trim().split("#")[0] || "Valorant")
+            : (String(s.widgetTitle ?? "").trim() || "My Widget");
 
-    const rawStats = fnMode ? fortniteStatLines() : [1, 2, 3, 4, 5, 6].map(i => String(s[`stat${i}`] ?? ""));
+    const rawStats = tpl === "fortnite" ? fortniteStatLines()
+        : tpl === "valorant" ? valorantStatLines()
+            : [1, 2, 3, 4, 5, 6].map(i => String(s[`stat${i}`] ?? ""));
     const stats: Record<string, any> = {};
     let firstStat = "";
     for (let i = 1; i <= 6; i++) {
@@ -321,23 +340,35 @@ async function republishConfig(): Promise<string | null> {
     } catch (e) { return classifyDiscordError(e); }
 }
 
-// Fetch live Fortnite stats (native, no CORS) and re-publish the card.
-async function refreshFortnite(announce = false): Promise<void> {
+// Fetch live game stats (native, no CORS) and re-publish the card. Handles
+// whichever game template is active; a no-op for "none".
+async function refreshGame(announce = false): Promise<void> {
     const s = settings.store as any;
-    if (s.gameTemplate !== "fortnite") return;
-    const ign = String(s.fnIgn ?? "").trim();
-    const key = String(s.fnApiKey ?? "").trim();
-    if (!ign || !key) { if (announce) toast("Set your Epic IGN + fortnite-api.com key first.", Toasts.Type.FAILURE); return; }
+    const tpl = s.gameTemplate;
+    if (tpl !== "fortnite" && tpl !== "valorant") return;
     await identity.ready;
     if (!SNOWFLAKE.test(identity.get().appId)) { if (announce) toast("Create the widget first, then refresh stats.", Toasts.Type.FAILURE); return; }
 
-    const res = await Native.fetchFortniteStats(ign, key, String(s.fnAccountType ?? "epic"));
-    if ("error" in res) { toast(`Fortnite stats: ${res.error}`, Toasts.Type.FAILURE, 8000); return; }
-    fnStats = res.overall;
+    if (tpl === "fortnite") {
+        const ign = String(s.fnIgn ?? "").trim(); const key = String(s.fnApiKey ?? "").trim();
+        if (!ign || !key) { if (announce) toast("Set your Epic IGN + fortnite-api.com key first.", Toasts.Type.FAILURE); return; }
+        const res = await Native.fetchFortniteStats(ign, key, String(s.fnAccountType ?? "epic"));
+        if ("error" in res) { toast(`Fortnite stats: ${res.error}`, Toasts.Type.FAILURE, 8000); return; }
+        fnStats = res.overall;
+    } else {
+        const riot = String(s.valRiotId ?? "").trim(); const key = String(s.valApiKey ?? "").trim();
+        const hash = riot.indexOf("#");
+        if (hash < 1 || !key) { if (announce) toast("Set your Riot ID (Name#Tag) + HenrikDev key first.", Toasts.Type.FAILURE); return; }
+        const res = await Native.fetchValorantStats(riot.slice(0, hash), riot.slice(hash + 1), String(s.valRegion ?? "na"), "pc", key);
+        if ("error" in res) { toast(res.error, Toasts.Type.FAILURE, 8000); return; }
+        valStats = res.overall;
+    }
+
     const err = await republishConfig();
     if (announce) {
         if (err) toast(`Stats fetched but publish failed: ${err}`, Toasts.Type.FAILURE, 8000);
-        else toast(`Fortnite stats updated — ${fmtNum(res.overall.wins)} wins, ${res.overall.kd?.toFixed?.(2) ?? "—"} K/D.`, Toasts.Type.SUCCESS, 6000);
+        else if (tpl === "fortnite") toast(`Fortnite stats updated — ${fmtNum(fnStats?.wins)} wins, ${fnStats?.kd?.toFixed?.(2) ?? "—"} K/D.`, Toasts.Type.SUCCESS, 6000);
+        else toast(`Valorant stats updated — ${valStats?.rank ?? "—"}, main ${valStats?.mainAgent ?? "—"}.`, Toasts.Type.SUCCESS, 6000);
     }
 }
 
@@ -465,11 +496,17 @@ function WidgetEditor() {
                     Auto-updates on launch and every 30 min while open.
                 </div>
             )}
+            {live.gameTemplate === "valorant" && (
+                <div style={{ border: "1px solid var(--background-modifier-accent)", borderRadius: 8, padding: "8px 12px", fontSize: 12.5, lineHeight: 1.5, color: "var(--text-muted)" }}>
+                    <b style={{ color: "var(--text-normal)" }}>🎯 Valorant live stats</b> — Rank / RR / Peak / Main Agent / Recent Win-Rate / K-D, all
+                    auto-pulled from your Riot ID (HenrikDev API key + region required). Auto-updates on launch and every 30 min while open.
+                </div>
+            )}
 
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                 <Button disabled={busy} onClick={() => run(deployWidget)}>{created ? "Update my widget" : "Create my widget"}</Button>
-                {created && live.gameTemplate === "fortnite" && (
-                    <Button disabled={busy} color={Button.Colors.BRAND} onClick={() => run(() => refreshFortnite(true))}>Refresh Fortnite stats now</Button>
+                {created && (live.gameTemplate === "fortnite" || live.gameTemplate === "valorant") && (
+                    <Button disabled={busy} color={Button.Colors.BRAND} onClick={() => run(() => refreshGame(true))}>Refresh {live.gameTemplate === "valorant" ? "Valorant" : "Fortnite"} stats now</Button>
                 )}
                 {created && <Button disabled={busy} color={Button.Colors.RED} onClick={() => run(removeFromProfile)}>Remove from profile</Button>}
             </div>
@@ -480,10 +517,11 @@ function WidgetEditor() {
 const settings = definePluginSettings({
     gameTemplate: {
         type: OptionType.SELECT,
-        description: "Auto-fill the card from a game's live stats. 'Fortnite' pulls your Wins/K-D/Kills/Win-Rate from your public career stats and lays out a competitive card (title = your IGN); you fill Unreal rank + earnings by hand.",
+        description: "Auto-fill the card from a game's live stats. 'Fortnite' pulls your Wins/K-D/Kills/Win-Rate; 'Valorant' pulls your rank + most-used agent. (One template per widget — multiple widgets let both show at once.)",
         options: [
             { label: "None (manual card)", value: "none", default: true },
-            { label: "Fortnite live stats", value: "fortnite" }
+            { label: "Fortnite live stats", value: "fortnite" },
+            { label: "Valorant live stats", value: "valorant" }
         ]
     },
     fnIgn: { type: OptionType.STRING, description: "Fortnite: your EXACT Epic display name (case + spaces + special characters matter). Your career stats must be set to PUBLIC in Fortnite.", default: "" },
@@ -499,6 +537,20 @@ const settings = definePluginSettings({
     },
     fnUnrealRank: { type: OptionType.STRING, description: "Fortnite (manual — no free API): your ranked/Unreal rank, e.g. 'Unreal #1,234' or just 'Unreal'.", default: "" },
     fnEarnings: { type: OptionType.STRING, description: "Fortnite (manual — no free API): total career earnings, e.g. '$8,500'. Leave '$0' if none.", default: "$0" },
+    valRiotId: { type: OptionType.STRING, description: "Valorant: your Riot ID as Name#Tag (e.g. 'Diggy#NA1').", default: "" },
+    valApiKey: { type: OptionType.STRING, description: "Valorant: your free HenrikDev API key (get it in the HenrikDev Discord). Stored locally; treat it like a password.", default: "" },
+    valRegion: {
+        type: OptionType.SELECT,
+        description: "Valorant: your account region.",
+        options: [
+            { label: "North America", value: "na", default: true },
+            { label: "Europe", value: "eu" },
+            { label: "Asia-Pacific", value: "ap" },
+            { label: "Korea", value: "kr" },
+            { label: "LATAM", value: "latam" },
+            { label: "Brazil", value: "br" }
+        ]
+    },
     appName: {
         type: OptionType.STRING,
         description: "Widget app name — shows as the widget's attribution. Pick something you own; do NOT name it after a real brand (Discord/Steam/etc.), that's a bannable impersonation.",
@@ -551,8 +603,8 @@ export default definePlugin({
     // 30 min while running. Guards inside refreshFortnite make it a no-op unless
     // the Fortnite template is on and a widget exists.
     start() {
-        setTimeout(() => { refreshFortnite(false); }, 20_000);
-        fnRefreshTimer = setInterval(() => { refreshFortnite(false); }, 30 * 60_000);
+        setTimeout(() => { refreshGame(false); }, 20_000);
+        fnRefreshTimer = setInterval(() => { refreshGame(false); }, 30 * 60_000);
     },
     stop() {
         if (fnRefreshTimer) { clearInterval(fnRefreshTimer); fnRefreshTimer = null; }
