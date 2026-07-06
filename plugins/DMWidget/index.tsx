@@ -180,12 +180,23 @@ async function resolveConfigId(appId: string, appName: string): Promise<string> 
 // can reference. Returns the asset key, or null if there's no/invalid image.
 async function uploadHeroAsset(appId: string, url: string): Promise<string | null> {
     if (!url) return null;
-    let blob: Blob;
+    let blob: Blob | null = null;
     try {
         const r = await fetch(url, { credentials: "omit" });
         if (!r.ok) throw new Error("HTTP " + r.status);
         blob = await r.blob();
-    } catch (e) {
+    } catch {
+        // Renderer fetch blocked (CORS / CSP) — pull it through the main process,
+        // which isn't CORS-bound, so any image host works.
+        const nat = await Native.fetchImageData(url);
+        if (!("error" in nat)) {
+            try {
+                const bytes = Uint8Array.from(atob(nat.dataBase64), c => c.charCodeAt(0));
+                blob = new Blob([bytes], { type: nat.contentType || "image/png" });
+            } catch { /* fall through */ }
+        }
+    }
+    if (!blob) {
         toast("Couldn't download the hero image (use a direct image link). Deploying without it.", Toasts.Type.MESSAGE, 5000);
         return null;
     }

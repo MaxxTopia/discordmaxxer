@@ -60,6 +60,27 @@ export async function hasWidgetToken(): Promise<boolean> {
     return readWidgetToken() !== null;
 }
 
+// Pull an image through the main process (no CORS) → base64, so a hero image
+// can come from ANY host (fortnite-api.com renders, etc.), not just CORS-open ones.
+export async function fetchImageData(
+    _: IpcMainInvokeEvent, url: string
+): Promise<{ ok: true; dataBase64: string; contentType: string; } | { error: string; }> {
+    if (!url || !/^https?:\/\//i.test(url)) return { error: "not a valid http(s) image URL" };
+    return new Promise(resolve => {
+        const req = request(url, { method: "GET", headers: { "User-Agent": USER_AGENT } }, res => {
+            const code = res.statusCode ?? 0;
+            if (code >= 300 && code < 400 && res.headers.location) { res.resume(); return resolve({ error: "image URL redirects — use the direct link (" + res.headers.location.slice(0, 80) + ")" }); }
+            if (code !== 200) { res.resume(); return resolve({ error: "image download failed: HTTP " + code }); }
+            const chunks: Buffer[] = []; let size = 0;
+            res.on("data", (d: Buffer) => { size += d.length; if (size > 9_000_000) { req.destroy(); resolve({ error: "image too large (>9MB)" }); return; } chunks.push(d); });
+            res.on("end", () => resolve({ ok: true, dataBase64: Buffer.concat(chunks).toString("base64"), contentType: String(res.headers["content-type"] ?? "image/png") }));
+        });
+        req.setTimeout(12000, () => req.destroy(new Error("image request timed out")));
+        req.on("error", e => resolve({ error: String((e as any)?.message ?? e) }));
+        req.end();
+    });
+}
+
 // Small GET-JSON helper (native = no CORS) shared by the stat fetchers.
 function httpsJson(host: string, path: string, headers: Record<string, string>): Promise<{ status: number; json: any; }> {
     return new Promise(resolve => {
