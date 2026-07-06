@@ -717,6 +717,28 @@ async function removeFromProfile(): Promise<void> {
     }
 }
 
+// Reorder the profile board so THIS slot's card sits on top. The FRONT of the
+// widgets array is the top of the board (verified live), so we move this app's
+// entry to the front and keep the rest in their existing order.
+async function moveToTop(): Promise<void> {
+    await ensureSlots();
+    const me = UserStore.getCurrentUser();
+    const slotKey = slotKeyOf();
+    const id = getSlot(slotKey);
+    if (!me?.id || !SNOWFLAKE.test(id.appId)) { toast("Create this widget first.", Toasts.Type.FAILURE); return; }
+    try {
+        let widgets: any[] = [];
+        try { const prof = await apiGet(`/users/${me.id}/profile`); widgets = Array.isArray(prof?.widgets) ? prof.widgets : []; } catch { widgets = []; }
+        const mine = widgets.filter(w => w?.data?.application_id === id.appId);
+        if (!mine.length) { toast("This card isn't on your board yet — hit Create first.", Toasts.Type.FAILURE); return; }
+        const rest = widgets.filter(w => w?.data?.application_id !== id.appId);
+        await apiPut("/users/@me/widgets", { widgets: [...mine, ...rest] });
+        toast("Moved to the top of your profile board.", Toasts.Type.SUCCESS, 5000);
+    } catch (e: any) {
+        toast(`Couldn't reorder: ${classifyDiscordError(e)}`, Toasts.Type.FAILURE, 7000);
+    }
+}
+
 // ---- share / import (move a widget from one account to another) ------------
 // Serialize the CONTENT of the current widget (never the app id, bot token, or
 // API keys) to a short code the user can paste on another account. Secrets are
@@ -870,6 +892,7 @@ function WidgetEditor() {
                 {created && (live.gameTemplate === "fortnite" || live.gameTemplate === "valorant") && (
                     <Button disabled={busy} color={Button.Colors.BRAND} onClick={() => run(() => refreshGame(true))}>Refresh {live.gameTemplate === "valorant" ? "Valorant" : "Fortnite"} stats now</Button>
                 )}
+                {created && <Button disabled={busy} onClick={() => run(moveToTop)}>Move to top</Button>}
                 {created && <Button disabled={busy} color={Button.Colors.RED} onClick={() => run(removeFromProfile)}>Remove from profile</Button>}
             </div>
 
