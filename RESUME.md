@@ -5,7 +5,7 @@
 > `CLAUDE.md` ("Operational facts" section). Those three are enough to build,
 > ship, and maintain without prior context.
 
-## Current state — v0.7.48 (LIVE, latest published release)
+## Current state — v0.7.49 (LIVE, latest published release)
 
 Mature, shipping Vesktop fork (Electron 41 + bundled Vencord, pinned to a main
 COMMIT). ~30+ Vencord plugins enabled by default + ~24 custom plugins. Repo:
@@ -26,6 +26,16 @@ Recent shipped work (2026-06-26/27):
   hide-list + Votes (these never persisted before); micNoiseSuppression AudioContext+mic
   leak fixed; DMPrivacy now actually revokes analytics/personalization; DMStreamMute no
   longer claims success when it muted nothing; updater double-open + tray-destroy crashes.
+- **v0.7.49** — new **DMWidget** plugin (default-OFF, experimental): one-click custom
+  Discord profile-board widgets ("widgets v2" / Social SDK) with no Developer Portal,
+  DevTools, or paid "widget maker" site. Live game cards for Fortnite (fortnite-api.com)
+  and Valorant (HenrikDev) with auto-refreshing stats, rank badges on the stat cells
+  (Valorant tiers auto-sourced; Fortnite Bronze->Unreal + Unreal Legends baked in), game
+  logos, and multi-widget support (FN + Valorant coexist on one board). Move a widget
+  between accounts with a copy/paste code that carries content + images but never your
+  API keys/token. DMHub gains a "Refresh widget stats" button. Model B (per-user,
+  self-owned app; bot token minted via 2FA, used once, never stored). Undocumented
+  pre-GA Discord surface, gated behind an in-plugin experimental warning.
 
 ## Self-maintenance (built 2026-06-27 — see TROUBLESHOOTING.md "Self-maintenance")
 
