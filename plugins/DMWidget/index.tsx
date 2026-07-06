@@ -152,8 +152,7 @@ function slotHeader(tpl: string): string {
         // NB: the header IS the app name, which Discord forbids ":" in
         // (APPLICATION_NAME_INVALID_CONTAINS, probed live) — so strip colons and
         // join with " - " instead.
-        const act = String(s.valActEpisode ?? "").replace(/:/g, " ").replace(/\s+/g, " ").trim();
-        return act ? `Val - ${act}` : "Val";
+        return "Val";
     }
     return String(s.appName ?? "").trim() || "My Widget";
 }
@@ -629,7 +628,22 @@ async function deployWidget(): Promise<void> {
 
     await ensureSlots();
     const slotKey = slotKeyOf();
-    const id: WidgetIdentity = getSlot(slotKey);
+    let id: WidgetIdentity = getSlot(slotKey);
+
+    // If this slot points at an app the CURRENT account doesn't own — e.g. you
+    // switched Discord accounts to deploy the same widget on your real profile —
+    // forget it so we create a fresh app under THIS account instead of failing
+    // to edit someone else's app. This makes moving a widget between accounts
+    // "just log in and Create", no manual reset.
+    if (SNOWFLAKE.test(id.appId)) {
+        try {
+            const app = await apiGet(`/applications/${id.appId}`);
+            const ownerId = String(app?.owner?.id ?? app?.team?.owner_user_id ?? "");
+            if (ownerId && ownerId !== me.id) { id = { ...EMPTY_IDENTITY }; setSlot(slotKey, id); }
+        } catch (e: any) {
+            if (e?.status === 403 || e?.status === 404) { id = { ...EMPTY_IDENTITY }; setSlot(slotKey, id); }
+        }
+    }
 
     try {
         if (!SNOWFLAKE.test(id.appId)) {
