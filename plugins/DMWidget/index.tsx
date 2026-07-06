@@ -39,6 +39,7 @@ import definePlugin, { OptionType, PluginNative } from "@utils/types";
 import { Button, React, RestAPI, Toasts, UserStore } from "@webpack/common";
 
 import { makePersistentValue } from "../_dm-shared/persist";
+import { DEFAULT_APP_ICONS } from "./logos";
 
 const Native = VencordNative.pluginHelpers.DMWidget as PluginNative<typeof import("./native")>;
 
@@ -266,8 +267,10 @@ async function urlToDataUri(url: string): Promise<string | null> {
 // The app icon is the small top-left logo on the widget card (like the game
 // icon on a Marvel Rivals widget). Standard documented endpoint — best-effort:
 // a bad/oversized image just leaves the default icon, never fails the deploy.
-async function setAppIcon(appId: string, url: string): Promise<void> {
-    const dataUri = await urlToDataUri(url);
+async function setAppIcon(appId: string, src: string): Promise<void> {
+    if (!src) return;
+    // A baked default logo is already a data URI; a user-provided URL needs fetching.
+    const dataUri = src.startsWith("data:") ? src : await urlToDataUri(src);
     if (!dataUri) return;
     try {
         await apiPatch(`/applications/${appId}`, { icon: dataUri });
@@ -470,8 +473,9 @@ async function deployWidget(): Promise<void> {
         const iconUrl = String((settings.store as any).appIconUrl ?? "").trim();
         const heroUrl = String((settings.store as any).heroImageUrl ?? "").trim();
         id.heroImageUrl = heroUrl; id.appIconUrl = iconUrl; setSlot(slotKey, id);
-        // Optional top-left logo (non-fatal; falls back to the default icon).
-        await setAppIcon(id.appId, iconUrl);
+        // Top-left logo: your custom icon if set, otherwise the game's baked logo
+        // (Fortnite F / Valorant V) so a game card auto-brands with no image hosting.
+        await setAppIcon(id.appId, iconUrl || DEFAULT_APP_ICONS[slotKey] || "");
         let imageKey = await uploadHeroAsset(id.appId, heroUrl);
         // No new/valid image URL but this slot already has an uploaded asset —
         // reuse it so "Update" never blanks an existing widget's hero.
@@ -680,33 +684,35 @@ function WidgetEditor() {
 const settings = definePluginSettings({
     gameTemplate: {
         type: OptionType.SELECT,
-        description: "Auto-fill the card from a game's live stats. 'Fortnite' pulls your Wins/K-D/Kills/Win-Rate; 'Valorant' pulls your rank + most-used agent. (One template per widget — multiple widgets let both show at once.)",
+        description: "STEP 1 - What is this widget? Pick a game to auto-fill live stats, or 'Custom' to type your own card. IMPORTANT: each choice is its OWN separate widget - switching here does NOT replace the last one, it's how you add a second (e.g. Fortnite AND Valorant both on your board). Only the boxes for the mode you pick are shown below.",
         options: [
-            { label: "None (manual card)", value: "none", default: true },
-            { label: "Fortnite live stats", value: "fortnite" },
-            { label: "Valorant live stats", value: "valorant" }
+            { label: "Custom card (type it yourself)", value: "none", default: true },
+            { label: "Fortnite (auto live stats)", value: "fortnite" },
+            { label: "Valorant (auto live stats)", value: "valorant" }
         ]
     },
-    fnIgn: { type: OptionType.STRING, description: "Fortnite: your EXACT Epic display name (case + spaces + special characters matter). Your career stats must be set to PUBLIC in Fortnite.", default: "" },
-    fnApiKey: { type: OptionType.STRING, description: "Fortnite: your free fortnite-api.com key (log in with Discord at dash.fortnite-api.com). Stored locally; treat it like a password.", default: "" },
+    fnIgn: { type: OptionType.STRING, description: "Your exact Fortnite (Epic) username - capitals, spaces and symbols must match. Your Fortnite career stats must be set to Public in-game.", default: "", hidden() { return (this.store as any).gameTemplate !== "fortnite"; } },
+    fnApiKey: { type: OptionType.STRING, description: "Your free Fortnite stats key from fortnite-api.com (sign in with Discord at dash.fortnite-api.com). Stays on your PC; treat it like a password.", default: "", hidden() { return (this.store as any).gameTemplate !== "fortnite"; } },
     fnAccountType: {
         type: OptionType.SELECT,
-        description: "Fortnite: which platform your Epic account primarily signs in through.",
+        description: "Which platform your Epic account mainly signs in through.",
+        hidden() { return (this.store as any).gameTemplate !== "fortnite"; },
         options: [
             { label: "Epic", value: "epic", default: true },
             { label: "PlayStation", value: "psn" },
             { label: "Xbox", value: "xbl" }
         ]
     },
-    fnUnrealRank: { type: OptionType.STRING, description: "Fortnite (manual — no free API): your highest/Unreal rank, e.g. 'Unreal #1,234' or just 'Unreal'.", default: "" },
-    fnEarnings: { type: OptionType.STRING, description: "Fortnite (manual — no free API): total career earnings, e.g. '$8,500'. Leave '$0' if none.", default: "$0" },
-    fnChapterSeason: { type: OptionType.STRING, description: "Fortnite (manual): current chapter + season shown in the header, e.g. 'Ch 6 · S3'. Blank = just 'Fn'.", default: "" },
-    fnTopPlacement: { type: OptionType.STRING, description: "Fortnite (manual — no free API): your best tournament placement this chapter, e.g. '15th LCQ'. Blank to skip.", default: "" },
-    valRiotId: { type: OptionType.STRING, description: "Valorant: your Riot ID as Name#Tag (e.g. 'Diggy#NA1').", default: "" },
-    valApiKey: { type: OptionType.STRING, description: "Valorant: your free HenrikDev API key (get it in the HenrikDev Discord). Stored locally; treat it like a password.", default: "" },
+    fnUnrealRank: { type: OptionType.STRING, description: "Your rank text to show, e.g. 'Unreal' or 'Unreal #1,234'. (Typed in - there's no free rank API.)", default: "", hidden() { return (this.store as any).gameTemplate !== "fortnite"; } },
+    fnEarnings: { type: OptionType.STRING, description: "Your total earnings to show, e.g. '$8,500'. Leave '$0' if none. (Typed in.)", default: "$0", hidden() { return (this.store as any).gameTemplate !== "fortnite"; } },
+    fnChapterSeason: { type: OptionType.STRING, description: "Chapter/season shown in the small header, e.g. 'Ch 6 S3'. Leave blank for just 'Fn'.", default: "", hidden() { return (this.store as any).gameTemplate !== "fortnite"; } },
+    fnTopPlacement: { type: OptionType.STRING, description: "Best tournament finish to show, e.g. '15th LCQ'. Leave blank to skip.", default: "", hidden() { return (this.store as any).gameTemplate !== "fortnite"; } },
+    valRiotId: { type: OptionType.STRING, description: "Your Valorant Riot ID as Name#Tag, e.g. 'Diggy#NA1'.", default: "", hidden() { return (this.store as any).gameTemplate !== "valorant"; } },
+    valApiKey: { type: OptionType.STRING, description: "Your free HenrikDev Valorant key (get it in the HenrikDev Discord). Stays on your PC; treat it like a password.", default: "", hidden() { return (this.store as any).gameTemplate !== "valorant"; } },
     valRegion: {
         type: OptionType.SELECT,
-        description: "Valorant: your account region.",
+        description: "Your Valorant account region.",
+        hidden() { return (this.store as any).gameTemplate !== "valorant"; },
         options: [
             { label: "North America", value: "na", default: true },
             { label: "Europe", value: "eu" },
@@ -718,41 +724,44 @@ const settings = definePluginSettings({
     },
     appName: {
         type: OptionType.STRING,
-        description: "Widget app name — shows as the widget's attribution. Pick something you own; do NOT name it after a real brand (Discord/Steam/etc.), that's a bannable impersonation.",
-        default: "My Widget"
+        description: "A name for this widget (shows as a small header line). Use a name you OWN - never a real brand like Discord/Steam/Nitro; Discord bans accounts for that.",
+        default: "My Widget",
+        hidden() { return (this.store as any).gameTemplate !== "none"; }
     },
-    widgetTitle: { type: OptionType.STRING, description: "Big title on the card — keep it SHORT (one line; Discord truncates long titles and ignores line breaks). For season / rank / top-hero, use the Stat rows below — they stack as a clean grid. Your app name shows as a smaller header line above this.", default: "My Widget" },
-    appIconUrl: { type: OptionType.STRING, description: "Optional app icon — the small logo shown top-left on the widget card (like a game's icon). Direct image link; use a square image for best results. Blank keeps Discord's default.", default: "" },
-    heroImageUrl: { type: OptionType.STRING, description: "Direct image URL for the hero image — it gets uploaded to your app. Use a direct link (e.g. https://i.imgur.com/…png / a Discord CDN link), not a webpage.", default: "" },
+    widgetTitle: { type: OptionType.STRING, description: "The big title on the card. Keep it short - one line (Discord cuts off long titles).", default: "My Widget", hidden() { return (this.store as any).gameTemplate !== "none"; } },
+    heroImageUrl: { type: OptionType.STRING, description: "Main image on the card - your skin / agent render. Paste a DIRECT image link ending in .png or .jpg (not a webpage). This is the big picture people see.", default: "" },
+    appIconUrl: { type: OptionType.STRING, description: "Small logo in the top-left corner. Paste a direct SQUARE image link, or leave blank. (Fortnite & Valorant fill this in with their game logo automatically.)", default: "", hidden() { return (this.store as any).gameTemplate !== "none"; } },
     topLayout: {
         type: OptionType.SELECT,
-        description: "Top section image style: Hero = image bleeds off the right edge (banner look); Contained = image sits in a box beside the title.",
+        description: "How the main image sits on the card.",
         options: [
-            { label: "Hero image (edge-bleed banner)", value: "hero", default: true },
-            { label: "Contained image (boxed beside title)", value: "contained" }
+            { label: "Banner (image bleeds off the right edge)", value: "hero", default: true },
+            { label: "Boxed (image in a box beside the title)", value: "contained" }
         ]
     },
     bottomLayout: {
         type: OptionType.SELECT,
-        description: "Bottom section of the card: a grid of stats, or a single progress bar (like a season-pass / rank bar). Progress-bar mode reuses your hero image as the goal icon.",
+        description: "Bottom of the card: a grid of stats, or a single progress bar (like a level / season-pass bar). Progress bar reuses your main image as its icon.",
+        hidden() { return (this.store as any).gameTemplate !== "none"; },
         options: [
             { label: "Stat grid (up to 6)", value: "stats", default: true },
             { label: "Progress bar", value: "progress" }
         ]
     },
-    stat1: { type: OptionType.STRING, description: "Stat 1 — format 'Label | Value' (e.g. 'Rank | Diamond III'). Blank to skip. (Stat-grid mode.)", default: "" },
-    stat2: { type: OptionType.STRING, description: "Stat 2 — 'Label | Value'. (Stat-grid mode.)", default: "" },
-    stat3: { type: OptionType.STRING, description: "Stat 3 — 'Label | Value'. (Stat-grid mode.)", default: "" },
-    stat4: { type: OptionType.STRING, description: "Stat 4 — 'Label | Value'. (Stat-grid mode.)", default: "" },
-    stat5: { type: OptionType.STRING, description: "Stat 5 — 'Label | Value'. (Stat-grid mode.)", default: "" },
-    stat6: { type: OptionType.STRING, description: "Stat 6 — 'Label | Value'. (Stat-grid mode.)", default: "" },
-    progressLabel: { type: OptionType.STRING, description: "Progress-bar mode: the goal label next to the bar (e.g. 'Level 5', 'Season Pass Tier 42', 'Champion').", default: "Level 1" },
+    stat1: { type: OptionType.STRING, description: "Stat row 1 - write it as 'Label | Value', e.g. 'Rank | Diamond III'. Leave blank to skip.", default: "", hidden() { return (this.store as any).gameTemplate !== "none"; } },
+    stat2: { type: OptionType.STRING, description: "Stat row 2 - 'Label | Value'.", default: "", hidden() { return (this.store as any).gameTemplate !== "none"; } },
+    stat3: { type: OptionType.STRING, description: "Stat row 3 - 'Label | Value'.", default: "", hidden() { return (this.store as any).gameTemplate !== "none"; } },
+    stat4: { type: OptionType.STRING, description: "Stat row 4 - 'Label | Value'.", default: "", hidden() { return (this.store as any).gameTemplate !== "none"; } },
+    stat5: { type: OptionType.STRING, description: "Stat row 5 - 'Label | Value'.", default: "", hidden() { return (this.store as any).gameTemplate !== "none"; } },
+    stat6: { type: OptionType.STRING, description: "Stat row 6 - 'Label | Value'.", default: "", hidden() { return (this.store as any).gameTemplate !== "none"; } },
+    progressLabel: { type: OptionType.STRING, description: "Progress-bar mode only: the goal name next to the bar, e.g. 'Level 5' or 'Champion'.", default: "Level 1", hidden() { return (this.store as any).gameTemplate !== "none"; } },
     progressPercent: {
         type: OptionType.SLIDER,
-        description: "Progress-bar mode: how full the bar is (0–100%).",
+        description: "Progress-bar mode only: how full the bar is (0-100%).",
         default: 50,
         markers: [0, 25, 50, 75, 100],
-        stickToMarkers: false
+        stickToMarkers: false,
+        hidden() { return (this.store as any).gameTemplate !== "none"; }
     },
     importCode: { type: OptionType.STRING, description: "Import code — paste a 'Copy this widget' code from another account here, then click Import from code below. (Content only; no API keys travel in the code.)", default: "" },
     editor: { type: OptionType.COMPONENT, description: "", component: WidgetEditor }
