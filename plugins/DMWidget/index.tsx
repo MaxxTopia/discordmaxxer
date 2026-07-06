@@ -47,9 +47,11 @@ interface WidgetIdentity {
     appId: string;
     configId: string;
     heroAssetKey: string; // last uploaded hero asset, so refreshes reuse it
+    heroImageUrl: string; // per-slot hero source URL (so each slot keeps its own image + preview)
+    appIconUrl: string;   // per-slot app-icon URL (so a FN slot can wear an F logo, Valorant its own)
 }
-const EMPTY_IDENTITY: WidgetIdentity = { appId: "", configId: "", heroAssetKey: "" };
-const parseId = (raw: any): WidgetIdentity => ({ appId: String(raw?.appId ?? ""), configId: String(raw?.configId ?? ""), heroAssetKey: String(raw?.heroAssetKey ?? "") });
+const EMPTY_IDENTITY: WidgetIdentity = { appId: "", configId: "", heroAssetKey: "", heroImageUrl: "", appIconUrl: "" };
+const parseId = (raw: any): WidgetIdentity => ({ appId: String(raw?.appId ?? ""), configId: String(raw?.configId ?? ""), heroAssetKey: String(raw?.heroAssetKey ?? ""), heroImageUrl: String(raw?.heroImageUrl ?? ""), appIconUrl: String(raw?.appIconUrl ?? "") });
 
 // Multiple widgets = one Discord app per game template ("slot"). The slot key
 // IS the gameTemplate value ("fortnite" / "valorant" / "none"), so the template
@@ -149,6 +151,10 @@ function toast(msg: string, type: any = Toasts.Type.SUCCESS, durationMs = 5000) 
     if (type === Toasts.Type.SUCCESS) lastResult = "✅ " + msg;
     else if (type === Toasts.Type.FAILURE) lastResult = "⚠ " + msg;
     Toasts.show({ message: msg, type, id: Toasts.genId(), options: { duration: durationMs, position: Toasts.Position.TOP } });
+}
+
+async function copyText(t: string): Promise<boolean> {
+    try { await navigator.clipboard.writeText(t); return true; } catch { return false; }
 }
 
 function classifyDiscordError(err: any): string {
@@ -459,9 +465,17 @@ async function deployWidget(): Promise<void> {
         // The app NAME is what renders as the small header above the title
         // (not the config display_name), so set it to "Fn · Ch6 S3" / "Val".
         try { await apiPatch(`/applications/${id.appId}`, { name: slotHeader(slotKey) }); } catch (e) { console.warn("[DMWidget] app name (non-fatal):", e); }
+        // Per-slot media: remember the URLs on THIS slot so switching slots keeps
+        // each widget's own hero/icon (FN and Valorant no longer share one image).
+        const iconUrl = String((settings.store as any).appIconUrl ?? "").trim();
+        const heroUrl = String((settings.store as any).heroImageUrl ?? "").trim();
+        id.heroImageUrl = heroUrl; id.appIconUrl = iconUrl; setSlot(slotKey, id);
         // Optional top-left logo (non-fatal; falls back to the default icon).
-        await setAppIcon(id.appId, String((settings.store as any).appIconUrl ?? "").trim());
-        const imageKey = await uploadHeroAsset(id.appId, String((settings.store as any).heroImageUrl ?? "").trim());
+        await setAppIcon(id.appId, iconUrl);
+        let imageKey = await uploadHeroAsset(id.appId, heroUrl);
+        // No new/valid image URL but this slot already has an uploaded asset —
+        // reuse it so "Update" never blanks an existing widget's hero.
+        if (!imageKey && SNOWFLAKE.test(id.appId) && id.heroAssetKey) imageKey = id.heroAssetKey;
         if (imageKey) { id.heroAssetKey = imageKey; setSlot(slotKey, id); }
         if ((settings.store as any).bottomLayout === "progress" && !imageKey && slotKey === "none")
             toast("Progress-bar mode needs a hero image (it doubles as the goal icon) — showing the stat grid instead. Add a Hero image URL to use the bar.", Toasts.Type.MESSAGE, 8000);
@@ -505,6 +519,44 @@ async function removeFromProfile(): Promise<void> {
     }
 }
 
+// ---- share / import (move a widget from one account to another) ------------
+// Serialize the CONTENT of the current widget (never the app id, bot token, or
+// API keys) to a short code the user can paste on another account. Secrets are
+// excluded by construction: only these fields are ever read or written.
+const SHAREABLE = [
+    "gameTemplate", "appName", "widgetTitle", "topLayout", "bottomLayout",
+    "stat1", "stat2", "stat3", "stat4", "stat5", "stat6",
+    "progressLabel", "progressPercent", "heroImageUrl", "appIconUrl",
+    "fnIgn", "fnAccountType", "fnUnrealRank", "fnEarnings", "fnChapterSeason", "fnTopPlacement",
+    "valRiotId", "valRegion"
+] as const;
+
+// UTF-8-safe base64 (btoa/atob are latin1-only; emoji/katakana in titles break it).
+const b64encode = (s: string): string => btoa(unescape(encodeURIComponent(s)));
+const b64decode = (s: string): string => decodeURIComponent(escape(atob(s)));
+
+function exportConfig(): string {
+    const s = settings.store as any;
+    const o: Record<string, any> = {};
+    for (const k of SHAREABLE) o[k] = s[k];
+    return "DMW1:" + b64encode(JSON.stringify(o));
+}
+
+// Returns null on success or a human message on failure. Applies only SHAREABLE
+// keys, so a tampered code can never inject an API key or an app id.
+function importConfig(code: string): string | null {
+    const raw = String(code ?? "").trim().replace(/^DMW1:/i, "").trim();
+    if (!raw) return "Paste a widget code first (get one with 'Copy this widget' on your other account).";
+    let obj: any;
+    try { obj = JSON.parse(b64decode(raw)); } catch { return "That doesn't look like a valid DMWidget code."; }
+    if (!obj || typeof obj !== "object") return "That code is empty or malformed.";
+    const s = settings.store as any;
+    let n = 0;
+    for (const k of SHAREABLE) if (k in obj) { s[k] = obj[k]; n++; }
+    if (!n) return "No widget fields found in that code.";
+    return null;
+}
+
 // ---- settings UI -----------------------------------------------------------
 function ImgPreview({ url, label, round }: { url: string; label: string; round?: boolean; }) {
     const [ok, setOk] = React.useState(true);
@@ -530,6 +582,18 @@ function WidgetEditor() {
     const slotKey = String(live.gameTemplate ?? "none") || "none";
     const id = getSlot(slotKey);
     const created = !!id.appId;
+    // Switching to an already-deployed slot loads ITS saved hero/icon into the
+    // editing buffer, so each widget shows its own image (guarded to not loop:
+    // only writes when the value actually differs). New/empty slots keep the
+    // current draft untouched.
+    React.useEffect(() => {
+        ensureSlots().then(() => {
+            const s = getSlot(slotKey);
+            if (!s.appId) return;
+            if (s.heroImageUrl && s.heroImageUrl !== (settings.store as any).heroImageUrl) (settings.store as any).heroImageUrl = s.heroImageUrl;
+            if (s.appIconUrl !== (settings.store as any).appIconUrl) (settings.store as any).appIconUrl = s.appIconUrl;
+        });
+    }, [slotKey]);
     // Summary of every deployed widget (so multi-widget is legible).
     const allSlots = Object.entries(slots.get()).filter(([, v]) => !!v.appId).map(([k]) => SLOT_LABEL[k] ?? k);
 
@@ -587,6 +651,27 @@ function WidgetEditor() {
                     <Button disabled={busy} color={Button.Colors.BRAND} onClick={() => run(() => refreshGame(true))}>Refresh {live.gameTemplate === "valorant" ? "Valorant" : "Fortnite"} stats now</Button>
                 )}
                 {created && <Button disabled={busy} color={Button.Colors.RED} onClick={() => run(removeFromProfile)}>Remove from profile</Button>}
+            </div>
+
+            <div style={{ borderTop: "1px solid var(--background-modifier-accent)", paddingTop: 10, display: "flex", flexDirection: "column", gap: 6 }}>
+                <div style={{ fontSize: 12.5, color: "var(--text-muted)", lineHeight: 1.45 }}>
+                    <b style={{ color: "var(--text-normal)" }}>Move this widget to another account.</b> Copy the code here, paste it into the
+                    “Import code” box on your other account, and hit Import. The code carries your card’s <i>content only</i> — never your app,
+                    bot token, or API keys, so you’ll re-enter the game key + hit Create there.
+                </div>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    <Button disabled={busy} color={Button.Colors.PRIMARY} onClick={() => run(async () => {
+                        const code = exportConfig();
+                        const ok = await copyText(code);
+                        toast(ok ? "Widget code copied to clipboard — paste it into the Import box on your other account." : "Clipboard blocked — the code is shown below, select and copy it manually.", ok ? Toasts.Type.SUCCESS : Toasts.Type.MESSAGE, 8000);
+                        lastResult = (ok ? "✅ Copied widget code:\n" : "⚠ Copy this widget code:\n") + code;
+                    })}>Copy this widget</Button>
+                    <Button disabled={busy} color={Button.Colors.PRIMARY} onClick={() => run(async () => {
+                        const err = importConfig((settings.store as any).importCode ?? "");
+                        if (err) { toast(err, Toasts.Type.FAILURE, 7000); return; }
+                        toast("Widget content imported. Review the fields above, re-enter your game API key if it’s a game card, then hit Create/Update.", Toasts.Type.SUCCESS, 9000);
+                    })}>Import from code</Button>
+                </div>
             </div>
         </div>
     );
@@ -669,6 +754,7 @@ const settings = definePluginSettings({
         markers: [0, 25, 50, 75, 100],
         stickToMarkers: false
     },
+    importCode: { type: OptionType.STRING, description: "Import code — paste a 'Copy this widget' code from another account here, then click Import from code below. (Content only; no API keys travel in the code.)", default: "" },
     editor: { type: OptionType.COMPONENT, description: "", component: WidgetEditor }
 });
 
