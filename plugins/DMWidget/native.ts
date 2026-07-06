@@ -156,7 +156,7 @@ export async function fetchFortniteStats(
                         const j = JSON.parse(buf);
                         if (j.status && j.status !== 200) return resolve({ error: `${j.status}: ${j.error ?? "stats unavailable (is the account name exact + stats public?)"}` });
                         const o = j?.data?.stats?.all?.overall ?? {};
-                        resolve({ ok: true, name: j?.data?.account?.name ?? name, overall: { wins: o.wins, kills: o.kills, kd: o.kd, winRate: o.winRate, matches: o.matches, top1: o.top1, killsPerMatch: o.killsPerMatch } });
+                        resolve({ ok: true, name: j?.data?.account?.name ?? name, overall: { wins: o.wins, kills: o.kills, kd: o.kd, winRate: o.winRate, matches: o.matches, top1: o.top1, killsPerMatch: o.killsPerMatch, minutesPlayed: o.minutesPlayed } });
                     } catch { resolve({ error: "couldn't parse the stats response" }); }
                 });
             }

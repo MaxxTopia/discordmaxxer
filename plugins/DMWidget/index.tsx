@@ -107,14 +107,28 @@ function fortniteStatLines(): string[] {
     const o = fnStats ?? {};
     const rank = String(s.fnUnrealRank ?? "").trim() || "Unranked";
     const earn = String(s.fnEarnings ?? "").trim() || "$0";
-    return [
-        `Unreal Rank | ${rank}`,
-        `Earnings | ${earn}`,
+    const placement = String(s.fnTopPlacement ?? "").trim();
+    const hrs = o.minutesPlayed !== undefined ? Math.round(Number(o.minutesPlayed) / 60) : undefined;
+    // Prioritized; take the first 6 that exist. 👑 = Unreal badge, 💵 = green $
+    // (Discord styles all stat text one color, so an emoji is the only "color").
+    const all = [
+        `Highest Rank | 👑 ${rank}`,
+        `Earnings | 💵 ${earn}`,
+        placement ? `Best (Ch) | ${placement}` : null,
         `Wins | ${fmtNum(o.wins)}`,
         `K/D | ${o.kd !== undefined ? Number(o.kd).toFixed(2) : "—"}`,
-        `Kills | ${fmtNum(o.kills)}`,
-        `Win Rate | ${o.winRate !== undefined ? Number(o.winRate).toFixed(1) + "%" : "—"}`
-    ];
+        hrs !== undefined ? `Playtime | ${fmtNum(hrs)}h` : null,
+        `Kills | ${fmtNum(o.kills)}` // fills a slot only if placement/playtime absent
+    ].filter((x): x is string => !!x);
+    return all.slice(0, 6);
+}
+
+// The small header line above the title: "Fn · Ch6 S3" / "Val" / the app name.
+function slotHeader(tpl: string): string {
+    const s = settings.store as any;
+    if (tpl === "fortnite") { const cs = String(s.fnChapterSeason ?? "").trim(); return cs ? `Fn · ${cs}` : "Fn"; }
+    if (tpl === "valorant") return "Val";
+    return String(s.appName ?? "").trim() || "My Widget";
 }
 
 // Valorant template map (all live from HenrikDev — rank/RR/peak/agent/WR/KD).
@@ -375,7 +389,7 @@ async function republishConfig(slotKey: string): Promise<string | null> {
                 if (found) { assetKey = found; setSlot(slotKey, { ...id, heroAssetKey: found }); }
             } catch { /* fall through with none */ }
         }
-        await apiPatch(`/applications/${id.appId}/widget-configs/${id.configId}`, buildSurfaces(slotKey, assetKey || null));
+        await apiPatch(`/applications/${id.appId}/widget-configs/${id.configId}`, { ...buildSurfaces(slotKey, assetKey || null), display_name: slotHeader(slotKey) });
         await apiPost(`/applications/${id.appId}/widget-configs/${id.configId}/publish`, {});
         return null;
     } catch (e) { return classifyDiscordError(e); }
@@ -442,17 +456,23 @@ async function deployWidget(): Promise<void> {
         if (!SNOWFLAKE.test(id.configId)) { id.configId = await resolveConfigId(id.appId, appName); setSlot(slotKey, id); }
 
         toast("Uploading image + publishing layout…", Toasts.Type.MESSAGE, 3000);
+        // The app NAME is what renders as the small header above the title
+        // (not the config display_name), so set it to "Fn · Ch6 S3" / "Val".
+        try { await apiPatch(`/applications/${id.appId}`, { name: slotHeader(slotKey) }); } catch (e) { console.warn("[DMWidget] app name (non-fatal):", e); }
         // Optional top-left logo (non-fatal; falls back to the default icon).
         await setAppIcon(id.appId, String((settings.store as any).appIconUrl ?? "").trim());
         const imageKey = await uploadHeroAsset(id.appId, String((settings.store as any).heroImageUrl ?? "").trim());
         if (imageKey) { id.heroAssetKey = imageKey; setSlot(slotKey, id); }
         if ((settings.store as any).bottomLayout === "progress" && !imageKey && slotKey === "none")
             toast("Progress-bar mode needs a hero image (it doubles as the goal icon) — showing the stat grid instead. Add a Hero image URL to use the bar.", Toasts.Type.MESSAGE, 8000);
-        await apiPatch(`/applications/${id.appId}/widget-configs/${id.configId}`, buildSurfaces(slotKey, imageKey));
+        await apiPatch(`/applications/${id.appId}/widget-configs/${id.configId}`, { ...buildSurfaces(slotKey, imageKey), display_name: slotHeader(slotKey) });
         await apiPost(`/applications/${id.appId}/widget-configs/${id.configId}/publish`, {});
 
         await authorizeApp(id.appId);
         await attachToProfile(id.appId, me.id);
+
+        // Populate live stats immediately so a fresh game card isn't all "—".
+        if (slotKey === "fortnite" || slotKey === "valorant") await refreshGameSlot(slotKey, false);
 
         // Claim onto the profile identity so others can see it (needs 2FA).
         toast("Claiming widget to your profile (enter 2FA if prompted)…", Toasts.Type.MESSAGE, 4000);
@@ -593,8 +613,10 @@ const settings = definePluginSettings({
             { label: "Xbox", value: "xbl" }
         ]
     },
-    fnUnrealRank: { type: OptionType.STRING, description: "Fortnite (manual — no free API): your ranked/Unreal rank, e.g. 'Unreal #1,234' or just 'Unreal'.", default: "" },
+    fnUnrealRank: { type: OptionType.STRING, description: "Fortnite (manual — no free API): your highest/Unreal rank, e.g. 'Unreal #1,234' or just 'Unreal'.", default: "" },
     fnEarnings: { type: OptionType.STRING, description: "Fortnite (manual — no free API): total career earnings, e.g. '$8,500'. Leave '$0' if none.", default: "$0" },
+    fnChapterSeason: { type: OptionType.STRING, description: "Fortnite (manual): current chapter + season shown in the header, e.g. 'Ch 6 · S3'. Blank = just 'Fn'.", default: "" },
+    fnTopPlacement: { type: OptionType.STRING, description: "Fortnite (manual — no free API): your best tournament placement this chapter, e.g. '15th LCQ'. Blank to skip.", default: "" },
     valRiotId: { type: OptionType.STRING, description: "Valorant: your Riot ID as Name#Tag (e.g. 'Diggy#NA1').", default: "" },
     valApiKey: { type: OptionType.STRING, description: "Valorant: your free HenrikDev API key (get it in the HenrikDev Discord). Stored locally; treat it like a password.", default: "" },
     valRegion: {
