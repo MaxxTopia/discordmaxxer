@@ -357,6 +357,12 @@ function renderPanelHTML(): string {
             <button class="dm-hub-action-btn" data-action="open-tour">Open</button>
         </div>
         <div class="dm-hub-info">Browse featured plugins, enable bundles, and see what each one actually does — no settings-digging required.</div>
+        <div class="dm-hub-section">Profile widget</div>
+        <div class="dm-hub-row">
+            <div class="dm-hub-row-label">🔄 Refresh widget stats</div>
+            <button class="dm-hub-action-btn" data-action="refresh-widget-stats">Refresh</button>
+        </div>
+        <div class="dm-hub-info">Pulls your latest Fortnite / Valorant stats and re-publishes your profile board widget now (it also auto-refreshes every 30 min).</div>
         <div class="dm-hub-section">Maintenance</div>
         <div class="dm-hub-row">
             <div class="dm-hub-row-label">♻️ Reload Discord (frees RAM)</div>
@@ -389,6 +395,12 @@ function ensurePanelRoot() {
             panelRoot!.classList.add("hidden");
             const reopen = (globalThis as any).__dmReopenWelcome;
             if (typeof reopen === "function") reopen();
+            return;
+        }
+        if (t.dataset.action === "refresh-widget-stats") {
+            panelRoot!.classList.add("hidden");
+            const refresh = (globalThis as any).__dmWidgetRefresh;
+            if (typeof refresh === "function") refresh();
             return;
         }
         if (t.classList.contains("dm-hub-toggle") && !t.dataset.locked) {

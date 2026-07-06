@@ -39,7 +39,7 @@ import definePlugin, { OptionType, PluginNative } from "@utils/types";
 import { Button, React, RestAPI, Toasts, UserStore } from "@webpack/common";
 
 import { makePersistentValue } from "../_dm-shared/persist";
-import { DEFAULT_APP_ICONS } from "./logos";
+import { DEFAULT_APP_ICONS, FN_RANK_ICONS } from "./logos";
 
 const Native = VencordNative.pluginHelpers.DMWidget as PluginNative<typeof import("./native")>;
 
@@ -58,9 +58,13 @@ interface WidgetIdentity {
     heroAssetKey: string; // last uploaded hero asset, so refreshes reuse it
     heroImageUrl: string; // per-slot hero source URL (so each slot keeps its own image + preview)
     appIconUrl: string;   // per-slot app-icon URL (so a FN slot can wear an F logo, Valorant its own)
+    rankIconKey: string;  // uploaded rank-badge asset for the current-rank stat cell
+    rankIconName: string; // the rank name that badge is for (skip re-upload until it changes)
+    peakIconKey: string;  // uploaded rank-badge asset for the peak-rank stat cell
+    peakIconName: string;
 }
-const EMPTY_IDENTITY: WidgetIdentity = { appId: "", configId: "", heroAssetKey: "", heroImageUrl: "", appIconUrl: "" };
-const parseId = (raw: any): WidgetIdentity => ({ appId: String(raw?.appId ?? ""), configId: String(raw?.configId ?? ""), heroAssetKey: String(raw?.heroAssetKey ?? ""), heroImageUrl: String(raw?.heroImageUrl ?? ""), appIconUrl: String(raw?.appIconUrl ?? "") });
+const EMPTY_IDENTITY: WidgetIdentity = { appId: "", configId: "", heroAssetKey: "", heroImageUrl: "", appIconUrl: "", rankIconKey: "", rankIconName: "", peakIconKey: "", peakIconName: "" };
+const parseId = (raw: any): WidgetIdentity => ({ appId: String(raw?.appId ?? ""), configId: String(raw?.configId ?? ""), heroAssetKey: String(raw?.heroAssetKey ?? ""), heroImageUrl: String(raw?.heroImageUrl ?? ""), appIconUrl: String(raw?.appIconUrl ?? ""), rankIconKey: String(raw?.rankIconKey ?? ""), rankIconName: String(raw?.rankIconName ?? ""), peakIconKey: String(raw?.peakIconKey ?? ""), peakIconName: String(raw?.peakIconName ?? "") });
 
 // Multiple widgets = one Discord app per game template ("slot"). The slot key
 // IS the gameTemplate value ("fortnite" / "valorant" / "none"), so the template
@@ -123,7 +127,7 @@ function fortniteStatLines(): string[] {
     // Prioritized; take the first 6 that exist. 👑 = Unreal badge, 💵 = green $
     // (Discord styles all stat text one color, so an emoji is the only "color").
     const all = [
-        `Highest Rank | 👑 ${rank}`,
+        `Highest Rank | ${rank}`, // rank badge is drawn as the stat icon (fields.icon)
         `Earnings | 💵 ${earn}`,
         placement ? `Best (Ch) | ${placement}` : null,
         `Wins | ${fmtNum(o.wins)}`,
@@ -134,11 +138,23 @@ function fortniteStatLines(): string[] {
     return all.slice(0, 6);
 }
 
+// Discord rejects an application name containing ":" (and trims to ~60 chars);
+// the widget header IS the app name, so sanitize before any /applications PATCH.
+const sanitizeAppName = (v: string): string => v.replace(/:/g, " ").replace(/\s+/g, " ").trim().slice(0, 60) || "Widget";
+
 // The small header line above the title: "Fn · Ch6 S3" / "Val" / the app name.
 function slotHeader(tpl: string): string {
     const s = settings.store as any;
-    if (tpl === "fortnite") { const cs = String(s.fnChapterSeason ?? "").trim(); return cs ? `Fn · ${cs}` : "Fn"; }
-    if (tpl === "valorant") return "Val";
+    if (tpl === "fortnite") { const cs = String(s.fnChapterSeason ?? "").trim(); return cs ? `Fort · ${cs}` : "Fort"; }
+    if (tpl === "valorant") {
+        // Season line shown above the username title, e.g. "V26 A4 - Ascendant 3".
+        // Rank is appended live from HenrikDev; act/episode is a typed-in field.
+        // NB: the header IS the app name, which Discord forbids ":" in
+        // (APPLICATION_NAME_INVALID_CONTAINS, probed live) — so strip colons and
+        // join with " - " instead.
+        const act = String(s.valActEpisode ?? "").replace(/:/g, " ").replace(/\s+/g, " ").trim();
+        return act ? `Val - ${act}` : "Val";
+    }
     return String(s.appName ?? "").trim() || "My Widget";
 }
 
@@ -252,6 +268,112 @@ async function uploadHeroAsset(appId: string, url: string): Promise<string | nul
 
 const tf = (v: string) => ({ presentation_type: "text", value_type: "custom_string", value: String(v ?? "") });
 const nf = (v: number | string) => ({ presentation_type: "number", value_type: "custom_string", value: String(v) });
+// An image field pointing at an uploaded application asset (rank badge, etc).
+const assetImg = (key: string) => ({ presentation_type: "image", value_type: "application_asset", value: key });
+
+// Valorant competitive tier -> Riot's PERMANENT tier ID (0, 3..27; 1/2 unused).
+// Names match HenrikDev's tier.name (compared case-insensitively). Icons come
+// from valorant-api.com's CORS-open media host; uploadIconAsset's native
+// fallback handles Discord's renderer CSP (same host as the Neon default hero).
+const VAL_TIER_ID: Record<string, number> = {
+    "IRON 1": 3, "IRON 2": 4, "IRON 3": 5,
+    "BRONZE 1": 6, "BRONZE 2": 7, "BRONZE 3": 8,
+    "SILVER 1": 9, "SILVER 2": 10, "SILVER 3": 11,
+    "GOLD 1": 12, "GOLD 2": 13, "GOLD 3": 14,
+    "PLATINUM 1": 15, "PLATINUM 2": 16, "PLATINUM 3": 17,
+    "DIAMOND 1": 18, "DIAMOND 2": 19, "DIAMOND 3": 20,
+    "ASCENDANT 1": 21, "ASCENDANT 2": 22, "ASCENDANT 3": 23,
+    "IMMORTAL 1": 24, "IMMORTAL 2": 25, "IMMORTAL 3": 26,
+    "RADIANT": 27
+};
+// Current competitive-tier icon set. If badges ever 404 after a Riot episode
+// rollover, refresh this: GET valorant-api.com/v1/competitivetiers -> last uuid.
+const VAL_TIER_SET = "03621f52-342b-cf4e-4f86-9350a49c6d04";
+function valRankIconUrl(rankName: string): string | null {
+    const id = VAL_TIER_ID[String(rankName ?? "").trim().toUpperCase().replace(/\s+/g, " ")];
+    return id === undefined ? null : `https://media.valorant-api.com/competitivetiers/${VAL_TIER_SET}/${id}/largeicon.png`;
+}
+
+// Upload an icon image (rank badge) as a reusable "application_asset" under a
+// stable key prefix, deleting prior versions of that same slot first. Mirrors
+// uploadHeroAsset (renderer fetch -> native fallback for CSP-blocked hosts).
+async function uploadIconAsset(appId: string, url: string, keyBase: string): Promise<string | null> {
+    if (!url) return null;
+    let blob: Blob | null = null;
+    try {
+        const r = await fetch(url, { credentials: "omit" });
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        blob = await r.blob();
+    } catch {
+        const nat = await Native.fetchImageData(url);
+        if (!("error" in nat)) {
+            try {
+                const bytes = Uint8Array.from(atob(nat.dataBase64), c => c.charCodeAt(0));
+                blob = new Blob([bytes], { type: nat.contentType || "image/png" });
+            } catch { /* fall through */ }
+        }
+    }
+    if (!blob) return null;
+    const ext = (blob.type || "").includes("jpeg") ? "jpg" : (blob.type || "").includes("webp") ? "webp" : "png";
+    try {
+        const list = await apiGet(`/applications/${appId}/assets`);
+        const arr: any[] = Array.isArray(list) ? list : list?.assets ?? [];
+        for (const a of arr) {
+            const k = String(a.key ?? a.name ?? ""); const aid = a.id ?? a.asset_id;
+            if (k.startsWith(keyBase) && aid) { try { await RestAPI.del({ url: `/applications/${appId}/assets/${aid}` }); } catch { /* ignore */ } }
+        }
+    } catch { /* ignore */ }
+    const key = keyBase + Date.now();
+    const slot = await apiPost(`/applications/${appId}/assets/upload`, { filename: `${key}.${ext}`, file_size: blob.size });
+    const put = await fetch(slot.upload_url, { method: "PUT", body: blob });
+    if (!put.ok) return null;
+    const asset = await apiPost(`/applications/${appId}/assets`, { key, upload_filename: slot.upload_filename, visibility: "public" });
+    return String(asset?.key ?? key);
+}
+
+// Map the typed Fortnite rank text to a baked badge (keyword match). "Legend(s)"
+// wins over plain "unreal" so Unreal Legends shows its own crown.
+function fnRankIconDataUri(rankText: string): string | null {
+    const t = String(rankText ?? "").toLowerCase();
+    if (t.includes("legend")) return FN_RANK_ICONS["unreal legends"] ?? null;
+    for (const k of ["unreal", "champion", "elite", "diamond", "platinum", "gold", "silver", "bronze"])
+        if (t.includes(k)) return FN_RANK_ICONS[k] ?? null;
+    return null;
+}
+
+// Upload the badge for the current Fortnite rank onto the FN slot (one stat icon;
+// FN has no peak). Only re-uploads when the typed rank changes.
+async function syncFortniteRankIcon(slotKey: string): Promise<void> {
+    const id = getSlot(slotKey);
+    if (!SNOWFLAKE.test(id.appId)) return;
+    const rankText = String((settings.store as any).fnUnrealRank ?? "").trim();
+    if (!rankText || rankText === id.rankIconName) return;
+    const uri = fnRankIconDataUri(rankText);
+    if (!uri) return;
+    const k = await uploadIconAsset(id.appId, uri, "rankicon");
+    if (k) setSlot(slotKey, { ...id, rankIconKey: k, rankIconName: rankText });
+}
+
+// Make sure the Valorant slot has uploaded rank badges for the current + peak
+// rank (only re-uploads when the rank name actually changes, to avoid asset
+// churn / rate limits). Call after valStats is refreshed, before republishing.
+async function syncValorantRankIcons(slotKey: string): Promise<void> {
+    const id = getSlot(slotKey);
+    if (!SNOWFLAKE.test(id.appId)) return;
+    const o = valStats ?? {};
+    const next = { ...id }; let changed = false;
+    const rn = String(o.rank ?? "").trim();
+    if (rn && rn !== id.rankIconName) {
+        const url = valRankIconUrl(rn);
+        if (url) { const k = await uploadIconAsset(id.appId, url, "rankicon"); if (k) { next.rankIconKey = k; next.rankIconName = rn; changed = true; } }
+    }
+    const pn = String(o.peak ?? "").trim();
+    if (pn && pn !== id.peakIconName) {
+        const url = valRankIconUrl(pn);
+        if (url) { const k = await uploadIconAsset(id.appId, url, "peakicon"); if (k) { next.peakIconKey = k; next.peakIconName = pn; changed = true; } }
+    }
+    if (changed) setSlot(slotKey, next);
+}
 
 // Read an image URL into a base64 data URI (for the application icon PATCH,
 // which — unlike the widget hero — takes an inline data URI, not an asset key).
@@ -287,7 +409,7 @@ async function setAppIcon(appId: string, src: string): Promise<void> {
     }
 }
 
-function buildSurfaces(tpl: string, imageKey: string | null) {
+function buildSurfaces(tpl: string, imageKey: string | null, opts?: { titleIconKey?: string }) {
     const s = settings.store as any;
     const img = imageKey
         ? { presentation_type: "image", value_type: "application_asset", value: imageKey }
@@ -317,6 +439,18 @@ function buildSurfaces(tpl: string, imageKey: string | null) {
         if (raw) { const p = raw.indexOf("|"); if (p >= 0) { label = raw.slice(0, p).trim(); value = raw.slice(p + 1).trim(); } else value = raw; if (!firstStat) firstStat = label ? `${label}: ${value}` : value; }
         stats[`stat_${i}`] = { fields: { value: tf(value), label: tf(label) } };
     }
+    // Rank badges next to the rank cells (Marvel-Rivals style). Valorant's stat
+    // order is fixed (Rank=1, Peak Rank=3); the badge asset keys live on the slot.
+    if (tpl === "valorant") {
+        const slot = getSlot(tpl);
+        if (slot.rankIconKey && stats.stat_1) stats.stat_1.fields.icon = assetImg(slot.rankIconKey);
+        if (slot.peakIconKey && stats.stat_3) stats.stat_3.fields.icon = assetImg(slot.peakIconKey);
+    }
+    if (tpl === "fortnite") {
+        // Highest Rank (stat_1) wears the Fortnite rank badge.
+        const slot = getSlot(tpl);
+        if (slot.rankIconKey && stats.stat_1) stats.stat_1.fields.icon = assetImg(slot.rankIconKey);
+    }
 
     // widget_bottom is a SINGLE slot: either the stat grid OR a progress bar
     // (verified live 2026-07). Progress needs an objective IMAGE (an uploaded
@@ -339,9 +473,14 @@ function buildSurfaces(tpl: string, imageKey: string | null) {
     // widget_top: hero (image bleeds off the right edge, banner-style) OR
     // contained (image boxed beside the title) — verified live 2026-07. The
     // preview + popout stay on the hero layout (proven; independent surfaces).
+    // Optionally hang a badge (rank icon) on the title itself, next to the app
+    // icon — same application_asset mechanism the stat cells use. Experimental:
+    // publishSurfaces retries WITHOUT it if Discord rejects a title icon.
+    const titleFields: any = { text: tf(title) };
+    if (opts?.titleIconKey) titleFields.icon = assetImg(opts.titleIconKey);
     const widget_top = s.topLayout === "contained"
-        ? { layout: "widget_top_contained", components: { contained_image: { fields: { image: img } }, title: { fields: { text: tf(title) } } } }
-        : { layout: "widget_top_hero", components: { hero_image: { fields: { image: img } }, title: { fields: { text: tf(title) } } } };
+        ? { layout: "widget_top_contained", components: { contained_image: { fields: { image: img } }, title: { fields: titleFields } } }
+        : { layout: "widget_top_hero", components: { hero_image: { fields: { image: img } }, title: { fields: titleFields } } };
 
     return {
         surfaces: {
@@ -352,6 +491,27 @@ function buildSurfaces(tpl: string, imageKey: string | null) {
             mini_profile: { layout: "mini_profile_hero_stat", components: { hero_image: { fields: { image: img } }, stat: { fields: { text: tf(firstStat || (s.bottomLayout === "progress" ? String(s.progressLabel ?? "").trim() : "") || title) } } } }
         }
     };
+}
+
+// Patch the widget config then publish it. For game slots we try to put a rank
+// badge in the TITLE (next to the app icon); if Discord's schema rejects a title
+// icon, we retry text-only so a deploy never bricks over an experimental field.
+async function publishSurfaces(appId: string, configId: string, slotKey: string, assetKey: string | null) {
+    // Title icons are NOT supported by Discord's widget schema — probed live
+    // (title.fields.icon / a sibling icon component / title.badge all return
+    // WIDGET_CONFIG_UNKNOWN_FIELD/COMPONENT). The top of the card only takes the
+    // app icon + hero image, so we never attempt a title icon. (Kept as a no-op
+    // so the fallback plumbing stays harmless if Discord ever adds the field.)
+    const titleIconKey = "";
+    const base = { display_name: slotHeader(slotKey) };
+    try {
+        await apiPatch(`/applications/${appId}/widget-configs/${configId}`, { ...buildSurfaces(slotKey, assetKey, { titleIconKey }), ...base });
+    } catch (e) {
+        if (!titleIconKey) throw e;
+        console.warn("[DMWidget] title icon rejected — retrying text-only:", e);
+        await apiPatch(`/applications/${appId}/widget-configs/${configId}`, { ...buildSurfaces(slotKey, assetKey), ...base });
+    }
+    await apiPost(`/applications/${appId}/widget-configs/${configId}/publish`, {});
 }
 
 async function attachToProfile(appId: string, userId: string) {
@@ -406,8 +566,10 @@ async function republishConfig(slotKey: string): Promise<string | null> {
                 if (found) { assetKey = found; setSlot(slotKey, { ...id, heroAssetKey: found }); }
             } catch { /* fall through with none */ }
         }
-        await apiPatch(`/applications/${id.appId}/widget-configs/${id.configId}`, { ...buildSurfaces(slotKey, assetKey || null), display_name: slotHeader(slotKey) });
-        await apiPost(`/applications/${id.appId}/widget-configs/${id.configId}/publish`, {});
+        // The rendered header line is the app NAME (not display_name), so keep it
+        // current on every refresh — e.g. Valorant's "Act 3 Ep 3: <live rank>".
+        try { await apiPatch(`/applications/${id.appId}`, { name: sanitizeAppName(slotHeader(slotKey)) }); } catch (e) { lastResult = "⚠ header rename failed: " + classifyDiscordError(e); console.warn("[DMWidget] header name:", e); }
+        await publishSurfaces(id.appId, id.configId, slotKey, assetKey || null);
         return null;
     } catch (e) { return classifyDiscordError(e); }
 }
@@ -425,6 +587,9 @@ async function refreshGameSlot(tpl: string, announce = false): Promise<void> {
         const res = await Native.fetchFortniteStats(ign, key, String(s.fnAccountType ?? "epic"));
         if ("error" in res) { toast(`Fortnite stats: ${res.error}`, Toasts.Type.FAILURE, 8000); return; }
         fnStats = res.overall;
+        // Upload the current rank badge before republishing so buildSurfaces can
+        // hang it on the Highest Rank stat cell.
+        await syncFortniteRankIcon(tpl);
     } else {
         const riot = String(s.valRiotId ?? "").trim(); const key = String(s.valApiKey ?? "").trim();
         const hash = riot.indexOf("#");
@@ -432,6 +597,9 @@ async function refreshGameSlot(tpl: string, announce = false): Promise<void> {
         const res = await Native.fetchValorantStats(riot.slice(0, hash), riot.slice(hash + 1), String(s.valRegion ?? "na"), "pc", key);
         if ("error" in res) { toast(res.error, Toasts.Type.FAILURE, 8000); return; }
         valStats = res.overall;
+        // Upload/refresh the current + peak rank badges before we republish so
+        // buildSurfaces can hang them on the Rank / Peak Rank stat cells.
+        await syncValorantRankIcons(tpl);
     }
 
     const err = await republishConfig(tpl);
@@ -475,7 +643,7 @@ async function deployWidget(): Promise<void> {
         toast("Uploading image + publishing layout…", Toasts.Type.MESSAGE, 3000);
         // The app NAME is what renders as the small header above the title
         // (not the config display_name), so set it to "Fn · Ch6 S3" / "Val".
-        try { await apiPatch(`/applications/${id.appId}`, { name: slotHeader(slotKey) }); } catch (e) { console.warn("[DMWidget] app name (non-fatal):", e); }
+        try { await apiPatch(`/applications/${id.appId}`, { name: sanitizeAppName(slotHeader(slotKey)) }); } catch (e) { lastResult = "⚠ header rename failed: " + classifyDiscordError(e); console.warn("[DMWidget] app name:", e); }
         // Per-slot media: remember the URLs on THIS slot so switching slots keeps
         // each widget's own hero/icon (FN and Valorant no longer share one image).
         const iconUrl = String((settings.store as any).appIconUrl ?? "").trim();
@@ -493,8 +661,7 @@ async function deployWidget(): Promise<void> {
         if (imageKey) { id.heroAssetKey = imageKey; setSlot(slotKey, id); }
         if ((settings.store as any).bottomLayout === "progress" && !imageKey && slotKey === "none")
             toast("Progress-bar mode needs a hero image (it doubles as the goal icon) — showing the stat grid instead. Add a Hero image URL to use the bar.", Toasts.Type.MESSAGE, 8000);
-        await apiPatch(`/applications/${id.appId}/widget-configs/${id.configId}`, { ...buildSurfaces(slotKey, imageKey), display_name: slotHeader(slotKey) });
-        await apiPost(`/applications/${id.appId}/widget-configs/${id.configId}/publish`, {});
+        await publishSurfaces(id.appId, id.configId, slotKey, imageKey);
 
         await authorizeApp(id.appId);
         await attachToProfile(id.appId, me.id);
@@ -542,7 +709,7 @@ const SHAREABLE = [
     "stat1", "stat2", "stat3", "stat4", "stat5", "stat6",
     "progressLabel", "progressPercent", "heroImageUrl", "appIconUrl",
     "fnIgn", "fnAccountType", "fnUnrealRank", "fnEarnings", "fnChapterSeason", "fnTopPlacement",
-    "valRiotId", "valRegion"
+    "valRiotId", "valRegion", "valActEpisode"
 ] as const;
 
 // UTF-8-safe base64 (btoa/atob are latin1-only; emoji/katakana in titles break it).
@@ -732,6 +899,7 @@ const settings = definePluginSettings({
             { label: "Brazil", value: "br" }
         ]
     },
+    valActEpisode: { type: OptionType.STRING, description: "Season line shown above your name, e.g. 'Act 3 Ep 3' or 'E9 A3'. Your current rank is added automatically (-> 'Act 3 Ep 3: Ascendant 3'). Leave blank for just 'Val'.", default: "", hidden() { return (this.store as any).gameTemplate !== "valorant"; } },
     appName: {
         type: OptionType.STRING,
         description: "A name for this widget (shows as a small header line). Use a name you OWN - never a real brand like Discord/Steam/Nitro; Discord bans accounts for that.",
@@ -790,8 +958,18 @@ export default definePlugin({
     start() {
         setTimeout(() => { refreshAllGames(); }, 20_000);
         fnRefreshTimer = setInterval(() => { refreshAllGames(); }, 30 * 60_000);
+        // Let DMHub (or any surface) trigger a manual stats refresh — mirrors the
+        // __dmReopenWelcome hook DMWelcome exposes for the hub's "Open Tour" row.
+        (globalThis as any).__dmWidgetRefresh = async () => {
+            await ensureSlots();
+            if (deployedGameSlots().length === 0) { toast("No game widget deployed yet — Create one first (Fortnite / Valorant).", Toasts.Type.MESSAGE, 6000); return; }
+            toast("Refreshing your widget stats…", Toasts.Type.MESSAGE, 3000);
+            await refreshAllGames();
+            toast("Widget stats refreshed.", Toasts.Type.SUCCESS, 4000);
+        };
     },
     stop() {
         if (fnRefreshTimer) { clearInterval(fnRefreshTimer); fnRefreshTimer = null; }
+        delete (globalThis as any).__dmWidgetRefresh;
     }
 });
