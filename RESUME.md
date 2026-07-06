@@ -5,7 +5,7 @@
 > `CLAUDE.md` ("Operational facts" section). Those three are enough to build,
 > ship, and maintain without prior context.
 
-## Current state — v0.7.49 (LIVE, latest published release)
+## Current state — v0.7.50 (LIVE, latest published release)
 
 Mature, shipping Vesktop fork (Electron 41 + bundled Vencord, pinned to a main
 COMMIT). ~30+ Vencord plugins enabled by default + ~24 custom plugins. Repo:
@@ -36,6 +36,11 @@ Recent shipped work (2026-06-26/27):
   API keys/token. DMHub gains a "Refresh widget stats" button. Model B (per-user,
   self-owned app; bot token minted via 2FA, used once, never stored). Undocumented
   pre-GA Discord surface, gated behind an in-plugin experimental warning.
+- **v0.7.50** — DMWidget follow-ups: "Move to top" button to reorder profile-board cards
+  (front of the widgets array = top, verified live); cross-account deploy auto-creates a
+  fresh app when a slot points at an app another account owns (switch account + Create,
+  no manual reset); copy/paste share code now carries per-slot hero + app-icon images
+  (true visual clone; only API keys re-entered by design).
 
 ## Self-maintenance (built 2026-06-27 — see TROUBLESHOOTING.md "Self-maintenance")
 
