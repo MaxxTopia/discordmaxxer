@@ -43,6 +43,14 @@ import { DEFAULT_APP_ICONS } from "./logos";
 
 const Native = VencordNative.pluginHelpers.DMWidget as PluginNative<typeof import("./native")>;
 
+// Default hero render per game — used when you haven't pasted your own image URL,
+// so a game card looks finished on first Create. A direct URL (not baked base64;
+// full agent portraits are ~800KB); uploadHeroAsset's native fetch handles the
+// CORS-blocked host. Neon = official valorant-api.com full portrait.
+const DEFAULT_HEROES: Record<string, string> = {
+    valorant: "https://media.valorant-api.com/agents/bb2a4828-46eb-8cd1-e765-15848195d751/fullportrait.png"
+};
+
 // ---- local (per-user) identity: the self-owned app + its widget config ------
 interface WidgetIdentity {
     appId: string;
@@ -471,7 +479,9 @@ async function deployWidget(): Promise<void> {
         // Per-slot media: remember the URLs on THIS slot so switching slots keeps
         // each widget's own hero/icon (FN and Valorant no longer share one image).
         const iconUrl = String((settings.store as any).appIconUrl ?? "").trim();
-        const heroUrl = String((settings.store as any).heroImageUrl ?? "").trim();
+        // Your pasted hero wins; otherwise fall back to the game's default render
+        // (e.g. Valorant -> Neon) so a fresh game card isn't blank.
+        const heroUrl = String((settings.store as any).heroImageUrl ?? "").trim() || DEFAULT_HEROES[slotKey] || "";
         id.heroImageUrl = heroUrl; id.appIconUrl = iconUrl; setSlot(slotKey, id);
         // Top-left logo: your custom icon if set, otherwise the game's baked logo
         // (Fortnite F / Valorant V) so a game card auto-brands with no image hosting.
