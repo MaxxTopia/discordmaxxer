@@ -660,10 +660,13 @@ async function deployWidget(): Promise<void> {
         try { await apiPatch(`/applications/${id.appId}`, { name: sanitizeAppName(slotHeader(slotKey)) }); } catch (e) { lastResult = "⚠ header rename failed: " + classifyDiscordError(e); console.warn("[DMWidget] app name:", e); }
         // Per-slot media: remember the URLs on THIS slot so switching slots keeps
         // each widget's own hero/icon (FN and Valorant no longer share one image).
-        const iconUrl = String((settings.store as any).appIconUrl ?? "").trim();
+        const iconUrl = String((settings.store as any).appIconUrl ?? "").trim() || id.appIconUrl || "";
         // Your pasted hero wins; otherwise fall back to the game's default render
         // (e.g. Valorant -> Neon) so a fresh game card isn't blank.
-        const heroUrl = String((settings.store as any).heroImageUrl ?? "").trim() || DEFAULT_HEROES[slotKey] || "";
+        // Typed field wins; else the slot's remembered/imported hero; else the
+        // game default. Lets an imported widget deploy its original picture even
+        // when the Hero URL box is empty.
+        const heroUrl = String((settings.store as any).heroImageUrl ?? "").trim() || id.heroImageUrl || DEFAULT_HEROES[slotKey] || "";
         id.heroImageUrl = heroUrl; id.appIconUrl = iconUrl; setSlot(slotKey, id);
         // Top-left logo: your custom icon if set, otherwise the game's baked logo
         // (Fortnite F / Valorant V) so a game card auto-brands with no image hosting.
@@ -734,6 +737,16 @@ function exportConfig(): string {
     const s = settings.store as any;
     const o: Record<string, any> = {};
     for (const k of SHAREABLE) o[k] = s[k];
+    // Per-slot media (hero + app-icon URLs) so a paste reproduces each card's
+    // look on another account. Only the URLs travel — never appId, asset keys,
+    // or tokens, which are account-bound.
+    const media: Record<string, { heroImageUrl: string; appIconUrl: string; }> = {};
+    const cur = slots.get();
+    for (const key of Object.keys(cur)) {
+        const v = cur[key];
+        if (v && (v.heroImageUrl || v.appIconUrl)) media[key] = { heroImageUrl: v.heroImageUrl || "", appIconUrl: v.appIconUrl || "" };
+    }
+    if (Object.keys(media).length) o.__slots = media;
     return "DMW1:" + b64encode(JSON.stringify(o));
 }
 
@@ -748,6 +761,18 @@ function importConfig(code: string): string | null {
     const s = settings.store as any;
     let n = 0;
     for (const k of SHAREABLE) if (k in obj) { s[k] = obj[k]; n++; }
+    // Restore per-slot hero/icon URLs so Create reproduces each card's image.
+    // Never import appId/assetKeys/tokens — keep any real deploy intact, only
+    // seed the media URLs so the next Create re-uploads the same picture.
+    const media = obj.__slots;
+    if (media && typeof media === "object") {
+        for (const key of Object.keys(media)) {
+            const m = media[key] || {};
+            const existing = getSlot(key);
+            setSlot(key, { ...existing, heroImageUrl: String(m.heroImageUrl ?? existing.heroImageUrl ?? ""), appIconUrl: String(m.appIconUrl ?? existing.appIconUrl ?? "") });
+            n++;
+        }
+    }
     if (!n) return "No widget fields found in that code.";
     return null;
 }
@@ -851,17 +876,19 @@ function WidgetEditor() {
             <div style={{ borderTop: "1px solid var(--background-modifier-accent)", paddingTop: 10, display: "flex", flexDirection: "column", gap: 6 }}>
                 <div style={{ fontSize: 12.5, color: "var(--text-muted)", lineHeight: 1.45 }}>
                     <b style={{ color: "var(--text-normal)" }}>Move this widget to another account.</b> Copy the code here, paste it into the
-                    “Import code” box on your other account, and hit Import. The code carries your card’s <i>content only</i> — never your app,
-                    bot token, or API keys, so you’ll re-enter the game key + hit Create there.
+                    “Import code” box on your other account, and hit Import. The code carries your card’s content <i>and images</i> — never your app,
+                    bot token, or API keys, so on the other account you just re-enter your game API key and hit Create.
                 </div>
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                     <Button disabled={busy} color={Button.Colors.PRIMARY} onClick={() => run(async () => {
+                        await ensureSlots();
                         const code = exportConfig();
                         const ok = await copyText(code);
                         toast(ok ? "Widget code copied to clipboard — paste it into the Import box on your other account." : "Clipboard blocked — the code is shown below, select and copy it manually.", ok ? Toasts.Type.SUCCESS : Toasts.Type.MESSAGE, 8000);
                         lastResult = (ok ? "✅ Copied widget code:\n" : "⚠ Copy this widget code:\n") + code;
                     })}>Copy this widget</Button>
                     <Button disabled={busy} color={Button.Colors.PRIMARY} onClick={() => run(async () => {
+                        await ensureSlots();
                         const err = importConfig((settings.store as any).importCode ?? "");
                         if (err) { toast(err, Toasts.Type.FAILURE, 7000); return; }
                         toast("Widget content imported. Review the fields above, re-enter your game API key if it’s a game card, then hit Create/Update.", Toasts.Type.SUCCESS, 9000);
