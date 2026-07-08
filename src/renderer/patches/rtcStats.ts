@@ -28,6 +28,43 @@ const PC_REGISTRY: Array<WeakRef<RTCPeerConnection>> = [];
 
 let patched = false;
 
+// ── Passive voice-outage detector (feeds the one-tap failover system) ────────
+// When voice transport breaks for EVERYONE (the DAVE/zstd class), peer
+// connections repeatedly fail to establish. We watch connection state on every
+// tracked PC and, after a few failures with NO recent success, report a single
+// anonymous signature to the resilience worker (via main — renderer CSP blocks a
+// direct POST). Conservative + cooldowned so a one-off screenshare hiccup can't
+// spam, and the worker only alerts once MANY users report the same thing. This
+// only OBSERVES state; it never touches the connection.
+const FAIL_THRESHOLD = 3;
+const SUCCESS_GRACE_MS = 45_000;
+const REPORT_COOLDOWN_MS = 30 * 60_000;
+let lastConnectSuccessTs = 0;
+let failStreak = 0;
+let lastIncidentReportTs = 0;
+
+function noteConnectionState(state: string) {
+    const now = Date.now();
+    if (state === "connected" || state === "completed") {
+        lastConnectSuccessTs = now;
+        failStreak = 0;
+        return;
+    }
+    if (state !== "failed") return;
+    failStreak++;
+    const noRecentSuccess = now - lastConnectSuccessTs > SUCCESS_GRACE_MS;
+    const pastCooldown = now - lastIncidentReportTs > REPORT_COOLDOWN_MS;
+    if (failStreak >= FAIL_THRESHOLD && noRecentSuccess && pastCooldown) {
+        lastIncidentReportTs = now;
+        failStreak = 0;
+        try {
+            (window as any).VesktopNative?.resilience?.reportVoiceIncident?.("voice-connect-fail");
+        } catch {
+            /* best-effort; the detector must never affect voice */
+        }
+    }
+}
+
 export function installRtcStatsTracker() {
     if (patched) return;
     patched = true;
@@ -49,6 +86,15 @@ export function installRtcStatsTracker() {
             }
         } catch {
             /* never let telemetry break a real connection */
+        }
+        // Passive outage detector — observe connection state only.
+        try {
+            pc.addEventListener("connectionstatechange", () => noteConnectionState(pc.connectionState));
+            pc.addEventListener("iceconnectionstatechange", () => {
+                if (pc.iceConnectionState === "failed") noteConnectionState("failed");
+            });
+        } catch {
+            /* detector is best-effort; never affect the connection */
         }
         return pc;
     }

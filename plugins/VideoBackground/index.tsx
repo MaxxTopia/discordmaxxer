@@ -85,6 +85,27 @@ let localBlobUrl: string | null = null;
 // auto-clear the URL — making toggle-off then toggle-on look broken.
 let tearingDown = false;
 
+// TournamentMode integration: a full-window looping video keeps the GPU
+// decoding during a match — exactly the cost TM exists to kill (the rest of the
+// suite pauses animated content in TM; this brings VideoBackground in line). We
+// PAUSE rather than tear down, so leaving TM resumes instantly with no re-buffer,
+// and the last frame stays behind the chrome (avoids the "transparent chrome with
+// nothing behind = looks like a crash" trap). A light poll flips it back on TM
+// off. Mirrors DMProfileFlair's TM read.
+let tmPollTimer: ReturnType<typeof setInterval> | null = null;
+function isTournamentModeActive(): boolean {
+    return !!(globalThis as any).Vencord?.PlainSettings?.plugins?.TournamentMode?.manuallyActive;
+}
+function reconcileTournamentMode() {
+    if (!videoEl) return;
+    const tm = isTournamentModeActive();
+    if (tm && !videoEl.paused) {
+        videoEl.pause();
+    } else if (!tm && videoEl.paused && settings.store.enable && hasTier(REQUIRED_TIER)) {
+        videoEl.play().catch(() => { /* autoplay policy — harmless, user can toggle */ });
+    }
+}
+
 function buildCss() {
     const opacity = Math.max(0, Math.min(100, settings.store.opacity)) / 100;
     const blur = Math.max(0, Math.min(40, settings.store.blur));
@@ -299,6 +320,14 @@ function refresh() {
             options: { duration: 6000, position: Toasts.Position.TOP }
         });
     };
+
+    // Hold paused while TournamentMode is active — don't spin the GPU mid-match.
+    // The poll (started in start()) resumes it the moment TM turns off.
+    if (isTournamentModeActive()) {
+        videoEl.pause();
+        console.log("[VideoBackground] TournamentMode active — holding video paused to free GPU");
+        return;
+    }
 
     videoEl.play().then(() => {
         console.log("[VideoBackground] play() resolved — video is playing");
@@ -572,7 +601,7 @@ const settings = definePluginSettings({
     videoUrl: {
         type: OptionType.STRING,
         description:
-            "Video URL — http(s):// path. Or use the 'Upload local video' button below to play a file off your disk (kept in memory only, not persisted).",
+            "Video URL — must be a DIRECT video file (link ends in .mp4/.webm). A YouTube or web-page link will NOT work (those serve a page, not the video). Or use the 'Upload local video' button below to play a file off your disk (kept in memory only, not persisted).",
         default: "",
         onChange: refresh
     },
@@ -659,9 +688,14 @@ export default definePlugin({
     start() {
         style = createAndAppendStyle("dm-video-background", managedStyleRootNode);
         refresh();
+        // Poll TM state so toggling TournamentMode pauses/resumes the video
+        // without needing a settings change. Cheap (a property read); no-ops when
+        // no video is playing.
+        tmPollTimer = setInterval(reconcileTournamentMode, 1000);
     },
 
     stop() {
+        if (tmPollTimer) { clearInterval(tmPollTimer); tmPollTimer = null; }
         tearDownVideo();
         if (localBlobUrl) {
             URL.revokeObjectURL(localBlobUrl);

@@ -49,6 +49,10 @@ export const VesktopNative = {
             ipcRenderer.on(IpcEvents.VESKTOP_RENDERER_CSS_UPDATE, (_e, newCss: string) => cb(newCss));
         }
     },
+    resilience: {
+        // Renderer voice-fail detector -> main -> worker /incident (anon count).
+        reportVoiceIncident: (sig: string) => invoke<void>(IpcEvents.DM_REPORT_INCIDENT, sig)
+    },
     autostart: {
         isEnabled: () => sendSync<boolean>(IpcEvents.AUTOSTART_ENABLED),
         enable: () => invoke<void>(IpcEvents.ENABLE_AUTOSTART),

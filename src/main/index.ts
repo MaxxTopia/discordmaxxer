@@ -21,6 +21,7 @@ import { app, BrowserWindow, nativeTheme } from "electron";
 
 import { DATA_DIR } from "./constants";
 import { seedDiscordmaxxerDefaults } from "./discordmaxxerDefaults";
+import { applyRemoteLaunchFlags, refreshRemoteConfig } from "./remoteConfig";
 import { createFirstLaunchTour } from "./firstLaunch";
 import { createWindows, mainWin } from "./mainWindow";
 import { registerMediaPermissionsHandler } from "./mediaPermissions";
@@ -136,6 +137,15 @@ function init() {
     disabledFeatures.add("ZstdContentEncoding");
     disabledFeatures.add("SharedZstd");
 
+    // Resilience remote config (client half of the one-tap voice-failover): let
+    // a pushed config add/remove Chromium feature flags WITHOUT shipping a
+    // release. Reads the on-disk cache synchronously and fail-open (no cache or
+    // any error => no change). Placed here so it composes with the built-in
+    // flags above before they're set on the command line — so a pushed fix can
+    // re-assert the zstd disable, or drop it to test E43's native zstd. The
+    // fresh config is fetched post-ready (refreshRemoteConfig) for the NEXT boot.
+    applyRemoteLaunchFlags(disabledFeatures);
+
     if (isLinux) {
         // Support TTS on Linux using https://wiki.archlinux.org/title/Speech_dispatcher
         app.commandLine.appendSwitch("enable-speech-dispatcher");
@@ -175,6 +185,10 @@ function init() {
         registerMediaPermissionsHandler();
 
         bootstrap();
+
+        // Fetch the fresh resilience config and cache it for next launch.
+        // Fire-and-forget, time-boxed, fail-open — never blocks startup.
+        void refreshRemoteConfig();
 
         app.on("activate", () => {
             if (BrowserWindow.getAllWindows().length === 0) createWindows();
