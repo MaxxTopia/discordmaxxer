@@ -61,4 +61,7 @@
     </dialog>
 </body>
 
-<script type="module" src="./script.js"></script>
+<!-- NOT type="module": module scripts are CORS-fetched, and Electron 43's
+     Chromium refuses CORS for the `vesktop:` scheme, so the module was blocked
+     (net::ERR_FAILED) and no JS ran at all — the Install button did nothing. -->
+<script src="./script.js"></script>
