@@ -239,7 +239,7 @@
         },
         "publish": {
             "provider": "github",
-            "owner": "dtman-gif",
+            "owner": "MaxxTopia",
             "repo": "discordmaxxer",
             "releaseType": "release"
         },

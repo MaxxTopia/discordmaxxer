@@ -9,7 +9,7 @@ import { ipcRenderer } from "electron/renderer";
 import type { IpcMessage, IpcResponse } from "main/ipcCommands";
 import type { Settings } from "shared/settings";
 
-import { IpcEvents } from "../shared/IpcEvents";
+import { IpcEvents, UpdaterCheckResult } from "../shared/IpcEvents";
 import { invoke, sendSync } from "./typedIpc";
 
 type SpellCheckerResultCallback = (word: string, suggestions: string[]) => void;
@@ -41,6 +41,9 @@ export const VesktopNative = {
         getEnableHardwareAcceleration: () => sendSync<boolean>(IpcEvents.GET_ENABLE_HARDWARE_ACCELERATION),
         isOutdated: () => invoke<boolean>(IpcEvents.UPDATER_IS_OUTDATED),
         openUpdater: () => invoke<void>(IpcEvents.UPDATER_OPEN),
+        // Fresh on-demand check that reports its outcome (incl. the error text),
+        // so a failing update check is visible instead of silently doing nothing.
+        checkForUpdates: () => invoke<UpdaterCheckResult>(IpcEvents.DM_UPDATER_CHECK),
         // used by vencord
         getRendererCss: () => invoke<string>(IpcEvents.GET_VESKTOP_RENDERER_CSS),
         onRendererCssUpdate: (cb: (newCss: string) => void) => {
