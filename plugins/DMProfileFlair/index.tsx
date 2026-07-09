@@ -1126,14 +1126,59 @@ function findProfileViewAvatars(): HTMLImageElement[] {
     return out;
 }
 
-/** Given a banner, climb the DOM until we find a container big enough to be
- *  a profile popout / full-profile view (≥280px wide AND ≥300px tall). This
- *  is the element we paint theme colors on. */
+/** Selectors that identify Discord's CHAT message list specifically. A real
+ *  profile popout is portaled into a layer and never lives inside the chat, nor
+ *  contains it.
+ *
+ *  These must be chat-ONLY. Do NOT add generic classes like `scrollerInner` —
+ *  profile popouts have their own scroller using that class, so it matched
+ *  inside the popout, both guards below bailed, and ALL flair silently stopped
+ *  rendering (regression caught in v0.7.53-beta.1). */
+const MESSAGE_AREA_SEL = '[class*="messagesWrapper"], [class*="chatContent"], [class*="messageListItem"]';
+
+/** `el` is, or sits inside, the chat/message area. */
+function isInMessageArea(el: HTMLElement): boolean {
+    return !!el.closest(MESSAGE_AREA_SEL);
+}
+
+/** `el` CONTAINS the message scroller — so it's the chat/app frame, not a
+ *  profile view. Every ancestor above it contains it too, so callers bail. */
+function containsMessageArea(el: HTMLElement): boolean {
+    return !!el.querySelector(MESSAGE_AREA_SEL);
+}
+
+/** Given a banner, resolve the profile popout / full-profile container that we
+ *  paint theme colors + banners onto.
+ *
+ *  BUG THIS GUARDS (2026-07-08): the old version just climbed to the first
+ *  ancestor ≥280x300 with no upper bound. Reacting to a message surfaces your
+ *  own avatar in the chat; the scanner then resolved YOUR user id, climbed past
+ *  the little hover-card, landed on the DM's chat container, and painted your
+ *  profile gradient across the whole conversation (`background-color: <p>
+ *  !important`). Only showed up in DMs with a flair user, only while the
+ *  reaction was rendered. Every viewer toggle has a self-exception, so nothing
+ *  could turn it off short of disabling the plugin.
+ *
+ *  Now: never resolve a container from a banner inside the chat, prefer the
+ *  real popout root, and never return anything that contains the message list. */
 function findProfileContainerFromBanner(banner: HTMLElement): HTMLElement | null {
+    // A banner rendered inside the chat is never a profile-view banner.
+    if (isInMessageArea(banner)) return null;
+
+    // Preferred: the actual popout / full-profile root — bounded and unambiguous.
+    const popout = banner.closest<HTMLElement>(
+        '[class*="user-profile-popout"], [class*="userProfileModal"], [class*="userPopout"], [role="dialog"]'
+    );
+    if (popout && !containsMessageArea(popout)) return popout;
+
+    // Fallback (Discord renamed the popout class): the old size heuristic, but
+    // it may NEVER return the chat/app frame.
     let el: HTMLElement | null = banner.parentElement;
     while (el && el !== document.body) {
         const r = el.getBoundingClientRect();
-        if (r.width >= 280 && r.height >= 300) return el;
+        if (r.width >= 280 && r.height >= 300) {
+            return containsMessageArea(el) ? null : el;
+        }
         el = el.parentElement;
     }
     return null;

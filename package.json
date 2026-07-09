@@ -1,6 +1,6 @@
 {
     "name": "discordmaxxer",
-    "version": "0.7.51",
+    "version": "0.7.57",
     "private": true,
     "description": "Discord, optimized. 7th project in the maxxer suite. Forked from Vesktop.",
     "keywords": [
@@ -239,7 +239,7 @@
         },
         "publish": {
             "provider": "github",
-            "owner": "dtman-gif",
+            "owner": "MaxxTopia",
             "repo": "discordmaxxer",
             "releaseType": "release"
         },

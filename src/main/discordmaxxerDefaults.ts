@@ -18,7 +18,8 @@ const PLUGINS_DEFAULT_ON: string[] = [
     "ClearURLs",
     "AlwaysTrust",
     "ClientTheme",
-    "FriendsSince",
+    // FriendsSince removed 2026-07-08: deleted upstream in Vencord (Discord made
+    // "friends since" a native profile field), so the plugin no longer exists.
     "ImageZoom",
     "TypingTweaks",
     "RelationshipNotifier",

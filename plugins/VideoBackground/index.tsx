@@ -85,6 +85,27 @@ let localBlobUrl: string | null = null;
 // auto-clear the URL — making toggle-off then toggle-on look broken.
 let tearingDown = false;
 
+// TournamentMode integration: a full-window looping video keeps the GPU
+// decoding during a match — exactly the cost TM exists to kill (the rest of the
+// suite pauses animated content in TM; this brings VideoBackground in line). We
+// PAUSE rather than tear down, so leaving TM resumes instantly with no re-buffer,
+// and the last frame stays behind the chrome (avoids the "transparent chrome with
+// nothing behind = looks like a crash" trap). A light poll flips it back on TM
+// off. Mirrors DMProfileFlair's TM read.
+let tmPollTimer: ReturnType<typeof setInterval> | null = null;
+function isTournamentModeActive(): boolean {
+    return !!(globalThis as any).Vencord?.PlainSettings?.plugins?.TournamentMode?.manuallyActive;
+}
+function reconcileTournamentMode() {
+    if (!videoEl) return;
+    const tm = isTournamentModeActive();
+    if (tm && !videoEl.paused) {
+        videoEl.pause();
+    } else if (!tm && videoEl.paused && settings.store.enable && hasTier(REQUIRED_TIER)) {
+        videoEl.play().catch(() => { /* autoplay policy — harmless, user can toggle */ });
+    }
+}
+
 function buildCss() {
     const opacity = Math.max(0, Math.min(100, settings.store.opacity)) / 100;
     const blur = Math.max(0, Math.min(40, settings.store.blur));
@@ -127,7 +148,35 @@ function buildCss() {
             --bg-surface-overlay-tinted: rgba(0, 0, 0, ${sidebarAlpha * 0.55}) !important;
             --bg-surface-raised: rgba(0, 0, 0, ${sidebarAlpha * 0.65}) !important;
             --bg-app-frame: transparent !important;
+
+            /* Discord's CURRENT token family (2025 redesign). The older
+               --background-* / --bg-* names above no longer paint the chat area
+               or the sidebars - these do. Missing them is exactly why the app
+               FRAME went transparent (video visible behind the top bar) while
+               every panel below stayed solid.
+               base-lowest/lower = app frame + chat  -> fully clear.
+               base-low          = channel/sidebar   -> tinted for readability.
+               surface-*         = popouts + modals  -> kept mostly opaque. */
+            --background-base-lowest: transparent !important;
+            --background-base-lower: transparent !important;
+            --background-base-low: rgba(0, 0, 0, ${sidebarAlpha * 0.5}) !important;
+            --background-surface-high: rgba(0, 0, 0, ${sidebarAlpha * 0.6}) !important;
+            --background-surface-higher: rgba(0, 0, 0, ${sidebarAlpha * 0.7}) !important;
+            --background-surface-highest: rgba(0, 0, 0, ${sidebarAlpha * 0.8}) !important;
         }
+
+        /* STRUCTURAL clear, hash-independent. Everything below matches Discord's
+           HASHED classes (bg_d4b6c2), which Discord rotates constantly - that's
+           why this feature silently broke: the old selectors matched nothing and
+           an opaque bg_ layer painted straight over a video that was playing
+           fine. #app-mount is an ID Discord has used forever, and the frame and
+           background layers are its first two levels of children. Clearing those
+           works regardless of what the class hashes are this week.
+           NOTE: never use backticks in this block - it is a template literal. */
+        html body #app-mount,
+        html body #app-mount > div,
+        html body #app-mount > div > div[class*="bg"],
+        html body #app-mount > div > div[class*="app"],
 
         /* Class-selector fallback for structural divs Discord paints
            backgrounds on directly. html prefix raises specificity above
@@ -138,14 +187,25 @@ function buildCss() {
         html body [class*=" appMount"],
         html body [class^="app-"],
         html body [class*=" app-"],
+        /* Modern Discord hashes classes with an UNDERSCORE (app_b1f720,
+           bg_d4b6c2, base_a4d4d9). The hyphen forms above are the OLD format
+           (app-2rEoOp) and match nothing on current Discord, which left the
+           bg_ element opaque and painted right over the video. Keep both.
+           NOTE: no backticks in here - this whole block is a template literal. */
+        html body [class^="app_"],
+        html body [class*=" app_"],
         html body [class^="layers"],
         html body [class*=" layers"],
         html body [class^="layer"]:first-child,
         html body [class*=" layer"]:first-child,
         html body [class^="bg-"],
         html body [class*=" bg-"],
+        html body [class^="bg_"],
+        html body [class*=" bg_"],
         html body [class*="container"][class*="root"],
         html body [class*="base-"][class*="base"],
+        html body [class^="base_"],
+        html body [class*=" base_"],
         html body [class^="chat"][class*="chat"] > [class*="content"],
         html body [class*="chatContent"],
         html body [class*="visualRefresh"],
@@ -227,6 +287,66 @@ function tearDownVideo() {
     if (style) style.textContent = "";
 }
 
+/** Layers that are SUPPOSED to be opaque and sit over the video: the settings
+ *  panel the user enables it from, modals, popouts, and our own toast. Reporting
+ *  those as "the thing covering your video" is useless noise. */
+const IGNORE_FOR_DIAG =
+    '#dm-video-bg, [class*="layerContainer"], [role="dialog"], [class*="modal"], ' +
+    '[class*="popout"], [class*="standardSidebarView"], [class*="toast"]';
+
+/** The video sits at z-index 0 under Discord's chrome, so it is only visible
+ *  because buildCss() forces those backgrounds transparent. When the video is
+ *  demonstrably playing but invisible, some element we DIDN'T clear is painted
+ *  on top. Sample the element stack over the screen centre (skipping layers that
+ *  are opaque by design) and name the first thing with a real background. */
+function logCoverageDiagnostic() {
+    try {
+        const cx = Math.round(window.innerWidth / 2);
+        const cy = Math.round(window.innerHeight / 2);
+        // elementsFromPoint gives the WHOLE stack under the point, top-first, so
+        // we can skip things that are opaque BY DESIGN — the settings panel you
+        // enable the video from, modals, popouts, our own toast — instead of
+        // reporting them as the culprit (which is what the first version did).
+        const stack = (Array.from(document.elementsFromPoint(cx, cy)) as HTMLElement[]).filter(
+            el => !el.closest(IGNORE_FOR_DIAG)
+        );
+        if (!stack.length) {
+            console.log("[VideoBackground] diag: only modal/settings layers over the centre — close settings, then toggle the video off and on.");
+            return;
+        }
+        console.log("[VideoBackground] diag: top non-modal element:", stack[0].tagName, stack[0].className || "(no class)");
+
+        let found = 0;
+        let firstCulprit = "";
+        for (const node of stack) {
+            const s = getComputedStyle(node);
+            const hasBg = s.backgroundColor !== "rgba(0, 0, 0, 0)" && s.backgroundColor !== "transparent";
+            const hasImg = s.backgroundImage !== "none";
+            if (hasBg || hasImg) {
+                const cls = String(node.className || node.tagName);
+                if (!firstCulprit) firstCulprit = cls;
+                found++;
+                console.warn(
+                    `[VideoBackground] diag: OPAQUE -> ${cls}` +
+                    ` | bg=${s.backgroundColor} | img=${s.backgroundImage.slice(0, 48)}`
+                );
+            }
+        }
+        if (found) {
+            toast(
+                `Video is playing, but "${firstCulprit.slice(0, 60)}" is painted over it. ` +
+                "Its background isn't being cleared — report this class.",
+                Toasts.Type.FAILURE,
+                10000
+            );
+        } else {
+            console.log("[VideoBackground] diag: no opaque ancestors — backgrounds are clear. If you still can't see it, check the Opacity slider.");
+        }
+    } catch {
+        /* diagnostic only — never affect playback */
+    }
+}
+
 function refresh() {
     if (!hasTier(REQUIRED_TIER)) {
         console.log("[VideoBackground] refresh: tier check failed (need MAXXER+, got tier from claim cache or hardcoded list)");
@@ -300,8 +420,28 @@ function refresh() {
         });
     };
 
+    // Hold paused while TournamentMode is active — don't spin the GPU mid-match.
+    // The poll (started in start()) resumes it the moment TM turns off. Tell the
+    // user, otherwise enabling the feature looks silently broken.
+    if (isTournamentModeActive()) {
+        videoEl.pause();
+        console.log("[VideoBackground] TournamentMode active — holding video paused to free GPU");
+        Toasts.show({
+            message: "🎮 TournamentMode is on, so the video background is paused to free GPU. Turn TM off to see it.",
+            type: Toasts.Type.MESSAGE,
+            id: Toasts.genId(),
+            options: { duration: 6000, position: Toasts.Position.TOP }
+        });
+        return;
+    }
+
     videoEl.play().then(() => {
         console.log("[VideoBackground] play() resolved — video is playing");
+        // If the video plays but the user can't see it, something opaque is
+        // painted over it. Name it here so diagnosing never needs devtools
+        // spelunking: whatever prints as OPAQUE is what buildCss() failed to
+        // clear (a Discord class we don't cover, or a third-party theme).
+        logCoverageDiagnostic();
     }).catch(e => {
         console.warn("[VideoBackground] play() rejected:", e);
         Toasts.show({
@@ -572,7 +712,11 @@ const settings = definePluginSettings({
     videoUrl: {
         type: OptionType.STRING,
         description:
-            "Video URL — http(s):// path. Or use the 'Upload local video' button below to play a file off your disk (kept in memory only, not persisted).",
+            "Video URL — must be a DIRECT video file (the link itself ends in .mp4 or .webm). " +
+            "YouTube, TikTok and other page links will NOT work: they serve a web page, not a video file. " +
+            "TIP: upload your clip to catbox.moe (or any host that hands back a direct .mp4 link) and paste that link here — " +
+            "a URL keeps working after a restart, unlike a local upload. " +
+            "Or use 'Upload local video' below to play a file off your disk (held in memory only — cleared when you reload or restart Discordmaxxer).",
         default: "",
         onChange: refresh
     },
@@ -659,9 +803,14 @@ export default definePlugin({
     start() {
         style = createAndAppendStyle("dm-video-background", managedStyleRootNode);
         refresh();
+        // Poll TM state so toggling TournamentMode pauses/resumes the video
+        // without needing a settings change. Cheap (a property read); no-ops when
+        // no video is playing.
+        tmPollTimer = setInterval(reconcileTournamentMode, 1000);
     },
 
     stop() {
+        if (tmPollTimer) { clearInterval(tmPollTimer); tmPollTimer = null; }
         tearDownVideo();
         if (localBlobUrl) {
             URL.revokeObjectURL(localBlobUrl);

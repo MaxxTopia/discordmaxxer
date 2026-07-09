@@ -7,7 +7,7 @@
 import { app, BrowserWindow, ipcMain } from "electron";
 import { autoUpdater, UpdateInfo } from "electron-updater";
 import { join } from "path";
-import { IpcEvents, UpdaterIpcEvents } from "shared/IpcEvents";
+import { IpcEvents, UpdaterCheckResult, UpdaterIpcEvents } from "shared/IpcEvents";
 import { Millis } from "shared/utils/millis";
 
 import { State } from "./settings";
@@ -90,6 +90,31 @@ handle(IpcEvents.UPDATER_IS_OUTDATED, () => isOutdated);
 handle(IpcEvents.UPDATER_OPEN, async () => {
     const res = await autoUpdater.checkForUpdates();
     if (res?.isUpdateAvailable && res.updateInfo) openUpdater(res.updateInfo);
+});
+
+/** Manual, on-demand update check that REPORTS ITS RESULT.
+ *
+ *  Why this exists: the only updater surface used to be OutdatedVesktopWarning,
+ *  which renders `if (!isOutdated) return null` — and `isOutdated` is the result
+ *  of the ONE startup check, captured as a promise and never re-evaluated. So if
+ *  the startup check failed (network blip, GitHub 5xx) or simply ran before a
+ *  release existed, there was no button, no error, and no way to retry short of
+ *  restarting the app. A silent failure with no user-visible surface at all.
+ *
+ *  This always runs a fresh check and hands the renderer the outcome, including
+ *  the error text, so the user can see what happened instead of guessing. */
+handle(IpcEvents.DM_UPDATER_CHECK, async (): Promise<UpdaterCheckResult> => {
+    try {
+        const res = await autoUpdater.checkForUpdates();
+        if (res?.isUpdateAvailable && res.updateInfo) {
+            openUpdater(res.updateInfo);
+            return { status: "available", version: res.updateInfo.version };
+        }
+        return { status: "none", version: app.getVersion() };
+    } catch (err: any) {
+        console.error("[Discordmaxxer updater] manual checkForUpdates failed:", err);
+        return { status: "error", error: String(err?.message ?? err) };
+    }
 });
 
 handle(IpcEvents.DM_GET_ALLOW_PRERELEASE, () => State.store.allowPrerelease ?? false);

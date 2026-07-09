@@ -80,6 +80,18 @@ export const enum IpcEvents {
     DM_WIN_AUDIO_SESSIONS = "DM_WIN_AUDIO_SESSIONS",
     DM_WIN_AUDIO_START_PROCESS = "DM_WIN_AUDIO_START_PROCESS",
     DM_WIN_AUDIO_START_EXCLUDE_SELF = "DM_WIN_AUDIO_START_EXCLUDE_SELF",
+    DM_REPORT_INCIDENT = "DM_REPORT_INCIDENT",
+    DM_UPDATER_CHECK = "DM_UPDATER_CHECK",
+}
+
+/** Result of a manual, on-demand update check (DM_UPDATER_CHECK). Reported to the
+ *  renderer so a failing check is visible instead of silently doing nothing. */
+export interface UpdaterCheckResult {
+    status: "available" | "none" | "error";
+    /** The available version, or the current one when already up to date. */
+    version?: string;
+    /** Present only when status === "error". */
+    error?: string;
 }
 
 export const enum UpdaterIpcEvents {
