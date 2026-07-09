@@ -48,11 +48,16 @@ jobs:
             - name: Clone Vencord at pinned commit
               run: |
                   git clone https://github.com/Vendicated/Vencord.git vencord-src
-                  git -C vencord-src checkout e8415d7c64d421616eb6d9081cc9ac05c6d1fb15
+                  git -C vencord-src checkout 94cc541e38905063988094249a40e618f83a12e4
 
             - name: Install Vencord deps
               working-directory: vencord-src
-              run: pnpm install --frozen-lockfile
+              # Vencord pins its OWN (newer) pnpm via its packageManager field.
+              # Enable corepack so `pnpm` here resolves to Vencord's pnpm —
+              # otherwise our older root pnpm rejects Vencord's lockfile format.
+              run: |
+                  corepack enable
+                  pnpm install --frozen-lockfile
 
             # Applies overlay-scripts/rebrand-vencord.mjs (61 patches), syncs
             # plugins/* into vencord-src/src/userplugins/, builds Vencord, and
