@@ -19,6 +19,16 @@ permissions:
 jobs:
     release:
         runs-on: windows-latest
+        # Beta tags MUST be valid semver (v0.7.58-beta.1), because electron-updater
+        # parses every release tag it sees. A non-semver tag (e.g. `beta-v0.7.53`,
+        # which is what we used to dodge this workflow) makes the update check throw
+        # "invalid version" for anyone with the beta opt-in enabled — the check dies
+        # silently and they never get prompted again. That cost a full day (2026-07-09).
+        #
+        # So: use real prerelease semver tags, and skip the stable publish for them.
+        # A tag containing "-" is a prerelease and must never publish to the stable
+        # channel. Non-tag runs (workflow_dispatch) are unaffected.
+        if: ${{ !startsWith(github.ref, 'refs/tags/') || !contains(github.ref_name, '-') }}
 
         steps:
             - uses: actions/checkout@v4
