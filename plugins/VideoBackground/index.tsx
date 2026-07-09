@@ -161,8 +161,9 @@ function buildCss() {
         html body [class*=" app-"],
         /* Modern Discord hashes classes with an UNDERSCORE (app_b1f720,
            bg_d4b6c2, base_a4d4d9). The hyphen forms above are the OLD format
-           (app-2rEoOp) and match nothing on current Discord — which left the
-           `bg_…` element opaque and painted right over the video. Keep both. */
+           (app-2rEoOp) and match nothing on current Discord, which left the
+           bg_ element opaque and painted right over the video. Keep both.
+           NOTE: no backticks in here - this whole block is a template literal. */
         html body [class^="app_"],
         html body [class*=" app_"],
         html body [class^="layers"],
