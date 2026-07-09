@@ -1126,10 +1126,15 @@ function findProfileViewAvatars(): HTMLImageElement[] {
     return out;
 }
 
-/** Selectors for Discord's message list / chat scroller. A real profile popout
- *  is portaled into a layer and NEVER lives inside the chat, nor contains it. */
-const MESSAGE_AREA_SEL =
-    '[class*="messagesWrapper"], [class*="chatContent"], [class*="scrollerInner"], [class*="messageListItem"]';
+/** Selectors that identify Discord's CHAT message list specifically. A real
+ *  profile popout is portaled into a layer and never lives inside the chat, nor
+ *  contains it.
+ *
+ *  These must be chat-ONLY. Do NOT add generic classes like `scrollerInner` —
+ *  profile popouts have their own scroller using that class, so it matched
+ *  inside the popout, both guards below bailed, and ALL flair silently stopped
+ *  rendering (regression caught in v0.7.53-beta.1). */
+const MESSAGE_AREA_SEL = '[class*="messagesWrapper"], [class*="chatContent"], [class*="messageListItem"]';
 
 /** `el` is, or sits inside, the chat/message area. */
 function isInMessageArea(el: HTMLElement): boolean {
