@@ -148,6 +148,21 @@ function buildCss() {
             --bg-surface-overlay-tinted: rgba(0, 0, 0, ${sidebarAlpha * 0.55}) !important;
             --bg-surface-raised: rgba(0, 0, 0, ${sidebarAlpha * 0.65}) !important;
             --bg-app-frame: transparent !important;
+
+            /* Discord's CURRENT token family (2025 redesign). The older
+               --background-* / --bg-* names above no longer paint the chat area
+               or the sidebars - these do. Missing them is exactly why the app
+               FRAME went transparent (video visible behind the top bar) while
+               every panel below stayed solid.
+               base-lowest/lower = app frame + chat  -> fully clear.
+               base-low          = channel/sidebar   -> tinted for readability.
+               surface-*         = popouts + modals  -> kept mostly opaque. */
+            --background-base-lowest: transparent !important;
+            --background-base-lower: transparent !important;
+            --background-base-low: rgba(0, 0, 0, ${sidebarAlpha * 0.5}) !important;
+            --background-surface-high: rgba(0, 0, 0, ${sidebarAlpha * 0.6}) !important;
+            --background-surface-higher: rgba(0, 0, 0, ${sidebarAlpha * 0.7}) !important;
+            --background-surface-highest: rgba(0, 0, 0, ${sidebarAlpha * 0.8}) !important;
         }
 
         /* STRUCTURAL clear, hash-independent. Everything below matches Discord's
@@ -272,22 +287,38 @@ function tearDownVideo() {
     if (style) style.textContent = "";
 }
 
+/** Layers that are SUPPOSED to be opaque and sit over the video: the settings
+ *  panel the user enables it from, modals, popouts, and our own toast. Reporting
+ *  those as "the thing covering your video" is useless noise. */
+const IGNORE_FOR_DIAG =
+    '#dm-video-bg, [class*="layerContainer"], [role="dialog"], [class*="modal"], ' +
+    '[class*="popout"], [class*="standardSidebarView"], [class*="toast"]';
+
 /** The video sits at z-index 0 under Discord's chrome, so it is only visible
  *  because buildCss() forces those backgrounds transparent. When the video is
  *  demonstrably playing but invisible, some element we DIDN'T clear is painted
- *  on top. Log the element over the screen centre plus any ancestor with a
- *  non-transparent background — that names the culprit's class directly. */
+ *  on top. Sample the element stack over the screen centre (skipping layers that
+ *  are opaque by design) and name the first thing with a real background. */
 function logCoverageDiagnostic() {
     try {
         const cx = Math.round(window.innerWidth / 2);
         const cy = Math.round(window.innerHeight / 2);
-        const el = document.elementFromPoint(cx, cy) as HTMLElement | null;
-        console.log("[VideoBackground] diag: element over screen centre:", el?.tagName, el?.className || "(no class)");
+        // elementsFromPoint gives the WHOLE stack under the point, top-first, so
+        // we can skip things that are opaque BY DESIGN — the settings panel you
+        // enable the video from, modals, popouts, our own toast — instead of
+        // reporting them as the culprit (which is what the first version did).
+        const stack = (Array.from(document.elementsFromPoint(cx, cy)) as HTMLElement[]).filter(
+            el => !el.closest(IGNORE_FOR_DIAG)
+        );
+        if (!stack.length) {
+            console.log("[VideoBackground] diag: only modal/settings layers over the centre — close settings, then toggle the video off and on.");
+            return;
+        }
+        console.log("[VideoBackground] diag: top non-modal element:", stack[0].tagName, stack[0].className || "(no class)");
 
-        let node: HTMLElement | null = el;
         let found = 0;
         let firstCulprit = "";
-        for (let i = 0; i < 8 && node; i++) {
+        for (const node of stack) {
             const s = getComputedStyle(node);
             const hasBg = s.backgroundColor !== "rgba(0, 0, 0, 0)" && s.backgroundColor !== "transparent";
             const hasImg = s.backgroundImage !== "none";
@@ -296,14 +327,11 @@ function logCoverageDiagnostic() {
                 if (!firstCulprit) firstCulprit = cls;
                 found++;
                 console.warn(
-                    `[VideoBackground] diag: OPAQUE ancestor -> ${cls}` +
+                    `[VideoBackground] diag: OPAQUE -> ${cls}` +
                     ` | bg=${s.backgroundColor} | img=${s.backgroundImage.slice(0, 48)}`
                 );
             }
-            node = node.parentElement;
         }
-        // Surface it as a toast too — reading devtools shouldn't be a prerequisite
-        // for finding out why your video background is invisible.
         if (found) {
             toast(
                 `Video is playing, but "${firstCulprit.slice(0, 60)}" is painted over it. ` +
