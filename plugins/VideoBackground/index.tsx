@@ -159,14 +159,24 @@ function buildCss() {
         html body [class*=" appMount"],
         html body [class^="app-"],
         html body [class*=" app-"],
+        /* Modern Discord hashes classes with an UNDERSCORE (app_b1f720,
+           bg_d4b6c2, base_a4d4d9). The hyphen forms above are the OLD format
+           (app-2rEoOp) and match nothing on current Discord — which left the
+           `bg_…` element opaque and painted right over the video. Keep both. */
+        html body [class^="app_"],
+        html body [class*=" app_"],
         html body [class^="layers"],
         html body [class*=" layers"],
         html body [class^="layer"]:first-child,
         html body [class*=" layer"]:first-child,
         html body [class^="bg-"],
         html body [class*=" bg-"],
+        html body [class^="bg_"],
+        html body [class*=" bg_"],
         html body [class*="container"][class*="root"],
         html body [class*="base-"][class*="base"],
+        html body [class^="base_"],
+        html body [class*=" base_"],
         html body [class^="chat"][class*="chat"] > [class*="content"],
         html body [class*="chatContent"],
         html body [class*="visualRefresh"],
@@ -262,20 +272,32 @@ function logCoverageDiagnostic() {
 
         let node: HTMLElement | null = el;
         let found = 0;
+        let firstCulprit = "";
         for (let i = 0; i < 8 && node; i++) {
             const s = getComputedStyle(node);
             const hasBg = s.backgroundColor !== "rgba(0, 0, 0, 0)" && s.backgroundColor !== "transparent";
             const hasImg = s.backgroundImage !== "none";
             if (hasBg || hasImg) {
+                const cls = String(node.className || node.tagName);
+                if (!firstCulprit) firstCulprit = cls;
                 found++;
                 console.warn(
-                    `[VideoBackground] diag: OPAQUE ancestor -> ${node.className || node.tagName}` +
+                    `[VideoBackground] diag: OPAQUE ancestor -> ${cls}` +
                     ` | bg=${s.backgroundColor} | img=${s.backgroundImage.slice(0, 48)}`
                 );
             }
             node = node.parentElement;
         }
-        if (!found) {
+        // Surface it as a toast too — reading devtools shouldn't be a prerequisite
+        // for finding out why your video background is invisible.
+        if (found) {
+            toast(
+                `Video is playing, but "${firstCulprit.slice(0, 60)}" is painted over it. ` +
+                "Its background isn't being cleared — report this class.",
+                Toasts.Type.FAILURE,
+                10000
+            );
+        } else {
             console.log("[VideoBackground] diag: no opaque ancestors — backgrounds are clear. If you still can't see it, check the Opacity slider.");
         }
     } catch {
