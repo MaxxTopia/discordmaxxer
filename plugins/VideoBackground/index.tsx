@@ -248,6 +248,41 @@ function tearDownVideo() {
     if (style) style.textContent = "";
 }
 
+/** The video sits at z-index 0 under Discord's chrome, so it is only visible
+ *  because buildCss() forces those backgrounds transparent. When the video is
+ *  demonstrably playing but invisible, some element we DIDN'T clear is painted
+ *  on top. Log the element over the screen centre plus any ancestor with a
+ *  non-transparent background — that names the culprit's class directly. */
+function logCoverageDiagnostic() {
+    try {
+        const cx = Math.round(window.innerWidth / 2);
+        const cy = Math.round(window.innerHeight / 2);
+        const el = document.elementFromPoint(cx, cy) as HTMLElement | null;
+        console.log("[VideoBackground] diag: element over screen centre:", el?.tagName, el?.className || "(no class)");
+
+        let node: HTMLElement | null = el;
+        let found = 0;
+        for (let i = 0; i < 8 && node; i++) {
+            const s = getComputedStyle(node);
+            const hasBg = s.backgroundColor !== "rgba(0, 0, 0, 0)" && s.backgroundColor !== "transparent";
+            const hasImg = s.backgroundImage !== "none";
+            if (hasBg || hasImg) {
+                found++;
+                console.warn(
+                    `[VideoBackground] diag: OPAQUE ancestor -> ${node.className || node.tagName}` +
+                    ` | bg=${s.backgroundColor} | img=${s.backgroundImage.slice(0, 48)}`
+                );
+            }
+            node = node.parentElement;
+        }
+        if (!found) {
+            console.log("[VideoBackground] diag: no opaque ancestors — backgrounds are clear. If you still can't see it, check the Opacity slider.");
+        }
+    } catch {
+        /* diagnostic only — never affect playback */
+    }
+}
+
 function refresh() {
     if (!hasTier(REQUIRED_TIER)) {
         console.log("[VideoBackground] refresh: tier check failed (need MAXXER+, got tier from claim cache or hardcoded list)");
@@ -322,15 +357,27 @@ function refresh() {
     };
 
     // Hold paused while TournamentMode is active — don't spin the GPU mid-match.
-    // The poll (started in start()) resumes it the moment TM turns off.
+    // The poll (started in start()) resumes it the moment TM turns off. Tell the
+    // user, otherwise enabling the feature looks silently broken.
     if (isTournamentModeActive()) {
         videoEl.pause();
         console.log("[VideoBackground] TournamentMode active — holding video paused to free GPU");
+        Toasts.show({
+            message: "🎮 TournamentMode is on, so the video background is paused to free GPU. Turn TM off to see it.",
+            type: Toasts.Type.MESSAGE,
+            id: Toasts.genId(),
+            options: { duration: 6000, position: Toasts.Position.TOP }
+        });
         return;
     }
 
     videoEl.play().then(() => {
         console.log("[VideoBackground] play() resolved — video is playing");
+        // If the video plays but the user can't see it, something opaque is
+        // painted over it. Name it here so diagnosing never needs devtools
+        // spelunking: whatever prints as OPAQUE is what buildCss() failed to
+        // clear (a Discord class we don't cover, or a third-party theme).
+        logCoverageDiagnostic();
     }).catch(e => {
         console.warn("[VideoBackground] play() rejected:", e);
         Toasts.show({
@@ -601,7 +648,11 @@ const settings = definePluginSettings({
     videoUrl: {
         type: OptionType.STRING,
         description:
-            "Video URL — must be a DIRECT video file (link ends in .mp4/.webm). A YouTube or web-page link will NOT work (those serve a page, not the video). Or use the 'Upload local video' button below to play a file off your disk (kept in memory only, not persisted).",
+            "Video URL — must be a DIRECT video file (the link itself ends in .mp4 or .webm). " +
+            "YouTube, TikTok and other page links will NOT work: they serve a web page, not a video file. " +
+            "TIP: upload your clip to catbox.moe (or any host that hands back a direct .mp4 link) and paste that link here — " +
+            "a URL keeps working after a restart, unlike a local upload. " +
+            "Or use 'Upload local video' below to play a file off your disk (held in memory only — cleared when you reload or restart Discordmaxxer).",
         default: "",
         onChange: refresh
     },
