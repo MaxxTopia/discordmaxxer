@@ -1165,19 +1165,30 @@ function findProfileContainerFromBanner(banner: HTMLElement): HTMLElement | null
     // A banner rendered inside the chat is never a profile-view banner.
     if (isInMessageArea(banner)) return null;
 
-    // Preferred: the actual popout / full-profile root — bounded and unambiguous.
-    const popout = banner.closest<HTMLElement>(
+    // The popout root is a BOUND, not the paint target.
+    //
+    // v0.7.54 painted this root directly. That put our gradient behind every
+    // inner layer of the popout: fine on stock Discord (those layers are
+    // transparent), but any theme that gives one of them a background buried the
+    // flair completely. Regression reported 2026-07-09.
+    //
+    // Discord paints its own gradient on an INNER container, so that is what we
+    // must colour too. Climb to it exactly as before, and use the root only to
+    // guarantee we never escape the popout (escaping is how we ended up painting
+    // the whole DM chat container in the first place).
+    const popoutRoot = banner.closest<HTMLElement>(
         '[class*="user-profile-popout"], [class*="userProfileModal"], [class*="userPopout"], [role="dialog"]'
     );
-    if (popout && !containsMessageArea(popout)) return popout;
 
-    // Fallback (Discord renamed the popout class): the old size heuristic, but
-    // it may NEVER return the chat/app frame.
     let el: HTMLElement | null = banner.parentElement;
     while (el && el !== document.body) {
         const r = el.getBoundingClientRect();
         if (r.width >= 280 && r.height >= 300) {
-            return containsMessageArea(el) ? null : el;
+            // Never the chat/app frame.
+            if (containsMessageArea(el)) return null;
+            // If we know the popout root, the target must live inside it.
+            if (popoutRoot && !popoutRoot.contains(el)) return null;
+            return el;
         }
         el = el.parentElement;
     }

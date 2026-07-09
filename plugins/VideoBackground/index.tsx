@@ -16,6 +16,7 @@
  * Local picks are runtime-only — not persisted across reloads.
  */
 
+import * as DataStore from "@api/DataStore";
 import { definePluginSettings } from "@api/Settings";
 import { managedStyleRootNode } from "@api/Styles";
 import { createAndAppendStyle } from "@utils/css";
@@ -453,6 +454,28 @@ function refresh() {
     });
 }
 
+// A blob: URL dies when the page reloads AND when the plugin stops, which is why
+// toggling VideoBackground off and on used to forget your video and make you
+// re-pick it. Stash the File itself in IndexedDB (same store the slots use) and
+// rebuild the blob on start. Survives plugin toggles and app restarts.
+const LOCAL_FILE_KEY = "dm-video-bg-file";
+// Guard the store: a huge file would bloat IndexedDB for a background loop.
+const MAX_PERSIST_BYTES = 200 * 1024 * 1024;
+
+async function restoreLocalFile() {
+    try {
+        // A typed URL wins over a remembered upload — don't clobber it.
+        if (localBlobUrl || settings.store.videoUrl?.trim()) return;
+        const file = await DataStore.get<File>(LOCAL_FILE_KEY);
+        if (!file) return;
+        localBlobUrl = URL.createObjectURL(file);
+        console.log("[VideoBackground] restored saved local video:", file.name || "(unnamed)");
+        refresh();
+    } catch (e) {
+        console.warn("[VideoBackground] could not restore saved local video:", e);
+    }
+}
+
 function pickLocalFile() {
     const input = document.createElement("input");
     input.type = "file";
@@ -462,6 +485,20 @@ function pickLocalFile() {
         if (!file) return;
         if (localBlobUrl) URL.revokeObjectURL(localBlobUrl);
         localBlobUrl = URL.createObjectURL(file);
+
+        if (file.size <= MAX_PERSIST_BYTES) {
+            DataStore.set(LOCAL_FILE_KEY, file).catch(e =>
+                console.warn("[VideoBackground] could not remember local video:", e)
+            );
+        } else {
+            DataStore.del(LOCAL_FILE_KEY).catch(() => {});
+            toast(
+                `That video is ${(file.size / 1_048_576).toFixed(0)}MB — too big to remember between restarts. ` +
+                "It'll play now; paste a direct .mp4 URL to make it stick.",
+                Toasts.Type.MESSAGE,
+                8000
+            );
+        }
         Toasts.show({
             message: `🎬 Loaded local video: ${file.name} (${(file.size / 1_048_576).toFixed(1)} MB)`,
             type: Toasts.Type.SUCCESS,
@@ -479,6 +516,9 @@ function clearLocalFile() {
         URL.revokeObjectURL(localBlobUrl);
         localBlobUrl = null;
     }
+    // Clearing means clearing: forget the remembered upload too, otherwise it
+    // would silently come back on the next start.
+    DataStore.del(LOCAL_FILE_KEY).catch(() => {});
     refresh();
 }
 
@@ -803,6 +843,10 @@ export default definePlugin({
     start() {
         style = createAndAppendStyle("dm-video-background", managedStyleRootNode);
         refresh();
+        // Rebuild the blob for a previously-picked local video (async; calls
+        // refresh() itself once it has one). This is what makes toggling the
+        // plugin off and on remember your video instead of forgetting it.
+        void restoreLocalFile();
         // Poll TM state so toggling TournamentMode pauses/resumes the video
         // without needing a settings change. Cheap (a property read); no-ops when
         // no video is playing.
