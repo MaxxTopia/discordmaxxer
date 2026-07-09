@@ -24,10 +24,13 @@ jobs:
             - uses: actions/checkout@v4
             - uses: pnpm/action-setup@v4 # Install pnpm using packageManager key in package.json
 
-            - name: Use Node.js 20
+            # Node 22, not 20: the pinned Vencord's packageManager is pnpm 11,
+            # which requires Node >= 22.13 (it imports `node:sqlite`). On Node 20
+            # the "Install Vencord deps" step dies with ERR_UNKNOWN_BUILTIN_MODULE.
+            - name: Use Node.js 22
               uses: actions/setup-node@v4
               with:
-                  node-version: 20
+                  node-version: 22
                   cache: "pnpm"
 
             - name: Install dependencies

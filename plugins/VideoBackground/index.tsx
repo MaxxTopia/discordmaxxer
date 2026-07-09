@@ -150,6 +150,18 @@ function buildCss() {
             --bg-app-frame: transparent !important;
         }
 
+        /* STRUCTURAL clear, hash-independent. Everything below matches Discord's
+           HASHED classes (bg_d4b6c2), which Discord rotates constantly — that's
+           why this feature silently broke: the old selectors matched nothing and
+           an opaque `bg_` layer painted straight over a video that was playing
+           fine. `#app-mount` is an ID Discord has used forever, and the frame /
+           background layers are its first two levels of children. Clearing those
+           works regardless of what the class hashes are this week. */
+        html body #app-mount,
+        html body #app-mount > div,
+        html body #app-mount > div > div[class*="bg"],
+        html body #app-mount > div > div[class*="app"],
+
         /* Class-selector fallback for structural divs Discord paints
            backgrounds on directly. html prefix raises specificity above
            single-class theme rules; html body chain raises further. */
