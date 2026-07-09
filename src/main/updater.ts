@@ -154,7 +154,18 @@ function openUpdater(update: UpdateInfo) {
 
     handle(UpdaterIpcEvents.GET_DATA, () => ({ update, version: app.getVersion() }));
     handle(UpdaterIpcEvents.INSTALL, async () => {
-        await autoUpdater.downloadUpdate();
+        try {
+            await autoUpdater.downloadUpdate();
+        } catch (err: any) {
+            // downloadUpdate() can reject WITHOUT the 'error' event firing, and
+            // main-process console output is invisible in a packaged app. Without
+            // this, clicking "Install update and restart" left the dialog sitting
+            // at 0% forever with no message — reported 2026-07-09.
+            const message = String(err?.message ?? err);
+            console.error("[Discordmaxxer updater] downloadUpdate failed:", err);
+            updaterWindow?.webContents.send(UpdaterIpcEvents.ERROR, message);
+            throw err;
+        }
     });
     handle(UpdaterIpcEvents.SNOOZE_UPDATE, () => {
         State.store.updater ??= {};

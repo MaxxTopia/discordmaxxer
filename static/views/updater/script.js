@@ -71,13 +71,25 @@ document.getElementById("update-button").addEventListener("click", () => {
 
     updateDialog.showModal();
 
-    VesktopUpdaterNative.installUpdate().then(() => {
-        downloadProgress.value = 100;
-        updateDialog.closedBy = "any";
+    VesktopUpdaterNative.installUpdate()
+        .then(() => {
+            downloadProgress.value = 100;
+            updateDialog.closedBy = "any";
 
-        installingDialog.showModal();
-        updateDialog.classList.add("hidden");
-    });
+            installingDialog.showModal();
+            updateDialog.classList.add("hidden");
+        })
+        // Without this, a rejected download left the dialog frozen at 0% with no
+        // message at all — the error only reached the main-process console, which
+        // is invisible in a packaged app. Never fail silently here.
+        .catch(err => {
+            const message = err?.message ?? String(err);
+            console.error("[Discordmaxxer updater] install failed:", err);
+            updateDialog.closedBy = "any";
+            errorText.textContent = `Update failed: ${message}`;
+            installingDialog.close();
+            updateDialog.classList.remove("hidden");
+        });
 });
 
 document.getElementById("later-button").addEventListener("click", () => VesktopUpdaterNative.snoozeUpdate());
