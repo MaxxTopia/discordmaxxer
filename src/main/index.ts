@@ -20,8 +20,8 @@ import "./dmMediaProxy";
 import { app, BrowserWindow, nativeTheme } from "electron";
 
 import { DATA_DIR } from "./constants";
-import { seedDiscordmaxxerDefaults } from "./discordmaxxerDefaults";
-import { applyRemoteLaunchFlags, refreshRemoteConfig } from "./remoteConfig";
+import { applyRemotelyDisabledPlugins, seedDiscordmaxxerDefaults } from "./discordmaxxerDefaults";
+import { applyRemoteLaunchFlags, getRemotelyDisabledPlugins, refreshRemoteConfig } from "./remoteConfig";
 import { createFirstLaunchTour } from "./firstLaunch";
 import { createWindows, mainWin } from "./mainWindow";
 import { registerMediaPermissionsHandler } from "./mediaPermissions";
@@ -210,6 +210,10 @@ if (!app.requestSingleInstanceLock({ IS_DEV })) {
 
 async function bootstrap() {
     seedDiscordmaxxerDefaults();
+    // Emergency remote kill-switch: force-disable any plugin the resilience worker
+    // is currently rolling off (from the cached config), BEFORE Vencord reads its
+    // settings this launch. Restores plugins when the incident is lifted. Fail-open.
+    applyRemotelyDisabledPlugins(getRemotelyDisabledPlugins());
     if (!Object.hasOwn(State.store, "firstLaunch")) {
         createFirstLaunchTour();
     } else {

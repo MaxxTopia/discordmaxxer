@@ -54,7 +54,15 @@ export const VesktopNative = {
     },
     resilience: {
         // Renderer voice-fail detector -> main -> worker /incident (anon count).
-        reportVoiceIncident: (sig: string) => invoke<void>(IpcEvents.DM_REPORT_INCIDENT, sig)
+        reportVoiceIncident: (sig: string) => invoke<void>(IpcEvents.DM_REPORT_INCIDENT, sig),
+        // Same-launch state for the known-issue banner + forced-update verdict.
+        getState: () =>
+            invoke<{
+                banner: { level: string; text: string; url: string };
+                versionOutdated: boolean;
+                forceUpdate: boolean;
+                updateUrl: string;
+            }>(IpcEvents.DM_GET_RESILIENCE_STATE)
     },
     autostart: {
         isEnabled: () => sendSync<boolean>(IpcEvents.AUTOSTART_ENABLED),

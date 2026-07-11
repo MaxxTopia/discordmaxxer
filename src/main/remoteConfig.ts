@@ -135,6 +135,54 @@ export function getRemotelyDisabledPlugins(): string[] {
     return readCachedConfig().disable_plugins;
 }
 
+/** Numeric dotted-version compare. -1 if a<b, 0 if equal, 1 if a>b. Tolerant of
+ *  a leading "v" and differing segment counts; non-numeric segments count as 0. */
+function versionCompare(a: string, b: string): number {
+    const pa = String(a).replace(/^v/i, "").split(".").map(n => parseInt(n, 10) || 0);
+    const pb = String(b).replace(/^v/i, "").split(".").map(n => parseInt(n, 10) || 0);
+    const len = Math.max(pa.length, pb.length);
+    for (let i = 0; i < len; i++) {
+        const x = pa[i] ?? 0;
+        const y = pb[i] ?? 0;
+        if (x < y) return -1;
+        if (x > y) return 1;
+    }
+    return 0;
+}
+
+const RELEASES_URL = "https://github.com/MaxxTopia/discordmaxxer/releases/latest";
+
+export interface ResilienceState {
+    banner: RemoteConfig["banner"];
+    /** THIS build is below the remotely-declared minimum supported version. */
+    versionOutdated: boolean;
+    /** …and the remote is forcing everyone to update off this build. */
+    forceUpdate: boolean;
+    updateUrl: string;
+}
+
+/** The full same-launch resilience state for the renderer: the known-issue
+ *  banner + whether this build is below min_supported_version (and whether the
+ *  remote is forcing an update off it). Lets the failover system pull every
+ *  client off a known-bad build without a new release. Fail-open → inert. */
+export function getResilienceState(): ResilienceState {
+    try {
+        const cfg = readCachedConfig();
+        let versionOutdated = false;
+        if (typeof cfg.min_supported_version === "string" && cfg.min_supported_version) {
+            versionOutdated = versionCompare(app.getVersion(), cfg.min_supported_version) < 0;
+        }
+        return {
+            banner: cfg.banner,
+            versionOutdated,
+            forceUpdate: versionOutdated && cfg.force_update === true,
+            updateUrl: cfg.banner.url || RELEASES_URL
+        };
+    } catch {
+        return { banner: DEFAULT.banner, versionOutdated: false, forceUpdate: false, updateUrl: RELEASES_URL };
+    }
+}
+
 // The renderer voice-fail detector (rtcStats.ts) can't POST to the worker
 // directly — Discord's CSP blocks a cross-origin fetch from the renderer. So it
 // hands the signature to the main process over IPC and we do the POST here.
@@ -142,3 +190,7 @@ export function getRemotelyDisabledPlugins(): string[] {
 handle(IpcEvents.DM_REPORT_INCIDENT, (_e, sig: string) => {
     void reportIncident(String(sig ?? "").slice(0, 40));
 });
+
+// The renderer asks for the same-launch resilience state (known-issue banner +
+// forced-update verdict) so it can surface a Vencord notice. Sync + fail-open.
+handle(IpcEvents.DM_GET_RESILIENCE_STATE, () => getResilienceState());

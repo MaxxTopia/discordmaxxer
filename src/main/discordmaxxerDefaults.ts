@@ -99,6 +99,65 @@ const VENCORD_DEFAULTS = {
     plugins: Object.fromEntries(PLUGINS_DEFAULT_ON.map(name => [name, { enabled: true }]))
 };
 
+// Tracks plugins WE force-disabled via the remote kill-switch, remembering each
+// plugin's prior `enabled` state so we can restore it exactly when the incident
+// is lifted (never clobber a user's own choice). Shape: { [name]: priorEnabled }.
+const REMOTE_KILL_KEY = "discordmaxxerRemoteKill";
+
+/**
+ * Emergency remote kill-switch (client side of the failover system). Given the
+ * list of plugins the resilience worker is currently disabling, force each OFF
+ * in the Vencord settings BEFORE Vencord initialises this launch — so a single
+ * bad plugin can be rolled off every install WITHOUT a new release. When a
+ * plugin leaves the list, its prior enabled state is restored. Fail-open: any
+ * error leaves settings untouched (the safety system must never be the outage).
+ */
+export function applyRemotelyDisabledPlugins(disabled: string[]): void {
+    try {
+        const list = Array.isArray(disabled)
+            ? disabled.filter(n => typeof n === "string" && n)
+            : [];
+        const settings = readSettingsSafe();
+        if (settings === null) return; // no settings yet (true first launch) — nothing to disable
+
+        const plugins: Record<string, any> = settings.plugins ?? {};
+        const killMap: Record<string, boolean> =
+            settings[REMOTE_KILL_KEY] && typeof settings[REMOTE_KILL_KEY] === "object"
+                ? { ...settings[REMOTE_KILL_KEY] }
+                : {};
+        let changed = false;
+
+        // 1. Restore plugins we killed that are no longer on the remote list.
+        for (const name of Object.keys(killMap)) {
+            if (!list.includes(name)) {
+                plugins[name] = { ...(plugins[name] ?? {}), enabled: killMap[name] };
+                delete killMap[name];
+                changed = true;
+            }
+        }
+        // 2. Kill plugins on the remote list (remember prior state on first kill;
+        //    re-assert OFF if the user flipped it back on while still killed).
+        for (const name of list) {
+            if (!(name in killMap)) {
+                killMap[name] = plugins[name]?.enabled ?? false;
+            }
+            if (plugins[name]?.enabled !== false) {
+                plugins[name] = { ...(plugins[name] ?? {}), enabled: false };
+                changed = true;
+            }
+        }
+
+        if (!changed) return;
+        settings.plugins = plugins;
+        settings[REMOTE_KILL_KEY] = killMap;
+        writeFileSync(VENCORD_SETTINGS_FILE, JSON.stringify(settings, null, 4));
+        console.log(`[Discordmaxxer] Remote kill-switch: ${list.length} plugin(s) disabled.`);
+    } catch (e) {
+        // fail-open — a bug here must never block launch
+        console.warn("[Discordmaxxer] applyRemotelyDisabledPlugins failed (ignored):", e);
+    }
+}
+
 function readSettingsSafe(): Record<string, any> | null {
     try {
         if (!existsSync(VENCORD_SETTINGS_FILE)) return null;
