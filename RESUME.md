@@ -5,10 +5,10 @@
 > `CLAUDE.md` ("Operational facts" section). Those three are enough to build,
 > ship, and maintain without prior context.
 
-## Current local state — v0.7.60 (release candidate)
+## Current live state — v0.7.60
 
-Checkpoint 2026-08-02: the local overlay was rebuilt and verified in the
-running Discordmaxxer dev client. Right-clicking a real image attachment now
+Released 2026-08-02: the overlay was rebuilt and verified locally and then
+published through the tag-driven GitHub release workflow. Right-clicking a real image attachment now
 adds ImageZoom to Discord's current `message` context-menu route; the three
 sliders are marked interactive and their pointer/arrow events are isolated so
 dragging no longer closes the menu. WebKeybinds now yields to already-claimed
@@ -25,20 +25,24 @@ Verification performed:
   `Vencord.PlainSettings.plugins.ImageZoom.zoom` while the menu stayed open.
 - Live WebKeybinds inspection confirmed the `defaultPrevented`/editable-target
   guard is present in the loaded plugin.
+- Release workflow `30788781038` passed strict rebrand, overlay build, artifact
+  verification, Electron Builder, and publish.
+- GitHub Release `v0.7.60` is stable and non-draft with HTTP-200 installer,
+  blockmap, Windows ZIP, and `latest.yml` assets. The updater manifest declares
+  version `0.7.60` and points to `Discordmaxxer-Setup-0.7.60.exe`.
 
-Not released: no commit, push, deploy, or publish was performed. The working
-tree still contains Diggy's unrelated DMPresence edits and untracked
-DMTranslate/PlaylistmaxxingPresence work; preserve those changes.
+The working tree still contains Diggy's unrelated DMPresence edits and
+untracked DMTranslate/PlaylistmaxxingPresence work; preserve those changes.
 
-Known check state: `pnpm test` is blocked by the existing root-lint failure
-because generated `vencord-src` references missing `scripts/header-new.txt`;
-`pnpm testTypes` still reports the existing venmic/State/screen-share type
-errors. The overlay build itself is the passing verification for this change.
+Known check state: `pnpm testTypes`, strict overlay, `pnpm build`, artifact
+verification, and `pnpm package:dir` passed. The full local `pnpm lint` command
+still reports pre-existing formatting/header/import findings in unrelated
+source files; those were not mass-reformatted or included in this release.
 
 Diggy-owed test: manually right-click an image, drag each zoom slider, and
 exercise any Discord keybinds that overlap the configured Discordmaxxer
-fallback hotkeys. Best next move is to keep this local for that test; commit
-only after the interaction feels correct in the normal window.
+fallback hotkeys. The updater should offer the release on its normal polling
+cycle and install it on quit; the release itself is already published.
 
 ## Last published baseline — v0.7.50 (historical release)
 
@@ -46,8 +50,8 @@ Mature, shipping Vesktop fork (Electron 41 + bundled Vencord, pinned to a main
 COMMIT). ~30+ Vencord plugins enabled by default + ~24 custom plugins. Repo:
 `github.com/MaxxTopia/discordmaxxer` (public, GPL-3.0-or-later). Distributes via
 GitHub Releases + in-app electron-updater. That historical baseline was clean
-and pushed; do not infer that the current working tree is clean or that local
-v0.7.60 changes have been published.
+and pushed; the current working tree still has unrelated local WIP, while
+v0.7.60 is published.
 
 Recent shipped work (2026-06-26/27):
 - **v0.7.43** — in-app RNNoise mic noise suppression (Krisp replacement).
