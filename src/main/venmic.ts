@@ -4,17 +4,17 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-import type { LinkData, Node, PatchBay as PatchBayType } from "@vencord/venmic";
 import { app } from "electron";
 import { join } from "path";
 import { IpcEvents } from "shared/IpcEvents";
 import { STATIC_DIR } from "shared/paths";
+import type { LinkData, Node, PatchBay, PatchBayConstructor, VenmicModule } from "shared/venmicTypes";
 
 import { Settings } from "./settings";
 import { handle } from "./utils/ipcWrappers";
 
-let PatchBay: typeof PatchBayType | undefined;
-let patchBayInstance: PatchBayType | undefined;
+let PatchBay: PatchBayConstructor | undefined;
+let patchBayInstance: PatchBay | undefined;
 
 let imported = false;
 let initialized = false;
@@ -30,8 +30,7 @@ function importVenmic() {
     imported = true;
 
     try {
-        PatchBay = (require(join(STATIC_DIR, `dist/venmic-${process.arch}.node`)) as typeof import("@vencord/venmic"))
-            .PatchBay;
+        PatchBay = (require(join(STATIC_DIR, `dist/venmic-${process.arch}.node`)) as VenmicModule).PatchBay;
 
         hasPipewirePulse = PatchBay.hasPipeWire();
     } catch (e: any) {

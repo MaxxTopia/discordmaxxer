@@ -144,6 +144,9 @@ async function setupKeybinds() {
         const mute = parseHotkey(settings.store.muteHotkey);
         const deafen = parseHotkey(settings.store.deafenHotkey);
         windowHandler = (e: KeyboardEvent) => {
+            // Discord's own keybind dispatcher gets first refusal. This is a
+            // fallback only for a hotkey Electron could not register globally.
+            if (e.defaultPrevented) return;
             const t = e.target as HTMLElement | null;
             const tag = t?.tagName?.toUpperCase();
             if (tag === "INPUT" || tag === "TEXTAREA" || t?.isContentEditable) return;
@@ -157,7 +160,7 @@ async function setupKeybinds() {
                 toggleDeafen();
             }
         };
-        window.addEventListener("keydown", windowHandler, true);
+        window.addEventListener("keydown", windowHandler);
     }
 
     console.log(
@@ -177,7 +180,7 @@ async function teardownKeybinds() {
         deafenGlobalRegistered = false;
     }
     if (windowHandler) {
-        window.removeEventListener("keydown", windowHandler, true);
+        window.removeEventListener("keydown", windowHandler);
         windowHandler = null;
     }
 }

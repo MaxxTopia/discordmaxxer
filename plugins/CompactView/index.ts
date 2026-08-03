@@ -157,6 +157,10 @@ export default definePlugin({
 
         const hk = parseHotkey(settings.store.hotkey);
         hotkeyHandler = (e: KeyboardEvent) => {
+            // Discord's own keybind dispatcher gets first refusal. This
+            // fallback is only for combos the OS-level registration could not
+            // claim, so it must not steal a user's existing Discord keybind.
+            if (e.defaultPrevented) return;
             if (
                 e.ctrlKey === hk.ctrl &&
                 e.altKey === hk.alt &&
@@ -168,7 +172,7 @@ export default definePlugin({
                 setActive(!active);
             }
         };
-        window.addEventListener("keydown", hotkeyHandler, true);
+        window.addEventListener("keydown", hotkeyHandler);
     },
 
     stop() {
@@ -177,7 +181,7 @@ export default definePlugin({
             globalRegistered = false;
         }
         if (hotkeyHandler) {
-            window.removeEventListener("keydown", hotkeyHandler, true);
+            window.removeEventListener("keydown", hotkeyHandler);
             hotkeyHandler = null;
         }
         style?.remove();

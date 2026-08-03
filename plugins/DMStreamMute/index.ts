@@ -204,6 +204,9 @@ function toggleMute() {
 }
 
 function onKeyDown(e: KeyboardEvent) {
+    // This window-focused fallback must yield to Discord's own keybind
+    // dispatcher when it has already claimed the event.
+    if (e.defaultPrevented) return;
     // Ctrl+Shift+M, no Alt, no Meta. Skip if the user is typing in a field
     // — Discord's message composer is a contentEditable, also covered.
     if (!e.ctrlKey || !e.shiftKey || e.altKey || e.metaKey) return;
@@ -225,7 +228,7 @@ export default definePlugin({
 
     start() {
         pluginActive = true;
-        window.addEventListener("keydown", onKeyDown, true);
+        window.addEventListener("keydown", onKeyDown);
         FluxDispatcher.subscribe("STREAM_CREATE", onStreamCreate);
         // Re-apply persisted state on launch so a saved mute survives restart.
         // 500ms gives Discord's media engine time to come up before we
@@ -247,7 +250,7 @@ export default definePlugin({
         // we restore below (which would strand audio muted with no listener).
         for (const id of pendingTimers) clearTimeout(id);
         pendingTimers.clear();
-        window.removeEventListener("keydown", onKeyDown, true);
+        window.removeEventListener("keydown", onKeyDown);
         FluxDispatcher.unsubscribe("STREAM_CREATE", onStreamCreate);
         // On unload, un-mute everything we muted — leaves the user's audio
         // in a known-good state if they uninstall the plugin.

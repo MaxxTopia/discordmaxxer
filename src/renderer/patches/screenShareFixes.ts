@@ -129,7 +129,7 @@ function debug(...args: any[]) {
     ECHO_LOG.push(args.map(a => (typeof a === "object" ? JSON.parse(JSON.stringify(a)) : a)));
 }
 
-function toast(message: string, type: number) {
+function toast(message: string, type: string) {
     try {
         Toasts.show({ message, id: Toasts.genId(), type });
     } catch (e) {

@@ -4,10 +4,10 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-import type { Node } from "@vencord/venmic";
 import { ipcRenderer } from "electron/renderer";
 import type { IpcMessage, IpcResponse } from "main/ipcCommands";
 import type { Settings } from "shared/settings";
+import type { Node } from "shared/venmicTypes";
 
 import { IpcEvents, UpdaterCheckResult } from "../shared/IpcEvents";
 import { invoke, sendSync } from "./typedIpc";

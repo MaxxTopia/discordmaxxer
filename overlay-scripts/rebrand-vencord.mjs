@@ -486,6 +486,98 @@ const PATCHES = [
     },
 
     // ── Round 6 (v0.5.6): CSP allowlist + donor-badge kill ────────────
+    // ImageZoom: current Discord routes attachment-image context menus
+    // through `message`, not `image-context`. Keep the upstream route for
+    // older builds, add the current route, and isolate slider pointer/arrow
+    // events so the parent menu does not select and close on interaction.
+    {
+        file: "src/plugins/imageZoom/index.tsx",
+        marker: "Discordmaxxer: ImageZoom menu route helpers",
+        find: 'const imageContextMenuPatch: NavContextMenuPatchCallback = (children, props) => {',
+        replace:
+            '// Discordmaxxer: ImageZoom menu route helpers\n' +
+            'function isImageContext(props: any) {\n' +
+            '    const mediaType = props?.mediaItem?.contentType ?? props?.mediaItem?.originalContentType;\n' +
+            '    if (mediaType) return mediaType.startsWith("image/");\n' +
+            '    return props?.target?.tagName === "IMG";\n' +
+            '}\n\n' +
+            'function stopImageSliderKey(e: any) {\n' +
+            '    if (!e.ctrlKey && !e.altKey && !e.metaKey && ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown", "Enter", " "].includes(e.key)) {\n' +
+            '        e.stopPropagation();\n' +
+            '    }\n' +
+            '}\n\n' +
+            'function ImageZoomSlider({ children }: { children: JSX.Element }) {\n' +
+            '    return (\n' +
+            '        <div\n' +
+            '            onPointerDown={e => e.stopPropagation()}\n' +
+            '            onMouseDown={e => e.stopPropagation()}\n' +
+            '            onClick={e => e.stopPropagation()}\n' +
+            '            onKeyDown={stopImageSliderKey}\n' +
+            '        >\n' +
+            '            {children}\n' +
+            '        </div>\n' +
+            '    );\n' +
+            '}\n\n' +
+            'const imageContextMenuPatch: NavContextMenuPatchCallback = (children, props) => {'
+    },
+    {
+        file: "src/plugins/imageZoom/index.tsx",
+        find: '    if ("href" in props) return;\n    // emojis in user statuses',
+        replace: '    if ("href" in props) return;\n    if (props?.mediaItem && !isImageContext(props)) return;\n    if (children.some(child => child?.props?.id === "image-zoom")) return;\n    // emojis in user statuses'
+    },
+    {
+        file: "src/plugins/imageZoom/index.tsx",
+        marker: "Discordmaxxer: ImageZoom interactive MenuControlItems",
+        find: '                control={(props, ref) => (',
+        replace: '                // Discordmaxxer: ImageZoom interactive MenuControlItems\n                interactive\n                control={(props, ref) => ('
+    },
+    {
+        file: "src/plugins/imageZoom/index.tsx",
+        marker: "Discordmaxxer: ImageZoom slider interaction boundary",
+        find: 'control={(props, ref) => (\n                    <Menu.MenuSliderControl',
+        replace: 'control={(props, ref) => (\n                    <ImageZoomSlider>\n                        {/* Discordmaxxer: ImageZoom slider interaction boundary */}\n                        <Menu.MenuSliderControl'
+    },
+    {
+        file: "src/plugins/imageZoom/index.tsx",
+        find: '                    />\n                )}',
+        replace: '                        />\n                    </ImageZoomSlider>\n                )}'
+    },
+    {
+        file: "src/plugins/imageZoom/index.tsx",
+        marker: "Discordmaxxer: ImageZoom message-menu route",
+        find: '};\n\nexport default definePlugin({\n    name: "ImageZoom",',
+        replace:
+            '};\n\n' +
+            '// Discordmaxxer: ImageZoom message-menu route\n' +
+            'const messageContextMenuPatch: NavContextMenuPatchCallback = (children, props) => {\n' +
+            '    if (!isImageContext(props)) return;\n' +
+            '    imageContextMenuPatch(children, props);\n' +
+            '};\n\n' +
+            'export default definePlugin({\n    name: "ImageZoom",'
+    },
+    {
+        file: "src/plugins/imageZoom/index.tsx",
+        find: '        "image-context": imageContextMenuPatch\n    },',
+        replace: '        "image-context": imageContextMenuPatch,\n        "message": messageContextMenuPatch\n    },'
+    },
+    // WebKeybinds: do not steal a key already claimed by Discord, an IME, or
+    // text editing controls. Ctrl+Tab is explicitly prevented because the
+    // browser focus action otherwise wins over the Discord action.
+    {
+        file: "src/plugins/webKeybinds.web/index.ts",
+        find: '    onKey(e: KeyboardEvent) {\n        const hasCtrl = e.ctrlKey || (e.metaKey && IS_MAC);',
+        replace:
+            '    onKey(e: KeyboardEvent) {\n' +
+            '        const target = e.target as HTMLElement | null;\n' +
+            '        if (e.defaultPrevented || e.isComposing || target?.isContentEditable || target?.closest?.("[contenteditable=true]") || ["INPUT", "TEXTAREA", "SELECT"].includes(target?.tagName ?? "")) return;\n' +
+            '        const hasCtrl = e.ctrlKey || (e.metaKey && IS_MAC);'
+    },
+    {
+        file: "src/plugins/webKeybinds.web/index.ts",
+        find: '            case "Tab":\n                if (!IS_VESKTOP) return;\n                const handler',
+        replace: '            case "Tab":\n                if (!IS_VESKTOP) return;\n                e.preventDefault();\n                const handler'
+    },
+
     // Allow renderer fetches to the optmaxxing-vip Cloudflare Worker so the
     // VipClaim panel can POST {code, hwid} without tripping Discord's CSP.
     // Without this patch, fetch() throws "Failed to fetch" because the
@@ -599,6 +691,11 @@ for (const p of PATCHES) {
         continue;
     }
     let content = readFileSync(path, "utf-8");
+
+    if (p.marker && content.includes(p.marker)) {
+        skipped++;
+        continue;
+    }
 
     if (content.includes(p.replace) && !content.includes(p.find)) {
         skipped++;

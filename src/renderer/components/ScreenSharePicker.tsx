@@ -32,11 +32,11 @@ import {
 } from "@vencord/types/utils";
 import { onceReady } from "@vencord/types/webpack";
 import { FluxDispatcher, MediaEngineStore, Select, useEffect, UserStore, useState } from "@vencord/types/webpack/common";
-import { Node } from "@vencord/venmic";
 import type { Dispatch, SetStateAction } from "react";
 import { addPatch } from "renderer/patches/shared";
 import { State, useSettings, useVesktopState } from "renderer/settings";
 import { isLinux, isWindows } from "renderer/utils";
+import type { Node } from "shared/venmicTypes";
 import { getActiveWinAudioSession } from "renderer/winaudioBridge";
 
 import { SimpleErrorBoundary } from "./SimpleErrorBoundary";
@@ -820,7 +820,7 @@ function ModalComponent({
                     disabled={!selected}
                     onClick={() => {
                         currentSettings = settings;
-                        currentSourceId = selected;
+                        currentSourceId = selected ?? null;
                         try {
                             const frameRate = Number(qualitySettings.frameRate);
                             const height = Number(qualitySettings.resolution);

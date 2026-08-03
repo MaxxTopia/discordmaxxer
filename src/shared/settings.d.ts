@@ -76,6 +76,7 @@ export interface State {
     windowBounds?: Rectangle;
 
     firstLaunch?: boolean;
+    discordmaxxerSkipTips?: boolean;
 
     steamOSLayoutVersion?: number;
     linuxAutoStartEnabled?: boolean;

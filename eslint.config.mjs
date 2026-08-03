@@ -17,7 +17,7 @@ import tseslint from "typescript-eslint";
 import prettier from "eslint-plugin-prettier";
 
 export default defineConfig(
-    { ignores: ["dist"] },
+    { ignores: ["dist", "vencord-src"] },
     {
         files: ["src/**/*.{tsx,ts,mts,mjs,js,jsx}"],
         settings: {

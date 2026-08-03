@@ -42,7 +42,7 @@ export interface LastStreamHealth {
     healthy: boolean;
 }
 
-function toast(message: string, type: number) {
+function toast(message: string, type: string) {
     try {
         Toasts.show({ message, id: Toasts.genId(), type });
     } catch {

@@ -5,12 +5,49 @@
 > `CLAUDE.md` ("Operational facts" section). Those three are enough to build,
 > ship, and maintain without prior context.
 
-## Current state — v0.7.50 (LIVE, latest published release)
+## Current local state — v0.7.60 (release candidate)
+
+Checkpoint 2026-08-02: the local overlay was rebuilt and verified in the
+running Discordmaxxer dev client. Right-clicking a real image attachment now
+adds ImageZoom to Discord's current `message` context-menu route; the three
+sliders are marked interactive and their pointer/arrow events are isolated so
+dragging no longer closes the menu. WebKeybinds now yields to already-claimed
+Discord events, IME composition, editable controls, and content-editable
+surfaces. Renderer fallback hotkeys in CompactView, TournamentMode,
+DMVoiceKeybinds, and DMStreamMute now run in the normal bubbling phase and
+return when Discord has already prevented the event.
+
+Verification performed:
+- `pnpm overlay:vencord` passed; rebrand warnings were 0 and the staged
+  renderer bundle was written to `vencord-dist`.
+- Live DOM/CDP check used a real image attachment: menu id `message`,
+  `message-vc-zoom` was present, and dragging changed
+  `Vencord.PlainSettings.plugins.ImageZoom.zoom` while the menu stayed open.
+- Live WebKeybinds inspection confirmed the `defaultPrevented`/editable-target
+  guard is present in the loaded plugin.
+
+Not released: no commit, push, deploy, or publish was performed. The working
+tree still contains Diggy's unrelated DMPresence edits and untracked
+DMTranslate/PlaylistmaxxingPresence work; preserve those changes.
+
+Known check state: `pnpm test` is blocked by the existing root-lint failure
+because generated `vencord-src` references missing `scripts/header-new.txt`;
+`pnpm testTypes` still reports the existing venmic/State/screen-share type
+errors. The overlay build itself is the passing verification for this change.
+
+Diggy-owed test: manually right-click an image, drag each zoom slider, and
+exercise any Discord keybinds that overlap the configured Discordmaxxer
+fallback hotkeys. Best next move is to keep this local for that test; commit
+only after the interaction feels correct in the normal window.
+
+## Last published baseline — v0.7.50 (historical release)
 
 Mature, shipping Vesktop fork (Electron 41 + bundled Vencord, pinned to a main
 COMMIT). ~30+ Vencord plugins enabled by default + ~24 custom plugins. Repo:
 `github.com/MaxxTopia/discordmaxxer` (public, GPL-3.0-or-later). Distributes via
-GitHub Releases + in-app electron-updater. **Working tree clean, all pushed.**
+GitHub Releases + in-app electron-updater. That historical baseline was clean
+and pushed; do not infer that the current working tree is clean or that local
+v0.7.60 changes have been published.
 
 Recent shipped work (2026-06-26/27):
 - **v0.7.43** — in-app RNNoise mic noise suppression (Krisp replacement).

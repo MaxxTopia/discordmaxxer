@@ -245,6 +245,9 @@ export default definePlugin({
 
         const hk = parseHotkey(settings.store.hotkey);
         hotkeyHandler = (e: KeyboardEvent) => {
+            // Let Discord's own keybinds win when the OS-level registration
+            // was unavailable and this renderer fallback is active.
+            if (e.defaultPrevented) return;
             if (
                 e.ctrlKey === hk.ctrl &&
                 e.altKey === hk.alt &&
@@ -256,7 +259,7 @@ export default definePlugin({
                 setActive(!active);
             }
         };
-        window.addEventListener("keydown", hotkeyHandler, true);
+        window.addEventListener("keydown", hotkeyHandler);
     },
 
     async stop() {
@@ -277,7 +280,7 @@ export default definePlugin({
             globalRegistered = false;
         }
         if (hotkeyHandler) {
-            window.removeEventListener("keydown", hotkeyHandler, true);
+            window.removeEventListener("keydown", hotkeyHandler);
             hotkeyHandler = null;
         }
         style?.remove();
