@@ -61,7 +61,7 @@ jobs:
             - name: Clone Vencord at pinned commit
               run: |
                   git clone https://github.com/Vendicated/Vencord.git vencord-src
-                  git -C vencord-src checkout 94cc541e38905063988094249a40e618f83a12e4
+                  git -C vencord-src checkout ef29bbeb6119cfb53d1273ed78147bcc97d91261
 
             - name: Install Vencord deps
               working-directory: vencord-src

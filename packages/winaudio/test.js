@@ -31,11 +31,19 @@ test("startCapture / stopCapture roundtrip on default device", async () => {
     let chunkCount = 0;
     let totalBytes = 0;
     let format = null;
+    assert.strictEqual(typeof winaudio.drainChunks, "function", "native drainChunks() export is missing");
 
-    format = winaudio.startCapture(def.id, (chunk) => {
-        chunkCount++;
-        totalBytes += chunk.data.length;
-    });
+    const drain = () => {
+        for (const chunk of winaudio.drainChunks()) {
+            chunkCount++;
+            totalBytes += chunk.data.length;
+        }
+    };
+
+    // The Electron production bridge polls drainChunks(); the native callback
+    // is not serviced by Electron's main-process event loop. Keep this test on
+    // the same delivery path so it exercises the actual integration contract.
+    format = winaudio.startCapture(def.id, () => {});
 
     assert.ok(format, "no format returned");
     assert.ok(format.sampleRate >= 8000 && format.sampleRate <= 192000);
@@ -43,11 +51,16 @@ test("startCapture / stopCapture roundtrip on default device", async () => {
     assert.ok(format.bitsPerSample === 16 || format.bitsPerSample === 24 || format.bitsPerSample === 32);
     assert.ok(winaudio.isCapturing());
 
-    // Capture for 2 seconds. WASAPI loopback emits silence packets even
-    // when no apps play, so chunkCount > 0 even without user audio.
-    await new Promise(r => setTimeout(r, 2000));
-
-    winaudio.stopCapture();
+    const drainTimer = setInterval(drain, 20);
+    try {
+        // Capture for 2 seconds. WASAPI loopback emits silence packets even
+        // when no apps play, so chunkCount > 0 even without user audio.
+        await new Promise(r => setTimeout(r, 2000));
+        drain();
+    } finally {
+        clearInterval(drainTimer);
+        winaudio.stopCapture();
+    }
     assert.ok(!winaudio.isCapturing());
 
     console.log(`captured ${chunkCount} chunks (${totalBytes} bytes) @ ${format.sampleRate}Hz ${format.channels}ch ${format.bitsPerSample}bit ${format.isFloat ? "float" : "int"}`);

@@ -5,7 +5,7 @@
  *
  * Tour script: connects to a running `pnpm start:dev:debug` and validates
  * every custom plugin end-to-end, including account-mutating channels of
- * DiscordmaxxerBadge (caller authorized; burner account).
+ * DMBadge (caller authorized; burner account).
  *
  * Phases (run in order, can skip with --skip <name>):
  *   inventory   read-only Vencord plugin state
@@ -29,7 +29,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const SCREENSHOTS_DIR = resolve(__dirname, "screenshots");
 const REPORTS_DIR = resolve(__dirname, "reports");
 const RUN_TS = Date.now();
-const DEBUG_URL = "http://localhost:9222";
+const DEBUG_URL = process.env.DM_DEBUG_URL || "http://localhost:9222";
 
 const PHASE_NAMES = ["inventory", "visual", "hotkeys", "badge", "massdelete"];
 const skips = new Set();
@@ -94,9 +94,8 @@ async function phaseInventory(page) {
         const settings = v.PlainSettings?.plugins ?? {};
         const watch = [
             "TournamentMode", "CompactView", "MassDelete",
-            "DiscordmaxxerBadge", "DiscordmaxxerHub", "DiscordmaxxerTheme",
-            "DiscordmaxxerBranding", "VideoBackground",
-            "BetterGifPicker", "FavoriteGifSearch",
+            "DMBadge", "DMHub", "DMTheme", "DMWelcome", "VideoBackground",
+            "BetterGifPicker",
             "FakeNitro", "MessageLogger", "PinDMs", "VolumeBooster",
             "ClearURLs", "AlwaysTrust", "BetterFolders", "MentionAvatars",
             "NoReplyMention", "TextReplace", "ImageZoom", "TypingTweaks"
@@ -147,22 +146,27 @@ async function phaseVisual(page) {
             await page.click("#dm-hub-fab", { delay: 50 });
             await new Promise(r => setTimeout(r, 400));
             const after = await page.evaluate(() => {
+                const root = document.getElementById("dm-hub-panel-root");
                 const panel = document.getElementById("dm-hub-panel");
                 return {
-                    panelOpen: !!panel,
+                    panelRootPresent: !!root,
+                    panelOpen: !!root && !root.classList.contains("hidden"),
+                    panelPresent: !!panel,
                     panelHTMLLength: panel?.innerHTML?.length ?? 0,
                     tierBadge: panel?.querySelector?.('[class*="tier" i], [data-tier]')?.textContent ?? null
                 };
             });
             out.hubPanel = after;
             out.screenshotPanel = await shot(page, "visual-hub-panel-open");
-            // close it
-            await page.keyboard.press("Escape");
-            await new Promise(r => setTimeout(r, 200));
-            await page.evaluate(() => {
-                const p = document.getElementById("dm-hub-panel");
-                if (p) p.remove();
+            // Close through the plugin's own action so the plugin-owned root
+            // remains attached and the next validation run starts cleanly.
+            out.hubPanel.closedByPluginAction = await page.evaluate(() => {
+                const close = document.querySelector('#dm-hub-panel [data-action="close"]');
+                if (!(close instanceof HTMLElement)) return false;
+                close.click();
+                return true;
             });
+            await new Promise(r => setTimeout(r, 200));
         } catch (e) {
             out.hubPanel = { error: String(e) };
         }
@@ -174,34 +178,40 @@ async function phaseVisual(page) {
 async function activateViaRestart(page, name) {
     // Set enabledOnStart=true and restart the plugin. This exercises setActive(true)
     // through the same code path the hotkey would, without needing OS-level key sim.
-    return await page.evaluate((n) => {
+    return await page.evaluate(async (n) => {
         const p = Vencord.Plugins.plugins[n];
         if (!p) return { error: `Plugin ${n} not loaded` };
         Vencord.PlainSettings.plugins[n] = Vencord.PlainSettings.plugins[n] || { enabled: true };
         Vencord.PlainSettings.plugins[n].enabledOnStart = true;
         // Mirror to the live store too
         if (p.settings?.store) p.settings.store.enabledOnStart = true;
-        try { Vencord.Plugins.stopPlugin(p); } catch (e) { return { error: "stop failed: " + e.message }; }
-        try { Vencord.Plugins.startPlugin(p); } catch (e) { return { error: "start failed: " + e.message }; }
+        try { await Vencord.Plugins.stopPlugin(p); } catch (e) { return { error: "stop failed: " + e.message }; }
+        try { await Vencord.Plugins.startPlugin(p); } catch (e) { return { error: "start failed: " + e.message }; }
         return { ok: true };
     }, name);
 }
 
 async function deactivateAndCleanup(page, name) {
-    return await page.evaluate((n) => {
+    return await page.evaluate(async (n) => {
         const p = Vencord.Plugins.plugins[n];
         if (!p) return;
         if (Vencord.PlainSettings.plugins[n]) Vencord.PlainSettings.plugins[n].enabledOnStart = false;
         if (p.settings?.store) p.settings.store.enabledOnStart = false;
-        try { Vencord.Plugins.stopPlugin(p); } catch {}
-        try { Vencord.Plugins.startPlugin(p); } catch {}
+        try { await Vencord.Plugins.stopPlugin(p); } catch {}
+        try { await Vencord.Plugins.startPlugin(p); } catch {}
     }, name);
 }
 
 async function readStyleLen(page, id) {
     return await page.evaluate((sid) => {
-        const s = document.getElementById(sid);
-        return { id: s?.id ?? null, len: s?.textContent?.length ?? 0, sample: s?.textContent?.slice(0, 100) ?? "" };
+        const matches = [...document.querySelectorAll("style")].filter(s => s.id === sid);
+        const s = matches.at(-1);
+        return {
+            id: s?.id ?? null,
+            count: matches.length,
+            len: s?.textContent?.length ?? 0,
+            sample: s?.textContent?.slice(0, 100) ?? ""
+        };
     }, id);
 }
 
@@ -241,15 +251,15 @@ async function phaseHotkeys(page) {
 // ── Phase: badge (Channels A/B/C/D) ────────────────────────────────────────
 async function flipBadgeToggle(page, settingKey) {
     return await page.evaluate(async (key) => {
-        const p = Vencord.Plugins.plugins.DiscordmaxxerBadge;
-        if (!p) return { error: "DiscordmaxxerBadge not loaded" };
+        const p = Vencord.Plugins.plugins.DMBadge;
+        if (!p) return { error: "DMBadge not loaded" };
         const def = p.settings?.def?.[key];
         const store = p.settings?.store;
         if (!def || !store) return { error: "settings shape unexpected", hasDef: !!def, hasStore: !!store };
         const before = store[key];
         store[key] = true;
-        Vencord.PlainSettings.plugins.DiscordmaxxerBadge = Vencord.PlainSettings.plugins.DiscordmaxxerBadge || { enabled: true };
-        Vencord.PlainSettings.plugins.DiscordmaxxerBadge[key] = true;
+        Vencord.PlainSettings.plugins.DMBadge = Vencord.PlainSettings.plugins.DMBadge || { enabled: true };
+        Vencord.PlainSettings.plugins.DMBadge[key] = true;
         try {
             if (typeof def.onChange === "function") def.onChange(true);
             return { ok: true, before, after: true };
@@ -305,7 +315,7 @@ async function phaseBadge(page) {
             const badges = Vencord.Api.Badges._getBadges?.({ userId: me.id, guildId: undefined }) ?? [];
             const dmBadge = badges.find(b => b?.id === "discordmaxxer-user");
             return {
-                pluginEnabled: Vencord.PlainSettings.plugins.DiscordmaxxerBadge?.enabled === true,
+                pluginEnabled: Vencord.PlainSettings.plugins.DMBadge?.enabled === true,
                 meId: me?.id,
                 badgesShownForMe: badges.length,
                 badgeIds: badges.map(b => b.id),
@@ -373,15 +383,16 @@ async function phaseMassDelete(page) {
         return map;
     });
 
-    // Restore default
-    await page.evaluate(() => {
-        Vencord.PlainSettings.plugins.MassDelete.enableContextMenu = false;
+    // Restore the caller's prior setting; this validator must not silently
+    // change a user's MassDelete preference just because it inspected wiring.
+    await page.evaluate((wasEnabled) => {
+        Vencord.PlainSettings.plugins.MassDelete.enableContextMenu = wasEnabled;
         const p = Vencord.Plugins.plugins.MassDelete;
         if (p) {
             try { Vencord.Plugins.stopPlugin(p); } catch {}
             try { Vencord.Plugins.startPlugin(p); } catch {}
         }
-    });
+    }, out.beforeFlip.enableContextMenu);
 
     return out;
 }

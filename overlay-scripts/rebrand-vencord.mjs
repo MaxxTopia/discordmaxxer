@@ -272,8 +272,8 @@ const PATCHES = [
     // ── S. webKeybinds plugin description ──
     {
         file: "src/plugins/webKeybinds.web/index.ts",
-        find: 'description: "Re-adds keybinds missing in the web version of Discord: ctrl+t, ctrl+shift+t, ctrl+tab, ctrl+shift+tab, ctrl+1-9, ctrl+,. Only works fully on Vesktop/Legcord, not inside your browser",',
-        replace: 'description: "Re-adds keybinds missing in the web version of Discord: ctrl+t, ctrl+shift+t, ctrl+tab, ctrl+shift+tab, ctrl+1-9, ctrl+,. Only works fully on Discordmaxxer, not inside your browser",'
+        find: 'description: "Re-adds keybinds missing in the web version of Discord. Only works fully on Vesktop/Legcord, not inside your browser",',
+        replace: 'description: "Re-adds keybinds missing in the web version of Discord. Only works fully on Discordmaxxer, not inside your browser",'
     },
 
     // ── T. SupportHelper user-visible copy + slash-command names ──
@@ -563,20 +563,9 @@ const PATCHES = [
     // WebKeybinds: do not steal a key already claimed by Discord, an IME, or
     // text editing controls. Ctrl+Tab is explicitly prevented because the
     // browser focus action otherwise wins over the Discord action.
-    {
-        file: "src/plugins/webKeybinds.web/index.ts",
-        find: '    onKey(e: KeyboardEvent) {\n        const hasCtrl = e.ctrlKey || (e.metaKey && IS_MAC);',
-        replace:
-            '    onKey(e: KeyboardEvent) {\n' +
-            '        const target = e.target as HTMLElement | null;\n' +
-            '        if (e.defaultPrevented || e.isComposing || target?.isContentEditable || target?.closest?.("[contenteditable=true]") || ["INPUT", "TEXTAREA", "SELECT"].includes(target?.tagName ?? "")) return;\n' +
-            '        const hasCtrl = e.ctrlKey || (e.metaKey && IS_MAC);'
-    },
-    {
-        file: "src/plugins/webKeybinds.web/index.ts",
-        find: '            case "Tab":\n                if (!IS_VESKTOP) return;\n                const handler',
-        replace: '            case "Tab":\n                if (!IS_VESKTOP) return;\n                e.preventDefault();\n                const handler'
-    },
+    // Upstream 72cc4d11 replaced WebKeybinds' document-level onKey handler
+    // with Discord-native blocked-keybind patching. The old guards no longer
+    // have a handler to attach to, so stale patches are intentionally removed.
 
     // Allow renderer fetches to the optmaxxing-vip Cloudflare Worker so the
     // VipClaim panel can POST {code, hwid} without tripping Discord's CSP.
@@ -584,11 +573,12 @@ const PATCHES = [
     // worker domain isn't in connect-src.
     {
         file: "src/main/csp/index.ts",
-        find: '    "icons.duckduckgo.com": ImageSrc, // DuckDuckGo Favicon API (Reverse Image Search)\n};',
+        marker: "Discordmaxxer VIP claim worker",
+        find: '    "icons.duckduckgo.com": ImageSrc, // DuckDuckGo Favicon API (Reverse Image Search)\n',
         replace:
             '    "icons.duckduckgo.com": ImageSrc, // DuckDuckGo Favicon API (Reverse Image Search)\n\n' +
             '    // Discordmaxxer VIP claim worker (shared with optimizationmaxxing).\n' +
-            '    "optmaxxing-vip.maxxtopia.workers.dev": ConnectSrc,\n};'
+            '    "optmaxxing-vip.maxxtopia.workers.dev": ConnectSrc,\n'
     },
     // VideoBackground plugin (MAXXER+ feature) lets users pick an arbitrary
     // HTTPS video URL as their Discord background. Discord's base CSP locks
@@ -597,6 +587,7 @@ const PATCHES = [
     // exfiltration risk, narrow scope.
     {
         file: "src/main/csp/index.ts",
+        marker: "Discordmaxxer: VideoBackground plugin needs arbitrary HTTPS",
         find:
             '        for (const directive of ["style-src", "connect-src", "img-src", "font-src", "media-src", "worker-src"]) {\n' +
             '            pushDirective(directive, "blob:", "data:", "vencord:", "vesktop:");\n' +
@@ -621,6 +612,7 @@ const PATCHES = [
     // from feature flag to mandatory behavior).
     {
         file: "src/main/csp/index.ts",
+        marker: "Discordmaxxer: bypass Opaque Response Blocking for media+image",
         find:
             '            if (resourceType === "stylesheet") {\n' +
             '                const header = findHeader(responseHeaders, "content-type");\n' +

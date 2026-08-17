@@ -5,6 +5,36 @@
 > `CLAUDE.md` ("Operational facts" section). Those three are enough to build,
 > ship, and maintain without prior context.
 
+## Current maintenance candidate — v0.7.61 (not published)
+
+2026-08-17 upstream-drift maintenance: tracking issue #32 identified a stale
+Vencord pin. The release workflow now checks out Vencord
+`ef29bbeb6119cfb53d1273ed78147bcc97d91261`; Electron remains on the existing
+compatible `^43.0.0` line. The overlay rewriter was updated for upstream's new
+WebKeybinds architecture and its CSP patches are now marker-based and
+idempotent, so repeated local overlays no longer duplicate injected blocks.
+
+The runtime validator now uses the actual `DMBadge`/`DMHub`/`DMTheme` names,
+awaits plugin restart lifecycle calls, preserves user settings, and validates
+the Hub panel root correctly. The winaudio test helpers now poll the same
+`drainChunks()` path used by Electron; the native roundtrip test passes with
+198 packets. A process-loopback diagnostic delivered packets but observed no
+non-silent signal from the selected process, so a known-audio human test is
+still required before calling process audio verified.
+
+Verification: strict overlay on a pristine current Vencord clone passed with
+0 warnings and was idempotent; `pnpm testTypes`, targeted lint, JavaScript
+syntax checks, `pnpm build`, artifact verification, the read-only runtime
+validator, and winaudio native tests pass. Full `pnpm test` remains red from
+the repository's existing CRLF/prettier findings (8,607 errors); do not mass-
+format unrelated source. Local `pnpm package:dir` is blocked by insufficient C:
+drive space (`ENOSPC`), not by a build error. This candidate is not tagged or
+published until the required real voice + screenshare-with-audio check is
+performed.
+
+The working tree still contains Diggy's unrelated DMPresence edits and
+untracked DMTranslate/PlaylistmaxxingPresence work; preserve those changes.
+
 ## Current live state — v0.7.60
 
 Released 2026-08-02: the overlay was rebuilt and verified locally and then

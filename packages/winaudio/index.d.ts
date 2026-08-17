@@ -56,20 +56,23 @@ export function listOutputDevices(): ListDevicesResult;
 
 /**
  * Start loopback capture from the named device. Spawns a WASAPI capture
- * thread that emits audio chunks to `onChunk` via N-API thread-safe
- * function. Returns the capture format synchronously (or throws).
+ * thread that parks audio chunks for `drainChunks()`. Returns the capture
+ * format synchronously (or throws). The callback is retained for native ABI
+ * compatibility; Electron callers should use `drainChunks()` instead.
  *
  * Only one capture can be active at a time — calling startCapture while
  * another is running throws. Stop the previous one first.
  *
  * @param deviceId  Endpoint ID from `listOutputDevices()`.
- * @param onChunk   Called from the JS event loop for each audio packet.
- *                  Do NOT block — return immediately.
+ * @param onChunk   Legacy callback parameter retained for ABI compatibility.
  */
 export function startCapture(
     deviceId: string,
     onChunk: (chunk: AudioChunk) => void,
 ): CaptureFormat;
+
+/** Pull all audio chunks accumulated since the previous call. */
+export function drainChunks(): AudioChunk[];
 
 /**
  * Stop the active capture. Blocks until the capture thread exits cleanly

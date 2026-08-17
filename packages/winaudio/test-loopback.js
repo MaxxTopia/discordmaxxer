@@ -49,9 +49,13 @@ let sumSq = 0;
 let sampleCount = 0;
 const pcm = [];
 
-let fmt;
-try {
-    fmt = winaudio.startProcessLoopback(pid, mode, chunk => {
+if (typeof winaudio.drainChunks !== "function") {
+    console.log("\nERROR: native drainChunks() export is missing.");
+    process.exit(1);
+}
+
+const drain = () => {
+    for (const chunk of winaudio.drainChunks()) {
         chunks++;
         if (chunk.silent) silentChunks++;
         const buf = Buffer.from(chunk.data);
@@ -63,14 +67,25 @@ try {
             sumSq += f[i] * f[i];
             sampleCount++;
         }
-    });
+    }
+};
+
+let fmt;
+try {
+    // Match the Electron main-process bridge: it polls drainChunks() because
+    // the native callback is not serviced by Electron's event loop.
+    fmt = winaudio.startProcessLoopback(pid, mode, () => {});
 } catch (e) {
     console.log("\n❌ startProcessLoopback THREW: " + (e && e.message ? e.message : e));
     console.log("(That's a different failure than silent capture — paste this.)");
     process.exit(1);
 }
 
+const drainTimer = setInterval(drain, 20);
+
 setTimeout(() => {
+    clearInterval(drainTimer);
+    drain();
     try {
         winaudio.stopCapture();
     } catch {}
@@ -84,7 +99,7 @@ setTimeout(() => {
     console.log(`RMS  amplitude  : ${rms.toFixed(5)}`);
     console.log(
         peak < 0.0005
-            ? "VERDICT: ❌ SILENT — the native capture returned no real audio. THIS is the bug to fix."
+            ? "VERDICT: ⚠️ NO NON-SILENT AUDIO OBSERVED — capture delivered packets, but the selected process produced no measurable signal during the window. Re-run while known audio is playing before treating this as a native failure."
             : "VERDICT: ✅ AUDIO CAPTURED — peak is non-zero, the native capture WORKS. The old failure was the app wiring, not this."
     );
 
