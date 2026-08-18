@@ -5,7 +5,7 @@
 > `CLAUDE.md` ("Operational facts" section). Those three are enough to build,
 > ship, and maintain without prior context.
 
-## Current maintenance candidate — v0.7.61 (not published)
+## Current maintenance/release state — v0.7.61 (published)
 
 2026-08-17 upstream-drift maintenance: tracking issue #32 identified a stale
 Vencord pin. The release workflow now checks out Vencord
@@ -35,8 +35,9 @@ and SmartScreen remain an explicit release gate until signing is configured.
 The lint correction is mechanical (formatting, file headers, import order, and
 safe autofix-only cleanup). The maintenance chain ending at `a40e322` is pushed to `main`; the
 latest GitHub test run `32097496202` passed cleanly after the workflow actions
-moved to their current Node-24-compatible major versions. This candidate is
-not tagged or published until the release gates are consciously accepted.
+moved to their current Node-24-compatible major versions. The v0.7.61 release
+workflow `32104737220` also passed strict overlay, build, artifact
+verification, Electron Builder, and publication.
 
 2026-08-17 screenshare follow-up: Diggy reproduced a real v0.7.60 cross-PC
 problem: whole-screen sharing became usable after a warm-up, while application
@@ -51,13 +52,13 @@ which could miss application captures or leave them at native resolution.
 
 The follow-up passed `pnpm test`, `pnpm build`, strict overlay with zero
 warnings, overlay artifact verification, the live read-only validator, native
-winaudio tests (4/4), `pnpm package:dir`, and `pnpm package:win`. The current
-candidate packages are locally present, but the installer is still unsigned.
-The main-PC real sender test remains required: test both an application window
-and the whole screen, check the live encoder stats, and confirm viewer
-smoothness plus voice/screenshare audio. The mic `Error: 3002` is intentionally
-tracked as a separate gate because the screenshots do not prove whether the
-microphone itself was audible.
+winaudio tests (4/4), `pnpm package:dir`, and `pnpm package:win`. The public
+release assets and `latest.yml` returned HTTP 200 and the manifest declares
+version `0.7.61`; Diggy accepted the unsigned installer gate. The main-PC real
+sender test is now post-release validation: test both an application window and
+the whole screen, check the live encoder stats, and confirm viewer smoothness
+plus voice/screenshare audio. The mic `Error: 3002` remains a separate
+diagnostic until the microphone itself is confirmed audible.
 
 The resilience cache boundary is now hardened locally: fetched config is
 allowlisted and bounded, banner links must be HTTPS, malformed responses are
@@ -68,12 +69,20 @@ The dev client was reloaded from the project Electron binary after the
 screenshare follow-up overlay rebuild. The live read-only runtime validator
 passed with the account-writing badge phase skipped. This validates the loaded
 client and plugin surface, not a real sender/receiver screenshare session;
-Diggy's main-PC retest remains the publication gate.
+Diggy's main-PC retest remains post-release validation.
 
 The working tree still contains Diggy's unrelated DMPresence edits and
 untracked DMTranslate/PlaylistmaxxingPresence work; preserve those changes.
 
-## Current live state — v0.7.60
+## Current live state — v0.7.61
+
+Released 2026-08-18 through tag `v0.7.61` and the tag-driven GitHub release
+workflow. GitHub Release `v0.7.61` is stable and non-draft with HTTP-200
+installer, Windows/ARM64 ZIPs, blockmap, and `latest.yml` assets. The updater
+manifest declares version `0.7.61` and points to
+`Discordmaxxer-Setup-0.7.61.exe`.
+
+## Previous live state — v0.7.60
 
 Released 2026-08-02: the overlay was rebuilt and verified locally and then
 published through the tag-driven GitHub release workflow. Right-clicking a real image attachment now
