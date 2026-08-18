@@ -31,14 +31,14 @@ jobs:
         if: ${{ !startsWith(github.ref, 'refs/tags/') || !contains(github.ref_name, '-') }}
 
         steps:
-            - uses: actions/checkout@v4
-            - uses: pnpm/action-setup@v4 # Install pnpm using packageManager key in package.json
+            - uses: actions/checkout@v6
+            - uses: pnpm/action-setup@v6 # Install pnpm using packageManager key in package.json
 
             # Node 22, not 20: the pinned Vencord's packageManager is pnpm 11,
             # which requires Node >= 22.13 (it imports `node:sqlite`). On Node 20
             # the "Install Vencord deps" step dies with ERR_UNKNOWN_BUILTIN_MODULE.
             - name: Use Node.js 22
-              uses: actions/setup-node@v4
+              uses: actions/setup-node@v6
               with:
                   node-version: 22
                   cache: "pnpm"
@@ -149,7 +149,7 @@ jobs:
         if: failure()
         runs-on: ubuntu-latest
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@v6
             - name: DM Diggy via Maxx bot
               shell: bash
               env:
