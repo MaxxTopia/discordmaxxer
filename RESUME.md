@@ -39,6 +39,11 @@ changed. Commits `ab9c0df` and `e22fe2f` are pushed to `main`; GitHub test run
 Node-24-compatible major versions. This candidate is not tagged or published
 until the release gates are consciously accepted.
 
+The resilience cache boundary is now hardened locally: fetched config is
+allowlisted and bounded, banner links must be HTTPS, malformed responses are
+discarded, and cache replacement is atomic so an interrupted fetch cannot
+destroy the last-known-good startup state.
+
 The dev client was fully relaunched from the project Electron binary after the
 post-push overlay rebuild. Startup logged `vencord-dist -> MATCH`, the zstd
 compatibility flags were present, and the post-relaunch runtime validator

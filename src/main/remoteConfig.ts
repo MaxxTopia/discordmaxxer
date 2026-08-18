@@ -28,7 +28,7 @@
  */
 
 import { app } from "electron";
-import { existsSync, readFileSync, writeFileSync } from "fs";
+import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "fs";
 import { join } from "path";
 
 import { IpcEvents } from "../shared/IpcEvents";
@@ -40,6 +40,12 @@ const CONFIG_URL = BASE + "/config";
 const INCIDENT_URL = BASE + "/incident";
 const CACHE_PATH = join(DATA_DIR, "dm-resilience-config.json");
 const FETCH_TIMEOUT_MS = 6000;
+const MAX_LIST_ITEMS = 64;
+const MAX_LIST_ITEM_LENGTH = 120;
+const MAX_BANNER_TEXT_LENGTH = 600;
+const MAX_URL_LENGTH = 2048;
+const SAFE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+const SAFE_VERSION = /^v?\d+(?:\.\d+){1,3}(?:-[0-9A-Za-z.-]+)?$/;
 
 export interface RemoteConfig {
     launch_flags_add: string[];
@@ -57,20 +63,66 @@ const DEFAULT: RemoteConfig = {
     banner: { level: "none", text: "", url: "" }
 };
 
+function safeList(value: unknown): string[] {
+    if (!Array.isArray(value)) return [];
+    return value
+        .filter((item): item is string => typeof item === "string" && SAFE_NAME.test(item))
+        .map(item => item.slice(0, MAX_LIST_ITEM_LENGTH))
+        .slice(0, MAX_LIST_ITEMS);
+}
+
+function safeHttpsUrl(value: unknown): string {
+    if (typeof value !== "string") return "";
+    const url = value.trim().slice(0, MAX_URL_LENGTH);
+    return /^https:\/\//i.test(url) ? url : "";
+}
+
+/** Keep only the small, typed config surface the client actually consumes. */
+function normalizeConfig(raw: unknown): RemoteConfig | null {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+    const value = raw as Record<string, unknown>;
+    const rawBanner = value.banner && typeof value.banner === "object" ? (value.banner as Record<string, unknown>) : {};
+    const rawVersion = typeof value.min_supported_version === "string" ? value.min_supported_version.trim() : "";
+    const rawLevel = typeof rawBanner.level === "string" ? rawBanner.level : "none";
+    const level = ["none", "info", "warn", "critical"].includes(rawLevel) ? rawLevel : "none";
+    const rawText = typeof rawBanner.text === "string" ? rawBanner.text.trim() : "";
+
+    return {
+        launch_flags_add: safeList(value.launch_flags_add),
+        launch_flags_remove: safeList(value.launch_flags_remove),
+        disable_plugins: safeList(value.disable_plugins),
+        banner: {
+            level,
+            text: rawText.slice(0, MAX_BANNER_TEXT_LENGTH),
+            url: safeHttpsUrl(rawBanner.url)
+        },
+        ...(SAFE_VERSION.test(rawVersion) ? { min_supported_version: rawVersion } : {}),
+        force_update: value.force_update === true
+    };
+}
+
+/** Replace the cache as one filesystem operation; a partial write must not
+ * destroy the last-known-good launch config. Failure leaves the old cache. */
+function writeCachedConfig(config: RemoteConfig): void {
+    const tempPath = `${CACHE_PATH}.tmp`;
+    try {
+        writeFileSync(tempPath, JSON.stringify(config), "utf8");
+        renameSync(tempPath, CACHE_PATH);
+    } catch {
+        try {
+            if (existsSync(tempPath)) unlinkSync(tempPath);
+        } catch {
+            /* best-effort cleanup; startup remains fail-open */
+        }
+    }
+}
+
 /** SYNC read of the on-disk cache. Never throws — returns DEFAULT on anything
  *  unexpected (missing file, bad JSON, partial shape). */
 export function readCachedConfig(): RemoteConfig {
     try {
         if (!existsSync(CACHE_PATH)) return DEFAULT;
-        const raw = JSON.parse(readFileSync(CACHE_PATH, "utf8")) ?? {};
-        return {
-            ...DEFAULT,
-            ...raw,
-            launch_flags_add: Array.isArray(raw.launch_flags_add) ? raw.launch_flags_add : [],
-            launch_flags_remove: Array.isArray(raw.launch_flags_remove) ? raw.launch_flags_remove : [],
-            disable_plugins: Array.isArray(raw.disable_plugins) ? raw.disable_plugins : [],
-            banner: { ...DEFAULT.banner, ...(raw.banner && typeof raw.banner === "object" ? raw.banner : {}) }
-        };
+        return normalizeConfig(JSON.parse(readFileSync(CACHE_PATH, "utf8"))) ?? DEFAULT;
     } catch {
         return DEFAULT;
     }
@@ -105,8 +157,8 @@ export async function refreshRemoteConfig(): Promise<void> {
             clearTimeout(timer);
         }
         if (!res.ok) return;
-        const cfg = await res.json();
-        if (cfg && typeof cfg === "object") writeFileSync(CACHE_PATH, JSON.stringify(cfg));
+        const cfg = normalizeConfig(await res.json());
+        if (cfg) writeCachedConfig(cfg);
     } catch {
         /* keep last-known-good cache; the system must never depend on the fetch */
     }

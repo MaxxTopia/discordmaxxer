@@ -26,6 +26,9 @@
 - The current local candidate has a clean strict overlay, artifact integrity,
   test, build, package, and runtime-validator result. The real voice and
   screenshare-with-audio test remains human-only.
+- The client cache boundary now normalizes allowlisted fields, bounds remote
+  values, accepts HTTPS-only banner links, and replaces the cache atomically;
+  malformed or interrupted updates keep the prior safe state.
 
 ## Fix-class legend
 
@@ -54,7 +57,10 @@ Rows **#1, #2, #3, #5** can take out **every user at once**. #1 is the one with 
 2. **[IMPLEMENTED] Voice-connect detector** — `rtcStats.ts` observes `connectionstatechange`/`iceconnectionstatechange`, reports a conservative anonymous signature through IPC, and never touches the connection.
 3. **[IMPLEMENTED, VERIFY ON INCIDENT] Incident aggregator + alert** — the worker counts detector events and the existing suite-monitor service binding drives `/sweep`; an authenticated end-to-end alert probe is intentionally not run during ordinary maintenance because it can DM the owner.
 4. **[OPEN] Off-stack dead-man** — add an independent health check for the worker/monitor path so a dead monitor is itself caught.
-5. **[OPEN] Remote-config hardening** — add strict schema/bounds validation, atomic cache writes, and signed or otherwise integrity-checked payloads before allowing more powerful remediations.
+5. **[PARTIAL] Remote-config hardening** — the client now bounds/allowlists
+   values and atomically replaces its cache. Worker-side schema enforcement and
+   signed or otherwise integrity-checked payloads remain open before adding
+   more powerful remediations.
 
 ## What this does NOT promise
 
