@@ -34,10 +34,10 @@ Windows as `NotSigned`; local packaging works, but public distribution trust
 and SmartScreen remain an explicit release gate until signing is configured.
 The lint correction is mechanical (formatting, file headers, import order, and
 safe autofix-only cleanup); the voice/screenshare implementation was not
-changed. Commits `ab9c0df` and `e22fe2f` are pushed to `main`; GitHub test run
-`32096972164` passed cleanly after the workflow actions moved to their current
-Node-24-compatible major versions. This candidate is not tagged or published
-until the release gates are consciously accepted.
+changed. The maintenance chain ending at `a40e322` is pushed to `main`; the
+latest GitHub test run `32097496202` passed cleanly after the workflow actions
+moved to their current Node-24-compatible major versions. This candidate is
+not tagged or published until the release gates are consciously accepted.
 
 The resilience cache boundary is now hardened locally: fetched config is
 allowlisted and bounded, banner links must be HTTPS, malformed responses are
