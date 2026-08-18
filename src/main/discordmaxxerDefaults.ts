@@ -1,4 +1,10 @@
 /*
+ * Vesktop, a desktop app aiming to give you a snappier Discord Experience
+ * Copyright (c) 2026 Vendicated and Vesktop contributors
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
+/*
  * Discordmaxxer — defaults seeder
  * Copyright (c) 2026 Diggy
  * SPDX-License-Identifier: GPL-3.0-or-later
@@ -114,9 +120,7 @@ const REMOTE_KILL_KEY = "discordmaxxerRemoteKill";
  */
 export function applyRemotelyDisabledPlugins(disabled: string[]): void {
     try {
-        const list = Array.isArray(disabled)
-            ? disabled.filter(n => typeof n === "string" && n)
-            : [];
+        const list = Array.isArray(disabled) ? disabled.filter(n => typeof n === "string" && n) : [];
         const settings = readSettingsSafe();
         if (settings === null) return; // no settings yet (true first launch) — nothing to disable
 
@@ -185,9 +189,7 @@ export function seedDiscordmaxxerDefaults() {
         };
         try {
             writeFileSync(VENCORD_SETTINGS_FILE, JSON.stringify(defaults, null, 4));
-            console.log(
-                `[Discordmaxxer] First-launch seed: enabled ${PLUGINS_DEFAULT_ON.length} default plugins.`
-            );
+            console.log(`[Discordmaxxer] First-launch seed: enabled ${PLUGINS_DEFAULT_ON.length} default plugins.`);
         } catch (e) {
             console.error("[Discordmaxxer] Failed to write default Vencord settings.json:", e);
         }

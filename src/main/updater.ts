@@ -22,10 +22,7 @@ autoUpdater.on("update-available", update => {
     // Snooze is version-specific — snoozing v0.7.12 must not silence
     // v0.7.13/v0.7.14. Without the version check a 24h snooze was eating
     // every release that landed during that window (burned 2026-05-11).
-    if (
-        State.store.updater?.snoozedVersion === update.version &&
-        (State.store.updater?.snoozeUntil ?? 0) > Date.now()
-    )
+    if (State.store.updater?.snoozedVersion === update.version && (State.store.updater?.snoozeUntil ?? 0) > Date.now())
         return;
 
     openUpdater(update);

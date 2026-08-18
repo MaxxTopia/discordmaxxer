@@ -1,31 +1,15 @@
 /*
  * Vesktop, a desktop app aiming to give you a snappier Discord Experience
- * Copyright (c) 2026 Discordmaxxer contributors — auto stream-health capture
+ * Copyright (c) 2026 Vendicated and Vesktop contributors
  * SPDX-License-Identifier: GPL-3.0-or-later
- *
- * Captures the screenshare encoder verdict + echo-fix status AUTOMATICALLY when
- * a Go Live starts, so the recurring "is my stream actually smooth / is the echo
- * gone?" questions answer themselves with no panel-opening or manual reads.
- *
- * Flow: a light always-on poll watches getOutboundVideoStats() for the
- * null→streaming edge. ~6s after a share goes live (enough for the encoder to
- * settle on hardware-vs-software and a quality limitation to surface), it takes
- * one snapshot, combines it with how the echo path resolved this share, then:
- *   - persists it to Settings.store.lastStreamHealth (lands in the on-disk
- *     settings.json — survives restarts, readable after the fact), and
- *   - shows a one-line verdict toast; a louder one if something's wrong.
- *
- * No telemetry / nothing auto-sent — capture is entirely local, matching the
- * "zero outbound calls" posture. The data is surfaced to the user; sending it
- * stays a manual one-tap ("Report on Discord" in the health panel).
  */
 
 import { Toasts } from "@vencord/types/webpack/common";
 import { Settings } from "renderer/settings";
 import { isWindows } from "renderer/utils";
 
-import { getLastEchoInjection } from "./screenShareFixes";
 import { getOutboundVideoStats } from "./rtcStats";
+import { getLastEchoInjection } from "./screenShareFixes";
 
 export interface LastStreamHealth {
     ts: number;
@@ -93,7 +77,8 @@ function capture(stat: NonNullable<Awaited<ReturnType<typeof getOutboundVideoSta
     const healthy = !software && !cpuLimited && !echoRisk;
 
     let verdict: string;
-    if (software) verdict = `Software encoder (${stat.encoderImplementation}) — choppy under motion; re-enable HW encode`;
+    if (software)
+        verdict = `Software encoder (${stat.encoderImplementation}) — choppy under motion; re-enable HW encode`;
     else if (cpuLimited) verdict = "Hardware encoder but CPU-limited — drop to 720p30 / check optimizer tweaks";
     else if (bwLimited) verdict = "Bandwidth-limited — network is the bottleneck";
     else verdict = `Healthy: hardware encoder @ ${stat.framesPerSecond}fps`;
@@ -125,7 +110,10 @@ function capture(stat: NonNullable<Awaited<ReturnType<typeof getOutboundVideoSta
         toast(`Stream OK: ${stat.encoderKind} encoder @ ${stat.framesPerSecond}fps, echo-fix on`, Toasts.Type.SUCCESS);
     } else {
         const echoNote = echoRisk ? " · echo fix fell back to loopback" : "";
-        toast(`Stream health: ${verdict}${echoNote}. See Settings → Discordmaxxer → Dev Settings.`, Toasts.Type.FAILURE);
+        toast(
+            `Stream health: ${verdict}${echoNote}. See Settings → Discordmaxxer → Dev Settings.`,
+            Toasts.Type.FAILURE
+        );
     }
 }
 

@@ -1,4 +1,10 @@
 /*
+ * Vesktop, a desktop app aiming to give you a snappier Discord Experience
+ * Copyright (c) 2026 Vendicated and Vesktop contributors
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
+/*
  * Discordmaxxer — remote resilience config (client side of the failover system)
  * Copyright (c) 2026 Diggy
  * SPDX-License-Identifier: GPL-3.0-or-later
@@ -138,8 +144,14 @@ export function getRemotelyDisabledPlugins(): string[] {
 /** Numeric dotted-version compare. -1 if a<b, 0 if equal, 1 if a>b. Tolerant of
  *  a leading "v" and differing segment counts; non-numeric segments count as 0. */
 function versionCompare(a: string, b: string): number {
-    const pa = String(a).replace(/^v/i, "").split(".").map(n => parseInt(n, 10) || 0);
-    const pb = String(b).replace(/^v/i, "").split(".").map(n => parseInt(n, 10) || 0);
+    const pa = String(a)
+        .replace(/^v/i, "")
+        .split(".")
+        .map(n => parseInt(n, 10) || 0);
+    const pb = String(b)
+        .replace(/^v/i, "")
+        .split(".")
+        .map(n => parseInt(n, 10) || 0);
     const len = Math.max(pa.length, pb.length);
     for (let i = 0; i < len; i++) {
         const x = pa[i] ?? 0;

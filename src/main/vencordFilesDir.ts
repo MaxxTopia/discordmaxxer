@@ -27,10 +27,7 @@ function discordmaxxerStagedVencord(): string | null {
     // Dev: project-relative path. Production: bundled in resources/.
     // In dev __dirname is dist/js/ — go up 2 levels to project root.
     const candidates = IS_DEV
-        ? [
-              resolve(__dirname, "..", "..", "vencord-dist"),
-              resolve(app.getAppPath(), "vencord-dist")
-          ]
+        ? [resolve(__dirname, "..", "..", "vencord-dist"), resolve(app.getAppPath(), "vencord-dist")]
         : [join(process.resourcesPath ?? "", "vencord-dist"), join(app.getAppPath(), "vencord-dist")];
 
     for (const dir of candidates) {

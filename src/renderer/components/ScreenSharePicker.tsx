@@ -1,6 +1,6 @@
 /*
  * Vesktop, a desktop app aiming to give you a snappier Discord Experience
- * Copyright (c) 2023 Vendicated and Vencord contributors
+ * Copyright (c) 2026 Vendicated and Vesktop contributors
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
@@ -31,13 +31,20 @@ import {
     useForceUpdater
 } from "@vencord/types/utils";
 import { onceReady } from "@vencord/types/webpack";
-import { FluxDispatcher, MediaEngineStore, Select, useEffect, UserStore, useState } from "@vencord/types/webpack/common";
+import {
+    FluxDispatcher,
+    MediaEngineStore,
+    Select,
+    useEffect,
+    UserStore,
+    useState
+} from "@vencord/types/webpack/common";
 import type { Dispatch, SetStateAction } from "react";
 import { addPatch } from "renderer/patches/shared";
 import { State, useSettings, useVesktopState } from "renderer/settings";
 import { isLinux, isWindows } from "renderer/utils";
-import type { Node } from "shared/venmicTypes";
 import { getActiveWinAudioSession } from "renderer/winaudioBridge";
+import type { Node } from "shared/venmicTypes";
 
 import { SimpleErrorBoundary } from "./SimpleErrorBoundary";
 
@@ -491,7 +498,6 @@ function StreamSettingsUi({
                         setExcludeSources={sources => setSettings(s => ({ ...s, excludeSources: sources }))}
                     />
                 )}
-
             </Card>
         </div>
     );
@@ -764,9 +770,7 @@ function ModalComponent({
 }) {
     // Guard screens[0] — skipPicker with an empty source list would throw on
     // .id and crash the modal render instead of showing the picker.
-    const [selected, setSelected] = useState<string | undefined>(
-        skipPicker && screens.length ? screens[0].id : void 0
-    );
+    const [selected, setSelected] = useState<string | undefined>(skipPicker && screens.length ? screens[0].id : void 0);
     const [settings, setSettings] = useState<StreamSettings>({
         contentHint: "motion",
         audio: true,
@@ -798,9 +802,9 @@ function ModalComponent({
                     <Card className={cl("hw-accel-warning")}>
                         <Heading tag="h5">Hardware acceleration is off</Heading>
                         <Paragraph>
-                            Your screenshare will likely stutter on viewers' screens because the encoder will fall
-                            back to CPU. Enable it in <b>Settings &rarr; Discordmaxxer Settings &rarr; Hardware
-                            Acceleration</b>, then restart.
+                            Your screenshare will likely stutter on viewers' screens because the encoder will fall back
+                            to CPU. Enable it in{" "}
+                            <b>Settings &rarr; Discordmaxxer Settings &rarr; Hardware Acceleration</b>, then restart.
                         </Paragraph>
                     </Card>
                 )}

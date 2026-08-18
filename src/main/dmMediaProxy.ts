@@ -1,4 +1,10 @@
 /*
+ * Vesktop, a desktop app aiming to give you a snappier Discord Experience
+ * Copyright (c) 2026 Vendicated and Vesktop contributors
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
+/*
  * Discordmaxxer — dm-media:// protocol proxy
  * Copyright (c) 2026 Diggy
  * SPDX-License-Identifier: GPL-3.0-or-later
@@ -58,21 +64,21 @@ function ipIsPrivate(ipRaw: string): boolean {
         const p = ip.split(".").map(Number);
         if (p.length !== 4 || p.some(n => Number.isNaN(n))) return true;
         const [a, b] = p;
-        if (a === 0 || a === 10 || a === 127) return true;          // this-net / private / loopback
-        if (a === 169 && b === 254) return true;                    // link-local (incl. cloud metadata)
-        if (a === 172 && b >= 16 && b <= 31) return true;           // private
-        if (a === 192 && b === 168) return true;                    // private
-        if (a === 100 && b >= 64 && b <= 127) return true;          // CGNAT
-        if (a >= 224) return true;                                  // multicast + reserved
+        if (a === 0 || a === 10 || a === 127) return true; // this-net / private / loopback
+        if (a === 169 && b === 254) return true; // link-local (incl. cloud metadata)
+        if (a === 172 && b >= 16 && b <= 31) return true; // private
+        if (a === 192 && b === 168) return true; // private
+        if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT
+        if (a >= 224) return true; // multicast + reserved
         return false;
     }
     if (fam === 6) {
         const v = ip.toLowerCase();
         if (v === "::1" || v === "::") return true;
-        if (v.startsWith("fe80")) return true;                      // link-local
-        if (v.startsWith("fc") || v.startsWith("fd")) return true;  // unique-local
-        if (v.startsWith("2001:db8")) return true;                  // documentation
-        if (v.startsWith("::ffff:")) return ipIsPrivate(v.slice(7));// IPv4-mapped
+        if (v.startsWith("fe80")) return true; // link-local
+        if (v.startsWith("fc") || v.startsWith("fd")) return true; // unique-local
+        if (v.startsWith("2001:db8")) return true; // documentation
+        if (v.startsWith("::ffff:")) return ipIsPrivate(v.slice(7)); // IPv4-mapped
         return false;
     }
     return true; // not a valid IP literal where one was expected → block
@@ -91,8 +97,14 @@ async function resolvePinnedAddress(hostname: string): Promise<{ address: string
         if (ipIsPrivate(h)) throw new Error("target host is not allowed");
         return { address: h, family: isIP(h) };
     }
-    if (h === "localhost" || h.endsWith(".localhost") || h.endsWith(".local") ||
-        h.endsWith(".internal") || h.endsWith(".home.arpa")) throw new Error("target host is not allowed");
+    if (
+        h === "localhost" ||
+        h.endsWith(".localhost") ||
+        h.endsWith(".local") ||
+        h.endsWith(".internal") ||
+        h.endsWith(".home.arpa")
+    )
+        throw new Error("target host is not allowed");
     let addrs;
     try {
         addrs = await lookup(h, { all: true });
@@ -111,7 +123,11 @@ async function resolvePinnedAddress(hostname: string): Promise<{ address: string
  *  guard is the pinned connect in fetchValidated. */
 async function validateTarget(urlStr: string): Promise<string | null> {
     let parsed: URL;
-    try { parsed = new URL(urlStr); } catch { return "malformed URL"; }
+    try {
+        parsed = new URL(urlStr);
+    } catch {
+        return "malformed URL";
+    }
     if (parsed.protocol !== "https:") return "only https:// targets allowed";
     try {
         await resolvePinnedAddress(parsed.hostname);
@@ -131,7 +147,11 @@ interface ProxyResponse {
 /** One HTTPS GET pinned to a pre-validated address. The custom `lookup`
  *  forces the socket to connect to `pinned.address` while `servername`/the
  *  Host header stay the real hostname so TLS SNI + cert validation succeed. */
-function fetchOnce(parsed: URL, rangeHeader: string | null, pinned: { address: string; family: number }): Promise<ProxyResponse> {
+function fetchOnce(
+    parsed: URL,
+    rangeHeader: string | null,
+    pinned: { address: string; family: number }
+): Promise<ProxyResponse> {
     return new Promise((resolve, reject) => {
         // Node's net stack calls this with `{ all: true }`, which REQUIRES the
         // callback to return an ARRAY of {address,family}. Returning the 3-arg
@@ -168,7 +188,11 @@ function fetchOnce(parsed: URL, rangeHeader: string | null, pinned: { address: s
                 let total = 0;
                 res.on("data", (c: Buffer) => {
                     total += c.length;
-                    if (total > MAX_PROXY_BYTES) { req.destroy(); reject(new Error("response exceeds size cap")); return; }
+                    if (total > MAX_PROXY_BYTES) {
+                        req.destroy();
+                        reject(new Error("response exceeds size cap"));
+                        return;
+                    }
                     chunks.push(c);
                 });
                 res.on("end", () => resolve({ status, headers: res.headers, body: Buffer.concat(chunks) }));
@@ -186,7 +210,11 @@ async function fetchValidated(initialUrl: string, rangeHeader: string | null): P
     let current = initialUrl;
     for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
         let parsed: URL;
-        try { parsed = new URL(current); } catch { throw new Error("malformed URL"); }
+        try {
+            parsed = new URL(current);
+        } catch {
+            throw new Error("malformed URL");
+        }
         if (parsed.protocol !== "https:") throw new Error("only https:// targets allowed");
         // Resolve + validate + pin in one step — no second resolve at connect.
         const pinned = await resolvePinnedAddress(parsed.hostname);
@@ -207,20 +235,20 @@ protocol.registerSchemesAsPrivileged([
     {
         scheme: "dm-media",
         privileges: {
-            stream: true,           // enables seekable media playback (range requests)
+            stream: true, // enables seekable media playback (range requests)
             supportFetchAPI: true,
             corsEnabled: true,
-            bypassCSP: true,        // renderer's CSP doesn't apply to same-origin custom scheme
-            standard: true,         // required for `stream: true` to take effect
-            secure: true            // ALSO required for <video> URL safety check — without
-                                    //   this Chromium rejects with "Media load rejected by
-                                    //   URL safety check" before even fetching.
+            bypassCSP: true, // renderer's CSP doesn't apply to same-origin custom scheme
+            standard: true, // required for `stream: true` to take effect
+            secure: true // ALSO required for <video> URL safety check — without
+            //   this Chromium rejects with "Media load rejected by
+            //   URL safety check" before even fetching.
         }
     }
 ]);
 
 app.whenReady().then(() => {
-    protocol.handle("dm-media", async (request) => {
+    protocol.handle("dm-media", async request => {
         // URL shape: dm-media://proxy/<url-encoded https URL>
         // Example: dm-media://proxy/https%3A%2F%2Fi.imgur.com%2Fabc.mp4
         // The `proxy` hostname is required — Chromium's <video> URL safety

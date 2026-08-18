@@ -1,4 +1,10 @@
 /*
+ * Vesktop, a desktop app aiming to give you a snappier Discord Experience
+ * Copyright (c) 2026 Vendicated and Vesktop contributors
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
+/*
  * Discordmaxxer — resilience banner (renderer side of the failover system)
  * Copyright (c) 2026 Diggy
  * SPDX-License-Identifier: GPL-3.0-or-later
@@ -42,8 +48,7 @@ async function showResilienceNotice() {
         if (!forced && !hasBanner) return;
 
         const message = forced
-            ? text ||
-              "A required Discordmaxxer update is available — please update to keep voice and features working."
+            ? text || "A required Discordmaxxer update is available — please update to keep voice and features working."
             : text;
         const url = state.updateUrl || state.banner?.url || RELEASES_FALLBACK;
 

@@ -1,4 +1,10 @@
 /*
+ * Vesktop, a desktop app aiming to give you a snappier Discord Experience
+ * Copyright (c) 2026 Vendicated and Vesktop contributors
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
+/*
  * Discordmaxxer — winaudio bridge (Windows-only)
  * Copyright (c) 2026 Diggy
  * SPDX-License-Identifier: GPL-3.0-or-later
@@ -25,7 +31,7 @@ interface WinAudioModule {
     listOutputDevices: () => { devices: Array<{ id: string; name: string; isDefault: boolean }> };
     startCapture: (
         deviceId: string,
-        onChunk: (chunk: { data: Buffer; frameCount: number; timestamp100ns: bigint; silent: boolean }) => void,
+        onChunk: (chunk: { data: Buffer; frameCount: number; timestamp100ns: bigint; silent: boolean }) => void
     ) => { sampleRate: number; channels: number; bitsPerSample: number; isFloat: boolean };
     stopCapture: () => void;
     isCapturing: () => boolean;
@@ -35,7 +41,7 @@ interface WinAudioModule {
     startProcessLoopback: (
         targetPid: number,
         mode: "include" | "exclude",
-        onChunk: (chunk: { data: Buffer; frameCount: number; timestamp100ns: bigint; silent: boolean }) => void,
+        onChunk: (chunk: { data: Buffer; frameCount: number; timestamp100ns: bigint; silent: boolean }) => void
     ) => { sampleRate: number; channels: number; bitsPerSample: number; isFloat: boolean };
     // Pull PCM chunks parked by the native capture thread. Polled by the JS
     // side because the ThreadSafeFunction push path is never serviced in the
@@ -48,14 +54,19 @@ interface WinAudioModule {
 // timers run — verified end-to-end). So we ignore that callback and instead
 // POLL mod.drainChunks() on a timer, which IS serviced, and forward each chunk
 // to the renderer. One poller at a time (captures are single-instance).
-const NOOP_CHUNK = () => { /* unused — delivery is via the drainChunks poller */ };
+const NOOP_CHUNK = () => {
+    /* unused — delivery is via the drainChunks poller */
+};
 let chunkPoller: ReturnType<typeof setInterval> | null = null;
 
 function startChunkForwarding(mod: WinAudioModule, win: BrowserWindow | null) {
     stopChunkForwarding();
     if (!win || win.isDestroyed()) return;
     chunkPoller = setInterval(() => {
-        if (!win || win.isDestroyed()) { stopChunkForwarding(); return; }
+        if (!win || win.isDestroyed()) {
+            stopChunkForwarding();
+            return;
+        }
         let chunks;
         try {
             chunks = mod.drainChunks();
@@ -67,7 +78,7 @@ function startChunkForwarding(mod: WinAudioModule, win: BrowserWindow | null) {
                 data: chunk.data,
                 frameCount: chunk.frameCount,
                 timestamp100ns: chunk.timestamp100ns.toString(),
-                silent: chunk.silent,
+                silent: chunk.silent
             });
         }
     }, 10);
@@ -94,7 +105,6 @@ function load(): WinAudioModule | null {
         return null;
     }
     try {
-        // eslint-disable-next-line @typescript-eslint/no-require-imports
         winaudio = require("winaudio");
         return winaudio;
     } catch (e: any) {
@@ -152,22 +162,19 @@ handle(IpcEvents.DM_WIN_AUDIO_SESSIONS, async () => {
     }
 });
 
-handle(
-    IpcEvents.DM_WIN_AUDIO_START_PROCESS,
-    async (event, targetPid: number, mode: "include" | "exclude") => {
-        const mod = load();
-        if (!mod) return { ok: false, error: loadError ?? "winaudio unavailable" };
-        const win = BrowserWindow.fromWebContents(event.sender);
-        if (!win || win.isDestroyed()) return { ok: false, error: "no live window" };
-        try {
-            const format = mod.startProcessLoopback(targetPid, mode, NOOP_CHUNK);
-            startChunkForwarding(mod, win);
-            return { ok: true, format };
-        } catch (e: any) {
-            return { ok: false, error: String(e?.message || e) };
-        }
-    },
-);
+handle(IpcEvents.DM_WIN_AUDIO_START_PROCESS, async (event, targetPid: number, mode: "include" | "exclude") => {
+    const mod = load();
+    if (!mod) return { ok: false, error: loadError ?? "winaudio unavailable" };
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (!win || win.isDestroyed()) return { ok: false, error: "no live window" };
+    try {
+        const format = mod.startProcessLoopback(targetPid, mode, NOOP_CHUNK);
+        startChunkForwarding(mod, win);
+        return { ok: true, format };
+    } catch (e: any) {
+        return { ok: false, error: String(e?.message || e) };
+    }
+});
 
 // Exclude-self: capture the WHOLE system output mix EXCEPT this app's own
 // process tree. Used for full-screen shares / when we can't identify the
@@ -188,4 +195,3 @@ handle(IpcEvents.DM_WIN_AUDIO_START_EXCLUDE_SELF, async event => {
         return { ok: false, error: String(e?.message || e) };
     }
 });
-

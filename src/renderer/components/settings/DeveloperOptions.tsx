@@ -91,19 +91,17 @@ function StreamHealthSection() {
 
     // Auto-captured ~6s into the most recent Go Live (patches/streamHealthAuto.ts),
     // persisted to settings.json so it's here even after the stream ends.
-    const last = (s.lastStreamHealth ?? null) as
-        | null
-        | {
-              ts: number;
-              encoderImplementation: string;
-              encoderKind: string;
-              qualityLimitationReason: string;
-              framesPerSecond: number;
-              frameWidth: number;
-              frameHeight: number;
-              echoFix: string;
-              verdict: string;
-          };
+    const last = (s.lastStreamHealth ?? null) as null | {
+        ts: number;
+        encoderImplementation: string;
+        encoderKind: string;
+        qualityLimitationReason: string;
+        framesPerSecond: number;
+        frameWidth: number;
+        frameHeight: number;
+        echoFix: string;
+        verdict: string;
+    };
     const lastLines = last
         ? [
               `Last stream (${new Date(last.ts).toLocaleString()}):`,
@@ -130,7 +128,9 @@ function StreamHealthSection() {
         if (live.encoderKind === "software") {
             verdict = (
                 <Paragraph>
-                    <b style={{ color: "var(--text-danger)" }}>⚠ Software encoder in use ({live.encoderImplementation}).</b>{" "}
+                    <b style={{ color: "var(--text-danger)" }}>
+                        ⚠ Software encoder in use ({live.encoderImplementation}).
+                    </b>{" "}
                     This is the usual cause of "smooth for me, choppy for viewers" on fast motion — the CPU can't encode
                     60fps of game motion in real time, so frames are dropped. Fix below (re-enable hardware encode).
                 </Paragraph>
@@ -138,22 +138,23 @@ function StreamHealthSection() {
         } else if (live.qualityLimitationReason === "cpu") {
             verdict = (
                 <Paragraph>
-                    <b style={{ color: "var(--text-warning)" }}>Encoder is CPU-limited.</b> The GPU encoder is engaged but
-                    still can't keep up — drop to 720p30, close background CPU load, or check the optimizer tweaks below.
+                    <b style={{ color: "var(--text-warning)" }}>Encoder is CPU-limited.</b> The GPU encoder is engaged
+                    but still can't keep up — drop to 720p30, close background CPU load, or check the optimizer tweaks
+                    below.
                 </Paragraph>
             );
         } else if (live.qualityLimitationReason === "bandwidth") {
             verdict = (
                 <Paragraph>
-                    <b>Bandwidth-limited.</b> The network (not your PC) is the bottleneck — lower resolution/fps or check
-                    upload.
+                    <b>Bandwidth-limited.</b> The network (not your PC) is the bottleneck — lower resolution/fps or
+                    check upload.
                 </Paragraph>
             );
         } else {
             verdict = (
                 <Paragraph>
-                    <b style={{ color: "var(--text-positive)" }}>✓ Hardware encoder, no limitation.</b> The sender side is
-                    healthy — any choppiness a viewer sees is on their end or the network.
+                    <b style={{ color: "var(--text-positive)" }}>✓ Hardware encoder, no limitation.</b> The sender side
+                    is healthy — any choppiness a viewer sees is on their end or the network.
                 </Paragraph>
             );
         }
@@ -161,26 +162,45 @@ function StreamHealthSection() {
 
     return (
         <>
-            <Heading tag="h5" className={Margins.top16}>Stream &amp; Voice Health</Heading>
-            <div style={{ background: "var(--background-secondary)", borderRadius: 6, padding: "8px 10px", margin: "6px 0" }}>
-                <pre style={{ whiteSpace: "pre-wrap", margin: 0, fontFamily: "var(--font-code, monospace)", fontSize: 12 }}>{report}</pre>
+            <Heading tag="h5" className={Margins.top16}>
+                Stream &amp; Voice Health
+            </Heading>
+            <div
+                style={{
+                    background: "var(--background-secondary)",
+                    borderRadius: 6,
+                    padding: "8px 10px",
+                    margin: "6px 0"
+                }}
+            >
+                <pre
+                    style={{
+                        whiteSpace: "pre-wrap",
+                        margin: 0,
+                        fontFamily: "var(--font-code, monospace)",
+                        fontSize: 12
+                    }}
+                >
+                    {report}
+                </pre>
             </div>
             {verdict}
             <Paragraph>
                 <b>Viewers hear themselves (echo):</b> fixed in this build — stream audio is now captured as your
-                game/desktop audio <i>minus</i> Discordmaxxer's own playback (winaudio exclude-self), so a viewer's voice
-                can't loop back. If you ever still hear echo, share <b>video-only</b> as a fallback and report it.
+                game/desktop audio <i>minus</i> Discordmaxxer's own playback (winaudio exclude-self), so a viewer's
+                voice can't loop back. If you ever still hear echo, share <b>video-only</b> as a fallback and report it.
             </Paragraph>
             <Paragraph>
                 <b>Choppy / laggy to viewers — the fix order (for your RTX 2070, NVENC should engage):</b>
             </Paragraph>
             <Paragraph>
-                1. Read the <b>Encoder</b> line above while sharing. <code>SOFTWARE</code> or limitation <code>cpu</code>
-                = the problem is encode, not your settings (that's why no slider changed it). 2. Re-enable{" "}
-                <b>Hardware-Accelerated GPU Scheduling</b> (your optimizer turned it OFF) — Settings → Display → Graphics,
-                then restart. 3. Make sure the NVIDIA driver is a stable build (avoid the 577.00 branch). 4. In your
-                optimizer, restore <b>NetworkThrottlingIndex</b> to default (it's set to an aggressive 1) and re-check. 5.
-                Re-read the Encoder line: success = a hardware encoder string and limitation <code>none</code>.
+                1. Read the <b>Encoder</b> line above while sharing. <code>SOFTWARE</code> or limitation{" "}
+                <code>cpu</code>= the problem is encode, not your settings (that's why no slider changed it). 2.
+                Re-enable <b>Hardware-Accelerated GPU Scheduling</b> (your optimizer turned it OFF) — Settings → Display
+                → Graphics, then restart. 3. Make sure the NVIDIA driver is a stable build (avoid the 577.00 branch). 4.
+                In your optimizer, restore <b>NetworkThrottlingIndex</b> to default (it's set to an aggressive 1) and
+                re-check. 5. Re-read the Encoder line: success = a hardware encoder string and limitation{" "}
+                <code>none</code>.
             </Paragraph>
             <div className={cl("button-grid")}>
                 <Button
@@ -189,8 +209,18 @@ function StreamHealthSection() {
                         // catch its rejection (unhandled rejection + a false
                         // "copied" toast). Gate the toast on the result.
                         navigator.clipboard.writeText(report).then(
-                            () => Toasts.show({ message: "Stream health copied", type: Toasts.Type.SUCCESS, id: Toasts.genId() }),
-                            () => Toasts.show({ message: "Copy failed — clipboard blocked", type: Toasts.Type.FAILURE, id: Toasts.genId() })
+                            () =>
+                                Toasts.show({
+                                    message: "Stream health copied",
+                                    type: Toasts.Type.SUCCESS,
+                                    id: Toasts.genId()
+                                }),
+                            () =>
+                                Toasts.show({
+                                    message: "Copy failed — clipboard blocked",
+                                    type: Toasts.Type.FAILURE,
+                                    id: Toasts.genId()
+                                })
                         );
                     }}
                 >
@@ -201,16 +231,18 @@ function StreamHealthSection() {
                         // Catch the async rejection so it can't surface as an
                         // unhandled rejection; toast reflects the real outcome.
                         navigator.clipboard.writeText(report).then(
-                            () => Toasts.show({
-                                message: "Report copied — paste it in the Maxxtopia Discord to send it.",
-                                type: Toasts.Type.SUCCESS,
-                                id: Toasts.genId()
-                            }),
-                            () => Toasts.show({
-                                message: "Copy failed — opening Discord anyway; paste manually.",
-                                type: Toasts.Type.FAILURE,
-                                id: Toasts.genId()
-                            })
+                            () =>
+                                Toasts.show({
+                                    message: "Report copied — paste it in the Maxxtopia Discord to send it.",
+                                    type: Toasts.Type.SUCCESS,
+                                    id: Toasts.genId()
+                                }),
+                            () =>
+                                Toasts.show({
+                                    message: "Copy failed — opening Discord anyway; paste manually.",
+                                    type: Toasts.Type.FAILURE,
+                                    id: Toasts.genId()
+                                })
                         );
                         try {
                             window.open("https://discord.gg/S78eecbWdx", "_blank");

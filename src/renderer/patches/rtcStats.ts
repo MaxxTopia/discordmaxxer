@@ -1,24 +1,7 @@
 /*
  * Vesktop, a desktop app aiming to give you a snappier Discord Experience
- * Copyright (c) 2026 Discordmaxxer contributors — live WebRTC encoder telemetry
+ * Copyright (c) 2026 Vendicated and Vesktop contributors
  * SPDX-License-Identifier: GPL-3.0-or-later
- *
- * Why this exists: the #1 recurring screenshare complaint is "viewers say my
- * stream is choppy/laggy" and NO in-app setting (bitrate, resolution, fps, HW
- * accel) changes it. That signature almost always means the WebRTC video
- * encoder fell back to SOFTWARE (OpenH264 / libvpx) and is CPU-limited, so it
- * drops frames under fast motion — the broadcaster's own preview looks fine
- * because that's the raw capture, but viewers get the throttled encoded stream.
- *
- * The only way to know for sure is the sender-side getStats() outbound-rtp
- * video report: `encoderImplementation` (hardware vs software) and
- * `qualityLimitationReason` (cpu vs bandwidth vs none). Discord's MediaEngine
- * hides its RTCPeerConnection behind a native wrapper, so we can't reach it by
- * walking the connection object (that's also why the old replaceTrack-on-sender
- * echo path never fired). Instead we patch the RTCPeerConnection CONSTRUCTOR at
- * renderer startup and keep a weak registry of every PC Discord's web client
- * creates. Polling getStats across them surfaces the encoder truth with zero
- * dependency on Discord internals.
  */
 
 // Live registry of every RTCPeerConnection created in this renderer. WeakRef so

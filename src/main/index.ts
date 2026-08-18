@@ -21,10 +21,10 @@ import { app, BrowserWindow, nativeTheme } from "electron";
 
 import { DATA_DIR } from "./constants";
 import { applyRemotelyDisabledPlugins, seedDiscordmaxxerDefaults } from "./discordmaxxerDefaults";
-import { applyRemoteLaunchFlags, getRemotelyDisabledPlugins, refreshRemoteConfig } from "./remoteConfig";
 import { createFirstLaunchTour } from "./firstLaunch";
 import { createWindows, mainWin } from "./mainWindow";
 import { registerMediaPermissionsHandler } from "./mediaPermissions";
+import { applyRemoteLaunchFlags, getRemotelyDisabledPlugins, refreshRemoteConfig } from "./remoteConfig";
 import { registerScreenShareHandler } from "./screenShare";
 import { Settings, State } from "./settings";
 import { setAsDefaultProtocolClient } from "./utils/setAsDefaultProtocolClient";

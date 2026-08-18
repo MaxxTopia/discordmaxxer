@@ -1,4 +1,10 @@
 /*
+ * Vesktop, a desktop app aiming to give you a snappier Discord Experience
+ * Copyright (c) 2026 Vendicated and Vesktop contributors
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
+/*
  * Discordmaxxer — HWID computation
  * Copyright (c) 2026 Diggy
  * SPDX-License-Identifier: GPL-3.0-or-later
@@ -54,12 +60,7 @@ async function computeHwid(): Promise<string> {
     try {
         const { stdout } = await execFileAsync(
             "powershell.exe",
-            [
-                "-NoProfile",
-                "-NonInteractive",
-                "-ExecutionPolicy", "Bypass",
-                "-Command", PS_QUERY
-            ],
+            ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", PS_QUERY],
             { windowsHide: true, timeout: 10_000 }
         );
         const basis = stdout.trim();

@@ -23,14 +23,27 @@ non-silent signal from the selected process, so a known-audio human test is
 still required before calling process audio verified.
 
 Verification: strict overlay on a pristine current Vencord clone passed with
-0 warnings and was idempotent; `pnpm testTypes`, targeted lint, JavaScript
+0 warnings and was idempotent; the normalized CI-equivalent lint scan is clean
+across 104 tracked source files, and `pnpm test` now passes locally. JavaScript
 syntax checks, `pnpm build`, artifact verification, the read-only runtime
-validator, and winaudio native tests pass. Full `pnpm test` remains red from
-the repository's existing CRLF/prettier findings (8,607 errors); do not mass-
-format unrelated source. Local `pnpm package:dir` is blocked by insufficient C:
-drive space (`ENOSPC`), not by a build error. This candidate is not tagged or
-published until the required real voice + screenshare-with-audio check is
-performed.
+validator, and winaudio native tests also pass. After reclaiming approximately
+46 GiB of replaceable build/cache storage, both `pnpm package:dir` and the
+full `pnpm package:win` target pass, producing x64/ARM64 ZIPs and the NSIS
+installer without `ENOSPC`. The generated installer is currently reported by
+Windows as `NotSigned`; local packaging works, but public distribution trust
+and SmartScreen remain an explicit release gate until signing is configured.
+The lint correction is mechanical (formatting, file headers, import order, and
+safe autofix-only cleanup); the voice/screenshare implementation was not
+changed. This candidate is not tagged or published until the release gates
+are consciously accepted.
+
+The dev client was relaunched from the project Electron binary after the
+full packaging run (the build closed the prior dev instance). Startup logged
+`vencord-dist -> MATCH`, the zstd compatibility flags were present, and the
+post-relaunch runtime validator passed with the account-writing badge phase
+skipped. The voice/screenshare runtime path was not changed in this drift
+update; Diggy's earlier successful real voice/screenshare test remains the
+best evidence for that path, with a fresh retest optional before publication.
 
 The working tree still contains Diggy's unrelated DMPresence edits and
 untracked DMTranslate/PlaylistmaxxingPresence work; preserve those changes.

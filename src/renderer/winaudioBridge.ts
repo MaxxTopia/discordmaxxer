@@ -1,4 +1,10 @@
 /*
+ * Vesktop, a desktop app aiming to give you a snappier Discord Experience
+ * Copyright (c) 2026 Vendicated and Vesktop contributors
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
+/*
  * Discordmaxxer — winaudio renderer bridge
  * Copyright (c) 2026 Diggy
  * SPDX-License-Identifier: GPL-3.0-or-later
@@ -189,7 +195,7 @@ async function startSessionFromInit(
     if (!startResult.ok) {
         throw new Error("winaudio start failed: " + startResult.error);
     }
-    const format = startResult.format;
+    const { format } = startResult;
 
     // Build the Web Audio graph at the WASAPI device's native sample rate
     // so we don't introduce resampling on our side. AudioContext will
@@ -247,9 +253,7 @@ async function startSessionFromInit(
         try {
             // Build a Float32Array view backed by the chunk's bytes. Buffer is
             // a Uint8Array subclass; .buffer/.byteOffset are compatible.
-            const samples = new Float32Array(
-                buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength)
-            );
+            const samples = new Float32Array(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength));
             feeder.port.postMessage({ samples }, [samples.buffer]);
         } catch {
             /* malformed chunk — drop it rather than throw in the hot path */
@@ -309,22 +313,32 @@ async function startSessionFromInit(
             offChunk();
             try {
                 feeder.disconnect();
-            } catch { /* ok */ }
+            } catch {
+                /* ok */
+            }
             try {
                 analyser.disconnect();
-            } catch { /* ok */ }
+            } catch {
+                /* ok */
+            }
             // Explicitly stop the destination track. ctx.close() usually ends it,
             // but the track is handed to replaceTrack() and may outlive the
             // context — stopping it is the idempotent, leak-safe contract.
             try {
                 track.stop();
-            } catch { /* ok */ }
+            } catch {
+                /* ok */
+            }
             try {
                 await ctx.close();
-            } catch { /* ok */ }
+            } catch {
+                /* ok */
+            }
             try {
                 await VesktopNative.winAudio.stop();
-            } catch { /* ok */ }
+            } catch {
+                /* ok */
+            }
             if (activeSession === session) activeSession = null;
         }
     };
@@ -342,16 +356,12 @@ async function startSessionFromInit(
  * keys depending on the version. We try the documented `connection.pc`
  * path first, fall back to scanning `connection` for any RTCPeerConnection.
  */
-export async function replaceScreenShareAudioTrack(
-    streamUserId: string,
-    newTrack: MediaStreamTrack
-): Promise<boolean> {
+export async function replaceScreenShareAudioTrack(streamUserId: string, newTrack: MediaStreamTrack): Promise<boolean> {
     // MediaEngineStore is a Vencord/Discord-internal store; we access via
     // global Vencord webpack. The renderer-side patches in ScreenSharePicker
     // already use this same path.
     const w = (globalThis as any).Vencord;
-    const MediaEngineStore = w?.Webpack?.Common?.MediaEngineStore
-        ?? w?.WebpackCommon?.MediaEngineStore;
+    const MediaEngineStore = w?.Webpack?.Common?.MediaEngineStore ?? w?.WebpackCommon?.MediaEngineStore;
     if (!MediaEngineStore) {
         console.warn("[winaudio] MediaEngineStore not found via Vencord webpack");
         return false;
@@ -361,9 +371,7 @@ export async function replaceScreenShareAudioTrack(
         console.warn("[winaudio] mediaEngine null");
         return false;
     }
-    const conn = [...(engine.connections ?? [])].find(
-        (c: any) => c?.streamUserId === streamUserId
-    );
+    const conn = [...(engine.connections ?? [])].find((c: any) => c?.streamUserId === streamUserId);
     if (!conn) {
         console.warn("[winaudio] no connection for streamUserId", streamUserId);
         return false;
@@ -403,7 +411,9 @@ function findPC(root: any, depth = 0, seen = new Set<any>()): RTCPeerConnection 
                 const found = findPC(v, depth + 1, seen);
                 if (found) return found;
             }
-        } catch { /* getters can throw, skip */ }
+        } catch {
+            /* getters can throw, skip */
+        }
     }
     return undefined;
 }

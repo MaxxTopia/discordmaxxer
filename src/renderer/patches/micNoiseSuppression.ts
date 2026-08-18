@@ -1,4 +1,10 @@
 /*
+ * Vesktop, a desktop app aiming to give you a snappier Discord Experience
+ * Copyright (c) 2026 Vendicated and Vesktop contributors
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
+/*
  * Discordmaxxer — in-app microphone noise suppression (RNNoise)
  * Copyright (c) 2026 Discordmaxxer contributors
  * SPDX-License-Identifier: GPL-3.0-or-later
@@ -37,7 +43,6 @@ import rnnoiseWasm from "@sapphi-red/web-noise-suppressor/rnnoise_simd.wasm";
 // The worklet processor's source, inlined as text (rawPlugin). Registered from
 // a Blob URL at runtime so we don't ship a separate .js asset.
 import rnnoiseWorkletSrc from "@sapphi-red/web-noise-suppressor/rnnoiseWorklet.js?raw";
-
 import { Logger } from "@vencord/types/utils";
 import { Settings } from "renderer/settings";
 
@@ -96,14 +101,20 @@ async function applyRnnoise(inputStream: MediaStream): Promise<MediaStream> {
             torn = true;
             try {
                 rnnoise.destroy();
-            } catch { /* ok */ }
+            } catch {
+                /* ok */
+            }
             try {
                 source.disconnect();
-            } catch { /* ok */ }
+            } catch {
+                /* ok */
+            }
             ctx.close().catch(() => {});
             try {
                 original?.stop();
-            } catch { /* ok */ }
+            } catch {
+                /* ok */
+            }
         };
         // CRITICAL: MediaStreamTrack 'ended' does NOT fire when stop() is called
         // manually (only when the underlying source ends). Discord ends a mic by
@@ -113,7 +124,10 @@ async function applyRnnoise(inputStream: MediaStream): Promise<MediaStream> {
         // also tears down. Keep the 'ended' listeners as a backstop (device
         // unplug). teardown is idempotent.
         const originalCleanedStop = cleaned.stop.bind(cleaned);
-        cleaned.stop = () => { teardown(); originalCleanedStop(); };
+        cleaned.stop = () => {
+            teardown();
+            originalCleanedStop();
+        };
         cleaned.addEventListener("ended", teardown);
         original?.addEventListener("ended", teardown);
 
@@ -131,7 +145,7 @@ async function applyRnnoise(inputStream: MediaStream): Promise<MediaStream> {
 function isPlainMicRequest(constraints: MediaStreamConstraints | undefined): boolean {
     if (!constraints?.audio) return false;
     if (constraints.video) return false; // camera/screen capture, not a mic
-    const audio = constraints.audio;
+    const { audio } = constraints;
     if (typeof audio === "object" && ((audio as any).mandatory || (audio as any).optional)) return false;
     return true;
 }
@@ -145,7 +159,7 @@ const originalGetUserMedia = navigator.mediaDevices.getUserMedia.bind(navigator.
 // it fighting RNNoise by mistake. We deliberately leave echoCancellation alone
 // (RNNoise has no echo canceller) and don't touch autoGainControl.
 function withBrowserNoiseSuppressionOff(constraints: MediaStreamConstraints): MediaStreamConstraints {
-    const audio = constraints.audio;
+    const { audio } = constraints;
     const audioObj = typeof audio === "object" && audio ? { ...audio } : {};
     (audioObj as any).noiseSuppression = false;
     return { ...constraints, audio: audioObj };
