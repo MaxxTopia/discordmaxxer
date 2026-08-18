@@ -17,10 +17,10 @@ idempotent, so repeated local overlays no longer duplicate injected blocks.
 The runtime validator now uses the actual `DMBadge`/`DMHub`/`DMTheme` names,
 awaits plugin restart lifecycle calls, preserves user settings, and validates
 the Hub panel root correctly. The winaudio test helpers now poll the same
-`drainChunks()` path used by Electron; the native roundtrip test passes with
-198 packets. A process-loopback diagnostic delivered packets but observed no
-non-silent signal from the selected process, so a known-audio human test is
-still required before calling process audio verified.
+`drainChunks()` path used by Electron; the native roundtrip test passes at
+48kHz, 2-channel float capture. A process-loopback diagnostic delivered
+packets but observed no non-silent signal from the selected process, so a
+known-audio human test is still required before calling process audio verified.
 
 Verification: strict overlay on a pristine current Vencord clone passed with
 0 warnings and was idempotent; the normalized CI-equivalent lint scan is clean
@@ -34,16 +34,18 @@ Windows as `NotSigned`; local packaging works, but public distribution trust
 and SmartScreen remain an explicit release gate until signing is configured.
 The lint correction is mechanical (formatting, file headers, import order, and
 safe autofix-only cleanup); the voice/screenshare implementation was not
-changed. This candidate is not tagged or published until the release gates
-are consciously accepted.
+changed. Commits `ab9c0df` and `e22fe2f` are pushed to `main`; GitHub test run
+`32096972164` passed cleanly after the workflow actions moved to their current
+Node-24-compatible major versions. This candidate is not tagged or published
+until the release gates are consciously accepted.
 
-The dev client was relaunched from the project Electron binary after the
-full packaging run (the build closed the prior dev instance). Startup logged
-`vencord-dist -> MATCH`, the zstd compatibility flags were present, and the
-post-relaunch runtime validator passed with the account-writing badge phase
-skipped. The voice/screenshare runtime path was not changed in this drift
-update; Diggy's earlier successful real voice/screenshare test remains the
-best evidence for that path, with a fresh retest optional before publication.
+The dev client was fully relaunched from the project Electron binary after the
+post-push overlay rebuild. Startup logged `vencord-dist -> MATCH`, the zstd
+compatibility flags were present, and the post-relaunch runtime validator
+passed with the account-writing badge phase skipped. The voice/screenshare
+runtime path was not changed in this drift update; Diggy's earlier successful
+real voice/screenshare test remains the best evidence for that path, with a
+fresh retest still recommended before publication.
 
 The working tree still contains Diggy's unrelated DMPresence edits and
 untracked DMTranslate/PlaylistmaxxingPresence work; preserve those changes.
