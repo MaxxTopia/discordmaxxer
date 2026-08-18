@@ -33,24 +33,42 @@ installer without `ENOSPC`. The generated installer is currently reported by
 Windows as `NotSigned`; local packaging works, but public distribution trust
 and SmartScreen remain an explicit release gate until signing is configured.
 The lint correction is mechanical (formatting, file headers, import order, and
-safe autofix-only cleanup); the voice/screenshare implementation was not
-changed. The maintenance chain ending at `a40e322` is pushed to `main`; the
+safe autofix-only cleanup). The maintenance chain ending at `a40e322` is pushed to `main`; the
 latest GitHub test run `32097496202` passed cleanly after the workflow actions
 moved to their current Node-24-compatible major versions. This candidate is
 not tagged or published until the release gates are consciously accepted.
+
+2026-08-17 screenshare follow-up: Diggy reproduced a real v0.7.60 cross-PC
+problem: whole-screen sharing became usable after a warm-up, while application
+window sharing stayed choppy. The receiver was the normal Discord client. The
+sender showed `OpenH264`/software encoder health and Discord's separate mic
+input `Error: 3002` banner. The candidate now applies an aspect-preserving
+`crop-and-scale` target before Discord ingests Windows capture, awaits that
+pass, and retries after the MediaEngine sender is created at 75/250/600/1200/
+2200 ms. Retries stop once the actual track is at the requested dimensions and
+frame rate. This avoids the old fixed-16:9/`resizeMode: "none"` one-shot path,
+which could miss application captures or leave them at native resolution.
+
+The follow-up passed `pnpm test`, `pnpm build`, strict overlay with zero
+warnings, overlay artifact verification, the live read-only validator, native
+winaudio tests (4/4), `pnpm package:dir`, and `pnpm package:win`. The current
+candidate packages are locally present, but the installer is still unsigned.
+The main-PC real sender test remains required: test both an application window
+and the whole screen, check the live encoder stats, and confirm viewer
+smoothness plus voice/screenshare audio. The mic `Error: 3002` is intentionally
+tracked as a separate gate because the screenshots do not prove whether the
+microphone itself was audible.
 
 The resilience cache boundary is now hardened locally: fetched config is
 allowlisted and bounded, banner links must be HTTPS, malformed responses are
 discarded, and cache replacement is atomic so an interrupted fetch cannot
 destroy the last-known-good startup state.
 
-The dev client was fully relaunched from the project Electron binary after the
-post-push overlay rebuild. Startup logged `vencord-dist -> MATCH`, the zstd
-compatibility flags were present, and the post-relaunch runtime validator
-passed with the account-writing badge phase skipped. The voice/screenshare
-runtime path was not changed in this drift update; Diggy's earlier successful
-real voice/screenshare test remains the best evidence for that path, with a
-fresh retest still recommended before publication.
+The dev client was reloaded from the project Electron binary after the
+screenshare follow-up overlay rebuild. The live read-only runtime validator
+passed with the account-writing badge phase skipped. This validates the loaded
+client and plugin surface, not a real sender/receiver screenshare session;
+Diggy's main-PC retest remains the publication gate.
 
 The working tree still contains Diggy's unrelated DMPresence edits and
 untracked DMTranslate/PlaylistmaxxingPresence work; preserve those changes.

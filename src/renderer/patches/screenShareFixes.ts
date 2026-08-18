@@ -11,6 +11,8 @@ import { State } from "renderer/settings";
 import { isLinux } from "renderer/utils";
 import { startWinAudioExcludeSelfSession } from "renderer/winaudioBridge";
 
+import { applyScreenShareVideoQuality } from "./videoQuality";
+
 const logger = new Logger("VesktopStreamFixes");
 
 const isWindows = !isLinux && navigator.platform.startsWith("Win");
@@ -136,38 +138,24 @@ function toast(message: string, type: string) {
     }
 }
 
-// Cap the captured screenshare video to the user's chosen quality + hint the
-// encoder toward motion. WHY: on Windows the WebRTC screenshare encoder runs in
-// SOFTWARE (Chromium doesn't use NVENC for screen-share send), so feeding it the
-// monitor's native resolution (e.g. 1920x1080) of a fast game collapses to a few
-// fps — choppy to viewers regardless of the app's hardware-acceleration toggle.
-// The Linux branch already constrains its track; the Windows branch historically
-// did not, so quality settings were silently ignored (set 720p, still sent
-// 1080p). Downscaling to 720p cuts the pixel load ~2.25x, and contentHint
-// "motion" tells the encoder to hold framerate and trade away per-frame detail —
-// both make gameplay visibly smoother with HW accel ON or OFF.
-function applyVideoQualityConstraints(stream: MediaStream) {
+// Cap the captured screenshare video to the user's chosen quality and hint the
+// encoder toward motion. Windows capture can initially expose the source's
+// native dimensions while Discord is still negotiating its sender. Applying a
+// target before ingestion, then retrying after submit(), keeps application
+// windows and whole-screen captures on the same bounded path. Preserve the
+// source aspect ratio and allow Chromium to crop-and-scale; forcing a fixed
+// 16:9 box or resizeMode "none" is a poor fit for arbitrary application
+// windows. The cap helps whether the eventual encoder is software or hardware.
+async function applyVideoQualityConstraints(stream: MediaStream) {
     const track = stream.getVideoTracks()[0];
     if (!track) return;
 
-    track.contentHint = currentSettings?.contentHint ? String(currentSettings.contentHint) : "motion";
-
-    const frameRate = Number(State.store.screenshareQuality?.frameRate ?? 30);
-    const height = Number(State.store.screenshareQuality?.resolution ?? 720);
-    const width = Math.round(height * (16 / 9));
-
-    const constraints = {
-        ...track.getConstraints(),
-        frameRate: { ideal: frameRate, max: frameRate },
-        width: { ideal: width, max: width },
-        height: { ideal: height, max: height },
-        resizeMode: "none"
-    };
-
-    track
-        .applyConstraints(constraints)
-        .then(() => debug("applied video quality constraints", track.getConstraints()))
-        .catch(e => debug("failed to apply video constraints", String(e)));
+    try {
+        const settings = await applyScreenShareVideoQuality(track, currentSettings?.contentHint);
+        debug("applied video quality constraints", settings ?? track.getSettings?.());
+    } catch (e) {
+        debug("failed to apply video constraints", String(e));
+    }
 }
 
 if (isWindows) {
@@ -180,11 +168,11 @@ if (isWindows) {
 
         debug("getDisplayMedia called", { audioRequested: !!currentSettings?.audio });
 
-        // Cap resolution/framerate so the software encoder isn't fed native
-        // 1080p of a fast game (the choppiness fix). Applies to every share,
-        // audio or not.
+        // Cap resolution/framerate before Discord ingests the stream. The
+        // sender-side retry in ScreenSharePicker handles the later negotiation
+        // step that is especially easy to miss for application captures.
         try {
-            applyVideoQualityConstraints(stream);
+            await applyVideoQualityConstraints(stream);
         } catch (e) {
             debug("video quality constraint pass failed", String(e));
         }

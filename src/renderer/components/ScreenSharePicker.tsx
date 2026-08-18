@@ -41,6 +41,7 @@ import {
 } from "@vencord/types/webpack/common";
 import type { Dispatch, SetStateAction } from "react";
 import { addPatch } from "renderer/patches/shared";
+import { settleScreenShareVideoQuality } from "renderer/patches/videoQuality";
 import { State, useSettings, useVesktopState } from "renderer/settings";
 import { isLinux, isWindows } from "renderer/utils";
 import { getActiveWinAudioSession } from "renderer/winaudioBridge";
@@ -853,34 +854,19 @@ function ModalComponent({
                             // here: Discord's MediaEngine hides its
                             // RTCPeerConnection, so a sender-side swap never fired.
 
-                            setTimeout(async () => {
+                            // Discord creates the actual sender after submit().
+                            // Retry the quality pass while that sender settles;
+                            // one 100 ms attempt is not reliable for window
+                            // captures and can leave application shares at
+                            // their native, expensive resolution.
+                            void settleScreenShareVideoQuality(() => {
                                 const conn = [...MediaEngineStore.getMediaEngine().connections].find(
                                     connection => connection.streamUserId === UserStore.getCurrentUser().id
                                 );
-                                if (!conn) return;
-
-                                const track = conn.input.stream.getVideoTracks()[0];
-
-                                const constraints = {
-                                    ...track.getConstraints(),
-                                    frameRate: { min: frameRate, ideal: frameRate },
-                                    width: { min: 640, ideal: width, max: width },
-                                    height: { min: 480, ideal: height, max: height },
-                                    advanced: [{ width: width, height: height }],
-                                    resizeMode: "none"
-                                };
-
-                                try {
-                                    await track.applyConstraints(constraints);
-
-                                    logger.info(
-                                        "Applied constraints successfully. New constraints:",
-                                        track.getConstraints()
-                                    );
-                                } catch (e) {
-                                    logger.error("Failed to apply constraints.", e);
-                                }
-                            }, 100);
+                                return conn?.input?.stream?.getVideoTracks?.()[0];
+                            }, settings.contentHint).then(applied => {
+                                if (applied) logger.info("Settled screenshare video quality after sender negotiation");
+                            });
                         } catch (error) {
                             logger.error("Error while submitting stream.", error);
                         }
