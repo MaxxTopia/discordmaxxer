@@ -181,12 +181,13 @@ async function activateViaRestart(page, name) {
     return await page.evaluate(async (n) => {
         const p = Vencord.Plugins.plugins[n];
         if (!p) return { error: `Plugin ${n} not loaded` };
+        const settle = (ms) => new Promise(resolve => setTimeout(resolve, ms));
         Vencord.PlainSettings.plugins[n] = Vencord.PlainSettings.plugins[n] || { enabled: true };
         Vencord.PlainSettings.plugins[n].enabledOnStart = true;
         // Mirror to the live store too
         if (p.settings?.store) p.settings.store.enabledOnStart = true;
-        try { await Vencord.Plugins.stopPlugin(p); } catch (e) { return { error: "stop failed: " + e.message }; }
-        try { await Vencord.Plugins.startPlugin(p); } catch (e) { return { error: "start failed: " + e.message }; }
+        try { await Vencord.Plugins.stopPlugin(p); await settle(250); } catch (e) { return { error: "stop failed: " + e.message }; }
+        try { await Vencord.Plugins.startPlugin(p); await settle(500); } catch (e) { return { error: "start failed: " + e.message }; }
         return { ok: true };
     }, name);
 }
@@ -195,10 +196,13 @@ async function deactivateAndCleanup(page, name) {
     return await page.evaluate(async (n) => {
         const p = Vencord.Plugins.plugins[n];
         if (!p) return;
+        const settle = (ms) => new Promise(resolve => setTimeout(resolve, ms));
         if (Vencord.PlainSettings.plugins[n]) Vencord.PlainSettings.plugins[n].enabledOnStart = false;
         if (p.settings?.store) p.settings.store.enabledOnStart = false;
         try { await Vencord.Plugins.stopPlugin(p); } catch {}
+        await settle(250);
         try { await Vencord.Plugins.startPlugin(p); } catch {}
+        await settle(500);
     }, name);
 }
 
