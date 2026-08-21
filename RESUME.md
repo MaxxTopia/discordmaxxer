@@ -5,9 +5,9 @@
 > `CLAUDE.md` ("Operational facts" section). Those three are enough to build,
 > ship, and maintain without prior context.
 
-## Current maintenance/release state — v0.7.62 release candidate
+## Current maintenance/release state — v0.7.62 (published)
 
-## 2026-08-21 DMWidget refresh/discovery release candidate
+## 2026-08-21 DMWidget refresh/discovery release — v0.7.62
 
 The DMWidget live-stat path now sends no-cache/cache-bust hints to HenrikDev,
 publishes fresh game stats before a new game card's first publish, includes the
@@ -21,22 +21,25 @@ Raze, and Sage, plus a small Catwoman Fortnite starter preset; custom URLs remai
 available. The native Discord Add Widgets menu was not patched because it is a
 remote Discord surface rather than a stable Vencord plugin registry.
 
-Verification for this release candidate: `pnpm test`, strict
+Verification for this release: `pnpm test`, strict
 `DM_STRICT_REBRAND=1 pnpm overlay:vencord`, `node overlay-scripts/verify-build.mjs`,
 `pnpm build:dev`, `pnpm package:dir`, and `pnpm package:win` pass. The cache-busted HenrikDev request returned HTTP 200
-with the current account at Diamond 3 / 42 RR during this session. No commit,
-push, deployment, or tag release has been made yet; v0.7.61 remains the live version
-until the v0.7.62 tag workflow completes.
+with the current account at Diamond 3 / 42 RR during this session. Commit `2da75f3`
+and tag `v0.7.62` are pushed. GitHub release workflow `32535488912` completed
+successfully in 5m36s; the stable non-draft release has x64/ARM64 ZIPs, the NSIS
+installer, blockmap, and `latest.yml` with updater version `0.7.62`. The generated
+installer remains unsigned, so SmartScreen is still the public-trust caveat.
 
 The rebuilt dev client was opened and checked in the real renderer: the Hub showed
 the new shortcut, it opened the DMWidget modal directly, the Jett preset selected,
 and the native-backed preview rendered a real image. The Fortnite template showed
 the Catwoman preset and a rendered preview as well. The test restored the user's
 editor state to Valorant + Automatic and deliberately did not click Create, Update,
-or Refresh, so no Discord app/profile data changed. Remaining post-release check:
-click Refresh when desired and confirm the already-open profile board redraws;
-the release workflow and a real publish/propagation check are still separate from
-this local UI test. Preserve the
+or Refresh, so no Discord app/profile data changed. Remaining user check: click
+Refresh when desired and confirm the already-open profile board redraws; a real
+publish/propagation test is still separate from this local UI test. Maxxtopia
+release-sync `32535830677` updated the download pointer, and the site update was
+published in commit `5a23436` through Pages deploy `32536038918`. Preserve the
 existing dirty DMPresence edits and untracked DMTranslate/PlaylistmaxxingPresence
 work.
 
@@ -107,13 +110,13 @@ Diggy's main-PC retest remains post-release validation.
 The working tree still contains Diggy's unrelated DMPresence edits and
 untracked DMTranslate/PlaylistmaxxingPresence work; preserve those changes.
 
-## Current live state — v0.7.61
+## Current live state — v0.7.62
 
-Released 2026-08-18 through tag `v0.7.61` and the tag-driven GitHub release
-workflow. GitHub Release `v0.7.61` is stable and non-draft with HTTP-200
+Released 2026-08-21 through tag `v0.7.62` and the tag-driven GitHub release
+workflow. GitHub Release `v0.7.62` is stable and non-draft with HTTP-200
 installer, Windows/ARM64 ZIPs, blockmap, and `latest.yml` assets. The updater
-manifest declares version `0.7.61` and points to
-`Discordmaxxer-Setup-0.7.61.exe`.
+manifest declares version `0.7.62` and points to
+`Discordmaxxer-Setup-0.7.62.exe`.
 
 ## Previous live state — v0.7.60
 
