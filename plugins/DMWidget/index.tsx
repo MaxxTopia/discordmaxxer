@@ -46,9 +46,23 @@ const Native = VencordNative.pluginHelpers.DMWidget as PluginNative<typeof impor
 // Default hero render per game — used when you haven't pasted your own image URL,
 // so a game card looks finished on first Create. A direct URL (not baked base64;
 // full agent portraits are ~800KB); uploadHeroAsset's native fetch handles the
-// CORS-blocked host. Neon = official valorant-api.com full portrait.
+// CORS-blocked host. These are a deliberately small, curated set rather than a
+// giant cosmetics catalog. The user can still paste any direct image URL.
 const DEFAULT_HEROES: Record<string, string> = {
-    valorant: "https://media.valorant-api.com/agents/bb2a4828-46eb-8cd1-e765-15848195d751/fullportrait.png"
+    valorant: "https://media.valorant-api.com/agents/bb2a4828-46eb-8cd1-e765-15848195d751/fullportrait.png",
+    fortnite: "https://fortnite-api.com/images/cosmetics/br/cid_530_athena_commando_f_blackmonday_1bv6j/featured.png"
+};
+
+const VALORANT_HERO_PRESETS: Record<string, string> = {
+    neon: DEFAULT_HEROES.valorant,
+    jett: "https://media.valorant-api.com/agents/add6443a-41bd-e414-f6ad-e58d267f4e95/fullportrait.png",
+    reyna: "https://media.valorant-api.com/agents/a3bfb853-43b2-7238-a4f1-ad90e9e46bcc/fullportrait.png",
+    raze: "https://media.valorant-api.com/agents/f94c3b30-42be-e959-889c-5aa313dba261/fullportrait.png",
+    sage: "https://media.valorant-api.com/agents/569fdd95-4d10-43ab-ca70-79becc718b46/fullportrait.png"
+};
+
+const FORTNITE_HERO_PRESETS: Record<string, string> = {
+    catwoman: DEFAULT_HEROES.fortnite
 };
 
 // ---- local (per-user) identity: the self-owned app + its widget config ------
@@ -108,6 +122,29 @@ let lastResult = "";
 let fnStats: Record<string, number> | null = null;
 let valStats: Record<string, any> | null = null;
 let fnRefreshTimer: ReturnType<typeof setInterval> | null = null;
+
+function presetHeroUrl(tpl: string): string {
+    const s = settings.store as any;
+    if (tpl === "valorant") return VALORANT_HERO_PRESETS[String(s.valHeroPreset ?? "auto")] ?? "";
+    if (tpl === "fortnite") return FORTNITE_HERO_PRESETS[String(s.fnHeroPreset ?? "auto")] ?? "";
+    return "";
+}
+
+function heroUrlFor(tpl: string, id: WidgetIdentity): string {
+    const custom = String((settings.store as any).heroImageUrl ?? "").trim();
+    const preset = presetHeroUrl(tpl);
+    if (preset) return preset;
+    // For a game slot, Automatic means the slot's own remembered image (or its
+    // game default). Do not accidentally carry the previous slot's draft image
+    // across when someone switches from Fortnite to Valorant. Custom image URL
+    // is the explicit opt-in for the shared URL field.
+    const choice = tpl === "valorant"
+        ? String((settings.store as any).valHeroPreset ?? "auto")
+        : tpl === "fortnite" ? String((settings.store as any).fnHeroPreset ?? "auto") : "custom";
+    return (tpl === "none" || choice === "custom")
+        ? custom || id.heroImageUrl || DEFAULT_HEROES[tpl] || ""
+        : id.heroImageUrl || DEFAULT_HEROES[tpl] || "";
+}
 
 const fmtNum = (n: number | undefined): string => {
     if (n === undefined || n === null || Number.isNaN(n)) return "—";
@@ -574,38 +611,71 @@ async function republishConfig(slotKey: string): Promise<string | null> {
 }
 
 // Fetch a specific game slot's live stats (native, no CORS) and re-publish it.
-async function refreshGameSlot(tpl: string, announce = false): Promise<void> {
-    if (tpl !== "fortnite" && tpl !== "valorant") return;
+// The boolean lets the hub distinguish "published" from "the provider or
+// publish step failed" instead of always showing a green success toast.
+async function refreshGameSlot(tpl: string, announce = false): Promise<boolean> {
+    if (tpl !== "fortnite" && tpl !== "valorant") return false;
     const s = settings.store as any;
     await ensureSlots();
-    if (!SNOWFLAKE.test(getSlot(tpl).appId)) { if (announce) toast("Create this widget first, then refresh stats.", Toasts.Type.FAILURE); return; }
-
-    if (tpl === "fortnite") {
-        const ign = String(s.fnIgn ?? "").trim(); const key = String(s.fnApiKey ?? "").trim();
-        if (!ign || !key) { if (announce) toast("Set your Epic IGN + fortnite-api.com key first.", Toasts.Type.FAILURE); return; }
-        const res = await Native.fetchFortniteStats(ign, key, String(s.fnAccountType ?? "epic"));
-        if ("error" in res) { toast(`Fortnite stats: ${res.error}`, Toasts.Type.FAILURE, 8000); return; }
-        fnStats = res.overall;
-        // Upload the current rank badge before republishing so buildSurfaces can
-        // hang it on the Highest Rank stat cell.
-        await syncFortniteRankIcon(tpl);
-    } else {
-        const riot = String(s.valRiotId ?? "").trim(); const key = String(s.valApiKey ?? "").trim();
-        const hash = riot.indexOf("#");
-        if (hash < 1 || !key) { if (announce) toast("Set your Riot ID (Name#Tag) + HenrikDev key first.", Toasts.Type.FAILURE); return; }
-        const res = await Native.fetchValorantStats(riot.slice(0, hash), riot.slice(hash + 1), String(s.valRegion ?? "na"), "pc", key);
-        if ("error" in res) { toast(res.error, Toasts.Type.FAILURE, 8000); return; }
-        valStats = res.overall;
-        // Upload/refresh the current + peak rank badges before we republish so
-        // buildSurfaces can hang them on the Rank / Peak Rank stat cells.
-        await syncValorantRankIcons(tpl);
+    if (!SNOWFLAKE.test(getSlot(tpl).appId)) {
+        if (announce) toast("Create this widget first, then refresh stats.", Toasts.Type.FAILURE);
+        return false;
     }
 
-    const err = await republishConfig(tpl);
-    if (announce) {
-        if (err) toast(`Stats fetched but publish failed: ${err}`, Toasts.Type.FAILURE, 8000);
-        else if (tpl === "fortnite") toast(`Fortnite stats updated — ${fmtNum(fnStats?.wins)} wins, ${fnStats?.kd?.toFixed?.(2) ?? "—"} K/D.`, Toasts.Type.SUCCESS, 6000);
-        else toast(`Valorant stats updated — ${valStats?.rank ?? "—"}, main ${valStats?.mainAgent ?? "—"}.`, Toasts.Type.SUCCESS, 6000);
+    try {
+        if (tpl === "fortnite") {
+            const ign = String(s.fnIgn ?? "").trim(); const key = String(s.fnApiKey ?? "").trim();
+            if (!ign || !key) {
+                if (announce) toast("Set your Epic IGN + fortnite-api.com key first.", Toasts.Type.FAILURE);
+                return false;
+            }
+            const res = await Native.fetchFortniteStats(ign, key, String(s.fnAccountType ?? "epic"));
+            if ("error" in res) {
+                const msg = `Fortnite stats: ${res.error}`;
+                if (announce) toast(msg, Toasts.Type.FAILURE, 8000); else console.warn("[DMWidget]", msg);
+                return false;
+            }
+            fnStats = res.overall;
+            // Upload the current rank badge before republishing so buildSurfaces can
+            // hang it on the Highest Rank stat cell.
+            await syncFortniteRankIcon(tpl);
+        } else {
+            const riot = String(s.valRiotId ?? "").trim(); const key = String(s.valApiKey ?? "").trim();
+            const hash = riot.indexOf("#");
+            if (hash < 1 || !key) {
+                if (announce) toast("Set your Riot ID (Name#Tag) + HenrikDev key first.", Toasts.Type.FAILURE);
+                return false;
+            }
+            const res = await Native.fetchValorantStats(riot.slice(0, hash), riot.slice(hash + 1), String(s.valRegion ?? "na"), "pc", key);
+            if ("error" in res) {
+                if (announce) toast(res.error, Toasts.Type.FAILURE, 8000); else console.warn("[DMWidget]", res.error);
+                return false;
+            }
+            valStats = res.overall;
+            // Upload/refresh the current + peak rank badges before we republish so
+            // buildSurfaces can hang them on the Rank / Peak Rank stat cells.
+            await syncValorantRankIcons(tpl);
+        }
+
+        const err = await republishConfig(tpl);
+        if (err) {
+            const msg = `Stats fetched but publish failed: ${err}`;
+            if (announce) toast(msg, Toasts.Type.FAILURE, 8000); else console.warn("[DMWidget]", msg);
+            return false;
+        }
+        if (announce) {
+            if (tpl === "fortnite") {
+                toast(`Fortnite stats updated — ${fmtNum(fnStats?.wins)} wins, ${fnStats?.kd?.toFixed?.(2) ?? "—"} K/D.`, Toasts.Type.SUCCESS, 6000);
+            } else {
+                const rr = valStats?.rr !== undefined ? `${valStats.rr} RR` : "RR unavailable";
+                toast(`Valorant stats updated — ${valStats?.rank ?? "—"}, ${rr}, main ${valStats?.mainAgent ?? "—"}. The profile card may take a moment to redraw.`, Toasts.Type.SUCCESS, 8000);
+            }
+        }
+        return true;
+    } catch (e) {
+        const msg = `Stats refresh failed: ${classifyDiscordError(e)}`;
+        if (announce) toast(msg, Toasts.Type.FAILURE, 8000); else console.warn("[DMWidget]", e);
+        return false;
     }
 }
 
@@ -613,9 +683,15 @@ async function refreshGameSlot(tpl: string, announce = false): Promise<void> {
 const refreshGame = (announce = false) => refreshGameSlot(slotKeyOf(), announce);
 
 // Timer — refresh EVERY deployed game slot (so FN + Valorant both stay live).
-async function refreshAllGames(): Promise<void> {
+async function refreshAllGames(): Promise<{ updated: number; failed: number; }> {
     await ensureSlots();
-    for (const key of deployedGameSlots()) await refreshGameSlot(key, false);
+    let updated = 0;
+    let failed = 0;
+    for (const key of deployedGameSlots()) {
+        if (await refreshGameSlot(key, false)) updated++;
+        else failed++;
+    }
+    return { updated, failed };
 }
 
 // ---- the whole flow --------------------------------------------------------
@@ -654,19 +730,17 @@ async function deployWidget(): Promise<void> {
         }
         if (!SNOWFLAKE.test(id.configId)) { id.configId = await resolveConfigId(id.appId, appName); setSlot(slotKey, id); }
 
-        toast("Uploading image + publishing layout…", Toasts.Type.MESSAGE, 3000);
+        toast(slotKey === "fortnite" || slotKey === "valorant" ? "Uploading image + fetching live stats…" : "Uploading image + publishing layout…", Toasts.Type.MESSAGE, 3000);
         // The app NAME is what renders as the small header above the title
         // (not the config display_name), so set it to "Fn · Ch6 S3" / "Val".
         try { await apiPatch(`/applications/${id.appId}`, { name: sanitizeAppName(slotHeader(slotKey)) }); } catch (e) { lastResult = "⚠ header rename failed: " + classifyDiscordError(e); console.warn("[DMWidget] app name:", e); }
         // Per-slot media: remember the URLs on THIS slot so switching slots keeps
         // each widget's own hero/icon (FN and Valorant no longer share one image).
         const iconUrl = String((settings.store as any).appIconUrl ?? "").trim() || id.appIconUrl || "";
-        // Your pasted hero wins; otherwise fall back to the game's default render
-        // (e.g. Valorant -> Neon) so a fresh game card isn't blank.
-        // Typed field wins; else the slot's remembered/imported hero; else the
-        // game default. Lets an imported widget deploy its original picture even
-        // when the Hero URL box is empty.
-        const heroUrl = String((settings.store as any).heroImageUrl ?? "").trim() || id.heroImageUrl || DEFAULT_HEROES[slotKey] || "";
+        // An explicit curated preset wins; otherwise keep the typed field, the
+        // slot's remembered/imported hero, or the game's default. This preserves
+        // existing custom cards while making a new game card one-click friendly.
+        const heroUrl = heroUrlFor(slotKey, id);
         id.heroImageUrl = heroUrl; id.appIconUrl = iconUrl; setSlot(slotKey, id);
         // Top-left logo: your custom icon if set, otherwise the game's baked logo
         // (Fortnite F / Valorant V) so a game card auto-brands with no image hosting.
@@ -678,13 +752,18 @@ async function deployWidget(): Promise<void> {
         if (imageKey) { id.heroAssetKey = imageKey; setSlot(slotKey, id); }
         if ((settings.store as any).bottomLayout === "progress" && !imageKey && slotKey === "none")
             toast("Progress-bar mode needs a hero image (it doubles as the goal icon) — showing the stat grid instead. Add a Hero image URL to use the bar.", Toasts.Type.MESSAGE, 8000);
-        await publishSurfaces(id.appId, id.configId, slotKey, imageKey);
+        // Game cards should fetch before their first publish. The old order made
+        // a new card briefly publish null/old stats and then republish, which was
+        // especially confusing when Discord kept the first board response warm.
+        // If the provider is unavailable, still publish the card with its current
+        // layout so creation is not blocked.
+        const liveStatsPublished = (slotKey === "fortnite" || slotKey === "valorant")
+            ? await refreshGameSlot(slotKey, false)
+            : false;
+        if (!liveStatsPublished) await publishSurfaces(id.appId, id.configId, slotKey, imageKey);
 
         await authorizeApp(id.appId);
         await attachToProfile(id.appId, me.id);
-
-        // Populate live stats immediately so a fresh game card isn't all "—".
-        if (slotKey === "fortnite" || slotKey === "valorant") await refreshGameSlot(slotKey, false);
 
         // Claim onto the profile identity so others can see it (needs 2FA).
         toast("Claiming widget to your profile (enter 2FA if prompted)…", Toasts.Type.MESSAGE, 4000);
@@ -801,14 +880,36 @@ function importConfig(code: string): string | null {
 
 // ---- settings UI -----------------------------------------------------------
 function ImgPreview({ url, label, round }: { url: string; label: string; round?: boolean; }) {
-    const [ok, setOk] = React.useState(true);
     const src = url.trim();
+    const [previewSrc, setPreviewSrc] = React.useState("");
+    const [failed, setFailed] = React.useState(false);
+    React.useEffect(() => {
+        let active = true;
+        setPreviewSrc("");
+        setFailed(false);
+        if (!src) return () => { active = false; };
+        if (!/^https?:\/\//i.test(src)) {
+            setPreviewSrc(src);
+            return () => { active = false; };
+        }
+        // Discord's renderer can block direct third-party image URLs even
+        // though the native upload path can fetch them. Reuse that native path
+        // for the preview so presets look selectable before the user deploys.
+        Native.fetchImageData(src).then(result => {
+            if (!active) return;
+            if ("error" in result) setFailed(true);
+            else setPreviewSrc(`data:${result.contentType};base64,${result.dataBase64}`);
+        }).catch(() => { if (active) setFailed(true); });
+        return () => { active = false; };
+    }, [src]);
     if (!src) return null;
     return (
         <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
-            {ok
-                ? <img src={src} onError={() => setOk(false)} style={{ width: round ? 48 : 96, height: 48, objectFit: "cover", borderRadius: round ? "50%" : 6, border: "1px solid var(--background-modifier-accent)", background: "var(--background-secondary)" }} />
-                : <div style={{ width: round ? 48 : 96, height: 48, display: "grid", placeItems: "center", borderRadius: round ? "50%" : 6, border: "1px dashed var(--text-danger, #f23f43)", color: "var(--text-danger, #f23f43)", fontSize: 11, textAlign: "center", padding: 2 }}>can't load</div>}
+            {failed
+                ? <div style={{ width: round ? 48 : 96, height: 48, display: "grid", placeItems: "center", borderRadius: round ? "50%" : 6, border: "1px dashed var(--text-danger, #f23f43)", color: "var(--text-danger, #f23f43)", fontSize: 11, textAlign: "center", padding: 2 }}>can't load</div>
+                : previewSrc
+                    ? <img src={previewSrc} onError={() => setFailed(true)} style={{ width: round ? 48 : 96, height: 48, objectFit: "cover", borderRadius: round ? "50%" : 6, border: "1px solid var(--background-modifier-accent)", background: "var(--background-secondary)" }} />
+                    : <div style={{ width: round ? 48 : 96, height: 48, display: "grid", placeItems: "center", borderRadius: round ? "50%" : 6, border: "1px dashed var(--background-modifier-accent)", color: "var(--text-muted)", fontSize: 11, textAlign: "center", padding: 2 }}>loading…</div>}
             <span style={{ fontSize: 11, color: "var(--text-muted)" }}>{label}</span>
         </div>
     );
@@ -819,11 +920,12 @@ const SLOT_LABEL: Record<string, string> = { fortnite: "Fortnite", valorant: "Va
 function WidgetEditor() {
     const [busy, setBusy] = React.useState(false);
     const [, force] = React.useState(0);
-    const live = settings.use(["appIconUrl", "heroImageUrl", "gameTemplate"]);
+    const live = settings.use(["appIconUrl", "heroImageUrl", "gameTemplate", "valHeroPreset", "fnHeroPreset"]);
     React.useEffect(() => { ensureSlots().then(() => force(x => x + 1)); }, []);
     const slotKey = String(live.gameTemplate ?? "none") || "none";
     const id = getSlot(slotKey);
     const created = !!id.appId;
+    const previewHero = heroUrlFor(slotKey, id);
     // Switching to an already-deployed slot loads ITS saved hero/icon into the
     // editing buffer, so each widget shows its own image (guarded to not loop:
     // only writes when the value actually differs). New/empty slots keep the
@@ -860,10 +962,10 @@ function WidgetEditor() {
                 {allSlots.length > 0 && <div style={{ marginTop: 3 }}>On your board: {allSlots.join(" · ")} — switch the <i>Game template</i> above to add/edit another.</div>}
             </div>
 
-            {(live.appIconUrl?.trim() || live.heroImageUrl?.trim()) && (
+            {(live.appIconUrl?.trim() || previewHero) && (
                 <div style={{ display: "flex", gap: 14, alignItems: "flex-end", flexWrap: "wrap" }}>
                     <ImgPreview url={live.appIconUrl ?? ""} label="app icon" round />
-                    <ImgPreview url={live.heroImageUrl ?? ""} label="hero image" />
+                    <ImgPreview url={previewHero} label="hero image" />
                 </div>
             )}
 
@@ -944,6 +1046,16 @@ const settings = definePluginSettings({
             { label: "Xbox", value: "xbl" }
         ]
     },
+    fnHeroPreset: {
+        type: OptionType.SELECT,
+        description: "Quick-pick the cutout on your Fortnite card. Automatic keeps the current/remembered image; Custom image uses the URL below. The starter preset is Catwoman, not a full cosmetics catalog.",
+        hidden() { return (this.store as any).gameTemplate !== "fortnite"; },
+        options: [
+            { label: "Automatic (keep current / Catwoman for a new card)", value: "auto", default: true },
+            { label: "Catwoman", value: "catwoman" },
+            { label: "Custom image URL", value: "custom" }
+        ]
+    },
     fnUnrealRank: { type: OptionType.STRING, description: "Your rank text to show, e.g. 'Unreal' or 'Unreal #1,234'. (Typed in - there's no free rank API.)", default: "", hidden() { return (this.store as any).gameTemplate !== "fortnite"; } },
     fnEarnings: { type: OptionType.STRING, description: "Your total earnings to show, e.g. '$8,500'. Leave '$0' if none. (Typed in.)", default: "$0", hidden() { return (this.store as any).gameTemplate !== "fortnite"; } },
     fnChapterSeason: { type: OptionType.STRING, description: "Chapter/season shown in the small header, e.g. 'Ch 6 S3'. Leave blank for just 'Fn'.", default: "", hidden() { return (this.store as any).gameTemplate !== "fortnite"; } },
@@ -963,6 +1075,20 @@ const settings = definePluginSettings({
             { label: "Brazil", value: "br" }
         ]
     },
+    valHeroPreset: {
+        type: OptionType.SELECT,
+        description: "Quick-pick a transparent Valorant agent cutout. Automatic keeps the current/remembered image; Custom image uses the URL below. Presets are intentionally curated; you can still paste any direct image URL.",
+        hidden() { return (this.store as any).gameTemplate !== "valorant"; },
+        options: [
+            { label: "Automatic (keep current / Neon for a new card)", value: "auto", default: true },
+            { label: "Neon", value: "neon" },
+            { label: "Jett", value: "jett" },
+            { label: "Reyna", value: "reyna" },
+            { label: "Raze", value: "raze" },
+            { label: "Sage", value: "sage" },
+            { label: "Custom image URL", value: "custom" }
+        ]
+    },
     valActEpisode: { type: OptionType.STRING, description: "Season line shown above your name, e.g. 'Act 3 Ep 3' or 'E9 A3'. Your current rank is added automatically (-> 'Act 3 Ep 3: Ascendant 3'). Leave blank for just 'Val'.", default: "", hidden() { return (this.store as any).gameTemplate !== "valorant"; } },
     appName: {
         type: OptionType.STRING,
@@ -971,7 +1097,7 @@ const settings = definePluginSettings({
         hidden() { return (this.store as any).gameTemplate !== "none"; }
     },
     widgetTitle: { type: OptionType.STRING, description: "The big title on the card. Keep it short - one line (Discord cuts off long titles).", default: "My Widget", hidden() { return (this.store as any).gameTemplate !== "none"; } },
-    heroImageUrl: { type: OptionType.STRING, description: "Main image on the card - your skin / agent render. Paste a DIRECT image link ending in .png or .jpg (not a webpage). This is the big picture people see.", default: "" },
+    heroImageUrl: { type: OptionType.STRING, description: "Custom image URL for the card. Paste a DIRECT image link ending in .png or .jpg (not a webpage); choose Custom image URL above to use it. Presets upload the cutout for you.", default: "" },
     appIconUrl: { type: OptionType.STRING, description: "Small logo in the top-left corner. Paste a direct SQUARE image link, or leave blank. (Fortnite & Valorant fill this in with their game logo automatically.)", default: "", hidden() { return (this.store as any).gameTemplate !== "none"; } },
     topLayout: {
         type: OptionType.SELECT,
@@ -1028,8 +1154,12 @@ export default definePlugin({
             await ensureSlots();
             if (deployedGameSlots().length === 0) { toast("No game widget deployed yet — Create one first (Fortnite / Valorant).", Toasts.Type.MESSAGE, 6000); return; }
             toast("Refreshing your widget stats…", Toasts.Type.MESSAGE, 3000);
-            await refreshAllGames();
-            toast("Widget stats refreshed.", Toasts.Type.SUCCESS, 4000);
+            const result = await refreshAllGames();
+            if (result.failed > 0) {
+                toast(`${result.updated} widget${result.updated === 1 ? "" : "s"} updated; ${result.failed} could not be refreshed. Check the DMWidget status for the error.`, Toasts.Type.FAILURE, 8000);
+            } else {
+                toast(`${result.updated} widget${result.updated === 1 ? "" : "s"} refreshed and published. An already-open profile may take a moment to redraw.`, Toasts.Type.SUCCESS, 6000);
+            }
         };
     },
     stop() {

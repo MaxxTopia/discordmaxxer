@@ -5,7 +5,40 @@
 > `CLAUDE.md` ("Operational facts" section). Those three are enough to build,
 > ship, and maintain without prior context.
 
-## Current maintenance/release state — v0.7.61 (published)
+## Current maintenance/release state — v0.7.62 release candidate
+
+## 2026-08-21 DMWidget refresh/discovery release candidate
+
+The DMWidget live-stat path now sends no-cache/cache-bust hints to HenrikDev,
+publishes fresh game stats before a new game card's first publish, includes the
+actual Valorant RR in the manual-refresh result, and reports partial refresh
+failures instead of always showing a green success toast. Discord's already-open
+profile board can still take a moment to redraw after a successful publish; this
+is a display/propagation delay, not a second stat source. The DMHub now has a
+direct "Create / edit profile widget" action that opens the DMWidget modal with a
+settings-page fallback. Curated hero presets are available for Neon, Jett, Reyna,
+Raze, and Sage, plus a small Catwoman Fortnite starter preset; custom URLs remain
+available. The native Discord Add Widgets menu was not patched because it is a
+remote Discord surface rather than a stable Vencord plugin registry.
+
+Verification for this release candidate: `pnpm test`, strict
+`DM_STRICT_REBRAND=1 pnpm overlay:vencord`, `node overlay-scripts/verify-build.mjs`,
+`pnpm build:dev`, `pnpm package:dir`, and `pnpm package:win` pass. The cache-busted HenrikDev request returned HTTP 200
+with the current account at Diamond 3 / 42 RR during this session. No commit,
+push, deployment, or tag release has been made yet; v0.7.61 remains the live version
+until the v0.7.62 tag workflow completes.
+
+The rebuilt dev client was opened and checked in the real renderer: the Hub showed
+the new shortcut, it opened the DMWidget modal directly, the Jett preset selected,
+and the native-backed preview rendered a real image. The Fortnite template showed
+the Catwoman preset and a rendered preview as well. The test restored the user's
+editor state to Valorant + Automatic and deliberately did not click Create, Update,
+or Refresh, so no Discord app/profile data changed. Remaining post-release check:
+click Refresh when desired and confirm the already-open profile board redraws;
+the release workflow and a real publish/propagation check are still separate from
+this local UI test. Preserve the
+existing dirty DMPresence edits and untracked DMTranslate/PlaylistmaxxingPresence
+work.
 
 2026-08-17 upstream-drift maintenance: tracking issue #32 identified a stale
 Vencord pin. The release workflow now checks out Vencord

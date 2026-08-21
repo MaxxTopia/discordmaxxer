@@ -84,7 +84,17 @@ export async function fetchImageData(
 // Small GET-JSON helper (native = no CORS) shared by the stat fetchers.
 function httpsJson(host: string, path: string, headers: Record<string, string>): Promise<{ status: number; json: any; }> {
     return new Promise(resolve => {
-        const req = request({ method: "GET", host, path, headers: { "User-Agent": USER_AGENT, ...headers } }, res => {
+        const req = request({
+            method: "GET",
+            host,
+            path,
+            headers: {
+                "User-Agent": USER_AGENT,
+                "Cache-Control": "no-cache, no-store",
+                Pragma: "no-cache",
+                ...headers
+            }
+        }, res => {
             let buf = "";
             res.on("data", d => (buf += d));
             res.on("end", () => { let json: any = null; try { json = JSON.parse(buf); } catch { /* leave null */ } resolve({ status: res.statusCode ?? 0, json }); });
@@ -104,18 +114,22 @@ export async function fetchValorantStats(
     const enc = encodeURIComponent;
     const plat = platform || "pc";
     const reg = region || "na";
+    // HenrikDev is normally quick, but an intermediary can otherwise hand a
+    // manual refresh the same cached MMR response. Keep the request fresh
+    // without changing the provider or account lookup.
+    const refresh = Date.now().toString(36);
 
-    const mmr = await httpsJson("api.henrikdev.xyz", `/valorant/v3/mmr/${enc(reg)}/${plat}/${enc(name)}/${enc(tag)}`, auth);
+    const mmr = await httpsJson("api.henrikdev.xyz", `/valorant/v3/mmr/${enc(reg)}/${plat}/${enc(name)}/${enc(tag)}?refresh=${refresh}`, auth);
     if (mmr.status !== 200 || !mmr.json?.data) {
         const msg = mmr.json?.errors?.[0]?.message ?? (typeof mmr.json?.status === "string" ? mmr.json.status : `HTTP ${mmr.status}`);
         return { error: `Valorant MMR: ${msg} (check Riot ID, region + that the key is valid)` };
     }
     const cur = mmr.json.data.current ?? {};
     const peak = mmr.json.data.peak ?? {};
-    const overall: Record<string, any> = { rank: cur.tier?.name ?? "Unrated", rr: cur.rr, peak: peak.tier?.name ?? "—" };
+    const overall: Record<string, any> = { rank: cur.tier?.name ?? "Unrated", rr: cur.rr, peak: peak.tier?.name ?? "—", fetchedAt: Date.now() };
 
     // Matches (v4) → most-used agent + recent win-rate + avg K/D (best-effort).
-    const m = await httpsJson("api.henrikdev.xyz", `/valorant/v4/matches/${enc(reg)}/${plat}/${enc(name)}/${enc(tag)}?size=10`, auth);
+    const m = await httpsJson("api.henrikdev.xyz", `/valorant/v4/matches/${enc(reg)}/${plat}/${enc(name)}/${enc(tag)}?size=10&refresh=${refresh}`, auth);
     if (m.status === 200 && Array.isArray(m.json?.data)) {
         const agents: Record<string, number> = {};
         let wins = 0, games = 0, kills = 0, deaths = 0;

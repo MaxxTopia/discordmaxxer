@@ -13,6 +13,7 @@
  */
 
 import { managedStyleRootNode } from "@api/Styles";
+import { openPluginModal } from "@components/settings/tabs";
 import { createAndAppendStyle } from "@utils/css";
 import definePlugin from "@utils/types";
 
@@ -307,6 +308,27 @@ function setSetting(plugin: string, key: string, value: boolean, noRestart?: boo
     }
 }
 
+function openDMWidgetSettings() {
+    const plugin = vencord()?.Plugins?.plugins?.DMWidget;
+    if (plugin) {
+        try {
+            openPluginModal(plugin);
+            return;
+        } catch (e) {
+            console.warn("[DiscordmaxxerHub] could not open DMWidget modal:", e);
+        }
+    }
+
+    // Keep a graceful fallback if the plugin is disabled/unloaded or Discord's
+    // settings internals move. This still lands on the Vencord plugin settings
+    // page instead of leaving the user with a dead button.
+    try {
+        vencord()?.Webpack?.Common?.SettingsRouter?.openUserSettings?.("vencord_plugins");
+    } catch (e) {
+        console.warn("[DiscordmaxxerHub] could not open plugin settings:", e);
+    }
+}
+
 function renderPanelHTML(): string {
     const tier = getMyTier();
     const tierLabel = TIER_LABELS[tier];
@@ -359,6 +381,11 @@ function renderPanelHTML(): string {
         <div class="dm-hub-info">Browse featured plugins, enable bundles, and see what each one actually does — no settings-digging required.</div>
         <div class="dm-hub-section">Profile widget</div>
         <div class="dm-hub-row">
+            <div class="dm-hub-row-label">✨ Create / edit profile widget</div>
+            <button class="dm-hub-action-btn" data-action="open-dmwidget">Open</button>
+        </div>
+        <div class="dm-hub-info">Jump straight to DMWidget's game templates, live stats, and cutout presets — no hunting through the full plugin list.</div>
+        <div class="dm-hub-row">
             <div class="dm-hub-row-label">🔄 Refresh widget stats</div>
             <button class="dm-hub-action-btn" data-action="refresh-widget-stats">Refresh</button>
         </div>
@@ -401,6 +428,11 @@ function ensurePanelRoot() {
             panelRoot!.classList.add("hidden");
             const refresh = (globalThis as any).__dmWidgetRefresh;
             if (typeof refresh === "function") refresh();
+            return;
+        }
+        if (t.dataset.action === "open-dmwidget") {
+            panelRoot!.classList.add("hidden");
+            openDMWidgetSettings();
             return;
         }
         if (t.classList.contains("dm-hub-toggle") && !t.dataset.locked) {
