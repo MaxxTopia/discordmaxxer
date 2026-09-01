@@ -7,6 +7,33 @@
 
 ## Current maintenance/release state — v0.7.62 (published)
 
+## 2026-09-01 screenshare upstream-drift safeguard
+
+Carried forward Vencord upstream fix `be77396b` in
+`overlay-scripts/rebrand-vencord.mjs`. The WebScreenShareFixes overlay now
+pauses the hidden application-stream preview before detaching `srcObject`,
+preventing long-running screenshares from accumulating preview decode CPU and
+starving the sender encoder. This is intentionally a focused overlay change;
+bitrate, codec selection, Windows capture routing, and winaudio were not
+changed because this audit had no fresh native-recipient stream stats proving a
+different cause.
+
+Verification: `pnpm test`, `pnpm build:dev`, strict
+`DM_STRICT_REBRAND=1 pnpm overlay:vencord` (0 warnings),
+`node overlay-scripts/verify-build.mjs`, and the strict overlay idempotence pass
+all pass. The generated renderer bundle contains both the existing
+`x-google-max-bitrate=80000` patch and the new preview `pause()`/`srcObject=null`
+patch. The running local Electron client was reloaded from the project debug
+renderer and the read-only validator passed inventory, visual, hotkeys, and
+mass-delete phases with the account-writing badge phase skipped.
+
+This is built and reloaded locally, not a new public release. Diggy still owes
+the real sender/receiver test with a native Discord recipient: application
+window and whole-screen sharing, live encoder stats, viewer smoothness, and
+voice/screenshare audio. The microphone `Error: 3002` remains separate. Keep
+the unrelated dirty `plugins/DMPresence/index.ts` edits and untracked
+`plugins/DMTranslate/` and `plugins/PlaylistmaxxingPresence/` work untouched.
+
 ## 2026-08-21 DMWidget refresh/discovery release — v0.7.62
 
 The DMWidget live-stat path now sends no-cache/cache-bust hints to HenrikDev,

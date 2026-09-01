@@ -478,6 +478,34 @@ const PATCHES = [
         find: 'description: "Removes 2500kbps bitrate cap on chromium and vesktop clients.",',
         replace: 'description: "Removes 2500kbps bitrate cap on chromium-based and Electron clients.",'
     },
+    // Carry forward Vencord be77396b: stop the hidden stream-preview video
+    // from continuing to decode after its source is detached. Without the
+    // pause(), long-running screenshares can accumulate CPU load and starve
+    // the sender encoder, which is visible to native Discord recipients as
+    // dropped or uneven frames. Keep this in the overlay so fresh pinned
+    // source checkouts receive the safeguard as well.
+    {
+        file: "src/plugins/webScreenShareFixes.web/index.ts",
+        find:
+            '                },\n' +
+            '            ]\n' +
+            '        }\n' +
+            '    ]\n' +
+            '});',
+        replace:
+            '                },\n' +
+            '            ]\n' +
+            '        },\n' +
+            '        {\n' +
+            '            find: "ApplicationStreamPreviewUploadManager",\n' +
+            '            replacement: {\n' +
+            '                match: /(\\i)\\.removeAttribute\\("srcObject"\\)/,\n' +
+            '                replace: "$1.pause(),$1.srcObject=null"\n' +
+            '            }\n' +
+            '        }\n' +
+            '    ]\n' +
+            '});'
+    },
     // Badges: "Vencord Contributor" badge title
     {
         file: "src/plugins/_api/badges/index.tsx",
