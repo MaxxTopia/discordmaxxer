@@ -5,7 +5,7 @@
 > `CLAUDE.md` ("Operational facts" section). Those three are enough to build,
 > ship, and maintain without prior context.
 
-## Current maintenance/release state — v0.7.62 (published)
+## Current maintenance/release state — v0.7.63 (published)
 
 ## 2026-09-01 screenshare upstream-drift safeguard
 
@@ -27,12 +27,19 @@ patch. The running local Electron client was reloaded from the project debug
 renderer and the read-only validator passed inventory, visual, hotkeys, and
 mass-delete phases with the account-writing badge phase skipped.
 
-This is built and reloaded locally, not a new public release. Diggy still owes
-the real sender/receiver test with a native Discord recipient: application
-window and whole-screen sharing, live encoder stats, viewer smoothness, and
-voice/screenshare audio. The microphone `Error: 3002` remains separate. Keep
-the unrelated dirty `plugins/DMPresence/index.ts` edits and untracked
-`plugins/DMTranslate/` and `plugins/PlaylistmaxxingPresence/` work untouched.
+Published as v0.7.63 from commit `70e6976` via GitHub Actions release run
+`33582607106`. The public GitHub Release is stable (not draft or prerelease),
+and its `latest.yml` advertises version `0.7.63`. Uploaded assets include the
+Windows installer, x64 and ARM64 ZIPs, installer blockmap, and updater
+manifest.
+
+The public release is a test candidate, not proof that native recipient
+quality improved. Diggy still owes the real sender/receiver test with a native
+Discord recipient: application window and whole-screen sharing, live encoder
+stats, viewer smoothness, and voice/screenshare audio. The microphone
+`Error: 3002` remains separate. Keep the unrelated dirty
+`plugins/DMPresence/index.ts` edits and untracked `plugins/DMTranslate/` and
+`plugins/PlaylistmaxxingPresence/` work untouched.
 
 ## 2026-08-21 DMWidget refresh/discovery release — v0.7.62
 
