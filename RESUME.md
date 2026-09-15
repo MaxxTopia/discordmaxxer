@@ -5,7 +5,41 @@
 > `CLAUDE.md` ("Operational facts" section). Those three are enough to build,
 > ship, and maintain without prior context.
 
-## Current maintenance/release state — v0.7.63 (published)
+## Current maintenance/release state — v0.7.64 candidate (not published)
+
+## 2026-09-14 upstream Electron drift maintenance — v0.7.64 candidate
+
+The September 14 Maxx-bot `upstream drift detected` DM was a valid maintenance
+signal, not a live suite outage. The successful `upstream-watch` run
+`34884180290` found only one difference: upstream Vesktop had moved to Electron
+`43.2.0`, while Discordmaxxer's frozen release lockfile still resolved
+`43.0.0`. The pinned Vencord commit remains
+`ef29bbeb6119cfb53d1273ed78147bcc97d91261`; its age was below the workflow's
+30-day drift threshold, so no Vencord re-pin was included. The live
+`suite-monitor.maxxtopia.workers.dev` endpoint was healthy in observation mode
+(`allUp: true`) during this audit.
+
+The candidate changes `package.json` and `pnpm-lock.yaml` to exact Electron
+`43.2.0`. Exact pinning keeps the frozen release reproducible and aligns the
+declared dependency with upstream Vesktop. No custom plugin or unrelated local
+work was changed. The public stable release remains v0.7.63 until this
+candidate is released.
+
+Automated verification in an isolated worktree: `pnpm install
+--frozen-lockfile`, `pnpm test`, strict `DM_STRICT_REBRAND=1
+pnpm overlay:vencord` against the pinned Vencord commit (0 warnings),
+`pnpm build`, `node overlay-scripts/verify-build.mjs`, Electron runtime
+`v43.2.0`, `pnpm electron-builder --windows --dir`, and `git diff --check` all
+pass. The moving Vencord `main` tree was deliberately not used for the release
+overlay because its paths have drifted beyond the pinned patch contract.
+
+Release gate: after the candidate is pushed, Diggy must run one real voice call
+with the v0.7.64 candidate and confirm connect, two-way audio, and stable
+disconnect/reconnect behavior. This real-device/session test is not provable
+from the automated build. If it passes, tag and push `v0.7.64` so GitHub
+Actions publishes the Windows installer; if it fails, fix the candidate before
+tagging. Preserve the canonical dirty `plugins/DMPresence/index.ts` edits and
+untracked `plugins/DMTranslate/` and `plugins/PlaylistmaxxingPresence/` work.
 
 ## 2026-09-01 screenshare upstream-drift safeguard
 
