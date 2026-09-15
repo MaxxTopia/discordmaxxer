@@ -33,8 +33,14 @@ pnpm overlay:vencord` against the pinned Vencord commit (0 warnings),
 pass. The moving Vencord `main` tree was deliberately not used for the release
 overlay because its paths have drifted beyond the pinned patch contract.
 
-Release gate: after the candidate is pushed, Diggy must run one real voice call
-with the v0.7.64 candidate and confirm connect, two-way audio, and stable
+The candidate was pushed to `main` in commit `6f2150417b4081ecb0dd294425c35145eb01970b`.
+Manual upstream-watch run `34927596682` completed successfully against that
+commit, and the Discord audit found no new upstream-drift DM after the run. The
+public stable installer remains v0.7.63 until the real voice gate passes and
+v0.7.64 is tagged.
+
+Release gate: before the public tag, Diggy must run one real voice call with the
+v0.7.64 candidate and confirm connect, two-way audio, and stable
 disconnect/reconnect behavior. This real-device/session test is not provable
 from the automated build. If it passes, tag and push `v0.7.64` so GitHub
 Actions publishes the Windows installer; if it fails, fix the candidate before
