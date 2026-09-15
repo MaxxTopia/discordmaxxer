@@ -41,11 +41,13 @@ v0.7.64 is tagged.
 
 Release gate: before the public tag, Diggy must run one real voice call with the
 v0.7.64 candidate and confirm connect, two-way audio, and stable
-disconnect/reconnect behavior. This real-device/session test is not provable
-from the automated build. If it passes, tag and push `v0.7.64` so GitHub
-Actions publishes the Windows installer; if it fails, fix the candidate before
-tagging. Preserve the canonical dirty `plugins/DMPresence/index.ts` edits and
-untracked `plugins/DMTranslate/` and `plugins/PlaylistmaxxingPresence/` work.
+disconnect/reconnect behavior, plus the existing real screenshare-with-audio
+sender/receiver check on the target Windows setup. These real-device/session
+tests are not provable from the automated build. If both pass, tag and push
+`v0.7.64` so GitHub Actions publishes the Windows installer; if either fails,
+fix the candidate before tagging. Preserve the canonical dirty
+`plugins/DMPresence/index.ts` edits and untracked `plugins/DMTranslate/` and
+`plugins/PlaylistmaxxingPresence/` work.
 
 ## 2026-09-01 screenshare upstream-drift safeguard
 
