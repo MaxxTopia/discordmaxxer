@@ -11,7 +11,7 @@
  *   - Avatar tier ring     — 1px tier-color outline around PFPs
  *   - Member list name tint with glow-glimmer pulse (MAXXER+)
  *   - Profile popout banner stripe (MAXXER+)
- *   - Animated profile badge for MAXXER++ (shimmer)
+ *   - Animated MAXXER++ name tint (shimmer)
  *   - Founder # badge (numbered gold gem in popouts) via addProfileBadge
  *
  * Implementation: MutationObserver tags any [data-user-id] element with
@@ -30,7 +30,7 @@ import { managedStyleRootNode } from "@api/Styles";
 import { createAndAppendStyle } from "@utils/css";
 import definePlugin, { OptionType } from "@utils/types";
 
-import { getRosterFounderNumber, getRosterStatus, getRosterTier, refreshRoster } from "../_dm-shared/roster";
+import { getRosterFounderNumber, getRosterStatus, getRosterTier, onRosterChange, refreshRoster } from "../_dm-shared/roster";
 import { Tier, TIER_LABELS } from "../_dm-shared/vip";
 
 // Hypixel-aligned tier colors. MAXXER+ uses one bracket color; MAXXER++ has
@@ -99,6 +99,7 @@ function unregisterFounderBadges() {
 let style: HTMLStyleElement | null = null;
 let observer: MutationObserver | null = null;
 let rescanTimer: ReturnType<typeof setInterval> | null = null;
+let removeRosterListener: (() => void) | null = null;
 
 function buildCss() {
     const showRing = settings.store.avatarRing;
@@ -146,7 +147,10 @@ function buildCss() {
         /* Profile popout banner stripe — full-width tier color across the
            top of the popout. Selector targets the popout's banner container
            when its rendered for a tagged user. */
-        [class*="userPopout"]:has([data-dm-tier="${TIER_LABELS[tier]}"]) [class*="banner"]:first-of-type::before {
+        [class*="userPopout"]:has([data-dm-tier="${TIER_LABELS[tier]}"]) [class*="banner"]:first-of-type::before,
+        [class*="user-profile-popout"]:has([data-dm-tier="${TIER_LABELS[tier]}"]) [class*="banner"]:first-of-type::before,
+        [class*="userProfileModal"]:has([data-dm-tier="${TIER_LABELS[tier]}"]) [class*="banner"]:first-of-type::before,
+        [class*="userProfile"]:has([data-dm-tier="${TIER_LABELS[tier]}"]) [class*="banner"]:first-of-type::before {
             content: "";
             position: absolute;
             top: 0; left: 0; right: 0;
@@ -181,7 +185,6 @@ function buildCss() {
         ${nameRule(Tier.MAXXER_PLUS_PLUS, COLORS[Tier.MAXXER_PLUS_PLUS])}
 
         /* Popout banner stripes */
-        ${bannerRule(Tier.MAXXER, COLORS[Tier.MAXXER])}
         ${bannerRule(Tier.MAXXER_PLUS, COLORS[Tier.MAXXER_PLUS])}
         ${bannerRule(Tier.MAXXER_PLUS_PLUS, COLORS[Tier.MAXXER_PLUS_PLUS])}
 
@@ -409,10 +412,13 @@ export default definePlugin({
         style = createAndAppendStyle("dm-tier-flair", managedStyleRootNode);
         style.textContent = buildCss();
         registerFounderBadges();
+        removeRosterListener = onRosterChange(() => scanRoot(document));
         startObserver();
     },
 
     stop() {
+        removeRosterListener?.();
+        removeRosterListener = null;
         stopObserver();
         unregisterFounderBadges();
         style?.remove();

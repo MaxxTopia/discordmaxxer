@@ -18,7 +18,7 @@ import { definePluginSettings } from "@api/Settings";
 import definePlugin, { OptionType } from "@utils/types";
 import { RestAPI, Toasts, UserStore } from "@webpack/common";
 
-import { getRosterTier, refreshRoster } from "../_dm-shared/roster";
+import { getRosterTier, onRosterChange, refreshRoster } from "../_dm-shared/roster";
 import { Tier } from "../_dm-shared/vip";
 
 // Profile-badge mark — v1 horror-Clyde, 96px PNG with TRANSPARENT background,
@@ -92,6 +92,7 @@ const settings = definePluginSettings({
 });
 
 const knownIds = new Set<string>();
+let removeRosterListener: (() => void) | null = null;
 
 function rebuildKnownIds() {
     knownIds.clear();
@@ -153,6 +154,13 @@ const badge: ProfileBadge = {
     shouldShow: ({ userId }) => knownIds.has(userId) || getRosterTier(userId) !== Tier.FREE
 };
 
+function registerBadge() {
+    // Re-registering forces Discord's badge registry to re-evaluate shouldShow
+    // after the async roster fetch completes, including already-open profiles.
+    try { removeProfileBadge(badge); } catch { /* not registered yet */ }
+    addProfileBadge(badge);
+}
+
 export default definePlugin({
     name: "DMBadge",
     description:
@@ -162,19 +170,24 @@ export default definePlugin({
 
     async start() {
         rebuildKnownIds();
-        addProfileBadge(badge);
+        registerBadge();
+        removeRosterListener = onRosterChange(registerBadge);
         // Kick off a roster refresh so paid-tier users appear in the cache
         // soon after launch. shouldShow() reads the cache synchronously and
         // returns Tier.FREE for un-cached users — meaning the first time you
         // open a paid friend's profile after a fresh launch you might not
         // see the badge, but the next render (after the fetch resolves) will.
         // Discord re-renders profile popouts on every open, so the catch-up
-        // is invisible in practice.
+        // is invisible in practice because the listener below re-registers
+        // the badge as soon as the roster replacement arrives.
         refreshRoster().catch(e => console.warn("[DiscordmaxxerBadge] roster refresh failed:", e));
         await loadRemoteList();
+        registerBadge();
     },
 
     stop() {
+        removeRosterListener?.();
+        removeRosterListener = null;
         removeProfileBadge(badge);
         knownIds.clear();
     }

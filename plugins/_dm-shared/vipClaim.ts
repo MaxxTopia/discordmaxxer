@@ -12,6 +12,8 @@
  *   request:  { code, hwid }
  *   response 200 + status="claimed":    new claim, code now bound
  *   response 200 + status="idempotent": same code+hwid as before, OK
+ *   response 200 + status="rebound": an existing binding was backfilled or
+ *                                      rebound to this user, OK
  *   response 409:                        code claimed by a different rig
  *   response 400:                        malformed code or hwid
  *
@@ -23,7 +25,7 @@
 
 import * as DataStore from "@api/DataStore";
 
-import { setClaimCache, Tier } from "./vip";
+import { normalizeTier, setClaimCache, Tier } from "./vip";
 
 export const WORKER_URL = "https://optmaxxing-vip.maxxtopia.workers.dev/claim";
 
@@ -75,7 +77,7 @@ export function isValidCode(input: string): boolean {
 
 export interface ClaimResult {
     ok: boolean;
-    status?: "claimed" | "idempotent" | "expired" | "scope-mismatch";
+    status?: "claimed" | "idempotent" | "rebound" | "expired" | "scope-mismatch";
     error?: string;
     boundHwid?: string;
     /** When the worker recognises a Founder code, it assigns the next
@@ -94,6 +96,10 @@ export interface ClaimResult {
     /** Product scope: "om" | "dm" | "both". Returned for diagnostics +
      *  to confirm the scope-enforcement layer is engaged. */
     scope?: string;
+}
+
+function isGrantedTier(value: unknown, founderNumber?: unknown): value is Tier {
+    return normalizeTier(value, founderNumber) !== Tier.FREE;
 }
 
 /** First-time claim or idempotent re-claim against the worker. The userId
@@ -152,17 +158,28 @@ export async function claimAgainstWorker(code: string, hwid: string, userId?: st
 
 /**
  * Validate an existing binding. Returns:
- *   - true if the worker confirms idempotent re-claim (binding is alive)
+ *   - an updated binding when the worker confirms it is alive
  *   - false if the worker rejects (claim was nuked or different hwid)
  *   - null if the network is unreachable (caller decides whether to trust cache)
  *
  * Pass the current Discord userId so pre-2026-05-10 claims (which were
  * stored without userId) get backfilled and start showing up in /roster.
  */
-export async function reValidateBinding(b: ClaimBinding, userId?: string): Promise<boolean | null> {
+export async function reValidateBinding(b: ClaimBinding, userId?: string): Promise<ClaimBinding | false | null> {
     const r = await claimAgainstWorker(b.code, b.hwid, userId);
-    if (r.ok && r.status === "idempotent") return true;
-    if (r.ok && r.status === "claimed") return true; // first re-claim after worker KV reset
+    if (r.ok && (r.status === "idempotent" || r.status === "claimed" || r.status === "rebound")) {
+        // The worker is authoritative for per-code tier and subscription
+        // expiry. Older workers omit these fields, so retain the cached value
+        // when they are absent for backwards compatibility.
+        const next: ClaimBinding = { ...b };
+        if (isGrantedTier(r.tier, r.founderNumber) || next.founderNumber) {
+            next.tier = normalizeTier(r.tier ?? next.tier, r.founderNumber ?? next.founderNumber);
+        }
+        if (typeof r.founderNumber === "number") next.founderNumber = r.founderNumber;
+        if (typeof r.expiresAt === "number") next.expiresAt = r.expiresAt;
+        if (typeof r.scope === "string") next.scope = r.scope;
+        return next;
+    }
     if (!r.ok && r.error?.startsWith("network")) return null;
     // Expired or scope-mismatch are both terminal "this binding is no
     // longer valid" — caller wipes the local cache and downgrades to
@@ -198,7 +215,13 @@ const validateShape = (b: any): ClaimBinding | null => {
     if (!b || typeof b !== "object") return null;
     if (typeof b.code !== "string" || typeof b.hwid !== "string") return null;
     if (!isValidCode(b.code) || b.hwid.length !== 32) return null;
-    return b as ClaimBinding;
+    const founderNumber = typeof b.founderNumber === "number" ? b.founderNumber : undefined;
+    return {
+        ...b,
+        // Pre-tier worker bindings were lifetime MAXXER++ claims.
+        tier: normalizeTier(b.tier ?? Tier.MAXXER_PLUS_PLUS, founderNumber),
+        ...(founderNumber !== undefined ? { founderNumber } : {})
+    } as ClaimBinding;
 };
 
 const initPromise = (async () => {
@@ -274,7 +297,9 @@ export function tierFromCachedBinding(): Tier {
         return Tier.FREE;
     }
     const ageMs = Date.now() - b.lastValidatedAt;
-    if (ageMs < OFFLINE_TRUST_MS) return b.tier;
+    if (ageMs < OFFLINE_TRUST_MS) {
+        return normalizeTier(b.tier ?? Tier.MAXXER_PLUS_PLUS, b.founderNumber);
+    }
     return Tier.FREE;
 }
 

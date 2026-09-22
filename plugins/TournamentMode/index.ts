@@ -109,17 +109,26 @@ const settings = definePluginSettings({
     lowerProcessPriority: {
         type: OptionType.BOOLEAN,
         description: "Lower Discord's process priority to BELOW_NORMAL while TM is on. Frees CPU scheduling slots for your game. Recommended ON.",
-        default: true
+        default: true,
+        onChange: () => {
+            if (active) syncNativePerf().catch(e => console.warn("[TournamentMode] lowerProcessPriority update failed:", e));
+        }
     },
     capFrameRate: {
         type: OptionType.BOOLEAN,
-        description: "Cap renderer frame rate at 30 fps while TM is on (default 60). Halves compositor GPU load. Recommended ON.",
-        default: true
+        description: "Request a 30 fps renderer cap while TM is on. Normal windowed rendering may ignore this best-effort request; the other TM savings still apply.",
+        default: true,
+        onChange: () => {
+            if (active) syncNativePerf().catch(e => console.warn("[TournamentMode] capFrameRate update failed:", e));
+        }
     },
     disableArRpc: {
         type: OptionType.BOOLEAN,
         description: "Terminate Rich Presence worker (arRPC) while TM is on. Disables 'Now Playing' detection. Set OFF if you want streamers/friends to see your game.",
-        default: true
+        default: true,
+        onChange: () => {
+            if (active) syncNativePerf().catch(e => console.warn("[TournamentMode] disableArRpc update failed:", e));
+        }
     },
     // Runtime mirror of the `active` module-level flag. Hidden from the
     // settings UI (DiscordmaxxerHub uses it to render a real toggle button
@@ -154,6 +163,20 @@ function parseHotkey(hk: string): ParsedHotkey {
     };
 }
 
+function perfOptions() {
+    return {
+        lowerProcessPriority: settings.store.lowerProcessPriority,
+        capFrameRate: settings.store.capFrameRate,
+        disableArRpc: settings.store.disableArRpc
+    };
+}
+
+async function syncNativePerf() {
+    const native = (globalThis as any).VesktopNative;
+    if (!native?.performanceMode?.set) return null;
+    return native.performanceMode.set(active, perfOptions());
+}
+
 async function setActive(next: boolean) {
     active = next;
     if (style) style.textContent = active ? PERF_CSS : "";
@@ -166,7 +189,7 @@ async function setActive(next: boolean) {
     let result: any = null;
     if (native?.performanceMode?.set) {
         try {
-            result = await native.performanceMode.set(active);
+            result = await syncNativePerf();
         } catch (e) {
             console.warn("[TournamentMode] performanceMode bridge failed:", e);
         }
@@ -176,7 +199,7 @@ async function setActive(next: boolean) {
 
     Toasts.show({
         message: active
-            ? `🎮 Tournament Mode: ON — priority↓ ${result?.arRpcDisabled ? "rpc✕" : ""}`
+            ? `🎮 Tournament Mode: ON — ${result?.lowerPriorityRequested ? "priority↓" : "priority unchanged"}${result?.arRpcRequested ? " · rpc✕" : ""}`
             : "Tournament Mode: OFF — restored",
         type: active ? Toasts.Type.SUCCESS : Toasts.Type.MESSAGE,
         id: Toasts.genId(),
@@ -186,7 +209,7 @@ async function setActive(next: boolean) {
 
 export default definePlugin({
     name: "TournamentMode",
-    description: "Press Ctrl+Alt+T (configurable) to toggle a real performance mode for gaming: drops Discord's process priority, caps the renderer at 30 fps, kills Rich Presence, and pauses animated emoji/avatars/typing-dots. Safe to leave on permanently — only strips things with measurable CPU/GPU cost; cosmetic plugins stay fully active.",
+    description: "Press Ctrl+Alt+T (configurable) to toggle a real performance mode for gaming: drops Discord's process priority, requests a best-effort 30 fps renderer cap, kills Rich Presence, and pauses animated emoji/avatars/typing-dots. Safe to leave on permanently — only strips things with measurable CPU/GPU cost; cosmetic plugins stay fully active.",
     authors: [{ name: "Diggy", id: 0n }],
     settings,
 

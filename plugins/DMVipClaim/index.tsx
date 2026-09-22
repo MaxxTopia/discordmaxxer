@@ -15,8 +15,8 @@
  * binding is wiped and the user drops to FREE on next tier check.
  *
  * Codes minted via optimizationmaxxing/scripts/mint-unbound-codes.py.
- * Each successful claim grants Tier.MAXXER_PLUS_PLUS in v0.5 (single-tier).
- * Multi-tier codes are a v0.6 schema extension.
+ * Each successful claim grants the tier encoded by the claim; older codes
+ * without a tier continue to default to Tier.MAXXER_PLUS_PLUS.
  */
 
 import { definePluginSettings } from "@api/Settings";
@@ -35,7 +35,7 @@ import {
     writeBinding,
     WORKER_URL
 } from "../_dm-shared/vipClaim";
-import { Tier, TIER_LABELS } from "../_dm-shared/vip";
+import { normalizeTier, Tier, TIER_LABELS } from "../_dm-shared/vip";
 
 function currentUserId(): string | undefined {
     try {
@@ -89,21 +89,29 @@ function ClaimPanel() {
             const r = await claimAgainstWorker(norm, hwid, currentUserId());
             if (r.ok) {
                 const now = Date.now();
+                // Legacy workers omitted tier; preserve their historical
+                // MAXXER++ meaning. An explicit tier of 0/malformed data
+                // stays FREE instead of being silently elevated.
+                const grantedTier = r.tier === undefined
+                    ? normalizeTier(undefined, r.founderNumber) || Tier.MAXXER_PLUS_PLUS
+                    : normalizeTier(r.tier, r.founderNumber);
                 const fresh: ClaimBinding = {
                     code: norm,
                     hwid,
-                    tier: Tier.MAXXER_PLUS_PLUS,
+                    tier: grantedTier,
                     claimedAt: now,
                     lastValidatedAt: now,
-                    founderNumber: r.founderNumber
+                    founderNumber: r.founderNumber,
+                    ...(typeof r.expiresAt === "number" ? { expiresAt: r.expiresAt } : {}),
+                    ...(typeof r.scope === "string" ? { scope: r.scope } : {})
                 };
                 writeBinding(fresh);
                 setBinding(fresh);
                 setCode("");
                 const founderTag = r.founderNumber ? ` Founder #${r.founderNumber} of 33.` : "";
                 toast(r.status === "claimed"
-                    ? `🎉 MAXXER++ unlocked.${founderTag} Restart Discordmaxxer to refresh badges.`
-                    : `✅ Code already bound to this rig — VIP active.${founderTag}`, Toasts.Type.SUCCESS);
+                    ? `🎉 ${TIER_LABELS[grantedTier]} unlocked.${founderTag} Restart Discordmaxxer to refresh badges.`
+                    : `✅ Code already bound to this rig — ${TIER_LABELS[grantedTier]} active.${founderTag}`, Toasts.Type.SUCCESS);
             } else {
                 if (r.boundHwid && r.boundHwid !== hwid) {
                     toast("That code is already claimed by another rig. One code, one machine.", Toasts.Type.FAILURE);
@@ -197,7 +205,7 @@ const settings = definePluginSettings({
 export default definePlugin({
     name: "DMVipClaim",
     description:
-        "Redeem a HWID-locked VIP code to unlock MAXXER++ tier. Each code binds to one rig (BIOS UUID + serial + CPU). " +
+        "Redeem a HWID-locked VIP code to unlock the tier encoded by the claim (older codes default to MAXXER++). Each code binds to one rig (BIOS UUID + serial + CPU). " +
         "Same backend as optimizationmaxxing — codes work across both products on the same machine. " +
         "Validation is online; offline access trusts the cache for 24 hours.",
     authors: [{ name: "Diggy", id: 0n }],
@@ -215,10 +223,11 @@ export default definePlugin({
         const b = readBinding();
         if (!b) return;
         try {
-            const ok = await reValidateBinding(b, currentUserId());
-            if (ok === true) writeBinding(bumpValidatedAt(b));
-            else if (ok === false) writeBinding(null);
-            // ok === null: leave cached binding intact, vip.ts handles 24h fade
+            const result = await reValidateBinding(b, currentUserId());
+            if (result && typeof result === "object") writeBinding(bumpValidatedAt(result));
+            else if (result === false) writeBinding(null);
+            // null result: leave cached binding intact, vip.ts handles the
+            // 24-hour offline trust window.
         } catch (e) {
             console.warn("[DiscordmaxxerVipClaim] revalidation failed:", e);
         }

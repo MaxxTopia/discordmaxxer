@@ -5,9 +5,135 @@
 > `CLAUDE.md` ("Operational facts" section). Those three are enough to build,
 > ship, and maintain without prior context.
 
+## 2026-09-22 v0.7.65 release handoff
+
+Diggy explicitly asked for the app update to go live before doing the
+real-client checks, and said he will test after it is live. This sets the
+remaining call, screenshare-with-audio, tier, Tournament Mode, and two-client
+profile-look checks as post-release user tests. The app candidate is versioned
+`0.7.65`; stable `0.7.64` remains current until the tag-triggered release
+workflow succeeds. Local release checks passed: `pnpm test` (lint and
+TypeScript), strict Vencord overlay (24 plugins, 0 rebrand warnings),
+`verify-build.mjs`, `pnpm build`, Windows x64/ARM64 packaging, and
+`git diff --check`. The temporary installer is
+`C:\Users\Diggy\AppData\Local\Temp\discordmaxxer-v0.7.65-release-preflight\Discordmaxxer-Setup-0.7.65.exe`;
+its SHA-512 matches the generated `latest.yml`. It is unsigned, so Windows
+SmartScreen may show the existing trust warning.
+
+The live client open for testing is still the local v0.7.64 candidate at
+`C:\Users\Diggy\projects\discordmaxxer-release-074\dist\win-unpacked\discordmaxxer.exe`;
+it was not stopped or replaced. No localhost:9223 debugger is listening, so
+the packaged runtime validator was not run rather than restarting Diggy's
+active client. The packaged runtime validator remains unrun. The feature
+checks remain owed after the release: Founder/MAXXER++ benefit inheritance,
+Tournament Mode during voice/screenshare, and creating/importing/saving a
+`DMLOOK1:` profile look between two clients.
+
+The VIP Worker checkout remains at its public baseline. Its local `worker.js`
+and README contain a large mixed diff with unrelated VIP admin/Aimmaxer work;
+deploying that file would publish unrelated changes. The candidate Worker
+also filters stale cosmetic fields after downgrades, contrary to Diggy's
+accepted behavior that stale flair may remain. Do not deploy that checkout as
+part of this release. Diggy's release authorization is recorded; the
+Discordmaxxer app is the only release in scope.
+
 ## Current maintenance/release state — v0.7.64 published
 
 ## 2026-09-21 covered-window/screenshare release — v0.7.64
+
+## 2026-09-22 local install handoff — v0.7.64
+
+The published v0.7.64 NSIS installer was downloaded from the MaxxTopia GitHub
+release and matched the published SHA-512. The stale installed v0.7.63 client
+was replaced. The Start Menu shortcut now targets
+`C:\Users\Diggy\AppData\Local\Discordmaxxer\discordmaxxer.exe`, and that
+installed executable is running at v0.7.64. The earlier unpacked test process
+from `discordmaxxer-release-074\dist\win-unpacked` was closed.
+
+Windows' icon cache was refreshed with `ie4uinit`, `SHChangeNotify`, and a
+targeted icon-cache rebuild. Explorer was restarted and the installed client
+was relaunched. The moved cache files are backed up under
+`C:\Users\Diggy\AppData\Local\Temp\discordmaxxer-iconcache-20260922-093515`.
+
+## 2026-09-22 profile-flair, tier-entitlement, and taskbar candidate
+
+This isolated candidate addresses the cross-client profile report and the
+remaining Windows identity mismatch without changing the canonical dirty
+checkout. The generic boat seen in ordinary Discord is Discord's
+server-side banner; Discordmaxxer's custom banner/avatar/theme roster is an
+in-app feature and is only rendered by another Discordmaxxer client. The
+candidate now makes that path reliable for default-avatar users and changing
+Discord markup: it discovers profile ids from data attributes, links, React
+props, and avatar URLs; refreshes the roster listeners when the async fetch
+completes; reapplies or removes banner/theme/avatar flair when the roster or
+tier changes; and restores Discord's original inline styles when the plugin
+stops or a user loses a field.
+
+Tier gates are aligned across the renderer, roster sanitizer, and VIP card:
+MAXXER gets custom banners and five saved video-background slots; MAXXER+
+gets animated avatars, video-background playback, twenty slots, and the three
+exclusive themes; MAXXER++ gets profile gradient colors, animated name tint,
+custom presence, voice color, beta builds, votes, and the About credit. The
+badge registration now re-evaluates after roster load. VIP claims accept the
+worker's `rebound` response and update the locally cached granted tier,
+expiry, and scope. The worker source also re-applies profile field gates and
+expiry normalization server-side; it has not been deployed.
+
+The Windows taskbar fix sets `com.maxxtopia.discordmaxxer` before Electron
+creates a window, supplies the Clyde icon through `setAppDetails`, and keeps
+the BrowserWindow icon explicit. A fresh candidate AUMID displayed the Clyde
+icon; the old `dev.diggy.discordmaxxer` AUMID retained Windows' cached Atom
+icon. The candidate is running from
+`C:\Users\Diggy\projects\discordmaxxer-release-074\dist\win-unpacked\discordmaxxer.exe`
+with the shared profile. Public stable v0.7.64 and the canonical checkout are
+unchanged.
+
+Verification in this checkout: `pnpm test` (lint plus TypeScript),
+`DM_STRICT_REBRAND=1 pnpm overlay:vencord` (81 idempotent upstream patches,
+24 custom plugins, 0 warnings), `pnpm build`,
+`node overlay-scripts/verify-build.mjs`, `pnpm package:dir`, `node --check`
+on the worker, and `git diff --check` all pass. The remaining human gate is a
+second Discordmaxxer client viewing this account's profile after the roster
+has refreshed. Publishing the worker or producing a new public app release
+still requires an explicit release decision.
+
+## 2026-09-22 tier inheritance, Tournament Mode, and profile-look sharing candidate
+
+The next local candidate keeps cosmetic flair deliberately stale after a
+downgrade or a cleared profile field, while the live tier and expiry lookup
+still follows the current roster. The shared tier boundary now normalizes
+Founder slots 1–33 to MAXXER++, treats higher numeric tiers as including every
+lower tier, and preserves legacy claim records that omitted their tier as the
+historical MAXXER++ entitlement. The VIP card and renderer gates use the same
+ladder, and the worker source mirrors the founder and profile-field rules. The
+worker change is local source only; the public worker has not been deployed.
+
+Tournament Mode now sends all three settings to the native bridge whenever the
+mode starts or a setting changes: process-priority lowering, the best-effort
+30-fps request, and arRPC disable/restore. The bridge reports requested state
+without claiming that normal windowed Chromium accepted a frame cap. Original
+arRPC intent is preserved across setting changes and restored when the mode is
+turned off.
+
+DMProfileFlair now has a versioned `DMLOOK1:` share code. It carries only the
+cosmetic banner, animated avatar, gradient colors, Maxxer theme selection, and
+rich-presence look. It is HTTPS/length/field allowlisted, checksummed, and
+contains no claim code, HWID, Discord id, tier, or credential. Users can create
+and copy a code or paste one into the editor; imported flair is local until
+Save, while the theme/presence settings are applied through Vencord's settings
+proxy. Unknown or edited codes are rejected.
+
+The isolated candidate is running from
+`C:\Users\Diggy\projects\discordmaxxer-release-074\dist\win-unpacked\discordmaxxer.exe`
+with the shared profile. Public stable v0.7.64 and the canonical checkout are
+unchanged. Verification passed: `pnpm test`, strict
+`DM_STRICT_REBRAND=1 pnpm overlay:vencord`,
+`node overlay-scripts/verify-build.mjs`, `pnpm build`, `pnpm package:dir`,
+worker `node --check worker.js`, worker extension tests (3/3), and
+`git diff --check`. Diggy still owes a live Founder/higher-tier gate test, a
+Tournament Mode voice/screenshare toggle test, and a two-client profile-look
+create/import/Save test. Diggy authorized the public app release on
+2026-09-22; the project-mandated real-client release gate remains outstanding.
 
 This release carries the covered-window and screenshare diagnostics work that
 Diggy field-tested in the running client. The live check looked good while a

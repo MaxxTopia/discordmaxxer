@@ -37,11 +37,11 @@ export const FEATURED_PLUGINS: FeaturedPlugin[] = [
     },
     {
         id: "DMProfileFlair",
-        title: "Animated PFPs + Custom Banners",
-        oneLiner: "Set any image, GIF, or MP4 as your animated avatar — plus a custom profile banner and a theme-tinted gradient. Cross-user: other Discordmaxxer friends see it too.",
+        title: "Custom banners, animated PFPs + profile themes",
+        oneLiner: "MAXXER unlocks custom profile banners; MAXXER+ adds animated avatars; MAXXER++ adds profile gradient colors. Other Discordmaxxer users see your flair in-app.",
         where: "Configure in Discordmaxxer settings → Profile Flair.",
         emoji: "✨",
-        tier: Tier.MAXXER_PLUS,
+        tier: Tier.MAXXER,
         gif: "featured/dmprofileflair.gif"
     },
     {

@@ -16,6 +16,7 @@ import {
     screen,
     session
 } from "electron";
+import { existsSync } from "fs";
 import { join } from "path";
 import { IpcCommands, IpcEvents } from "shared/IpcEvents";
 import { STATIC_DIR } from "shared/paths";
@@ -313,6 +314,26 @@ function getWindowBoundsOptions(): BrowserWindowConstructorOptions {
     return options;
 }
 
+/**
+ * Resolve the icon before BrowserWindow is constructed. Windows associates an
+ * active window with its AppUserModelId during construction; setting the icon
+ * afterwards changes the thumbnail but can leave the taskbar button using
+ * Electron's default atom icon. Keep the packaged .ico first so the shell can
+ * use the full multi-size icon, with the PNG as a development fallback.
+ */
+function getWindowsIconPath(): string | undefined {
+    if (process.platform !== "win32") return undefined;
+
+    const candidates = app.isPackaged
+        ? [join(process.resourcesPath, "shortcut-icon.ico"), join(STATIC_DIR, "taskbar", "taskbar.png")]
+        : [
+              join(app.getAppPath(), "build", "shortcut-icon.ico"),
+              join(app.getAppPath(), "build", "icon.ico"),
+              join(STATIC_DIR, "taskbar", "taskbar.png")
+          ];
+    return candidates.find(candidate => existsSync(candidate));
+}
+
 function buildBrowserWindowOptions(): BrowserWindowConstructorOptions {
     const { staticTitle, transparencyOption, enableMenu, customTitleBar, splashTheming, splashBackground } =
         Settings.store;
@@ -326,6 +347,7 @@ function buildBrowserWindowOptions(): BrowserWindowConstructorOptions {
     const options: BrowserWindowConstructorOptions = {
         show: Settings.store.enableSplashScreen === false && !CommandLine.values["start-minimized"],
         backgroundColor,
+        icon: getWindowsIconPath(),
         webPreferences: {
             nodeIntegration: false,
             sandbox: vencordSupportsSandboxing(),
@@ -379,13 +401,25 @@ function createMainWindow() {
 
     const win = (mainWin = new BrowserWindow(buildBrowserWindowOptions()));
 
-    // Override the runtime taskbar icon on Windows with the no-bullet-holes
-    // horror-Clyde so the taskbar/Alt-Tab thumbnail doesn't show bullet-hole
-    // noise at small render sizes. The shortcut/.exe icon stays as the
-    // bullet-holes version (embedded in build/icon.ico via electron-builder),
-    // so the Start menu / Explorer icon keeps its full character.
+    // Tell Windows which icon belongs to this taskbar identity. BrowserWindow's
+    // `icon` option and setIcon() update the window icon, but Windows can keep a
+    // stale Electron icon for an existing AppUserModelId unless the taskbar
+    // button details include the app icon explicitly.
     if (process.platform === "win32") {
         try {
+            const iconPath = getWindowsIconPath();
+            if (iconPath) {
+                win.setAppDetails({
+                    appId: "com.maxxtopia.discordmaxxer",
+                    appIconPath: iconPath,
+                    appIconIndex: 0,
+                    relaunchCommand: process.execPath,
+                    relaunchDisplayName: "Discordmaxxer"
+                });
+            }
+
+            // Use the no-bullet-holes Clyde for the small runtime/taskbar
+            // thumbnail while keeping the full character in the shortcut/.exe.
             const taskbarIcon = nativeImage.createFromPath(join(STATIC_DIR, "taskbar", "taskbar.png"));
             if (!taskbarIcon.isEmpty()) win.setIcon(taskbarIcon);
         } catch (e) {

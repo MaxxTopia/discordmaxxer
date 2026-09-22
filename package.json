@@ -1,6 +1,6 @@
 {
     "name": "discordmaxxer",
-    "version": "0.7.64",
+    "version": "0.7.65",
     "private": true,
     "description": "Discord, optimized. 7th project in the maxxer suite. Forked from Vesktop.",
     "keywords": [
@@ -93,7 +93,7 @@
         "pnpm": ">=8"
     },
     "build": {
-        "appId": "dev.diggy.discordmaxxer",
+        "appId": "com.maxxtopia.discordmaxxer",
         "productName": "Discordmaxxer",
         "executableName": "discordmaxxer",
         "files": [

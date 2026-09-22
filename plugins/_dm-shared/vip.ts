@@ -32,6 +32,26 @@ export const TIER_LABELS: Record<Tier, string> = {
     [Tier.MAXXER_PLUS_PLUS]: "MAXXER++"
 };
 
+/** Normalize every tier-shaped value at the entitlement boundary.
+ * Founder slots are always MAXXER++, and malformed / negative values are
+ * FREE. Numeric comparison then gives the ladder its inherited benefits. */
+export function normalizeTier(value: unknown, founderNumber?: unknown): Tier {
+    const founder = Number(founderNumber);
+    if (Number.isInteger(founder) && founder >= 1 && founder <= 33) {
+        return Tier.MAXXER_PLUS_PLUS;
+    }
+    const n = Number(value);
+    if (!Number.isFinite(n) || n < Tier.MAXXER) return Tier.FREE;
+    if (n >= Tier.MAXXER_PLUS_PLUS) return Tier.MAXXER_PLUS_PLUS;
+    if (n >= Tier.MAXXER_PLUS) return Tier.MAXXER_PLUS;
+    return Tier.MAXXER;
+}
+
+/** True when a user's tier includes the requested tier and its benefits. */
+export function tierIncludes(tier: unknown, required: unknown): boolean {
+    return normalizeTier(tier) >= normalizeTier(required);
+}
+
 // Hardcoded supporter list. Replace with remote-fetched JSON in a later
 // session once we have the GitHub-Pages users.json infrastructure live.
 const HARDCODED_TIERS: Record<string, Tier> = {
@@ -85,13 +105,13 @@ function tierFromClaimCache(): Tier {
     try {
         const b = claimCache;
         if (!b) return Tier.FREE;
-        if (typeof b?.tier !== "number") return Tier.FREE;
         // Honor subscription expiry if the binding carries one (mirrors
         // vipClaim.tierFromCachedBinding so both readers agree).
         if (typeof b?.expiresAt === "number" && Date.now() > b.expiresAt) return Tier.FREE;
         const ageMs = Date.now() - (b?.lastValidatedAt ?? 0);
         if (ageMs > 24 * 60 * 60 * 1000) return Tier.FREE; // offline trust window
-        return b.tier as Tier;
+        // Legacy bindings omitted tier and were issued as MAXXER++.
+        return normalizeTier(b?.tier ?? Tier.MAXXER_PLUS_PLUS, b?.founderNumber);
     } catch {
         return Tier.FREE;
     }
@@ -122,7 +142,7 @@ export function getUserTier(userId: string): Tier {
     if (remote !== Tier.FREE) return remote;
     if (isAdmin()) {
         const grants = getLocalGrants();
-        return grants[userId] ?? Tier.FREE;
+        return normalizeTier(grants[userId]);
     }
     return Tier.FREE;
 }
@@ -150,7 +170,7 @@ export function getMyTier(): Tier {
 }
 
 export function hasTier(required: Tier): boolean {
-    return getMyTier() >= required;
+    return tierIncludes(getMyTier(), required);
 }
 
 export function tierGateMessage(required: Tier): string {
