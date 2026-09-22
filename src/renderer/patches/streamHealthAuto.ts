@@ -13,6 +13,7 @@ import { getLastEchoInjection } from "./screenShareFixes";
 
 export interface LastStreamHealth {
     ts: number;
+    sourceKind: "screenshare";
     encoderImplementation: string;
     encoderKind: "hardware" | "software" | "unknown";
     qualityLimitationReason: string;
@@ -73,11 +74,14 @@ function capture(stat: NonNullable<Awaited<ReturnType<typeof getOutboundVideoSta
     const software = stat.encoderKind === "software";
     const cpuLimited = stat.qualityLimitationReason === "cpu";
     const bwLimited = stat.qualityLimitationReason === "bandwidth";
+    const lowFps = stat.framesPerSecond < 24;
     const echoRisk = echoFix === "loopback-fallback";
-    const healthy = !software && !cpuLimited && !echoRisk;
+    const healthy = !lowFps && !software && !cpuLimited && !echoRisk;
 
     let verdict: string;
-    if (software)
+    if (lowFps)
+        verdict = `Only ${stat.framesPerSecond} FPS is leaving the screenshare sender — capture or encoding is stalled`;
+    else if (software)
         verdict = `Software encoder (${stat.encoderImplementation}) — choppy under motion; re-enable HW encode`;
     else if (cpuLimited) verdict = "Hardware encoder but CPU-limited — drop to 720p30 / check optimizer tweaks";
     else if (bwLimited) verdict = "Bandwidth-limited — network is the bottleneck";
@@ -85,6 +89,7 @@ function capture(stat: NonNullable<Awaited<ReturnType<typeof getOutboundVideoSta
 
     const health: LastStreamHealth = {
         ts: Date.now(),
+        sourceKind: stat.sourceKind,
         encoderImplementation: stat.encoderImplementation,
         encoderKind: stat.encoderKind,
         qualityLimitationReason: stat.qualityLimitationReason,

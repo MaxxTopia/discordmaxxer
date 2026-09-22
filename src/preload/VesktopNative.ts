@@ -9,7 +9,7 @@ import type { IpcMessage, IpcResponse } from "main/ipcCommands";
 import type { Settings } from "shared/settings";
 import type { Node } from "shared/venmicTypes";
 
-import { IpcEvents, UpdaterCheckResult } from "../shared/IpcEvents";
+import { type ChromeWindowOcclusionStatus, IpcEvents, type UpdaterCheckResult } from "../shared/IpcEvents";
 import { invoke, sendSync } from "./typedIpc";
 
 type SpellCheckerResultCallback = (word: string, suggestions: string[]) => void;
@@ -79,6 +79,11 @@ export const VesktopNative = {
     settings: {
         get: () => sendSync<Settings>(IpcEvents.GET_SETTINGS),
         set: (settings: Settings, path?: string) => invoke<void>(IpcEvents.SET_SETTINGS, settings, path)
+    },
+    chromeWindowOcclusion: {
+        getStatus: () => invoke<ChromeWindowOcclusionStatus>(IpcEvents.DM_CHROME_WINDOW_OCCLUSION_GET),
+        setEnabled: (enabled: boolean) =>
+            invoke<ChromeWindowOcclusionStatus>(IpcEvents.DM_CHROME_WINDOW_OCCLUSION_SET, enabled)
     },
     spellcheck: {
         getAvailableLanguages: () => sendSync<string[]>(IpcEvents.SPELLCHECK_GET_AVAILABLE_LANGUAGES),

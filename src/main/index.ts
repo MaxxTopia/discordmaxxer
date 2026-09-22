@@ -87,25 +87,26 @@ function init() {
     disabledFeatures.add("HardwareMediaKeyHandling");
     disabledFeatures.add("MediaSessionService");
 
-    // OPT-IN: force Chromium's Windows Graphics Capture API for screenshare.
-    // WGC composites the system cursor into the captured frame for both window
-    // and screen sources, whereas the legacy GDI/BitBlt path drops the cursor
-    // on per-window captures of apps in exclusive fullscreen (e.g. Fortnite).
-    //
-    // Default OFF because forcing WGC on m134 (Electron 41) breaks the
-    // `streams.audio = "loopback"` request used by screenShare.ts: streamers
-    // share silent screenshares despite checking "Stream With Audio". Toggling
-    // this back ON is wired through Settings → "Stream cursor on per-window
-    // fullscreen captures (forces WGC)".
-    //
-    // Multiple feature names listed because Chromium renamed/split this flag
-    // across versions; unknown features are ignored, so over-specifying is
-    // safe.
-    if (process.platform === "win32" && Settings.store.screenshareForceWgc) {
-        enabledFeatures.add("AllowWgcCapturer");
-        enabledFeatures.add("AllowWgcScreenCapturer");
-        enabledFeatures.add("AllowWgcWindowCapturer");
-        enabledFeatures.add("WebRtcAllowWgcDesktopCapturer");
+    // Select the Windows Graphics Capture (WGC) backend for WebRTC screenshare.
+    // WGC can fix missing content from exclusive-fullscreen games (e.g.
+    // Fortnite), but may lower capture FPS or interfere with stream audio.
+    // Some Chromium versions enable WGC window capture by default, so the OFF
+    // setting must explicitly disable it to guarantee the legacy capture path.
+    // Unknown feature names are ignored, allowing aliases across Chromium
+    // versions to be listed together.
+    if (process.platform === "win32") {
+        const wgcFeatures = [
+            "AllowWgcCapturer",
+            "AllowWgcScreenCapturer",
+            "AllowWgcWindowCapturer",
+            "WebRtcAllowWgcDesktopCapturer"
+        ];
+
+        if (Settings.store.screenshareForceWgc) {
+            for (const feature of wgcFeatures) enabledFeatures.add(feature);
+        } else {
+            for (const feature of wgcFeatures) disabledFeatures.add(feature);
+        }
     }
 
     // Disable Opaque Response Blocking (ORB) so user-provided cross-origin

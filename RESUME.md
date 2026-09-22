@@ -5,7 +5,46 @@
 > `CLAUDE.md` ("Operational facts" section). Those three are enough to build,
 > ship, and maintain without prior context.
 
-## Current maintenance/release state — v0.7.64 candidate (not published)
+## Current maintenance/release state — v0.7.64 published
+
+## 2026-09-21 covered-window/screenshare release — v0.7.64
+
+This release carries the covered-window and screenshare diagnostics work that
+Diggy field-tested in the running client. The live check looked good while a
+Chrome YouTube window was being shared, including when Discordmaxxer was not
+the foreground window.
+
+The focused changes are:
+
+- Windows Graphics Capture feature aliases are explicitly enabled or disabled
+  from the existing setting, so the restart-time choice is deterministic.
+- `getDisplayMedia()` video tracks are registered before Discord creates its
+  senders. RTC diagnostics now inspect only display-capture tracks, expose a
+  screen-share source label, and warn when the sender falls below 24 FPS.
+- Settings now include a safe per-user Chrome `WindowOcclusionEnabled=0`
+  toggle. Discordmaxxer records ownership, leaves machine or externally owned
+  policies unchanged, and removes only the value it created. Chrome must be
+  fully exited and reopened for the policy to take effect.
+
+Automated release evidence in the isolated release checkout: `pnpm install
+--frozen-lockfile`, `pnpm test`, `pnpm build`, strict
+`DM_STRICT_REBRAND=1 pnpm overlay:vencord` (`81` patches applied, `0` warnings),
+`node overlay-scripts/verify-build.mjs`, `pnpm package:dir`,
+`pnpm package:win`, `git diff --check`, and the packaged read-only validator
+(`inventory`, `visual`, `hotkeys`, and `massdelete`) all pass. The Windows
+artifacts are the x64/ARM64 ZIPs, NSIS installer, blockmap, and `latest.yml`.
+The installer remains unsigned, so Windows SmartScreen may still show the
+existing trust warning.
+
+The public stable release is now v0.7.64 from the tagged release commit. A
+native recipient test of Fortnite and Chrome sharing with two-way voice/audio
+is still the final real-device quality check; the automated sender telemetry
+and this local field test do not replace that viewer-side proof. Chrome source
+picker enumeration was not changed by this release.
+
+The canonical checkout may still contain unrelated dirty `plugins/DMPresence`
+edits and untracked `plugins/DMTranslate/` and
+`plugins/PlaylistmaxxingPresence/` work; those files were not included.
 
 ## 2026-09-14 upstream Electron drift maintenance — v0.7.64 candidate
 

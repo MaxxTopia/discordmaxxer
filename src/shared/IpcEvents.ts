@@ -80,9 +80,21 @@ export const enum IpcEvents {
     DM_WIN_AUDIO_SESSIONS = "DM_WIN_AUDIO_SESSIONS",
     DM_WIN_AUDIO_START_PROCESS = "DM_WIN_AUDIO_START_PROCESS",
     DM_WIN_AUDIO_START_EXCLUDE_SELF = "DM_WIN_AUDIO_START_EXCLUDE_SELF",
+    DM_CHROME_WINDOW_OCCLUSION_GET = "DM_CHROME_WINDOW_OCCLUSION_GET",
+    DM_CHROME_WINDOW_OCCLUSION_SET = "DM_CHROME_WINDOW_OCCLUSION_SET",
     DM_REPORT_INCIDENT = "DM_REPORT_INCIDENT",
     DM_GET_RESILIENCE_STATE = "DM_GET_RESILIENCE_STATE",
     DM_UPDATER_CHECK = "DM_UPDATER_CHECK"
+}
+
+export interface ChromeWindowOcclusionStatus {
+    /** Whether Windows Chrome can keep painting while its window is covered. */
+    enabled: boolean;
+    /** True only when Discordmaxxer created the per-user policy value. */
+    managedByDiscordmaxxer: boolean;
+    /** False when another Chrome policy already owns this setting. */
+    canChange: boolean;
+    message: string;
 }
 
 /** Result of a manual, on-demand update check (DM_UPDATER_CHECK). Reported to the

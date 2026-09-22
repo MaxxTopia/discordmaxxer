@@ -32,11 +32,10 @@ export interface Settings {
     splashPixelated?: boolean;
 
     // When true, force Chromium's Windows Graphics Capture path for WebRTC
-    // screenshare. WGC composites the system cursor into per-window captures
-    // of exclusive-fullscreen games (e.g. Fortnite) — but on some Windows
-    // audio setups it also prevents the "loopback" audio request from
-    // capturing system audio, leading to silent screenshares. Off by default
-    // for that reason. Requires a full app restart to take effect.
+    // screenshare. It may capture a restored window while another app is on top,
+    // but minimized windows cannot be captured. WGC can lower capture FPS or
+    // interfere with system-loopback audio.
+    // Requires a full app restart.
     screenshareForceWgc?: boolean;
 
     // When ON, screenshare audio re-captures per-window audio (anti-echo swap
@@ -92,4 +91,7 @@ export interface State {
     /** Discordmaxxer — MAXXER++ "beta builds" perk. When true,
      *  electron-updater accepts prerelease GitHub releases (vX.Y.Z-beta.N) */
     allowPrerelease?: boolean;
+
+    /** True only while the Chrome window-occlusion policy was created by Discordmaxxer. */
+    chromeWindowOcclusionPolicyManaged?: boolean;
 }

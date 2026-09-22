@@ -11,6 +11,7 @@ import { State } from "renderer/settings";
 import { isLinux } from "renderer/utils";
 import { startWinAudioExcludeSelfSession } from "renderer/winaudioBridge";
 
+import { registerScreenShareVideoTracks } from "./screenShareTrackRegistry";
 import { applyScreenShareVideoQuality } from "./videoQuality";
 
 const logger = new Logger("VesktopStreamFixes");
@@ -32,6 +33,7 @@ if (isLinux) {
 
     navigator.mediaDevices.getDisplayMedia = async function (opts) {
         const stream = await original.call(this, opts);
+        registerScreenShareVideoTracks(stream);
         const id = await getVirtmic();
 
         const frameRate = Number(State.store.screenshareQuality?.frameRate ?? 30);
@@ -165,6 +167,7 @@ if (isWindows) {
 
     navigator.mediaDevices.getDisplayMedia = async function (opts) {
         const stream = await original.call(this, opts);
+        registerScreenShareVideoTracks(stream);
 
         debug("getDisplayMedia called", { audioRequested: !!currentSettings?.audio });
 

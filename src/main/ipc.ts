@@ -27,6 +27,7 @@ import { join } from "path";
 import { IpcEvents } from "../shared/IpcEvents";
 import { setBadgeCount } from "./appBadge";
 import { autoStart } from "./autoStart";
+import { getChromeWindowOcclusionStatus, setChromeWindowOcclusionEnabled } from "./chromeWindowOcclusion";
 import { mainWin } from "./mainWindow";
 import { Settings, State } from "./settings";
 import { handle, handleSync } from "./utils/ipcWrappers";
@@ -75,6 +76,9 @@ handle(IpcEvents.DISABLE_AUTOSTART, autoStart.disable);
 handle(IpcEvents.SET_SETTINGS, (_, settings: typeof Settings.store, path?: string) => {
     Settings.setData(settings, path);
 });
+
+handle(IpcEvents.DM_CHROME_WINDOW_OCCLUSION_GET, getChromeWindowOcclusionStatus);
+handle(IpcEvents.DM_CHROME_WINDOW_OCCLUSION_SET, (_, enabled: boolean) => setChromeWindowOcclusionEnabled(enabled));
 
 handle(IpcEvents.RELAUNCH, async () => {
     const options: RelaunchOptions = {

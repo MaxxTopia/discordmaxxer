@@ -4,9 +4,11 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
+import { isScreenShareVideoTrack } from "./screenShareTrackRegistry";
+
 // Live registry of every RTCPeerConnection created in this renderer. WeakRef so
 // closed/GC'd connections don't leak. Discord makes several (voice, video,
-// stream); we scan all and pick whichever currently has an outbound video feed.
+// stream); we scan all and inspect only registered display-capture video senders.
 const PC_REGISTRY: Array<WeakRef<RTCPeerConnection>> = [];
 
 let patched = false;
@@ -99,6 +101,8 @@ export function installRtcStatsTracker() {
 }
 
 export interface OutboundVideoStat {
+    /** These stats are tied to the active getDisplayMedia video track. */
+    sourceKind: "screenshare";
     /** "hardware" if encoderImplementation looks like a GPU encoder, else "software". */
     encoderKind: "hardware" | "software" | "unknown";
     encoderImplementation: string;
@@ -155,61 +159,80 @@ function pcIdFor(pc: RTCPeerConnection): number {
 }
 
 /**
- * Poll every tracked RTCPeerConnection's getStats() and return the most active
- * outbound video stream's encoder telemetry, or null if nothing is streaming
- * video right now. Safe to call on an interval from a settings panel.
+ * Poll the outbound senders tied to getDisplayMedia video tracks and return
+ * their encoder telemetry. Camera senders are deliberately excluded so the
+ * readout cannot accidentally describe the camera instead of the screenshare.
  */
 export async function getOutboundVideoStats(): Promise<OutboundVideoStat | null> {
     let best: OutboundVideoStat | null = null;
-    let bestFrames = -1;
+    let bestScore = -1;
 
     for (let idx = 0; idx < PC_REGISTRY.length; idx++) {
         const pc = PC_REGISTRY[idx].deref();
         if (!pc || pc.connectionState === "closed") continue;
         const pcKey = pcIdFor(pc);
 
-        let report: RTCStatsReport;
+        let senders: RTCRtpSender[];
         try {
-            report = await pc.getStats();
+            senders = pc.getSenders();
         } catch {
             continue;
         }
 
-        report.forEach((s: any) => {
-            if (s.type !== "outbound-rtp") return;
-            if ((s.kind ?? s.mediaType) !== "video") return;
-            // Skip inactive simulcast layers / not-yet-sending senders.
-            const framesEncoded = s.framesEncoded ?? 0;
-            if (!framesEncoded && !(s.bytesSent > 0)) return;
-            if (framesEncoded <= bestFrames) return;
-            bestFrames = framesEncoded;
+        for (const sender of senders) {
+            const { track } = sender;
+            if (!track || track.kind !== "video" || track.readyState !== "live" || !isScreenShareVideoTrack(track))
+                continue;
 
-            const key = `${pcKey}:${s.ssrc ?? s.id}`;
-            const now = s.timestamp ?? Date.now();
-            const bytes = s.bytesSent ?? 0;
-            let kbps = 0;
-            const prev = lastSample.get(key);
-            if (prev && now > prev.ts) {
-                kbps = Math.max(0, ((bytes - prev.bytes) * 8) / (now - prev.ts)); // bytes/ms*8 = kbit/s
+            let report: RTCStatsReport;
+            try {
+                report = await sender.getStats();
+            } catch {
+                continue;
             }
-            lastSample.set(key, { bytes, ts: now });
 
-            const framesSent = s.framesSent ?? framesEncoded;
-            const dropped = Math.max(0, framesEncoded - framesSent);
-            const dropPct = framesEncoded > 0 ? Math.min(100, (dropped / framesEncoded) * 100) : 0;
+            report.forEach((s: any) => {
+                if (s.type !== "outbound-rtp") return;
+                if ((s.kind ?? s.mediaType) !== "video") return;
 
-            const impl = String(s.encoderImplementation ?? "");
-            best = {
-                encoderKind: classifyEncoder(impl),
-                encoderImplementation: impl || "(unknown)",
-                qualityLimitationReason: String(s.qualityLimitationReason ?? "none"),
-                framesPerSecond: Math.round(s.framesPerSecond ?? 0),
-                frameWidth: s.frameWidth ?? 0,
-                frameHeight: s.frameHeight ?? 0,
-                kbps: Math.round(kbps),
-                dropPct: Math.round(dropPct)
-            };
-        });
+                const framesEncoded = s.framesEncoded ?? 0;
+                const key = `${pcKey}:${s.ssrc ?? s.id}`;
+                const now = s.timestamp ?? Date.now();
+                const bytes = s.bytesSent ?? 0;
+                let kbps = 0;
+                const prev = lastSample.get(key);
+                if (prev && now > prev.ts) {
+                    kbps = Math.max(0, ((bytes - prev.bytes) * 8) / (now - prev.ts)); // bytes/ms*8 = kbit/s
+                }
+                lastSample.set(key, { bytes, ts: now });
+
+                const framesSent = s.framesSent ?? framesEncoded;
+                const dropped = Math.max(0, framesEncoded - framesSent);
+                const dropPct = framesEncoded > 0 ? Math.min(100, (dropped / framesEncoded) * 100) : 0;
+                const framesPerSecond = Math.round(s.framesPerSecond ?? 0);
+                const frameWidth = s.frameWidth ?? 0;
+                const frameHeight = s.frameHeight ?? 0;
+
+                // Prefer the sending simulcast layer; if it stalls, retain a
+                // live display sender so the readout can expose its 0 FPS.
+                const score = kbps * 1000 + framesPerSecond * 100 + (frameWidth * frameHeight) / 1_000_000;
+                if (score <= bestScore) return;
+                bestScore = score;
+
+                const impl = String(s.encoderImplementation ?? "");
+                best = {
+                    sourceKind: "screenshare",
+                    encoderKind: classifyEncoder(impl),
+                    encoderImplementation: impl || "(unknown)",
+                    qualityLimitationReason: String(s.qualityLimitationReason ?? "none"),
+                    framesPerSecond,
+                    frameWidth,
+                    frameHeight,
+                    kbps: Math.round(kbps),
+                    dropPct: Math.round(dropPct)
+                };
+            });
+        }
     }
 
     // Bound the delta map — keys accumulate as ssrcs churn over a long session.
