@@ -329,6 +329,23 @@ function openDMWidgetSettings() {
     }
 }
 
+function openDMProfileFlairSettings() {
+    const plugin = vencord()?.Plugins?.plugins?.DMProfileFlair;
+    if (plugin) {
+        try {
+            openPluginModal(plugin);
+            return;
+        } catch (e) {
+            console.warn("[DiscordmaxxerHub] could not open DMProfileFlair modal:", e);
+        }
+    }
+    try {
+        vencord()?.Webpack?.Common?.SettingsRouter?.openUserSettings?.("vencord_plugins");
+    } catch (e) {
+        console.warn("[DiscordmaxxerHub] could not open Profile Flair settings:", e);
+    }
+}
+
 function renderPanelHTML(): string {
     const tier = getMyTier();
     const tierLabel = TIER_LABELS[tier];
@@ -379,6 +396,12 @@ function renderPanelHTML(): string {
             <button class="dm-hub-action-btn" data-action="open-tour">Open</button>
         </div>
         <div class="dm-hub-info">Browse featured plugins, enable bundles, and see what each one actually does — no settings-digging required.</div>
+        <div class="dm-hub-section">Profile look</div>
+        <div class="dm-hub-row">
+            <div class="dm-hub-row-label">🎨 Edit profile flair</div>
+            <button class="dm-hub-action-btn" data-action="open-profile-flair">Open</button>
+        </div>
+        <div class="dm-hub-info">Restore a saved look, choose a local GIF/video, copy only a banner, or decide whether to update your real Discord profile.</div>
         <div class="dm-hub-section">Profile widget</div>
         <div class="dm-hub-row">
             <div class="dm-hub-row-label">✨ Create / edit profile widget</div>
@@ -433,6 +456,11 @@ function ensurePanelRoot() {
         if (t.dataset.action === "open-dmwidget") {
             panelRoot!.classList.add("hidden");
             openDMWidgetSettings();
+            return;
+        }
+        if (t.dataset.action === "open-profile-flair") {
+            panelRoot!.classList.add("hidden");
+            openDMProfileFlairSettings();
             return;
         }
         if (t.classList.contains("dm-hub-toggle") && !t.dataset.locked) {

@@ -5,6 +5,39 @@
 > `CLAUDE.md` ("Operational facts" section). Those three are enough to build,
 > ship, and maintain without prior context.
 
+## 2026-09-22 profile-flair consistency and usability — v0.7.66 release candidate
+
+Diggy reported that the same Diggyai account showed the published green-cave/red
+look on one PC but a local Cotton Candy gradient and different background on
+another. The root cause was self-view precedence: the profile-flair renderer
+let per-install editor settings override the shared roster for the current user,
+while other clients rendered the roster. The live roster currently contains the
+red theme values, so the mismatch was a local draft being rendered as truth,
+not a second published look.
+
+The isolated release worktree now makes the published roster authoritative for
+self and other users; editor fields are clearly labeled per-install drafts until
+Save, and Restore reloads the published look without changing real Discord.
+Save is merge-only so editing a banner on a new PC cannot erase an avatar that
+already exists remotely; banner-only and avatar-only clear/share/import paths
+are explicit. Profile Flair is easier to reach from DMHub, direct-HTTPS errors
+explain the limit, downloaded GIF/image/video files can be previewed or sent
+once to real Discord, and profile-look codes can contain only the banner or
+avatar. Local files are intentionally not silently uploaded to the shared roster.
+
+Current state: v0.7.66 release candidate in
+`C:\Users\Diggy\projects\discordmaxxer-release-074`; the canonical dirty
+checkout is untouched. The published v0.7.65 build is unchanged. Verification
+for this candidate:
+`pnpm test`, `pnpm build`, `pnpm overlay:vencord`, and `git diff --check`.
+
+Human gates remain: load this candidate in the actual client; compare Diggyai's
+self profile with Diggy T viewing Diggyai; press Restore; save banner-only and
+confirm the remote avatar remains; test a local-file one-time Discord broadcast;
+and perform native recipient/Nitro checks. The authorized next step is the
+scoped commit, `main` push, `v0.7.66` tag push, and public-release verification;
+then update/relaunch the real client and perform those checks.
+
 ## 2026-09-22 v0.7.65 public release — live
 
 Diggy asked for the app update to go live before the real-client checks and

@@ -157,29 +157,14 @@ export function getEffectiveFlairForUser(
     if (kind === "theme" && !s.showOthersThemeColors) return null;
     if (isFlairHiddenForUser(userId)) return null;
 
-    // Self-preview path: when rendering YOUR OWN popout, prefer the local
-    // setter-side settings over the roster lookup. Lets you see your flair
-    // change as soon as you type a URL — no save, no worker, no claim, no
-    // roster cache wait. Renders only the fields you've filled in locally;
-    // empty fields fall through to roster (which may have a previously
-    // saved version) and then to nothing.
-    let flair: ProfileFlair | null = null;
-    const me = UserStore.getCurrentUser?.();
-    if (me?.id === userId) {
-        // Per-field merge: start from your saved roster flair, then let any
-        // non-empty LOCAL field override it. This matches the documented
-        // intent — an empty local field falls through to your roster value
-        // (e.g. a banner you saved earlier but never re-typed locally) instead
-        // of being masked to nothing. Filled local fields still preview
-        // instantly, no save/worker roundtrip needed.
-        const merged: ProfileFlair = { ...(getRosterProfileFlair(userId) ?? {}) };
-        const b = s.myBannerUrl.trim(); if (b) merged.bannerUrl = b;
-        const a = s.myAvatarAnimatedUrl.trim(); if (a) merged.avatarAnimatedUrl = a;
-        const p = s.myThemeColorPrimary.trim(); if (p) merged.themeColorPrimary = p;
-        const sc = s.myThemeColorSecondary.trim(); if (sc) merged.themeColorSecondary = sc;
-        if (Object.keys(merged).length) flair = merged;
-    }
-    if (!flair) flair = getRosterProfileFlair(userId) ?? null;
+    // The published roster is authoritative for rendering — including when
+    // you are looking at your own profile. The editor fields are per-install
+    // drafts, and letting them override the roster made the same account show
+    // a different banner/gradient on each PC (for example, a local Cotton
+    // Candy preset on one install versus the published red look elsewhere).
+    // Save or Restore updates those drafts; rendering then follows the same
+    // shared value that every other Discordmaxxer client sees.
+    const flair = getRosterProfileFlair(userId) ?? null;
     if (!flair) return null;
 
     if ((kind === "banner" || kind === "avatar") && isTournamentModeActive()) {
@@ -232,10 +217,14 @@ async function postFlairUpdate(profile: Partial<ProfileFlair>, replace: boolean)
         });
         const body = await res.json().catch(() => ({}));
         if (!res.ok) {
-            toast(`Save failed: ${body?.error ?? res.status}`, Toasts.Type.FAILURE, 5000);
+            const serverError = String(body?.error ?? res.status);
+            const friendlyError = /https|250/i.test(serverError)
+                ? "Use a direct HTTPS media URL that is 250 characters or fewer. A webpage link or local file will not work here."
+                : serverError;
+            toast(`Save failed: ${friendlyError}`, Toasts.Type.FAILURE, 6000);
             return false;
         }
-        toast("✅ Profile flair saved — other Discordmaxxer users see it within ~5 min");
+        toast("✅ Profile flair saved — the shared roster updates for Discordmaxxer users within ~5 min");
         // Replace the local cache immediately so the sender's own popout and
         // any already-open profile repaint without waiting for the normal TTL.
         refreshRoster().catch(e => console.warn("[DMProfileFlair] roster refresh after save failed:", e));
@@ -261,7 +250,7 @@ function validateLocal(profile: Partial<ProfileFlair>): string | null {
     for (const [k, v] of Object.entries(profile)) {
         if (!v) continue;
         if (k === "bannerUrl" || k === "avatarAnimatedUrl") {
-            if (!URL_RE.test(v as string)) return `${k} must be https:// and ≤250 chars`;
+            if (!URL_RE.test(v as string)) return k + " must be a direct HTTPS media URL of 250 characters or fewer. Page links will not render; use the file picker below or host the file first.";
             const pageHint = detectPageHostMistake(v as string);
             if (pageHint) return pageHint;
         }
@@ -333,6 +322,24 @@ async function urlToDataUri(httpsUrl: string): Promise<string | null> {
         });
     } catch (e) {
         console.warn("[DMProfileFlair] urlToDataUri failed:", e);
+        return null;
+    }
+}
+
+/** Read a locally selected media file for a one-time Discord broadcast. The
+ * file is intentionally kept in React state only: the roster contract stores
+ * a short HTTPS URL, not arbitrary binary data, and we must not silently upload
+ * personal files to a third-party host. */
+async function blobToDataUri(blob: Blob): Promise<string | null> {
+    try {
+        return await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onloadend = () => resolve(reader.result as string);
+            reader.onerror = () => reject(reader.error);
+            reader.readAsDataURL(blob);
+        });
+    } catch (e) {
+        console.warn("[DMProfileFlair] blobToDataUri failed:", e);
         return null;
     }
 }
@@ -410,6 +417,17 @@ async function extractStillFrameFromUrl(httpsUrl: string): Promise<string | null
     } catch (e) {
         console.warn("[DMProfileFlair] extractStillFrameFromUrl failed:", e);
         return null;
+    }
+}
+
+async function extractStillFrameFromBlob(blob: Blob, isVideo = false): Promise<string | null> {
+    const blobUrl = URL.createObjectURL(blob);
+    try {
+        return isVideo || blob.type.startsWith("video/")
+            ? await drawVideoFirstFrame(blobUrl)
+            : await drawImageFirstFrame(blobUrl);
+    } finally {
+        URL.revokeObjectURL(blobUrl);
     }
 }
 
@@ -560,21 +578,38 @@ function writeVencordSetting(plugin: string, key: string, value: unknown, skippe
     }
 }
 
-function applyProfileLookConfig(config: ProfileLookConfig): { changed: number; skipped: string[] } {
+function applyProfileLookConfig(config: ProfileLookConfig, only?: keyof ProfileFlair): { changed: number; skipped: string[] } {
     const s = settings.store;
-    s.myBannerUrl = config.flair.bannerUrl ?? "";
-    s.myAvatarAnimatedUrl = config.flair.avatarAnimatedUrl ?? "";
-    s.myThemeColorPrimary = config.flair.themeColorPrimary ?? "";
-    s.myThemeColorSecondary = config.flair.themeColorSecondary ?? "";
-
     const skipped = new Set<string>();
-    let changed = 4;
-    const theme = config.theme;
+    let changed = 0;
+    const flair: ProfileLookConfig["flair"] = only
+        ? { [only]: config.flair?.[only] }
+        : config.flair ?? {};
+    // Share codes are patches, not destructive full-state restores. A
+    // banner-only code must not blank the recipient's avatar, and a full look
+    // with an intentionally omitted field should leave that field alone.
+    if (flair.bannerUrl !== undefined) {
+        s.myBannerUrl = flair.bannerUrl;
+        changed++;
+    }
+    if (flair.avatarAnimatedUrl !== undefined) {
+        s.myAvatarAnimatedUrl = flair.avatarAnimatedUrl;
+        changed++;
+    }
+    if (flair.themeColorPrimary !== undefined) {
+        s.myThemeColorPrimary = flair.themeColorPrimary;
+        changed++;
+    }
+    if (flair.themeColorSecondary !== undefined) {
+        s.myThemeColorSecondary = flair.themeColorSecondary;
+        changed++;
+    }
+    const theme = only ? undefined : config.theme;
     if (theme) {
         if (theme.selected !== undefined && writeVencordSetting("DMTheme", "selected", theme.selected, skipped)) changed++;
         if (theme.enableFlair !== undefined && writeVencordSetting("DMTheme", "enableFlair", theme.enableFlair, skipped)) changed++;
     }
-    const presence = config.presence;
+    const presence = only ? undefined : config.presence;
     if (presence) {
         for (const key of ["enabled", "activityType", "name", "details", "state", "showElapsed", "showButton"] as const) {
             const value = presence[key];
@@ -611,7 +646,7 @@ async function broadcastStillBanner(animatedUrl: string): Promise<boolean> {
             url: "/users/@me/profile",
             body: { banner: dataUri }
         });
-        toast("✅ Still-frame banner broadcast — vanilla Discord users now see this image as your banner.", Toasts.Type.SUCCESS, 5000);
+        toast("✅ Discord accepted the still-frame banner upload. Visibility still follows Discord's Nitro rules.", Toasts.Type.SUCCESS, 6000);
         return true;
     } catch (e: any) {
         const { nitroRequired, label } = classifyDiscordError(e);
@@ -630,7 +665,7 @@ async function broadcastStillBanner(animatedUrl: string): Promise<boolean> {
 
 async function broadcastAvatar(url: string): Promise<boolean> {
     if (!URL_RE.test(url)) {
-        toast("Avatar URL must be https:// and ≤250 chars before broadcasting.", Toasts.Type.FAILURE, 5000);
+        toast("Avatar needs a direct HTTPS media URL of 250 characters or fewer before broadcasting.", Toasts.Type.FAILURE, 5000);
         return false;
     }
     const pageHint = detectPageHostMistake(url);
@@ -665,7 +700,7 @@ async function broadcastAvatar(url: string): Promise<boolean> {
 
 async function broadcastBanner(url: string): Promise<boolean> {
     if (!URL_RE.test(url)) {
-        toast("Banner URL must be https:// and ≤250 chars before broadcasting.", Toasts.Type.FAILURE, 5000);
+        toast("Banner needs a direct HTTPS media URL of 250 characters or fewer before broadcasting.", Toasts.Type.FAILURE, 5000);
         return false;
     }
     const pageHint = detectPageHostMistake(url);
@@ -698,12 +733,82 @@ async function broadcastBanner(url: string): Promise<boolean> {
     }
 }
 
+async function broadcastAvatarDataUri(dataUri: string): Promise<boolean> {
+    try {
+        await RestAPI.patch({
+            url: "/users/@me/profile",
+            body: { avatar: dataUri }
+        });
+        toast("✅ Avatar sent to your real Discord profile.", Toasts.Type.SUCCESS, 5000);
+        return true;
+    } catch (e: any) {
+        const { nitroRequired, label } = classifyDiscordError(e);
+        console.warn("[DMProfileFlair] broadcastAvatarDataUri failed:", e);
+        if (nitroRequired) {
+            toast(
+                "⚠ Nitro is required for an animated/GIF avatar. A static PNG/JPG would upload on free Discord.",
+                Toasts.Type.FAILURE, 8000
+            );
+        } else {
+            toast("Avatar broadcast failed: " + label, Toasts.Type.FAILURE, 6000);
+        }
+        return false;
+    }
+}
+
+async function broadcastBannerDataUri(dataUri: string): Promise<boolean> {
+    try {
+        await RestAPI.patch({
+            url: "/users/@me/profile",
+            body: { banner: dataUri }
+        });
+        toast("✅ Banner sent to your real Discord profile.", Toasts.Type.SUCCESS, 5000);
+        return true;
+    } catch (e: any) {
+        const { nitroRequired, label } = classifyDiscordError(e);
+        console.warn("[DMProfileFlair] broadcastBannerDataUri failed:", e);
+        if (nitroRequired) {
+            toast(
+                "⚠ Nitro is required for any Discord banner upload. The file was read locally, but Discord rejected the account update.",
+                Toasts.Type.FAILURE, 8000
+            );
+        } else {
+            toast("Banner broadcast failed: " + label, Toasts.Type.FAILURE, 6000);
+        }
+        return false;
+    }
+}
+
+type LocalMediaKind = "banner" | "avatar";
+interface LocalMediaSelection {
+    kind: LocalMediaKind;
+    name: string;
+    mime: string;
+    isVideo: boolean;
+    file: File;
+    previewUrl: string;
+    dataUri: string;
+}
+
+const MAX_LOCAL_IMAGE_BYTES = 5 * 1024 * 1024;
+const MAX_LOCAL_VIDEO_BYTES = 15 * 1024 * 1024;
+
+function isSupportedLocalMedia(file: File): boolean {
+    if (/^image\/(gif|png|jpeg|webp)$/i.test(file.type)) return true;
+    if (/^video\/(mp4|webm|quicktime)$/i.test(file.type)) return true;
+    return /\.(gif|png|jpe?g|webp|mp4|webm|mov)$/i.test(file.name);
+}
+
 function FlairEditor() {
     const s = settings.store;
     const [busy, setBusy] = React.useState(false);
     const [shareCode, setShareCode] = React.useState("");
     const [shareImport, setShareImport] = React.useState("");
     const [shareMessage, setShareMessage] = React.useState("");
+    const [restoreMessage, setRestoreMessage] = React.useState("");
+    const [localMedia, setLocalMedia] = React.useState<Partial<Record<LocalMediaKind, LocalMediaSelection>>>({});
+    const bannerFileInput = React.useRef<HTMLInputElement>(null);
+    const avatarFileInput = React.useRef<HTMLInputElement>(null);
     // Track TM state live so the warning notice flips on/off without a panel
     // reopen. Cheap interval — every 2s is plenty, TM toggles are user-driven.
     const [tmActive, setTmActive] = React.useState(isTournamentModeActive());
@@ -714,6 +819,109 @@ function FlairEditor() {
         }, 2000);
         return () => clearInterval(id);
     }, []);
+
+    React.useEffect(() => {
+        return () => {
+            Object.values(localMedia).forEach(media => {
+                if (media) URL.revokeObjectURL(media.previewUrl);
+            });
+        };
+    }, [localMedia]);
+
+    const onPickLocalFile = async (kind: LocalMediaKind, file: File) => {
+        if (!isSupportedLocalMedia(file)) {
+            toast("Choose a GIF, PNG, JPG, WEBP, MP4, or WEBM file.", Toasts.Type.FAILURE, 5000);
+            return;
+        }
+        const isVideo = file.type.startsWith("video/") || /\.(mp4|webm|mov)$/i.test(file.name);
+        const maxBytes = isVideo
+            ? MAX_LOCAL_VIDEO_BYTES
+            : MAX_LOCAL_IMAGE_BYTES;
+        if (file.size > maxBytes) {
+            toast(
+                (kind === "banner" ? "Banner" : "Avatar") + " files must be under " +
+                (maxBytes === MAX_LOCAL_VIDEO_BYTES ? "15 MB for video or 5 MB for images." : "5 MB for images."),
+                Toasts.Type.FAILURE, 6000
+            );
+            return;
+        }
+        const dataUri = await blobToDataUri(file);
+        if (!dataUri) {
+            toast("Couldn't read that file.", Toasts.Type.FAILURE, 5000);
+            return;
+        }
+        const previewUrl = URL.createObjectURL(file);
+        setLocalMedia(previous => {
+            const old = previous[kind];
+            if (old) URL.revokeObjectURL(old.previewUrl);
+            return {
+                ...previous,
+                [kind]: { kind, name: file.name, mime: file.type, isVideo, file, previewUrl, dataUri }
+            };
+        });
+        toast(
+            (kind === "banner" ? "Banner" : "Avatar") +
+            " file ready for this session. It is not uploaded to the roster.",
+            Toasts.Type.SUCCESS, 4500
+        );
+    };
+
+    const onRestorePublishedLook = async () => {
+        setBusy(true);
+        setRestoreMessage("Refreshing your saved Discordmaxxer look…");
+        try {
+            await refreshRoster();
+            const me = UserStore.getCurrentUser?.();
+            const saved = me?.id ? getRosterProfileFlair(me.id) : undefined;
+            if (!saved || !Object.keys(saved).length) {
+                setRestoreMessage(
+                    "No saved roster look was found. If the old PC never saved this look to Discordmaxxer, only that old install can still have the URL."
+                );
+                return;
+            }
+            let restored = 0;
+            if (saved.bannerUrl !== undefined) { s.myBannerUrl = saved.bannerUrl; restored++; }
+            if (saved.avatarAnimatedUrl !== undefined) { s.myAvatarAnimatedUrl = saved.avatarAnimatedUrl; restored++; }
+            if (saved.themeColorPrimary !== undefined) { s.myThemeColorPrimary = saved.themeColorPrimary; restored++; }
+            if (saved.themeColorSecondary !== undefined) { s.myThemeColorSecondary = saved.themeColorSecondary; restored++; }
+            setRestoreMessage(
+                "Restored " + restored + " saved field" + (restored === 1 ? "" : "s") +
+                " from the Discordmaxxer roster. Nothing was changed on your real Discord profile."
+            );
+        } catch (e) {
+            console.warn("[DMProfileFlair] restore published look failed:", e);
+            setRestoreMessage("Could not refresh the shared roster. Your published look was not changed.");
+        } finally {
+            setBusy(false);
+        }
+    };
+
+    const onBroadcastLocal = async (kind: LocalMediaKind, stillFrame: boolean) => {
+        const media = localMedia[kind];
+        if (!media) return;
+        const label = kind === "avatar" ? "avatar" : stillFrame ? "still-frame banner" : "banner";
+        if (!confirm(broadcastConfirmCopy(label, stillFrame
+            ? "We'll extract the first frame locally, then send one PNG upload to your real Discord profile. Discord banners still require Nitro."
+            : "This sends the selected file once to your real Discord profile. It does not save the file to the Discordmaxxer roster."))) return;
+        setBusy(true);
+        try {
+            if (kind === "avatar") {
+                await broadcastAvatarDataUri(media.dataUri);
+            } else if (stillFrame || media.isVideo) {
+                toast("Extracting the first frame locally…", Toasts.Type.MESSAGE, 3000);
+                const dataUri = await extractStillFrameFromBlob(media.file, media.isVideo);
+                if (!dataUri) {
+                    toast("Couldn't extract a frame from that file.", Toasts.Type.FAILURE, 6000);
+                } else {
+                    await broadcastBannerDataUri(dataUri);
+                }
+            } else {
+                await broadcastBannerDataUri(media.dataUri);
+            }
+        } finally {
+            setBusy(false);
+        }
+    };
 
     const onSave = async () => {
         // Normalize colors before sending — the worker validates strict
@@ -727,18 +935,26 @@ function FlairEditor() {
             const n = normalizeColor(trimmed);
             return n ?? trimmed;       // pass through unchanged so validation catches it
         };
-        const proposed: Partial<ProfileFlair> = {
-            bannerUrl: s.myBannerUrl.trim() || "",
-            avatarAnimatedUrl: s.myAvatarAnimatedUrl.trim() || "",
-            themeColorPrimary: normalizeForSave(s.myThemeColorPrimary),
-            themeColorSecondary: normalizeForSave(s.myThemeColorSecondary)
-        };
+        const proposed: Partial<ProfileFlair> = {};
+        const banner = s.myBannerUrl.trim();
+        const avatar = s.myAvatarAnimatedUrl.trim();
+        const primary = normalizeForSave(s.myThemeColorPrimary);
+        const secondary = normalizeForSave(s.myThemeColorSecondary);
+        // Save is merge-only. A new PC may not have the old avatar URL in its
+        // local settings yet; editing the banner must not erase the published
+        // avatar. Explicit clear buttons below handle deletion field by field.
+        if (banner) proposed.bannerUrl = banner;
+        if (avatar) proposed.avatarAnimatedUrl = avatar;
+        if (primary) proposed.themeColorPrimary = primary;
+        if (secondary) proposed.themeColorSecondary = secondary;
+        if (!Object.keys(proposed).length) {
+            toast("There is nothing new to save. Use Restore my published look or an explicit Clear button.", Toasts.Type.MESSAGE, 5000);
+            return;
+        }
         const err = validateLocal(proposed);
         if (err) { toast(err, Toasts.Type.FAILURE, 5000); return; }
         setBusy(true);
-        // Replace mode: the editor reflects the user's full intended state,
-        // so we replace rather than merge — empty fields clear server-side.
-        const ok = await postFlairUpdate(proposed, true);
+        const ok = await postFlairUpdate(proposed, false);
         if (ok) {
             // Push the just-saved values to the recents history so Diggy can
             // swap back like Discord's recent-avatars picker.
@@ -748,6 +964,21 @@ function FlairEditor() {
                 proposed.themeColorPrimary || "",
                 proposed.themeColorSecondary || ""
             );
+        }
+        setBusy(false);
+    };
+
+    const onClearField = async (field: "bannerUrl" | "avatarAnimatedUrl") => {
+        const label = field === "bannerUrl" ? "banner" : "animated avatar";
+        if (!confirm("Clear only your saved " + label + "? Your other flair stays unchanged.")) return;
+        setBusy(true);
+        const update: Partial<ProfileFlair> = field === "bannerUrl"
+            ? { bannerUrl: "" }
+            : { avatarAnimatedUrl: "" };
+        const ok = await postFlairUpdate(update, false);
+        if (ok) {
+            if (field === "bannerUrl") s.myBannerUrl = "";
+            else s.myAvatarAnimatedUrl = "";
         }
         setBusy(false);
     };
@@ -765,13 +996,21 @@ function FlairEditor() {
         setBusy(false);
     };
 
-    const onCreateProfileLookShare = async () => {
+    const onCreateProfileLookShare = async (only?: keyof ProfileFlair) => {
         try {
-            const code = encodeProfileLook(readProfileLookConfig());
+            const current = readProfileLookConfig();
+            if (only && current.flair[only] === undefined) {
+                setShareMessage("Set a " + (only === "bannerUrl" ? "banner" : "animated avatar") + " first.");
+                return;
+            }
+            const flair: ProfileLookConfig["flair"] = only
+                ? { [only]: current.flair[only] }
+                : current.flair;
+            const code = encodeProfileLook(only ? { flair } : current);
             setShareCode(code);
             const copied = await copyProfileLookCode(code);
             setShareMessage(copied
-                ? "Copied. Anyone with this code can import the same cosmetic look."
+                ? (only ? "Copied a " + (only === "bannerUrl" ? "banner-only" : "avatar-only") + " code." : "Copied the full cosmetic look.")
                 : "Code ready below. Clipboard access was unavailable, so copy it from the box.");
         } catch (e) {
             console.warn("[DMProfileFlair] profile-look encode failed:", e);
@@ -779,13 +1018,17 @@ function FlairEditor() {
         }
     };
 
-    const onImportProfileLookShare = () => {
+    const onImportProfileLookShare = (only?: keyof ProfileFlair) => {
         const decoded = decodeProfileLook(shareImport);
         if (!decoded.ok) {
             setShareMessage(decoded.error);
             return;
         }
-        const result = applyProfileLookConfig(decoded.value);
+        const result = applyProfileLookConfig(decoded.value, only);
+        if (only && result.changed === 0) {
+            setShareMessage("That code does not contain a " + (only === "bannerUrl" ? "banner" : "animated avatar") + ".");
+            return;
+        }
         setShareMessage(result.skipped.length
             ? `Imported ${result.changed} cosmetic fields. Enable ${result.skipped.join(" and ")} to apply every shared setting.`
             : `Imported ${result.changed} cosmetic fields. Click Save to Discordmaxxer to publish the flair fields to the roster.`);
@@ -798,7 +1041,7 @@ function FlairEditor() {
     // different Discord profile field with different Nitro requirements —
     // batching would conflate the "Nitro required" error and make it
     // ambiguous which field caused the failure.
-    const broadcastConfirmCopy = (kind: "theme colors" | "avatar" | "banner", extra = "") =>
+    const broadcastConfirmCopy = (kind: "theme colors" | "avatar" | "banner" | "still-frame banner", extra = "") =>
         `Broadcast your ${kind} to your REAL Discord profile?\n\n` +
         `This sets the value on your actual Discord account. Whether non-modded ("vanilla") Discord users actually SEE it depends on the field — read the per-field note below.\n\n` +
         `We only PATCH once when you click. We never re-assert if you change it back via Discord Settings → Profiles.\n\n` +
@@ -869,6 +1112,23 @@ function FlairEditor() {
     const titleStyle: React.CSSProperties = { fontSize: 13, fontWeight: 700, color: "#fbefff", marginBottom: 8 };
     const noteStyle: React.CSSProperties = { fontSize: 11.5, color: "#cbd0e0", opacity: 0.85, marginBottom: 8 };
     const btnRow: React.CSSProperties = { display: "flex", gap: 8, marginTop: 8 };
+    const fileWrapStyle: React.CSSProperties = {
+        marginTop: 12, padding: "10px 11px",
+        background: "rgba(72, 184, 255, 0.06)",
+        border: "1px solid rgba(72, 184, 255, 0.24)",
+        borderRadius: 7
+    };
+    const fileRowStyle: React.CSSProperties = {
+        display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginTop: 7
+    };
+    const localMediaStyle: React.CSSProperties = {
+        display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap",
+        marginTop: 8, padding: "7px 8px",
+        background: "rgba(0, 0, 0, 0.18)", borderRadius: 6
+    };
+    const localPreviewStyle: React.CSSProperties = {
+        width: 84, height: 34, objectFit: "cover", borderRadius: 4, background: "#17131d"
+    };
 
     const tmWarnStyle: React.CSSProperties = {
         marginBottom: 10, padding: "8px 10px",
@@ -1007,10 +1267,13 @@ function FlairEditor() {
                 </div>
             )}
             <div style={noteStyle}>
-                These values are sent to the Discordmaxxer roster and rendered for other
-                Discordmaxxer users. Vanilla Discord users see your stock profile.
-                Worker validates each field server-side — banner needs MAXXER, animated
-                avatar needs MAXXER+, theme colors need MAXXER++.
+                <b>Discordmaxxer look:</b> these values are saved to the shared roster and
+                rendered for every Discordmaxxer user, including you. These fields are
+                per-install drafts until you click Save; the published roster is what
+                determines the look on every PC. <b>Real Discord look:</b> the optional
+                broadcast section below makes a separate one-time account change.
+                Worker validates each roster field — banner needs MAXXER, animated avatar
+                needs MAXXER+, theme colors need MAXXER++.
             </div>
             <div style={btnRow}>
                 <Button size={Button.Sizes.SMALL} color={Button.Colors.BRAND} onClick={onSave} disabled={busy}>
@@ -1020,17 +1283,113 @@ function FlairEditor() {
                     ✕ Clear all my flair
                 </Button>
             </div>
+            <div style={btnRow}>
+                <Button size={Button.Sizes.SMALL} color={Button.Colors.PRIMARY} onClick={onRestorePublishedLook} disabled={busy}>
+                    ↻ Restore my published look
+                </Button>
+            </div>
+            <div style={btnRow}>
+                <Button size={Button.Sizes.SMALL} color={Button.Colors.RED} onClick={() => void onClearField("bannerUrl")} disabled={busy}>
+                    Clear banner only
+                </Button>
+                <Button size={Button.Sizes.SMALL} color={Button.Colors.RED} onClick={() => void onClearField("avatarAnimatedUrl")} disabled={busy}>
+                    Clear avatar only
+                </Button>
+            </div>
+            {restoreMessage && <div style={{ ...noteStyle, marginTop: 7, marginBottom: 0 }}>{restoreMessage}</div>}
+
+            <div style={fileWrapStyle}>
+                <div style={titleStyle}>📁 Use a downloaded GIF, image, or video</div>
+                <div style={noteStyle}>
+                    Choose a local file for a preview or a one-time real-Discord broadcast.
+                    The file stays on this PC and is <b>not</b> uploaded to the Discordmaxxer
+                    roster. To share it across PCs or with other Discordmaxxer users, host it
+                    somewhere that gives you a direct HTTPS media URL, then paste that URL above.
+                </div>
+                <div style={fileRowStyle}>
+                    <input
+                        ref={bannerFileInput}
+                        type="file"
+                        accept=".gif,.png,.jpg,.jpeg,.webp,.mp4,.webm,.mov,image/gif,image/png,image/jpeg,image/webp,video/mp4,video/webm,video/quicktime"
+                        style={{ display: "none" }}
+                        onChange={e => {
+                            const file = e.currentTarget.files?.[0];
+                            e.currentTarget.value = "";
+                            if (file) void onPickLocalFile("banner", file);
+                        }}
+                    />
+                    <input
+                        ref={avatarFileInput}
+                        type="file"
+                        accept=".gif,.png,.jpg,.jpeg,.webp,.mp4,.webm,.mov,image/gif,image/png,image/jpeg,image/webp,video/mp4,video/webm,video/quicktime"
+                        style={{ display: "none" }}
+                        onChange={e => {
+                            const file = e.currentTarget.files?.[0];
+                            e.currentTarget.value = "";
+                            if (file) void onPickLocalFile("avatar", file);
+                        }}
+                    />
+                    <Button size={Button.Sizes.SMALL} color={Button.Colors.PRIMARY} onClick={() => bannerFileInput.current?.click()} disabled={busy}>
+                        Choose banner file
+                    </Button>
+                    <Button size={Button.Sizes.SMALL} color={Button.Colors.PRIMARY} onClick={() => avatarFileInput.current?.click()} disabled={busy}>
+                        Choose avatar file
+                    </Button>
+                </div>
+                {localMedia.banner && (
+                    <div style={localMediaStyle}>
+                        {localMedia.banner.isVideo
+                            ? <video src={localMedia.banner.previewUrl} muted loop autoPlay playsInline style={localPreviewStyle} />
+                            : <img src={localMedia.banner.previewUrl} alt="" style={localPreviewStyle} />}
+                        <div style={{ flex: 1, minWidth: 170 }}>
+                            <div style={{ fontSize: 11.5, color: "#fbefff", fontWeight: 700 }}>Banner file ready</div>
+                            <div style={{ fontSize: 10.5, color: "#cbd0e0", opacity: 0.8 }}>{localMedia.banner.name}</div>
+                            <div style={fileRowStyle}>
+                                <Button size={Button.Sizes.SMALL} color={Button.Colors.PRIMARY} onClick={() => void onBroadcastLocal("banner", false)} disabled={busy}>
+                                    Send banner once
+                                </Button>
+                                <Button size={Button.Sizes.SMALL} color={Button.Colors.PRIMARY} onClick={() => void onBroadcastLocal("banner", true)} disabled={busy}>
+                                    Send first frame
+                                </Button>
+                            </div>
+                        </div>
+                    </div>
+                )}
+                {localMedia.avatar && (
+                    <div style={localMediaStyle}>
+                        {localMedia.avatar.isVideo
+                            ? <video src={localMedia.avatar.previewUrl} muted loop autoPlay playsInline style={{ ...localPreviewStyle, width: 44, height: 44, borderRadius: "50%" }} />
+                            : <img src={localMedia.avatar.previewUrl} alt="" style={{ ...localPreviewStyle, width: 44, height: 44, borderRadius: "50%" }} />}
+                        <div style={{ flex: 1, minWidth: 170 }}>
+                            <div style={{ fontSize: 11.5, color: "#fbefff", fontWeight: 700 }}>Avatar file ready</div>
+                            <div style={{ fontSize: 10.5, color: "#cbd0e0", opacity: 0.8 }}>{localMedia.avatar.name}</div>
+                            <div style={fileRowStyle}>
+                                <Button size={Button.Sizes.SMALL} color={Button.Colors.PRIMARY} onClick={() => void onBroadcastLocal("avatar", false)} disabled={busy}>
+                                    Send avatar once
+                                </Button>
+                            </div>
+                        </div>
+                    </div>
+                )}
+            </div>
 
             <div style={shareWrapStyle}>
                 <div style={broadcastTitleStyle}>🔗 Share your profile look</div>
                 <div style={broadcastNoteStyle}>
-                    Create a portable code for your banner, animated avatar, gradient, Maxxer theme, and rich-presence look.
-                    It contains cosmetic settings only — never your claim code, Discord account id, tier, or worker credentials.
-                    Imported flair is local until you click Save to Discordmaxxer.
+                    Create a portable code for the whole cosmetic look, or copy just one field.
+                    A banner-only code cannot overwrite the recipient's avatar or colors.
+                    Codes contain cosmetic settings only — never your claim code, Discord account id,
+                    tier, or worker credentials. Imported flair is local until you click Save to Discordmaxxer.
                 </div>
                 <div style={btnRow}>
                     <Button size={Button.Sizes.SMALL} color={Button.Colors.PRIMARY} onClick={onCreateProfileLookShare} disabled={busy}>
-                        📋 Create + copy look code
+                        📋 Copy full look
+                    </Button>
+                    <Button size={Button.Sizes.SMALL} color={Button.Colors.PRIMARY} onClick={() => void onCreateProfileLookShare("bannerUrl")} disabled={busy}>
+                        Copy banner only
+                    </Button>
+                    <Button size={Button.Sizes.SMALL} color={Button.Colors.PRIMARY} onClick={() => void onCreateProfileLookShare("avatarAnimatedUrl")} disabled={busy}>
+                        Copy avatar only
                     </Button>
                 </div>
                 {shareCode && (
@@ -1052,33 +1411,41 @@ function FlairEditor() {
                 />
                 <div style={btnRow}>
                     <Button size={Button.Sizes.SMALL} color={Button.Colors.PRIMARY} onClick={onImportProfileLookShare} disabled={busy || !shareImport.trim()}>
-                        ✨ Import look into editor
+                        ✨ Import full look
+                    </Button>
+                    <Button size={Button.Sizes.SMALL} color={Button.Colors.PRIMARY} onClick={() => onImportProfileLookShare("bannerUrl")} disabled={busy || !shareImport.trim()}>
+                        Import banner only
+                    </Button>
+                    <Button size={Button.Sizes.SMALL} color={Button.Colors.PRIMARY} onClick={() => onImportProfileLookShare("avatarAnimatedUrl")} disabled={busy || !shareImport.trim()}>
+                        Import avatar only
                     </Button>
                 </div>
                 {shareMessage && <div style={{ ...noteStyle, marginTop: 8, marginBottom: 0 }}>{shareMessage}</div>}
             </div>
 
             <div style={broadcastWrapStyle}>
-                <div style={broadcastTitleStyle}>📡 Broadcast to vanilla Discord (one-time)</div>
+                <div style={broadcastTitleStyle}>📡 Optional: update your real Discord profile</div>
                 <div style={broadcastNoteStyle}>
-                    The buttons above save flair that <b>only other Discordmaxxer users</b> can see.
-                    These buttons below PATCH your <b>real Discord profile</b> so <b>everyone</b> sees it —
-                    Nitro friends, normies, mobile-only users, the works. Fires once per click; never re-asserts.
+                    The Save button above updates the <b>Discordmaxxer-only</b> look. These buttons
+                    make a separate, one-time change to your <b>real Discord profile</b>; they do
+                    not make the roster flair appear in vanilla Discord and never re-assert themselves.
                     <br /><br />
-                    <b>Theme gradient:</b> PATCH succeeds on free accounts but Discord silently <b>Nitro-gates the render</b> — vanilla viewers see default unless you have Nitro. <b>Static avatar:</b> free. <b>Animated avatar + any banner (incl. still-frame):</b> Nitro required server-side.
+                    <b>Theme gradient:</b> Nitro-gated when Discord renders it. <b>Static avatar:</b>
+                    normally works on free. <b>Animated avatar + any banner:</b> Discord requires Nitro.
+                    A still-frame button only converts a GIF/video into a PNG; it does not bypass that requirement.
                 </div>
                 <div style={broadcastBtnRow}>
                     <Button size={Button.Sizes.SMALL} color={Button.Colors.PRIMARY} onClick={onBroadcastColors} disabled={busy}>
-                        📡 Broadcast theme gradient (Nitro-gated render)
+                        Set real Discord theme once
                     </Button>
                     <Button size={Button.Sizes.SMALL} color={Button.Colors.PRIMARY} onClick={onBroadcastAvatar} disabled={busy}>
-                        📡 Broadcast avatar (static = free, animated = Nitro)
+                        Set real Discord avatar once
                     </Button>
                     <Button size={Button.Sizes.SMALL} color={Button.Colors.PRIMARY} onClick={onBroadcastBanner} disabled={busy}>
-                        📡 Broadcast banner as-is (Nitro required)
+                        Set real Discord banner once
                     </Button>
                     <Button size={Button.Sizes.SMALL} color={Button.Colors.PRIMARY} onClick={onBroadcastStillBanner} disabled={busy}>
-                        📡 Broadcast banner as still-frame (extract first frame from video/GIF, Nitro required)
+                        Set banner's first frame once
                     </Button>
                 </div>
             </div>
@@ -1091,26 +1458,22 @@ const settings = definePluginSettings({
     myBannerUrl: {
         type: OptionType.STRING,
         description:
-            "[Channel E · MAXXER] DIRECT image URL (not a webpage). " +
-            "✅ Good: https://i.imgur.com/abc123.png  ❌ Bad: https://imgur.com/gallery/abc123 (HTML page, won't render). " +
-            "On imgur: right-click the image → 'Copy image address' to get the direct URL. " +
-            "Recommended size: 600×240 (or any 5:2 ratio — Discord's banner slot is 300×120 in popouts, 680×272 in full profile; 2× pixel density looks crispest). " +
-            "Supports png/jpg/webp/gif images OR short mp4/webm videos. ≤5MB image / ≤15MB video recommended. " +
-            "⚠ Suppressed while TournamentMode is active (any banner — image OR video — is paused; TM exists to free up GPU during matches).",
+            "[Channel E · MAXXER] Paste a DIRECT HTTPS media URL, not a webpage. " +
+            "The roster stores this short URL (maximum 250 characters), not the file itself. " +
+            "Good: https://i.imgur.com/abc123.png. Bad: https://imgur.com/gallery/abc123. " +
+            "For a downloaded GIF/image/video, use Choose banner file in the editor for a local preview or one-time Discord broadcast, " +
+            "or host it somewhere that gives you a direct HTTPS media URL. Recommended: 600×240; images ≤5MB and videos ≤15MB. " +
+            "This is a local draft until Save; profile rendering follows the shared roster on every PC. TournamentMode pauses custom banner rendering.",
         default: ""
     },
     myAvatarAnimatedUrl: {
         type: OptionType.STRING,
         description:
-            "[Channel F · MAXXER+] DIRECT image/GIF URL (not a webpage). " +
-            "Same rules as banner — right-click → Copy image address to get the right URL. " +
-            "Recommended size: 160×160 square (1:1 aspect — Discord renders 80×80 in popouts, 120×120 in full profile; 2× density for crisp). " +
-            "Renders in profile popouts, full profile, AND member list + chat + voice + DM headers. " +
-            "⚠ IMPORTANT — you must have a CUSTOM Discord avatar set on your account (Discord Settings → My Account → upload anything) " +
-            "for the swap to work on member list / chat / voice surfaces. " +
-            "Discord's DEFAULT avatars (the colored wordmark) aren't on the per-user CDN path we match against, " +
-            "so users on default avatars only get the swap on the profile popout + full-profile view. " +
-            "Suppressed when TournamentMode is on.",
+            "[Channel F · MAXXER+] Paste a DIRECT HTTPS media URL, not a webpage. " +
+            "The roster stores the URL (maximum 250 characters), so a downloaded file must be hosted first for cross-PC sharing. " +
+            "Use Choose avatar file in the editor for a local preview or one-time real-Discord broadcast. " +
+            "Recommended size: 160×160 square. GIF/MP4 avatar rendering is suppressed while TournamentMode is active. " +
+            "This is a local draft until Save; profile rendering follows the shared roster on every PC. Member-list/chat/voice replacement also requires you to have a custom Discord avatar rather than Discord's default wordmark.",
         default: ""
     },
     myThemeColorPrimary: {
@@ -1119,7 +1482,7 @@ const settings = definePluginSettings({
             "[Channel G · MAXXER++] Primary theme color — TOP of the profile gradient. " +
             "Accepts #RRGGBB, RRGGBB (no #), or 0xRRGGBB — auto-normalized. " +
             "Empty by default (no gradient) — pick a preset in the welcome screen or set your own here. " +
-            "Clear to remove your gradient.",
+            "This is a local draft until Save; profile rendering follows the shared roster on every PC. Clear to remove your gradient.",
         default: ""
     },
     myThemeColorSecondary: {
@@ -1127,7 +1490,7 @@ const settings = definePluginSettings({
         description:
             "[Channel G · MAXXER++] Secondary theme color — BOTTOM of the profile gradient. " +
             "Accepts #RRGGBB, RRGGBB (no #), or 0xRRGGBB — auto-normalized. " +
-            "Empty by default (no gradient) — paired with the primary above once both are set.",
+            "Empty by default (no gradient) — paired with the primary above once both are set. This is a local draft until Save; profile rendering follows the shared roster on every PC.",
         default: ""
     },
     manualClaimCode: {
@@ -1272,7 +1635,7 @@ function findAllProfileBanners(): HTMLElement[] {
  *  We also accept the path-relative form Discord occasionally uses
  *  (`/assets/...`) — but those are anonymous defaults so we skip them.
  *  Returns ALL imgs by user; the caller decides whether to swap them all
- *  (self-preview) or per-roster-user (live mode). */
+ *  for a roster user. */
 function findAvatarImgsForUser(userId: string): HTMLImageElement[] {
     if (!userId) return [];
     const out: HTMLImageElement[] = [];
@@ -1465,17 +1828,16 @@ function getUserIdFromContainer(container: Element): string | null {
 }
 
 /** Single point that decides what flair (if any) to render for a given user.
- *  - Self (me.id === userId): prefer local plugin settings so saves render
- *    instantly without a worker roundtrip.
- *  - Other users on roster: read their saved flair from `getRosterProfileFlair`.
- *  - Anyone else: return null (no flair).
+ *  The published roster is authoritative for both self and other users. The
+ *  editor's settings are per-install drafts; using them as a self override
+ *  made one account render a different banner/gradient on different PCs.
  *  Falls through viewer toggles, hide list, and TournamentMode gates. */
 function resolveFlairForUserId(userId: string | null, kind: "banner" | "avatar" | "theme"): ProfileFlair | null {
     const s = settings.store;
     if (!s.showOthersFlair) {
-        // Master viewer-toggle is off — still allow self-preview rendering on
-        // your own popout, otherwise the setter UX feels broken (you set a
-        // banner and don't see it).
+        // Master viewer-toggle is off — still allow your own published roster
+        // look, so the setting means "hide other users" rather than "show a
+        // different local version of my profile."
         const me = UserStore.getCurrentUser?.();
         if (!me?.id || userId !== me.id) return null;
     }
@@ -1493,23 +1855,7 @@ function resolveFlairForUserId(userId: string | null, kind: "banner" | "avatar" 
     }
     if (userId && isFlairHiddenForUser(userId)) return null;
 
-    let flair: ProfileFlair | null = null;
-    const me = UserStore.getCurrentUser?.();
-    if (userId && me?.id === userId) {
-        // Per-field merge (see getEffectiveFlairForUser): roster is the base,
-        // non-empty local fields override. An empty local field falls back to
-        // your saved roster value rather than masking it to nothing — which is
-        // why an empty local banner used to render nothing for you even though
-        // others saw your saved roster banner.
-        const merged: ProfileFlair = { ...(getRosterProfileFlair(userId) ?? {}) };
-        const b = s.myBannerUrl.trim(); if (b) merged.bannerUrl = b;
-        const a = s.myAvatarAnimatedUrl.trim(); if (a) merged.avatarAnimatedUrl = a;
-        const p = s.myThemeColorPrimary.trim(); if (p) merged.themeColorPrimary = p;
-        const sc = s.myThemeColorSecondary.trim(); if (sc) merged.themeColorSecondary = sc;
-        if (Object.keys(merged).length) flair = merged;
-    } else if (userId) {
-        flair = getRosterProfileFlair(userId) ?? null;
-    }
+    const flair = userId ? getRosterProfileFlair(userId) ?? null : null;
     if (!flair) return null;
 
     if ((kind === "banner" || kind === "avatar") && isTournamentModeActive()) return null;
@@ -1804,10 +2150,9 @@ function scanForPopouts(_root: ParentNode = document) {
         // back to the current user's id when that fails: a target on a DEFAULT
         // Discord avatar yields no CDN id, and the old "no id = me" assumption
         // painted OUR banner + gradient onto THEIR popout — a real flair-leak
-        // bug. No id → skip banner/theme for this container. Self-preview still
-        // works in the common case because flair users have a custom avatar
-        // (the member-list/chat swap requires one anyway), so the lookup
-        // returns their real id.
+        // bug. No id → skip banner/theme for this container. The lookup works
+        // in the common case because flair users have a custom avatar (the
+        // member-list/chat swap requires one anyway), so it returns their id.
         const userId = getUserIdFromContainer(container);
         if (!userId) {
             clearBanner(banner);
@@ -1846,7 +2191,10 @@ function scanForPopouts(_root: ParentNode = document) {
     // This is the common case (most users in most servers have no flair), and
     // it's what makes the per-mutation observer affordable.
     const sa = settings.store;
-    const selfHasAvatarFlair = !!sa.myAvatarAnimatedUrl.trim();
+    // The self gate must use the published roster too. Once self rendering is
+    // roster-authoritative, a blank per-install draft must not prevent the
+    // shared avatar from being scanned when the viewer toggles allow self.
+    const selfHasAvatarFlair = !!(me?.id && getRosterProfileFlair(me.id)?.avatarAnimatedUrl);
     const othersAvatarFlair =
         sa.showOthersFlair && sa.showOthersAvatar && rosterHasAnyAvatarFlair();
     const anyAvatarFlair = selfHasAvatarFlair || othersAvatarFlair;
@@ -1880,8 +2228,8 @@ function scanForPopouts(_root: ParentNode = document) {
             applyBackgroundAvatar(el, avatarFlair.avatarAnimatedUrl);
         });
         // Profile-view fallback: large avatars (≥60px) that don't have a CDN
-        // URL we could match (default-avatar users). If we're viewing our own
-        // popout in self-preview, swap those too.
+        // URL we could match (default-avatar users). Resolve the profile owner
+        // and apply that user's published roster avatar too.
         const fallback = findProfileViewAvatars();
         for (const a of fallback) {
             if (a.dataset.dmFlairAvatarApplied) continue;
@@ -1891,7 +2239,7 @@ function scanForPopouts(_root: ParentNode = document) {
             if (flair?.avatarAnimatedUrl) applyAvatar(a, flair.avatarAnimatedUrl);
         }
         // Warn once if the current user has a default avatar.
-        if (me && !me.avatar && settings.store.myAvatarAnimatedUrl.trim() && !defaultAvatarWarned) {
+        if (me && !me.avatar && selfHasAvatarFlair && !defaultAvatarWarned) {
             defaultAvatarWarned = true;
             toast(
                 "⚠ Your Discord avatar is set to the default — your animated avatar will only show on profile popouts + full profile, not member list or chat. Upload any custom Discord avatar to fix.",
