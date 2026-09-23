@@ -26,13 +26,18 @@ without waiting for the roster, and keeps reduced-motion media visible via a
 cached first frame. TournamentMode remains the explicit media pause. This is
 source/build/release proof; the running client, second-PC sync, and recipient
 rendering still need a real-device check. The separate `/profile-media`
-worker/R2 route was not deployed by this app release, and vanilla Discord
-rendering is not claimed for Discordmaxxer-only flair.
+worker/R2 route was not part of the app tag, but it was deployed afterward
+from optimizationmaxxing commit `a979d91` (Worker version
+`18aa8c78-5b55-42e4-9f9c-3d39f722b0c6`). Its live upload route returns the
+expected validation response and `/roster` returns 200; an authenticated
+user-media upload and second-PC recipient render are still unverified.
+Vanilla Discord rendering is not claimed for Discordmaxxer-only flair.
 
 Best next action: update/relaunch Discordmaxxer to v0.7.68 on both PCs, open
 the self profile, and confirm the banner/avatar are visible after startup.
-Then test cross-PC/other-user media only after the worker/R2 route is deployed
-and the roster has a successful snapshot.
+Then test cross-PC/other-user media with an authenticated publish and a
+second Discordmaxxer client; the worker/R2 route is now deployed, but those
+recipient checks still need to be performed.
 
 ## 2026-09-23 v0.7.67 public release — historical
 
@@ -84,10 +89,10 @@ Candidate verification passed `pnpm test`, `pnpm build`, strict
 was not available in this session, so those remain explicit external gates.
 
 This candidate was superseded by the published v0.7.68 release above. The
-separate `/profile-media` worker/R2 route and vanilla Discord rendering were
-not silently included in this app-only release; local self visibility is the
-fix shipped here, while cross-PC/other-user file visibility still needs the
-worker deployment and roster proof.
+separate `/profile-media` worker/R2 route was not silently included in that
+app-only tag; it is now deployed separately, while cross-PC/other-user file
+visibility still needs authenticated publish and recipient proof. Vanilla
+Discord rendering remains outside the Discordmaxxer-only flair path.
 
 ## 2026-09-23 post-update flair fallback candidate — superseded
 
