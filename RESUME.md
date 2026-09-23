@@ -5,7 +5,36 @@
 > `CLAUDE.md` ("Operational facts" section). Those three are enough to build,
 > ship, and maintain without prior context.
 
-## 2026-09-23 v0.7.67 public release — live
+## 2026-09-23 v0.7.68 public release — live
+
+Release commit `eee9e4118dd15d1bf34a3f97ccf6f728cd2e1064` and tag `v0.7.68`
+are pushed to `main`. GitHub Actions release run `35909670139` and test run
+`35909654857` passed. The stable non-draft release is live:
+https://github.com/MaxxTopia/discordmaxxer/releases/tag/v0.7.68
+
+Published assets include x64/ARM64 ZIPs, the NSIS installer, blockmap, and
+`latest.yml` advertising version `0.7.68` with the installer hash and size.
+The release workflow also successfully notified maxxtopia.com. Local gates
+passed: `pnpm test`, `pnpm build`, strict
+`DM_STRICT_REBRAND=1 pnpm overlay:vencord`, `pnpm verifyPlugins`,
+`node overlay-scripts/verify-build.mjs`, `pnpm package:dir`,
+`pnpm package:win`, and `git diff --check`.
+
+The shipped fix restores current-user banner/avatar drafts and remembered
+IndexedDB files into the renderer on plugin start, lets local self media paint
+without waiting for the roster, and keeps reduced-motion media visible via a
+cached first frame. TournamentMode remains the explicit media pause. This is
+source/build/release proof; the running client, second-PC sync, and recipient
+rendering still need a real-device check. The separate `/profile-media`
+worker/R2 route was not deployed by this app release, and vanilla Discord
+rendering is not claimed for Discordmaxxer-only flair.
+
+Best next action: update/relaunch Discordmaxxer to v0.7.68 on both PCs, open
+the self profile, and confirm the banner/avatar are visible after startup.
+Then test cross-PC/other-user media only after the worker/R2 route is deployed
+and the roster has a successful snapshot.
+
+## 2026-09-23 v0.7.67 public release — historical
 
 Release commit `86d4a021476a1dfee47f227cdc19bd509a943d9f` and tag `v0.7.67`
 are pushed to `main`. GitHub Actions release run `35853072999` passed, and
@@ -54,11 +83,11 @@ Candidate verification passed `pnpm test`, `pnpm build`, strict
 `git diff --check`. A visual running-client or second-PC/recipient assertion
 was not available in this session, so those remain explicit external gates.
 
-This candidate is not yet committed, pushed, published, or released. The
-separate `/profile-media` worker/R2 route and vanilla Discord rendering are
+This candidate was superseded by the published v0.7.68 release above. The
+separate `/profile-media` worker/R2 route and vanilla Discord rendering were
 not silently included in this app-only release; local self visibility is the
-fix being shipped here, while cross-PC/other-user file visibility still needs
-the worker deployment and roster proof.
+fix shipped here, while cross-PC/other-user file visibility still needs the
+worker deployment and roster proof.
 
 ## 2026-09-23 post-update flair fallback candidate — superseded
 
