@@ -5,7 +5,32 @@
 > `CLAUDE.md` ("Operational facts" section). Those three are enough to build,
 > ship, and maintain without prior context.
 
-## 2026-09-23 plugin reliability + truthful tour + usable DMVotes — unpublished candidate
+## 2026-09-23 v0.7.67 public release — live
+
+Release commit `86d4a021476a1dfee47f227cdc19bd509a943d9f` and tag `v0.7.67`
+are pushed to `main`. GitHub Actions release run `35853072999` passed, and
+the stable non-draft release is live:
+https://github.com/MaxxTopia/discordmaxxer/releases/tag/v0.7.67
+
+Published assets include x64/ARM64 ZIPs, the NSIS installer, blockmap, and
+`latest.yml` advertising version `0.7.67`. Release notes are populated for the
+updater. Local gates passed: `pnpm test`, `pnpm build`, strict
+`DM_STRICT_REBRAND=1 pnpm overlay:vencord`, `pnpm verifyPlugins`,
+`node overlay-scripts/verify-build.mjs`, `pnpm package:dir`,
+`pnpm package:win`, `git diff --check`, and the ASCII shipped-script check.
+
+The running machine still has the older installed client at
+`C:\Users\Diggy\AppData\Local\Discordmaxxer\discordmaxxer.exe`; this
+session did not load v0.7.67 into the running client, so native runtime,
+second-PC sync, and recipient behavior remain unverified. The separate
+profile-media worker/R2 deployment was not part of this app release. The app
+release does not claim vanilla Discord rendering for Discordmaxxer-only flair.
+
+Best next action: install/update v0.7.67 on both PCs and run the focused
+gradient, local media, backup/restore, and second-PC roster smoke test. Deploy
+the separate worker/R2 candidate only when that is explicitly scoped.
+
+## 2026-09-23 v0.7.67 release contents
 
 ### Profile appearance center and renderer guardrails
 
@@ -32,15 +57,15 @@ renderer bounds work to visible surfaces, caches stable profile identity
 lookups, skips hidden windows, and respects TournamentMode/reduced-motion
 media suppression while keeping gradients available.
 
-These additions are validated in the candidate by `pnpm test`, `pnpm build`,
+These additions were validated in the candidate by `pnpm test`, `pnpm build`,
 strict `DM_STRICT_REBRAND=1 pnpm overlay:vencord`,
 `pnpm verifyPlugins`, `node overlay-scripts/verify-build.mjs`, and
-`git diff --check`. The candidate is still not loaded into the running client,
-pushed, or deployed; real Discordmaxxer second-PC sync, worker/R2 media
-publication, and native Discord recipient behavior remain human/external
-gates.
+`git diff --check`. The release is now pushed and deployed through the
+GitHub Actions release workflow; the running client, real Discordmaxxer
+second-PC sync, worker/R2 media publication, and native Discord recipient
+behavior remain human/external gates.
 
-### Follow-up hardening in the same unpublished candidate
+### Follow-up hardening included in v0.7.67
 
 DMProfileFlair now remembers a selected banner and avatar file in Vencord's
 local IndexedDB, matching VideoBackground's same-PC restart behavior. The
@@ -57,16 +82,16 @@ full-document scans to a bounded trailing interval before the animation-frame
 paint. This reduces avoidable work during chat scroll/call churn without
 changing the 750ms avatar freshness limit or the two-second safety net.
 
-The follow-up gates pass: `pnpm test`, `pnpm testTypes`, `pnpm build`,
+The follow-up gates passed: `pnpm test`, `pnpm testTypes`, `pnpm build`,
 `pnpm verifyPlugins`, `node overlay-scripts/verify-build.mjs`,
-`pnpm overlay:vencord`, and `git diff --check`. These are still local
-candidate results only; the running client, worker/R2 path, second-PC sync,
-native Discord recipient, push, and deployment remain unverified.
+`pnpm overlay:vencord`, and `git diff --check`. They were included in the
+published app build; the running client, worker/R2 path, second-PC sync, and
+native Discord recipient remain unverified.
 
-This pass improves the existing Discordmaxxer candidate without changing the
-canonical checkout or publishing a release. It corrects stale upstream plugin
-IDs, migrates the two renamed settings once, removes unavailable legacy IDs
-from defaults and quick-enable bundles, and adds a registry gate so defaults,
+This release improves the existing Discordmaxxer architecture without
+changing the canonical dirty checkout. It corrects stale upstream plugin IDs,
+migrates the two renamed settings once, removes unavailable legacy IDs from
+defaults and quick-enable bundles, and adds a registry gate so defaults,
 bundles, and featured cards cannot point at missing plugins.
 
 DM Hub now has a Plugin health panel with loaded/off/conditional/best-effort/
@@ -97,14 +122,14 @@ The static gates pass locally: `pnpm verifyPlugins`, `pnpm test` (lint and
 TypeScript), `pnpm build`, strict `DM_STRICT_REBRAND=1 pnpm overlay:vencord`,
 `node overlay-scripts/verify-build.mjs`, and `git diff --check`. The overlay
 compiled all 24 custom plugins and the registry audit resolved 53 defaults, 10
-bundle entries, and 8 featured entries. This candidate is not in the running
-client, is not pushed, and is not deployed. Native runtime behavior, two-PC
-roster sync, service/account paths, and recipient voice/screenshare checks
-remain human gates.
+bundle entries, and 8 featured entries. These changes are published in
+v0.7.67, but are not loaded into the running client in this session. Native
+runtime behavior, two-PC roster sync, service/account paths, and recipient
+voice/screenshare checks remain human gates.
 
-Best next action: load this candidate in the real client for the focused
-health/tour, DMTyping, and local-grant smoke test before making a separate
-release decision.
+Best next action: install/update v0.7.67 on both PCs for the focused
+health/tour, DMTyping, gradient, local-media, backup/restore, and roster smoke
+test.
 
 ## 2026-09-22 profile-flair media + instant tour gradient picker — unpublished candidate
 
