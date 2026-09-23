@@ -31,6 +31,9 @@ clients. The local client currently open is still the v0.7.64 candidate at
 it was not replaced or restarted. No localhost:9223 debugger is listening, so
 the packaged runtime validator remains unrun.
 
+Best next step: update or relaunch the official client, confirm About shows
+v0.7.65, then run the real-client checks above. No client restart was performed.
+
 The VIP Worker checkout remains at its public baseline. Its local `worker.js`
 and README contain a large mixed diff with unrelated VIP admin/Aimmaxer work;
 deploying that file would publish unrelated changes. The candidate Worker
