@@ -5,39 +5,40 @@
 > `CLAUDE.md` ("Operational facts" section). Those three are enough to build,
 > ship, and maintain without prior context.
 
-## 2026-09-22 v0.7.65 release handoff
+## 2026-09-22 v0.7.65 public release — live
 
-Diggy explicitly asked for the app update to go live before doing the
-real-client checks, and said he will test after it is live. This sets the
-remaining call, screenshare-with-audio, tier, Tournament Mode, and two-client
-profile-look checks as post-release user tests. The app candidate is versioned
-`0.7.65`; stable `0.7.64` remains current until the tag-triggered release
-workflow succeeds. Local release checks passed: `pnpm test` (lint and
-TypeScript), strict Vencord overlay (24 plugins, 0 rebrand warnings),
-`verify-build.mjs`, `pnpm build`, Windows x64/ARM64 packaging, and
-`git diff --check`. The temporary installer is
-`C:\Users\Diggy\AppData\Local\Temp\discordmaxxer-v0.7.65-release-preflight\Discordmaxxer-Setup-0.7.65.exe`;
-its SHA-512 matches the generated `latest.yml`. It is unsigned, so Windows
-SmartScreen may show the existing trust warning.
+Diggy asked for the app update to go live before the real-client checks and
+will test after release. Stable v0.7.65 is published from commit
+`b4aee35403e0b45cdbafe76213411ed73792089a`; tag `v0.7.65` points to that
+commit. The [GitHub release](https://github.com/MaxxTopia/discordmaxxer/releases/tag/v0.7.65)
+is public, stable, and not a draft. Its [release workflow](https://github.com/MaxxTopia/discordmaxxer/actions/runs/35799871094)
+completed successfully, including overlay, build, integrity check, Windows
+packaging, upload, and the MaxxTopia site notification dispatch.
 
-The live client open for testing is still the local v0.7.64 candidate at
+The release has x64 and ARM64 zip files, the NSIS installer and blockmap, and
+`latest.yml`. The public updater manifest returned HTTP 200 and names
+`Discordmaxxer-Setup-0.7.65.exe` at 211,045,288 bytes. Local checks passed:
+`pnpm test` (lint and TypeScript), strict Vencord overlay (24 plugins, 0
+rebrand warnings), `verify-build.mjs`, `pnpm build`, x64/ARM64 packaging, and
+`git diff --check`. The installer is unsigned, so Windows SmartScreen may show
+the existing trust warning.
+
+Diggy's real-client checks remain owed: call and screenshare with audio;
+Founder/MAXXER++ benefit inheritance; Tournament Mode during voice/screenshare;
+and creating, importing, and saving a `DMLOOK1:` profile look between two
+clients. The local client currently open is still the v0.7.64 candidate at
 `C:\Users\Diggy\projects\discordmaxxer-release-074\dist\win-unpacked\discordmaxxer.exe`;
-it was not stopped or replaced. No localhost:9223 debugger is listening, so
-the packaged runtime validator was not run rather than restarting Diggy's
-active client. The packaged runtime validator remains unrun. The feature
-checks remain owed after the release: Founder/MAXXER++ benefit inheritance,
-Tournament Mode during voice/screenshare, and creating/importing/saving a
-`DMLOOK1:` profile look between two clients.
+it was not replaced or restarted. No localhost:9223 debugger is listening, so
+the packaged runtime validator remains unrun.
 
 The VIP Worker checkout remains at its public baseline. Its local `worker.js`
 and README contain a large mixed diff with unrelated VIP admin/Aimmaxer work;
 deploying that file would publish unrelated changes. The candidate Worker
 also filters stale cosmetic fields after downgrades, contrary to Diggy's
 accepted behavior that stale flair may remain. Do not deploy that checkout as
-part of this release. Diggy's release authorization is recorded; the
-Discordmaxxer app is the only release in scope.
+part of this release. The Discordmaxxer app is the only release in scope.
 
-## Current maintenance/release state — v0.7.64 published
+## Current maintenance/release state — v0.7.65 published
 
 ## 2026-09-21 covered-window/screenshare release — v0.7.64
 
