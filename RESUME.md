@@ -30,6 +30,66 @@ Best next action: install/update v0.7.67 on both PCs and run the focused
 gradient, local media, backup/restore, and second-PC roster smoke test. Deploy
 the separate worker/R2 candidate only when that is explicitly scoped.
 
+## 2026-09-23 v0.7.68 profile flair recovery — release candidate
+
+Diggy reported that a v0.7.67 update left the gradient visible while the
+custom banner and animated avatar disappeared. The regression came from two
+independent gates: media rendering trusted the shared roster even when the
+current install had no usable roster snapshot, and the Windows reduced-motion
+path suppressed animated media instead of keeping a visible still frame.
+
+The v0.7.68 candidate fixes the whole self-render path: saved HTTPS drafts and
+remembered IndexedDB files are restored when the plugin starts and paint the
+current user's banner/avatar immediately; the current user's local field wins
+over an older shared value without leaking to other users; reduced motion
+keeps the media visible and swaps to a cached first frame when available; and
+TournamentMode remains the explicit performance pause. The avatar sweep gate
+now includes local self media, so the current user's avatar is not skipped
+before the profile surface is scanned. Clearing a local field also clears its
+remembered file.
+
+Candidate verification passed `pnpm test`, `pnpm build`, strict
+`DM_STRICT_REBRAND=1 pnpm overlay:vencord`, `node overlay-scripts/verify-build.mjs`,
+`pnpm verifyPlugins`, `pnpm package:dir`, `pnpm package:win`, and
+`git diff --check`. A visual running-client or second-PC/recipient assertion
+was not available in this session, so those remain explicit external gates.
+
+This candidate is not yet committed, pushed, published, or released. The
+separate `/profile-media` worker/R2 route and vanilla Discord rendering are
+not silently included in this app-only release; local self visibility is the
+fix being shipped here, while cross-PC/other-user file visibility still needs
+the worker deployment and roster proof.
+
+## 2026-09-23 post-update flair fallback candidate — superseded
+
+Diggy reported that after updating, the profile gradient still appeared but
+the custom banner and animated avatar disappeared. The v0.7.67 renderer made
+media roster-authoritative while allowing the current user's gradient draft to
+paint immediately. This fresh client had no successful roster snapshot because
+the live worker `/roster` route is currently returning a retryable 503 while
+Cloudflare KV's daily legacy-list quota recovers. The saved avatar URL is also
+260 characters, so it cannot be published under the shared short-URL limit;
+the banner URL is within the limit. Windows reports `MinAnimate=0`, and the
+plugin setting `respectReducedMotion` is true, so animated GIF media is also
+intentionally suppressed until that preference is disabled.
+
+The first uncommitted candidate treated a valid saved HTTPS media URL as a
+self-only local fallback only when no successful roster snapshot existed. That
+was too narrow: it did not restore remembered local files into the renderer,
+and reduced motion could still make the animated media look absent. v0.7.68
+supersedes it with per-field local precedence, startup file restoration, and a
+cached first-frame path.
+
+Candidate verification passed `pnpm test` (lint + types), `pnpm build`,
+`pnpm verifyPlugins`, strict `DM_STRICT_REBRAND=1 pnpm overlay:vencord`,
+`node overlay-scripts/verify-build.mjs`, and `git diff --check`. The staged
+renderer is 1,505,181 bytes. A dev Electron client was launched from this
+checkout and is running; no CUA accessibility binding was available for a
+visual/profile-recipient assertion, so this is build/process proof only.
+
+This historical candidate was not committed, pushed, published, or released.
+Do not use its narrower test instruction as the current release behavior.
+
 ## 2026-09-23 v0.7.67 release contents
 
 ### Profile appearance center and renderer guardrails

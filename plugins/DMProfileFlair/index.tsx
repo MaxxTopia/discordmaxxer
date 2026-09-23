@@ -41,6 +41,7 @@ import { makePersistentValue } from "../_dm-shared/persist";
 import {
     getRosterProfileFlair,
     getRosterProfileUpdatedAt,
+    getRosterStatus,
     onRosterChange,
     ProfileFlair,
     refreshRoster,
@@ -57,8 +58,39 @@ const WORKER_PROFILE_URL = "https://optmaxxing-vip.maxxtopia.workers.dev/profile
 const WORKER_PROFILE_MEDIA_URL = "https://optmaxxing-vip.maxxtopia.workers.dev/profile-media";
 
 const URL_RE = /^https:\/\/[^\s"']{1,242}$/;
+// Shared writes stay deliberately strict (the worker stores short URLs), but
+// a previously saved local draft may be a little longer — Discord proxy URLs
+// commonly are. Keep that draft safe for a self-only preview without allowing
+// non-HTTPS schemes or CSS-breaking quotes into the renderer.
+const LOCAL_DRAFT_URL_RE = /^https:\/\/[^\s"']{1,2048}$/;
 const COLOR_RE = /^#[0-9a-fA-F]{6}$/;
 type ProfileLookComponent = keyof ProfileFlair | "gradient";
+
+interface LocalRenderMedia {
+    url: string;
+    isVideo: boolean;
+}
+
+// A picked file is intentionally local-only until the user explicitly
+// publishes it. Keep a data URI for the renderer so the selected file remains
+// visible in the profile itself, not only inside the editor preview. The
+// IndexedDB copy is restored into this map when the plugin starts.
+const localRenderMedia: Partial<Record<"banner" | "avatar", LocalRenderMedia>> = {};
+
+function setLocalRenderMedia(kind: "banner" | "avatar", media: LocalRenderMedia): void {
+    localRenderMedia[kind] = media;
+}
+
+function clearLocalRenderMedia(kind?: "banner" | "avatar"): void {
+    if (kind) delete localRenderMedia[kind];
+    else {
+        delete localRenderMedia.banner;
+        delete localRenderMedia.avatar;
+    }
+}
+
+const reducedMotionFrameCache = new Map<string, string | null>();
+const reducedMotionFrameRequests = new Map<string, Promise<string | null>>();
 
 /** Lightweight diagnostics for the settings panel and support reports. Keep
  * this in memory only: it describes renderer work, never account data or
@@ -150,10 +182,10 @@ function toast(msg: string, type: any = Toasts.Type.SUCCESS, durationMs = 3000) 
 }
 
 /** TournamentMode integration: read the plugin's manuallyActive flag through
- *  Vencord's plain-settings tree. Used to suppress animated content (banner
- *  videos + animated avatars) when the user is gaming — TM exists exactly to
- *  free up CPU/GPU, so adding animated avatar decodes back into the mix would
- *  defeat the point. */
+ *  Vencord's plain-settings tree. TournamentMode is the explicit hard pause
+ *  for animated content (banner videos + animated avatars) when the user is
+ *  gaming. Reduced-motion preferences use a cached still frame instead, so
+ *  they do not make profile flair silently disappear. */
 export function isTournamentModeActive(): boolean {
     return !!(globalThis as any).Vencord?.PlainSettings?.plugins?.TournamentMode?.manuallyActive;
 }
@@ -167,7 +199,7 @@ function prefersReducedMotion(): boolean {
 }
 
 function shouldSuppressAnimatedFlair(): boolean {
-    return isTournamentModeActive() || prefersReducedMotion();
+    return isTournamentModeActive();
 }
 
 /** Local hide list — userIds whose flair the viewer has muted. Persisted via
@@ -206,11 +238,95 @@ function getLocalThemeFlair(): ProfileFlair | undefined {
     };
 }
 
+function getLocalMediaDraftFlair(): ProfileFlair | undefined {
+    const banner = settings.store.myBannerUrl.trim();
+    const avatar = settings.store.myAvatarAnimatedUrl.trim();
+    const flair: ProfileFlair = {};
+    if (LOCAL_DRAFT_URL_RE.test(banner)) flair.bannerUrl = banner;
+    if (LOCAL_DRAFT_URL_RE.test(avatar)) flair.avatarAnimatedUrl = avatar;
+    return flair.bannerUrl || flair.avatarAnimatedUrl ? flair : undefined;
+}
+
+function getLocalMediaValue(kind: "banner" | "avatar"): string | undefined {
+    const renderMedia = localRenderMedia[kind];
+    if (renderMedia?.url) return renderMedia.url;
+    const draft = getLocalMediaDraftFlair();
+    return kind === "banner" ? draft?.bannerUrl : draft?.avatarAnimatedUrl;
+}
+
+function hasAuthoritativeRosterSnapshot(): boolean {
+    const { fetchedAt } = getRosterStatus();
+    return typeof fetchedAt === "number" && fetchedAt > 0;
+}
+
+async function requestReducedMotionFrame(url: string): Promise<string | null> {
+    const cached = reducedMotionFrameCache.get(url);
+    if (cached !== undefined) return cached;
+
+    const existing = reducedMotionFrameRequests.get(url);
+    if (existing) return existing;
+
+    const request = extractStillFrameFromUrl(url)
+        .then(frame => {
+            reducedMotionFrameCache.set(url, frame);
+            if (frame) scheduleScan();
+            return frame;
+        })
+        .catch(error => {
+            reducedMotionFrameCache.set(url, null);
+            console.warn("[DMProfileFlair] reduced-motion frame extraction failed:", error);
+            return null;
+        })
+        .finally(() => {
+            reducedMotionFrameRequests.delete(url);
+        });
+    reducedMotionFrameRequests.set(url, request);
+    return request;
+}
+
+function getMotionSafeMediaUrl(url: string): string {
+    // Reduced motion should remove animation, not make the user's flair
+    // disappear. While the first-frame PNG is being prepared, keep the media
+    // visible; the next scan swaps it to the cached still as soon as it is
+    // ready. TournamentMode remains the explicit hard pause for performance.
+    if (!prefersReducedMotion() || !isAnimatedUrl(url)) return url;
+    const cached = reducedMotionFrameCache.get(url);
+    if (cached) return cached;
+    void requestReducedMotionFrame(url);
+    return url;
+}
+
+function applyMotionFallback(flair: ProfileFlair | undefined, kind: "banner" | "avatar"): ProfileFlair | undefined {
+    if (!flair) return flair;
+    const key = kind === "banner" ? "bannerUrl" : "avatarAnimatedUrl";
+    const value = flair[key];
+    if (!value) return flair;
+    const rendered = getMotionSafeMediaUrl(value);
+    return rendered === value ? flair : { ...flair, [key]: rendered };
+}
+
 function getProfileFlairForRender(userId: string, kind: "banner" | "avatar" | "theme"): ProfileFlair | undefined {
     const shared = getRosterProfileFlair(userId);
-    if (kind !== "theme") return shared;
-
     const me = UserStore.getCurrentUser?.();
+
+    if (kind !== "theme") {
+        // Other viewers use the shared roster. For the current user, a local
+        // draft/file is the immediate source of truth; if it is absent, keep
+        // the shared field. This prevents a healthy roster that omits the
+        // account (or contains an older value) from making the profile look
+        // blank after an update.
+        const key = kind === "banner" ? "bannerUrl" : "avatarAnimatedUrl";
+        if (!me?.id || me.id !== userId) return applyMotionFallback(shared, kind);
+        const value = getLocalMediaValue(kind);
+        // The current user's local choice wins immediately, including over an
+        // older shared value. This makes picking a file or changing a URL feel
+        // instant; other Discordmaxxer users still resolve the shared roster.
+        const merged = value
+            ? { ...(shared ?? {}), [key]: value }
+            : shared;
+        return applyMotionFallback(merged, kind);
+    }
+
     if (!me?.id || me.id !== userId) return shared;
 
     const local = getLocalThemeFlair();
@@ -260,17 +376,18 @@ export function getEffectiveFlairForUser(
     if (kind === "theme" && !s.showOthersThemeColors) return null;
     if (isFlairHiddenForUser(userId)) return null;
 
-    // Media remains roster-authoritative and never gets a private local
-    // fallback. Theme colors are different: the current user's local choice
-    // is allowed to paint immediately, while other users still resolve from
-    // the shared roster only. Banner/avatar sharing still needs its normal
-    // tier + claim.
+    // Shared media is preferred. During the initial/failed roster sync, the
+    // current user's saved direct URL can be shown as a self-only fallback;
+    // other users still resolve media from the shared roster only. Theme
+    // colors remain local-first because gradients are free and instant.
     const flair = getProfileFlairForRender(userId, kind) ?? null;
     if (!flair) return null;
 
-    if ((kind === "banner" || kind === "avatar") && shouldSuppressAnimatedFlair()) {
-        // Media is the expensive layer. Theme colors are free, so they stay
-        // visible during TournamentMode and reduced-motion preferences.
+    if ((kind === "banner" || kind === "avatar") && isTournamentModeActive()) {
+        // TournamentMode is the explicit performance pause. Reduced-motion
+        // media has already been converted to a cached still-frame source by
+        // getProfileFlairForRender(). Theme colors remain visible in both
+        // modes.
         return null;
     }
     return flair;
@@ -1100,6 +1217,25 @@ async function restoreLocalMedia(kind: LocalMediaKind): Promise<LocalMediaSelect
     }
 }
 
+async function restoreLocalMediaForRenderer(): Promise<void> {
+    for (const kind of ["banner", "avatar"] as const) {
+        const restored = await restoreLocalMedia(kind);
+        if (!restored) continue;
+        setLocalRenderMedia(kind, { url: restored.dataUri, isVideo: restored.isVideo });
+        URL.revokeObjectURL(restored.previewUrl);
+    }
+    repaintProfileFlairNow();
+}
+
+async function forgetLocalMedia(kind: LocalMediaKind): Promise<void> {
+    clearLocalRenderMedia(kind);
+    try {
+        await DataStore.del(LOCAL_MEDIA_KEYS[kind]);
+    } catch (e) {
+        console.warn(`[DMProfileFlair] could not clear remembered ${kind} file:`, e);
+    }
+}
+
 interface ProfileAppearanceBackupMedia {
     name: string;
     mime: string;
@@ -1259,6 +1395,8 @@ function FlairEditor() {
                 const next = { ...localMediaRef.current, [kind]: restored };
                 localMediaRef.current = next;
                 setLocalMedia(next);
+                setLocalRenderMedia(kind, { url: restored.dataUri, isVideo: restored.isVideo });
+                repaintProfileFlairNow();
             }
         })();
         return () => { alive = false; };
@@ -1303,6 +1441,8 @@ function FlairEditor() {
         };
         localMediaRef.current = next;
         setLocalMedia(next);
+        setLocalRenderMedia(kind, { url: dataUri, isVideo });
+        repaintProfileFlairNow();
         toast(kind === "banner"
             ? `Banner file ready${remembered ? " and remembered on this PC" : " for this session"}. Publish it for cross-PC Discordmaxxer sharing, or use a one-time Discord action.`
             : `Avatar file ready${remembered ? " and remembered on this PC" : " for this session"}. Publish it for cross-PC Discordmaxxer sharing, or use the one-time Discord action.`,
@@ -1590,6 +1730,7 @@ function FlairEditor() {
         if (!getProfileAuth(false)) {
             if (field === "bannerUrl") s.myBannerUrl = "";
             else s.myAvatarAnimatedUrl = "";
+            void forgetLocalMedia(field === "bannerUrl" ? "banner" : "avatar");
             scheduleScan();
             toast(`Cleared the local ${label} draft. A claim is needed to remove a shared roster value.`, Toasts.Type.MESSAGE, 5500);
             return;
@@ -1602,6 +1743,8 @@ function FlairEditor() {
         if (ok) {
             if (field === "bannerUrl") s.myBannerUrl = "";
             else s.myAvatarAnimatedUrl = "";
+            await forgetLocalMedia(field === "bannerUrl" ? "banner" : "avatar");
+            repaintProfileFlairNow();
         }
         setBusy(false);
     };
@@ -1633,6 +1776,7 @@ function FlairEditor() {
             s.myAvatarAnimatedUrl = "";
             s.myThemeColorPrimary = "";
             s.myThemeColorSecondary = "";
+            await Promise.all([forgetLocalMedia("banner"), forgetLocalMedia("avatar")]);
             repaintProfileFlairNow();
             toast("Cleared this install's local profile flair. A claim is needed to clear shared roster flair.", Toasts.Type.MESSAGE, 6000);
             return;
@@ -1644,6 +1788,8 @@ function FlairEditor() {
             s.myAvatarAnimatedUrl = "";
             s.myThemeColorPrimary = "";
             s.myThemeColorSecondary = "";
+            await Promise.all([forgetLocalMedia("banner"), forgetLocalMedia("avatar")]);
+            repaintProfileFlairNow();
         }
         setBusy(false);
     };
@@ -1883,6 +2029,7 @@ function FlairEditor() {
     const currentUser = UserStore.getCurrentUser?.();
     const publishedFlair = currentUser?.id ? getRosterProfileFlair(currentUser.id) : undefined;
     const localTheme = getLocalThemeFlair();
+    const rosterReady = hasAuthoritativeRosterSnapshot();
     const sourceFor = (kind: "gradient" | "banner" | "avatar"): string => {
         if (kind === "gradient") return localTheme
             ? "Local • instant"
@@ -1891,7 +2038,7 @@ function FlairEditor() {
                 : "Not set";
         if (localMedia[kind]) return "Local file • preview";
         const draft = kind === "banner" ? s.myBannerUrl.trim() : s.myAvatarAnimatedUrl.trim();
-        return draft ? "URL draft" : publishedFlair?.[kind === "banner" ? "bannerUrl" : "avatarAnimatedUrl"]
+        return draft ? (rosterReady ? "URL draft" : "Local draft • this PC") : publishedFlair?.[kind === "banner" ? "bannerUrl" : "avatarAnimatedUrl"]
             ? "Shared roster"
             : "Not set";
     };
@@ -1904,6 +2051,12 @@ function FlairEditor() {
         const media = localMedia[kind];
         if (media) return `${kind === "banner" ? "Banner" : "Avatar"} file is a local preview. Publish it for cross-PC Discordmaxxer visibility, or use the one-time native Discord action separately.`;
         const draft = kind === "banner" ? s.myBannerUrl.trim() : s.myAvatarAnimatedUrl.trim();
+        if (draft && !rosterReady) {
+            if (!URL_RE.test(draft)) {
+                return "This saved URL is being kept as a local preview on this PC, but it is too long or otherwise invalid for shared roster publishing. Use Choose a file → Publish to share it without hunting for a shorter URL.";
+            }
+            return "The shared roster is temporarily unavailable, so your saved URL is being shown on this PC only. Save it after roster sync recovers to make it visible to other Discordmaxxer users and your other PC.";
+        }
         if (draft) return "This URL is an editor draft. Save it to the shared roster, or replace it with a local file if you do not want to hunt for a URL.";
         if (publishedFlair?.[kind === "banner" ? "bannerUrl" : "avatarAnimatedUrl"]) return "This media is coming from the shared roster. If it fails, Discordmaxxer restores the normal Discord media and records the failure here.";
         return "No shared media is set. Choose a local file or paste a direct HTTPS URL.";
@@ -1944,6 +2097,11 @@ function FlairEditor() {
                     These are three independent layers. The badge tells you where each layer comes from;
                     <b> Why am I seeing this?</b> explains the current local, shared, native, or performance boundary.
                 </div>
+                {prefersReducedMotion() && (
+                    <div role="status" style={{ marginTop: 7, padding: "6px 8px", borderRadius: 5, background: "rgba(255, 207, 112, 0.11)", border: "1px solid rgba(255, 207, 112, 0.35)", color: "#ffcf70", fontSize: 10.5, lineHeight: 1.4 }}>
+                        Reduced motion is enabled. Custom animated banner/avatar media will show its first frame after it is prepared, while TournamentMode can still pause media completely.
+                    </div>
+                )}
                 <div style={appearanceGridStyle}>
                     {(["gradient", "banner", "avatar"] as const).map(kind => {
                         const label = kind === "gradient" ? "🌈 Gradient" : kind === "banner" ? "🖼️ Banner" : "👤 Avatar";
@@ -2464,7 +2622,7 @@ const settings = definePluginSettings({
     respectReducedMotion: {
         type: OptionType.BOOLEAN,
         description:
-            "Pause custom banner/avatar media when Windows or Discord requests reduced motion. Theme gradients continue to render.",
+            "When Windows or Discord requests reduced motion, show a cached first frame instead of animating custom banner/avatar media. TournamentMode still pauses media completely; theme gradients continue to render.",
         default: true
     }
 });
@@ -2502,7 +2660,10 @@ const onVisibilityChange = () => {
  *  string heuristic — Content-Type would be more reliable but needs a HEAD
  *  request before render which we'd rather avoid for popout-open latency. */
 function isVideoUrl(url: string): boolean {
-    return /(?:[?&]dmx-media=video(?:&|#|$)|\.(mp4|webm|mov)(\?|#|$))/i.test(url);
+    return /^data:video\//i.test(url) ||
+        localRenderMedia.banner?.url === url && !!localRenderMedia.banner.isVideo ||
+        localRenderMedia.avatar?.url === url && !!localRenderMedia.avatar.isVideo ||
+        /(?:[?&]dmx-media=video(?:&|#|$)|\.(mp4|webm|mov)(\?|#|$))/i.test(url);
 }
 
 /** Wrap an HTTPS video URL through the dm-media:// proxy (registered in
@@ -2523,7 +2684,9 @@ function proxyVideoUrl(url: string): string {
  *  TournamentMode suppression — we want all decode/compositing-cost banners
  *  paused during gaming, not just videos. */
 function isAnimatedUrl(url: string): boolean {
-    return /(?:[?&]dmx-media=video(?:&|#|$)|\.(mp4|webm|mov|gif|apng)(\?|#|$))/i.test(url);
+    return /^data:image\/(?:gif|apng)/i.test(url) ||
+        isVideoUrl(url) ||
+        /(?:[?&]dmx-media=video(?:&|#|$)|\.(mp4|webm|mov|gif|apng)(\?|#|$))/i.test(url);
 }
 
 function buildCss(): string {
@@ -2810,7 +2973,8 @@ function getUserIdFromContainer(container: Element): string | null {
 }
 
 /** Single point that decides what flair (if any) to render for a given user.
- *  Media always comes from the shared roster. The current user's theme can
+ *  Shared media is preferred for other users, while the current user's local
+ *  draft/file is allowed to paint immediately. The current user's theme can
  *  use the local free-gradient selection for instant feedback; other users'
  *  themes still come from the shared roster only. Falls through viewer
  *  toggles, hide list, and TournamentMode gates. */
@@ -2840,7 +3004,7 @@ function resolveFlairForUserId(userId: string | null, kind: "banner" | "avatar" 
     const flair = userId ? getProfileFlairForRender(userId, kind) ?? null : null;
     if (!flair) return null;
 
-    if ((kind === "banner" || kind === "avatar") && shouldSuppressAnimatedFlair()) return null;
+    if ((kind === "banner" || kind === "avatar") && isTournamentModeActive()) return null;
     return flair;
 }
 
@@ -3212,10 +3376,10 @@ function scanForPopouts(_root: ParentNode = document) {
     // This is the common case (most users in most servers have no flair), and
     // it's what makes the per-mutation observer affordable.
     const sa = settings.store;
-    // The self gate must use the published roster too. Once self rendering is
-    // roster-authoritative, a blank per-install draft must not prevent the
-    // shared avatar from being scanned when the viewer toggles allow self.
-    const selfHasAvatarFlair = !!(me?.id && getRosterProfileFlair(me.id)?.avatarAnimatedUrl);
+    // Include the self-only local draft/file so the page-wide avatar sweep is
+    // not gated off before it gets a chance to apply the current user's local
+    // selection.
+    const selfHasAvatarFlair = !!(me?.id && getProfileFlairForRender(me.id, "avatar")?.avatarAnimatedUrl);
     const othersAvatarFlair =
         sa.showOthersFlair && sa.showOthersAvatar && rosterHasAnyAvatarFlair();
     const anyAvatarFlair = selfHasAvatarFlair || othersAvatarFlair;
@@ -3351,6 +3515,10 @@ export default definePlugin({
         (globalThis as any).__dmApplyProfileGradient = applySharedGradient;
         removeRosterListener = onRosterChange(scheduleScan);
         startObserver();
+        // Restore remembered local files independently of the editor so a
+        // restart/update does not leave the profile surface blank until the
+        // user happens to open Appearance Center.
+        void restoreLocalMediaForRenderer();
         // Resolve the roster immediately so an already-open profile does not
         // depend on the next profile open or the two-second DOM poll. The
         // listener above repaints when this asynchronous fetch completes.
@@ -3361,6 +3529,7 @@ export default definePlugin({
         removeRosterListener?.();
         removeRosterListener = null;
         stopObserver();
+        clearLocalRenderMedia();
         style?.remove();
         style = null;
         delete (globalThis as any).__dmApplyProfileGradient;
