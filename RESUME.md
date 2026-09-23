@@ -5,7 +5,7 @@
 > `CLAUDE.md` ("Operational facts" section). Those three are enough to build,
 > ship, and maintain without prior context.
 
-## 2026-09-22 profile-flair consistency and usability — v0.7.66 release candidate
+## 2026-09-22 profile-flair consistency and usability — v0.7.66 public release — live
 
 Diggy reported that the same Diggyai account showed the published green-cave/red
 look on one PC but a local Cotton Candy gradient and different background on
@@ -25,18 +25,34 @@ explain the limit, downloaded GIF/image/video files can be previewed or sent
 once to real Discord, and profile-look codes can contain only the banner or
 avatar. Local files are intentionally not silently uploaded to the shared roster.
 
-Current state: v0.7.66 release candidate in
-`C:\Users\Diggy\projects\discordmaxxer-release-074`; the canonical dirty
-checkout is untouched. The published v0.7.65 build is unchanged. Verification
-for this candidate:
-`pnpm test`, `pnpm build`, `pnpm overlay:vencord`, and `git diff --check`.
+Current state: stable v0.7.66 is published from commit
+`310138c479a2ed3489a678553d544aa314676de5`; tag `v0.7.66` points to that
+commit. The [GitHub release](https://github.com/MaxxTopia/discordmaxxer/releases/tag/v0.7.66)
+is public, stable, and not a draft. Its [release workflow](https://github.com/MaxxTopia/discordmaxxer/actions/runs/35808934513)
+completed successfully, including strict overlay, build, integrity check,
+Windows packaging, upload, and the MaxxTopia site notification dispatch.
+
+The public release contains x64 and ARM64 ZIPs, the NSIS installer and
+blockmap, and `latest.yml`. The public updater manifest returned HTTP 200 and
+names `Discordmaxxer-Setup-0.7.66.exe` at 211,048,844 bytes. Local checks
+passed: `pnpm test`, strict `DM_STRICT_REBRAND=1 pnpm overlay:vencord`,
+`pnpm build`, `node overlay-scripts/verify-build.mjs`, `pnpm package:dir`,
+`pnpm package:win`, shipped-script ASCII validation, and `git diff --check`.
+The installer is unsigned, so Windows SmartScreen may show the existing trust
+warning. The canonical dirty checkout was not staged or modified by this
+release.
 
 Human gates remain: load this candidate in the actual client; compare Diggyai's
 self profile with Diggy T viewing Diggyai; press Restore; save banner-only and
 confirm the remote avatar remains; test a local-file one-time Discord broadcast;
-and perform native recipient/Nitro checks. The authorized next step is the
-scoped commit, `main` push, `v0.7.66` tag push, and public-release verification;
-then update/relaunch the real client and perform those checks.
+and perform native recipient/Nitro checks. The release makes the published
+Discordmaxxer roster authoritative for rendering, but it does not silently
+change Diggyai's roster look or real Discord account: Save is still the user
+action that shares a profile-flair edit. Vanilla Discord still requires the
+explicit broadcast path and its Nitro/server limits; local video files remain
+per-install app data and are not recoverable after a Windows reinstall unless
+backed up separately. Best next step: update or relaunch the real client,
+confirm About shows v0.7.66, then perform those checks.
 
 ## 2026-09-22 v0.7.65 public release — live
 
@@ -74,7 +90,7 @@ also filters stale cosmetic fields after downgrades, contrary to Diggy's
 accepted behavior that stale flair may remain. Do not deploy that checkout as
 part of this release. The Discordmaxxer app is the only release in scope.
 
-## Current maintenance/release state — v0.7.65 published
+## Current maintenance/release state — v0.7.66 published
 
 ## 2026-09-21 covered-window/screenshare release — v0.7.64
 
