@@ -35,7 +35,7 @@ const LADDER: TierVisual[] = [
         tier: Tier.FREE,
         bracketColor: "#9aa1ad",
         plusColor: null,
-        perks: ["All plugins · all themes", "Tournament Mode · Hub panel", "1 saved video bg slot"],
+        perks: ["All plugins · all themes", "Free profile gradients", "Tournament Mode · Hub panel", "1 saved video bg slot"],
         priceLabel: "Free forever"
     },
     {
@@ -61,7 +61,7 @@ const LADDER: TierVisual[] = [
         bracketColor: "#FFAA00",
         plusColor: "#FF5555",
         perks: [
-            "Profile gradient colors · animated name tint",
+            "Animated name tint",
             "Custom presence text · voice channel name color",
             "Beta builds · plugin votes · About credit"
         ],

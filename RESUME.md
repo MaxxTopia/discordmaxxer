@@ -5,6 +5,177 @@
 > `CLAUDE.md` ("Operational facts" section). Those three are enough to build,
 > ship, and maintain without prior context.
 
+## 2026-09-23 plugin reliability + truthful tour + usable DMVotes — unpublished candidate
+
+### Profile appearance center and renderer guardrails
+
+The profile-flair editor now has a three-layer Appearance Center for gradient,
+banner, and avatar. Each layer shows whether it is local, a URL draft, shared
+roster data, or unset, and a `Why am I seeing this?` explanation makes the
+current precedence and native-Discord boundary visible. Renderer health is
+available in the same panel with scan counts, visible candidates, applied
+layers, and the last media fallback failure.
+
+Local banner/avatar files can be selected, dragged in, or chosen from the
+keyboard. They remain per-PC and are remembered in IndexedDB; Export/Import
+appearance backup now carries the selected file bytes and cosmetic settings in
+a private JSON file without claim codes or worker credentials, so a Windows
+reinstall has a deliberate recovery path. Media failures restore the original
+Discord asset instead of leaving a broken image. Share codes can now copy or
+import banner-only, avatar-only, or gradient-only components without
+overwriting unrelated look fields.
+
+The gradient picker is shared by the tour and Profile Flair and now exposes 24
+presets plus custom top/bottom color inputs. Every preset applies locally
+immediately; a claim code is only needed for shared cross-PC/user sync. The
+renderer bounds work to visible surfaces, caches stable profile identity
+lookups, skips hidden windows, and respects TournamentMode/reduced-motion
+media suppression while keeping gradients available.
+
+These additions are validated in the candidate by `pnpm test`, `pnpm build`,
+strict `DM_STRICT_REBRAND=1 pnpm overlay:vencord`,
+`pnpm verifyPlugins`, `node overlay-scripts/verify-build.mjs`, and
+`git diff --check`. The candidate is still not loaded into the running client,
+pushed, or deployed; real Discordmaxxer second-PC sync, worker/R2 media
+publication, and native Discord recipient behavior remain human/external
+gates.
+
+### Follow-up hardening in the same unpublished candidate
+
+DMProfileFlair now remembers a selected banner and avatar file in Vencord's
+local IndexedDB, matching VideoBackground's same-PC restart behavior. The
+editor labels the file as remembered-on-this-PC versus session-only and keeps
+the boundary explicit: only the deliberate Publish as shared... action makes a
+copy available across PCs; a Windows reinstall still needs the original file.
+Profile writes, profile-media uploads, remote URL reads, and still-frame fetches
+now have hard timeouts with actionable failure toasts instead of hanging
+indefinitely; a timed-out shared write leaves the local gradient applied.
+
+The profile renderer also skips reconciliation while Discord is backgrounded,
+resumes with a fresh avatar sweep when visible, and debounces mutation-driven
+full-document scans to a bounded trailing interval before the animation-frame
+paint. This reduces avoidable work during chat scroll/call churn without
+changing the 750ms avatar freshness limit or the two-second safety net.
+
+The follow-up gates pass: `pnpm test`, `pnpm testTypes`, `pnpm build`,
+`pnpm verifyPlugins`, `node overlay-scripts/verify-build.mjs`,
+`pnpm overlay:vencord`, and `git diff --check`. These are still local
+candidate results only; the running client, worker/R2 path, second-PC sync,
+native Discord recipient, push, and deployment remain unverified.
+
+This pass improves the existing Discordmaxxer candidate without changing the
+canonical checkout or publishing a release. It corrects stale upstream plugin
+IDs, migrates the two renamed settings once, removes unavailable legacy IDs
+from defaults and quick-enable bundles, and adds a registry gate so defaults,
+bundles, and featured cards cannot point at missing plugins.
+
+DM Hub now has a Plugin health panel with loaded/off/conditional/best-effort/
+experimental/caution/unavailable states. The tour and quick bundles report
+when a plugin is not present instead of claiming it was enabled. The tour copy
+also keeps local gradients, service/account-dependent profile media, native
+Discord actions, and Tournament Mode's best-effort frame-rate behavior
+separate and explicit. README/CLAUDE/RESILIENCE documentation was corrected to
+match the current registry and to remove an unverified fixed RAM claim.
+
+The follow-up audit found and fixed three quieter reliability issues. DMTyping
+now targets the pinned TypingTweaks row class, rechecks recycled DOM rows and
+roster updates, and cleans up its observer on stop instead of silently doing
+nothing after a Vencord UI change. DMGrant now reads the current `DMGrant`
+settings key while retaining a read-only fallback for old
+`DiscordmaxxerGrant` data. DMVotes now skips tally polling for ineligible
+users and bounds its worker requests to eight seconds.
+
+DMVotes no longer presents the old filler poll. Its six moderated candidates now
+map to the actual profile backup, banner-only copy, media restore, sync/conflict,
+voice/screenshare, and native-Discord explanation work users have been asking
+for. Retired worker keys are excluded from the visible total. The panel also
+lets every user save up to ten short requests locally and copy one into
+`#vip-chat` or support; the current worker has no moderated suggestion endpoint,
+so custom text is not pretended to be a shared vote.
+
+The static gates pass locally: `pnpm verifyPlugins`, `pnpm test` (lint and
+TypeScript), `pnpm build`, strict `DM_STRICT_REBRAND=1 pnpm overlay:vencord`,
+`node overlay-scripts/verify-build.mjs`, and `git diff --check`. The overlay
+compiled all 24 custom plugins and the registry audit resolved 53 defaults, 10
+bundle entries, and 8 featured entries. This candidate is not in the running
+client, is not pushed, and is not deployed. Native runtime behavior, two-PC
+roster sync, service/account paths, and recipient voice/screenshare checks
+remain human gates.
+
+Best next action: load this candidate in the real client for the focused
+health/tour, DMTyping, and local-grant smoke test before making a separate
+release decision.
+
+## 2026-09-22 profile-flair media + instant tour gradient picker — unpublished candidate
+
+This candidate continues the v0.7.66 profile-flair fix in two isolated
+worktrees. It is not loaded into the running client and does not change the
+canonical dirty checkout.
+
+The DMWelcome tour is now version 6. It has 24 gradient swatches plus a
+top/bottom color picker for custom blends. Every preset applies immediately on
+the current PC, even without a claim code; the current user's local choice
+overrides an older shared gradient so a click cannot look broken. With a claim
+code, the same action also publishes both colors through `/profile` and lets
+the shared roster sync across PCs and other Discordmaxxer users. If shared
+publication fails, the free local gradient remains applied with an explicit
+sync warning. Gradients are FREE, not MAXXER++-only. Animated avatars remain
+MAXXER+ and shared banners remain MAXXER. Vanilla Discord still cannot render
+Discordmaxxer-only roster flair; the optional native Discord action is a
+separate Discord/Nitro-gated path.
+
+The same low-friction pass now covers the other raw-input surfaces that were
+most likely to feel broken: DMTheme has visual swatch cards alongside its
+keyboard-friendly selector; DMPresence has one-click purpose presets plus a
+preview line while keeping custom MAXXER++ fields; and DMVipClaim cleans and
+formats pasted codes, uppercases typed input, shows character progress, and
+only enables Redeem once the code shape is valid. VideoBackground now explains
+that local files persist across app restarts on the same PC but cannot survive
+a Windows reinstall without the original file or a portable HTTPS source.
+
+The same treatment now covers shortcuts. CompactView, TournamentMode, and
+DMVoiceKeybinds expose visual recorders with safe modifier requirements,
+readable current values, and one-click default reset while retaining their raw
+settings for advanced users. Changed CompactView and TournamentMode shortcuts
+re-register immediately instead of waiting for a plugin restart, named keys
+(Escape, arrows, Space, Page Up, and lock keys) are normalized in both the
+renderer fallback and Electron bridge, and a global-registration conflict
+falls back to a focused-window handler with an explicit warning.
+
+The app worktree is
+`C:\Users\Diggy\projects\discordmaxxer-profile-flair-local-media` on
+`codex/profile-flair-local-media`. The worker worktree is
+`C:\Users\Diggy\projects\optimizationmaxxing-profile-media` on
+`codex/profile-flair-media-upload`. The worker candidate adds authenticated
+`/profile-media` upload and serving with R2-backed image/GIF/video storage so
+a local banner can be deliberately published and recovered on another PC;
+the R2 bucket still needs to be created and deployed before that path is live.
+
+Profile writes carry an `updatedAt` conflict guard, the roster replaces stale
+profiles atomically, and media serving supports HEAD/range requests plus
+bounded per-user retention. The updater page now shows a GitHub release link
+when release notes are empty or arrive in an unexpected format.
+
+Verification: app `pnpm testTypes`, `pnpm build`, `pnpm lint`,
+`pnpm build:dev`, strict `CI=true pnpm overlay:vencord`,
+`node overlay-scripts/verify-build.mjs`, updater syntax, and diff checks pass.
+The worker profile-media suite is 8/8 passing, `node --check vip-worker/worker.js`
+passes, and its diff check passes. The strict overlay used a temporary Vencord
+source worktree only for this candidate build. No native client, second-PC,
+recipient, R2, worker-deploy, or live-release proof has been claimed.
+
+Live boundary: v0.7.66 remains the public release. The old live tour could
+leave a per-install draft behind or let an older shared red value win, which is
+why the user's Cotton Candy click could appear ineffective; this candidate
+overrides that stale value locally, repaints the open profile synchronously,
+and publishes the shared value when the worker accepts it. The next
+real-client checks are to click a tour swatch and a custom blend, confirm the
+new value survives reload and another Discordmaxxer client syncs after the
+worker/app release, then publish a local banner after the worker/R2 deployment
+gate.
+The best next action is explicit review/approval for the separate worker
+deployment and app publication, followed by those human client checks.
+
 ## 2026-09-22 profile-flair consistency and usability — v0.7.66 public release — live
 
 Diggy reported that the same Diggyai account showed the published green-cave/red
@@ -123,14 +294,15 @@ tier changes; and restores Discord's original inline styles when the plugin
 stops or a user loses a field.
 
 Tier gates are aligned across the renderer, roster sanitizer, and VIP card:
-MAXXER gets custom banners and five saved video-background slots; MAXXER+
-gets animated avatars, video-background playback, twenty slots, and the three
-exclusive themes; MAXXER++ gets profile gradient colors, animated name tint,
-custom presence, voice color, beta builds, votes, and the About credit. The
-badge registration now re-evaluates after roster load. VIP claims accept the
-worker's `rebound` response and update the locally cached granted tier,
-expiry, and scope. The worker source also re-applies profile field gates and
-expiry normalization server-side; it has not been deployed.
+gradients are FREE for every user; MAXXER gets custom banners and five saved
+video-background slots; MAXXER+ gets animated avatars, video-background
+playback, twenty slots, and the three exclusive themes; MAXXER++ gets animated
+name tint, custom presence, voice color, beta builds, votes, and the About
+credit. A claim is still required for any shared roster write, and the worker
+continues to gate shared media server-side. The badge registration now
+re-evaluates after roster load. VIP claims accept the worker's `rebound`
+response and update the locally cached granted tier, expiry, and scope. The
+worker source has not been deployed.
 
 The Windows taskbar fix sets `com.maxxtopia.discordmaxxer` before Electron
 creates a window, supplies the Clyde icon through `setAppDetails`, and keeps

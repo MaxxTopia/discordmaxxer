@@ -65,7 +65,6 @@ Each maps to a feature Diggy specifically asked for:
 | Remove untrusted-domain / sus-file popup | AlwaysTrust |
 | Crash recovery | CrashHandler |
 | Custom Nitro-style themes / bg color | ClientTheme + custom CSS |
-| Friends-since on user popout | FriendsSince |
 | Image zoom + image quality | ImageZoom |
 | Avatars + role colors in typing indicator | TypingTweaks |
 | Notify when friend/server removes you | RelationshipNotifier |
@@ -80,21 +79,19 @@ Each maps to a feature Diggy specifically asked for:
 | Server folders on dedicated sidebar | BetterFolders |
 | Enhanced settings menu | BetterSettings |
 | Avatars + role icons in @ mentions | MentionAvatars |
-| More quick-react buttons | MoreQuickReact |
+| More quick-react buttons | MoreQuickReactions |
 | Auto-mute new servers + tweak settings on join | NewGuildSettings |
 | Disable F1 keybind | NoF1 |
 | Pin DMs to top | PinDMs |
 | One-click read-all notifications | ReadAllNotificationsButton |
-| Add current channel to forward popup | SelfForward |
 | Text replacement / autocorrect | TextReplace |
 | Theming data attributes | ThemeAttributes |
-| Bundled community theme library | ThemeLibrary |
 | Re-add web-only keybinds | WebKeybinds |
-| Fix screenshare | WebScreenShareFix |
+| Fix screenshare | WebScreenShareFixes |
 
 ### Custom plugins (we build)
 
-1. **TournamentMode** — toggle button + global hotkey. **Performance-only, always-on-friendly.** When on: lowers Discord's process priority to BELOW_NORMAL (game gets CPU scheduling), caps renderer at 30 fps (halves compositor GPU load), terminates the arRPC Rich Presence worker, and pauses real-cost CSS animations (animated emoji decoding loop, animated avatars, typing-dots, voice-activity ring). Does NOT strip cosmetic stuff (transitions, badges, hover effects) — those don't add lag, so they stay on. v3 — 2026-05-06.
+1. **TournamentMode** — toggle button + global hotkey. **Performance-only, always-on-friendly.** When on: lowers Discord's process priority to BELOW_NORMAL (game gets CPU scheduling), pauses real-cost CSS animations, and terminates the arRPC Rich Presence worker. It requests a 30 FPS renderer cap where Chromium honors it; normal windowed BrowserWindows may ignore that request. Does NOT strip cosmetic stuff (transitions, badges, hover effects) — those don't add lag, so they stay on. v3 — 2026-05-06.
 
 2. **CompactView** — hotkey-toggle hide of server list, channels, and member list. Auto-hide-on-screenshare option. Targets vertical-monitor screenshare users. ~120 LoC, 0.5 day.
 
@@ -154,13 +151,13 @@ End-to-end on Diggy's daily Windows machine:
 1. Build installer, install, sign in
 2. Voice call (verify WebRTC)
 3. Send fake-Nitro animated emoji to non-modded friend → fallback link
-4. Toggle TournamentMode → animations gone, FPS throttled
+4. Toggle TournamentMode → costly animations pause; verify the best-effort frame-rate request, process priority, and voice/screenshare behavior
 5. MassDelete a test channel's last 10 messages → rate-limit visible
 6. Theme switch → 3 bundled themes apply cleanly
 7. CompactView hotkey → server list, channels, members each toggle independently
 8. DiscordmaxxerBadge → install on a 2nd test account, verify badge appears in user popouts on both; toggle "Hide" works for supporter, gates non-supporter; opt-in custom status sets correctly and is editable in Discord normally
 9. Restart → defaults persist
-10. Compare RAM idle vs official Discord (target: ≥30% reduction) → real number for landing page
+10. Compare RAM and frame-time behavior idle vs official Discord with an apples-to-apples benchmark before publishing any percentage claim
 
 Pass = ship to private beta of ~3 trusted testers before public release.
 

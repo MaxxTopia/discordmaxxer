@@ -3,8 +3,8 @@
  * Copyright (c) 2026 Diggy
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * Fetches the project-wide tier roster on app startup and caches it for 5
- * minutes. The roster is a JSON file at a stable URL — see docs/v0.2-tier-
+ * Fetches the project-wide tier roster on app startup and caches it for 30
+ * seconds. The roster is a JSON file at a stable URL — see docs/v0.2-tier-
  * roster.md for the design and the migration path to the hub-site domain.
  *
  * NOT a Vencord plugin — just a shared utility imported by vip.ts. Lives
@@ -28,26 +28,29 @@ import { Tier } from "./vip";
 // claims (see optimizationmaxxing/vip-worker/worker.js). Each /claim writes
 // to KV and invalidates the worker's in-memory roster cache, so a freshly
 // claimed user appears in the roster within seconds. Worker and client both
-// use a 5 minute freshness window so profile flair and tier changes converge
+// use a 30 second freshness window so profile flair and tier changes converge
 // without leaving a viewer on yesterday's cached entitlement.
 const ROSTER_URL = "https://optmaxxing-vip.maxxtopia.workers.dev/roster";
 
-const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes; matches the worker cache
+const CACHE_TTL_MS = 30 * 1000; // 30 seconds; matches the worker cache
+const FETCH_RETRY_DELAY_MS = 30 * 1000;
 const FETCH_TIMEOUT_MS = 8000;
 
 /** Custom profile flair set by the user — visible only to other Discordmaxxer
  *  clients (channels E/F/G in DiscordmaxxerBadge). All fields optional; absent
- *  fields fall through to Discord's stock rendering. Tier-gated at ingest time:
- *  banner needs MAXXER; animated avatar needs MAXXER+; theme colors need
- *  MAXXER++. Keeping the gates here means every consumer sees the same
+ *  fields fall through to Discord's stock rendering. Media fields are
+ *  tier-gated at ingest time: banner needs MAXXER and animated avatar needs
+ *  MAXXER+. Theme colors are intentionally free for every Discordmaxxer user;
+ *  a claim is still required to publish a shared roster value.
+ *  Keeping the gates here means every consumer sees the same
  *  entitlement decision, even when an older worker payload contains stale
  *  profile fields after a tier changes. */
 export interface ProfileFlair {
-    /** https:// URL to image (png/jpg/webp/gif) or short MP4 video for the
-     *  profile-popout banner. ~256 char URL cap; viewer plugin HEAD-checks
+    /** https:// URL to image (png/jpg/webp/gif) or video for the
+     *  profile-popout banner. 250 char URL cap; viewer plugin HEAD-checks
      *  Content-Length and bails on >5MB image / >15MB video. */
     bannerUrl?: string;
-    /** https:// URL to an animated avatar (GIF or MP4). Replaces the user's
+    /** https:// URL to an animated avatar (GIF or image). Replaces the user's
      *  Discord avatar in profile popouts (P2) and member list + chat (P5).
      *  Suppressed when TournamentMode is active. */
     avatarAnimatedUrl?: string;
@@ -64,8 +67,8 @@ export interface ProfileFlair {
 export const PROFILE_FIELD_MIN_TIER: Readonly<Record<keyof ProfileFlair, Tier>> = {
     bannerUrl: Tier.MAXXER,
     avatarAnimatedUrl: Tier.MAXXER_PLUS,
-    themeColorPrimary: Tier.MAXXER_PLUS_PLUS,
-    themeColorSecondary: Tier.MAXXER_PLUS_PLUS
+    themeColorPrimary: Tier.FREE,
+    themeColorSecondary: Tier.FREE
 };
 
 interface RosterEntry {
@@ -80,6 +83,9 @@ interface RosterEntry {
     /** v2+ — user-set profile flair (banner / animated avatar / theme colors).
      *  Always optional. Missing on v1 payloads. */
     profile?: ProfileFlair;
+    /** Last successful profile write, used for optimistic concurrency across
+     *  PCs. */
+    profileUpdatedAt?: number;
 }
 
 interface RosterPayload {
@@ -90,20 +96,34 @@ interface RosterPayload {
 
 interface CacheState {
     fetchedAt: number;
+    retryAt: number;
     users: Record<string, RosterEntry>;
 }
 
 let cache: CacheState | null = null;
 let inFlight: Promise<void> | null = null;
 let avatarFlairFlag: { fetchedAt: number; value: boolean } | null = null;
-// Keep the last sanitized cosmetic payload separately from current
-// entitlements. A downgrade or a worker response that omits a profile field
-// must not make an already-rendered banner/avatar blink away mid-session.
-// Tier resolution remains live and never reads this cache.
-let staleProfileCache: Record<string, ProfileFlair> = {};
+
+// A successful profile write should be visible on the sender's own screen
+// immediately, even if the next roster request lands on a different worker
+// isolate before its KV read has caught up. This is deliberately short-lived:
+// the shared roster remains the source of truth for every other viewer, and a
+// later refresh naturally takes over once the worker has converged.
+const OPTIMISTIC_PROFILE_TTL_MS = 2 * 60 * 1000;
+let optimisticProfileCache: Record<string, ProfileFlair> = {};
+let optimisticProfileExpiresAt: Record<string, number> = {};
+let optimisticProfileUpdatedAt: Record<string, number> = {};
+let optimisticProfileReplacesCurrent: Record<string, boolean> = {};
 
 type RosterListener = () => void;
 const rosterListeners = new Set<RosterListener>();
+
+function notifyRosterListeners(): void {
+    for (const listener of rosterListeners) {
+        try { listener(); }
+        catch (e) { console.warn("[Discordmaxxer roster] listener failed:", e); }
+    }
+}
 
 /** Subscribe to a completed roster replacement. Consumers use this to repaint
  *  already-open profiles as soon as the async fetch resolves instead of
@@ -114,24 +134,27 @@ export function onRosterChange(listener: RosterListener): () => void {
 }
 
 function replaceCache(users: Record<string, RosterEntry>): void {
-    if (cache) {
-        for (const [id, entry] of Object.entries(cache.users)) {
-            if (entry.profile) {
-                staleProfileCache[id] = { ...staleProfileCache[id], ...entry.profile };
-            }
+    // A successful roster response is authoritative. Replacing the whole
+    // snapshot prevents removed/expired/cleared cosmetic fields from living
+    // forever in a side cache and lets a cross-PC delete converge normally.
+    const optimisticUsers = new Set([
+        ...Object.keys(optimisticProfileCache),
+        ...Object.keys(optimisticProfileReplacesCurrent),
+        ...Object.keys(optimisticProfileUpdatedAt)
+    ]);
+    for (const userId of optimisticUsers) {
+        const serverUpdatedAt = users[userId]?.profileUpdatedAt;
+        const localUpdatedAt = optimisticProfileUpdatedAt[userId];
+        if (serverUpdatedAt !== undefined && (localUpdatedAt === undefined || serverUpdatedAt >= localUpdatedAt)) {
+            delete optimisticProfileCache[userId];
+            delete optimisticProfileExpiresAt[userId];
+            delete optimisticProfileUpdatedAt[userId];
+            delete optimisticProfileReplacesCurrent[userId];
         }
     }
-    for (const [id, entry] of Object.entries(users)) {
-        if (entry.profile) {
-            staleProfileCache[id] = { ...staleProfileCache[id], ...entry.profile };
-        }
-    }
-    cache = { fetchedAt: Date.now(), users };
+    cache = { fetchedAt: Date.now(), retryAt: 0, users };
     avatarFlairFlag = null;
-    for (const listener of rosterListeners) {
-        try { listener(); }
-        catch (e) { console.warn("[Discordmaxxer roster] listener failed:", e); }
-    }
+    notifyRosterListeners();
 }
 
 /** Highest version we know how to read. The worker may emit a lower version
@@ -147,9 +170,13 @@ const SUPPORTED_VERSION = 2;
 // these straight into element src / CSS) gets already-sanitized values. A
 // non-https URL would otherwise bypass the dm-media:// proxy and a malformed
 // one could break out of a CSS value.
-const URL_RE = /^https:\/\/[^\s"']+$/i;
+const URL_RE = /^https:\/\/[^\s"']{1,242}$/i;
 const COLOR_RE = /^#[0-9a-fA-F]{6}$/;
 const VALID_TIERS = new Set<number>([Tier.FREE, Tier.MAXXER, Tier.MAXXER_PLUS, Tier.MAXXER_PLUS_PLUS]);
+
+function isVideoProfileUrl(value: string): boolean {
+    return /(?:[?&]dmx-media=video(?:&|#|$)|\.(?:mp4|webm|mov)(?:[?#]|$))/i.test(value);
+}
 
 function sanitizeProfile(p: any, tier: Tier): ProfileFlair | undefined {
     if (!p || typeof p !== "object") return undefined;
@@ -157,7 +184,7 @@ function sanitizeProfile(p: any, tier: Tier): ProfileFlair | undefined {
     if (tier >= PROFILE_FIELD_MIN_TIER.bannerUrl && typeof p.bannerUrl === "string" && URL_RE.test(p.bannerUrl)) {
         out.bannerUrl = p.bannerUrl;
     }
-    if (tier >= PROFILE_FIELD_MIN_TIER.avatarAnimatedUrl && typeof p.avatarAnimatedUrl === "string" && URL_RE.test(p.avatarAnimatedUrl)) {
+    if (tier >= PROFILE_FIELD_MIN_TIER.avatarAnimatedUrl && typeof p.avatarAnimatedUrl === "string" && URL_RE.test(p.avatarAnimatedUrl) && !isVideoProfileUrl(p.avatarAnimatedUrl)) {
         out.avatarAnimatedUrl = p.avatarAnimatedUrl;
     }
     if (tier >= PROFILE_FIELD_MIN_TIER.themeColorPrimary && typeof p.themeColorPrimary === "string" && COLOR_RE.test(p.themeColorPrimary)) {
@@ -195,6 +222,7 @@ function sanitizeUsers(raw: Record<string, any>): Record<string, RosterEntry> {
         if (typeof e.grantedBy === "string") entry.grantedBy = e.grantedBy;
         if (typeof e.via === "string") entry.via = e.via;
         if (founderNumber !== undefined) entry.founderNumber = founderNumber;
+        if (Number.isFinite(Number(e.profileUpdatedAt))) entry.profileUpdatedAt = Number(e.profileUpdatedAt);
         const prof = sanitizeProfile(e.profile, tier);
         if (prof) entry.profile = prof;
         out[id] = entry;
@@ -221,31 +249,38 @@ async function doFetch(): Promise<void> {
         }
         if (!res.ok) {
             console.warn(`[Discordmaxxer roster] fetch ${ROSTER_URL} -> ${res.status}`);
-            replaceCache(cache?.users ?? {});
+            noteFetchFailure();
             return;
         }
         const payload = (await res.json()) as RosterPayload;
         if (typeof payload?.version !== "number" || payload.version > SUPPORTED_VERSION) {
             console.warn(`[Discordmaxxer roster] unsupported version: ${payload?.version}`);
-            replaceCache(cache?.users ?? {});
+            noteFetchFailure();
             return;
         }
         if (!payload.users || typeof payload.users !== "object") {
             console.warn("[Discordmaxxer roster] missing/invalid users map");
-            replaceCache(cache?.users ?? {});
+            noteFetchFailure();
             return;
         }
         replaceCache(sanitizeUsers(payload.users));
     } catch (e) {
-        // Network error / abort / parse fail — keep prior cache if any, just
-        // refresh the timestamp so we don't hammer the URL on every read.
+        // Network error / abort / parse fail — keep the last good snapshot and
+        // schedule a bounded retry instead of pretending the old data is new.
         console.warn("[Discordmaxxer roster] fetch failed:", (e as any)?.message ?? e);
-        replaceCache(cache?.users ?? {});
+        noteFetchFailure();
     }
 }
 
+function noteFetchFailure(): void {
+    if (cache) cache.retryAt = Date.now() + FETCH_RETRY_DELAY_MS;
+    else cache = { fetchedAt: 0, retryAt: Date.now() + FETCH_RETRY_DELAY_MS, users: {} };
+}
+
 function ensureFresh() {
-    const stale = !cache || Date.now() - cache.fetchedAt > CACHE_TTL_MS;
+    const now = Date.now();
+    const stale = !cache || now - cache.fetchedAt > CACHE_TTL_MS;
+    if (cache?.retryAt && now < cache.retryAt) return;
     if (!stale || inFlight) return;
     inFlight = doFetch().finally(() => { inFlight = null; });
 }
@@ -272,7 +307,10 @@ export function refreshRoster(): Promise<void> {
     // Keep the last good snapshot visible while the refresh is in flight. A
     // transient worker/network failure should not make every open profile
     // fall back to FREE or lose its flair until the next successful fetch.
-    if (cache) cache.fetchedAt = 0;
+    if (cache) {
+        cache.fetchedAt = 0;
+        cache.retryAt = 0;
+    }
     avatarFlairFlag = null;
     ensureFresh();
     return inFlight ?? Promise.resolve();
@@ -298,36 +336,91 @@ export function getRosterFounderNumber(userId: string): number | undefined {
 
 /** Fetch the user-set profile flair for a user (banner, animated avatar, theme
  *  colors) — visible only to other Discordmaxxer clients. Returns undefined if
- *  the user hasn't set any flair. Cosmetic fields intentionally remain
- *  available from the last sanitized roster snapshot after an entitlement
- *  downgrade/omission; getRosterTier() still follows current expiry. */
+ *  the user hasn't set any flair or the current roster omitted/expired it. */
 export function getRosterProfileFlair(userId: string): ProfileFlair | undefined {
     ensureFresh();
     const current = cache?.users[userId];
-    const stale = staleProfileCache[userId];
-    if (!current && !stale) return undefined;
-    return {
-        ...(stale ?? {}),
-        ...(current && !isExpired(current) ? (current.profile ?? {}) : {})
+    const expiresAt = optimisticProfileExpiresAt[userId];
+    if (expiresAt && expiresAt <= Date.now()) {
+        delete optimisticProfileExpiresAt[userId];
+        delete optimisticProfileCache[userId];
+        delete optimisticProfileUpdatedAt[userId];
+        delete optimisticProfileReplacesCurrent[userId];
+    }
+    const optimistic = optimisticProfileCache[userId];
+    if (!current && !optimistic) return undefined;
+    const merged = {
+        ...(current && !optimisticProfileReplacesCurrent[userId] && !isExpired(current) ? (current.profile ?? {}) : {}),
+        ...(optimistic ?? {})
     };
+    return Object.keys(merged).length ? merged : undefined;
+}
+
+/** Last server write timestamp for optimistic concurrency between PCs. */
+export function getRosterProfileUpdatedAt(userId: string): number | undefined {
+    ensureFresh();
+    if (optimisticProfileUpdatedAt[userId] !== undefined) return optimisticProfileUpdatedAt[userId];
+    const entry = cache?.users[userId];
+    if (!entry || isExpired(entry)) return undefined;
+    return entry.profileUpdatedAt;
+}
+
+/**
+ * Paint a just-saved profile locally before the public roster has converged.
+ * Only known profile fields are accepted; callers still need a successful
+ * worker response before treating this as published state.
+ */
+export function setOptimisticProfileFlair(userId: string, profile: Partial<ProfileFlair>, replace = false, updatedAt?: number): void {
+    if (replace) optimisticProfileReplacesCurrent[userId] = true;
+    if (Number.isFinite(updatedAt)) optimisticProfileUpdatedAt[userId] = updatedAt as number;
+    const next = replace ? {} : { ...(optimisticProfileCache[userId] ?? {}) };
+    for (const key of ["bannerUrl", "avatarAnimatedUrl", "themeColorPrimary", "themeColorSecondary"] as const) {
+        const value = profile[key];
+        if (value === undefined) continue;
+        if (typeof value === "string" && value.length > 0) next[key] = value;
+        else delete next[key];
+    }
+    if (Object.keys(next).length) {
+        optimisticProfileCache[userId] = next;
+        optimisticProfileExpiresAt[userId] = Date.now() + OPTIMISTIC_PROFILE_TTL_MS;
+    } else if (replace) {
+        // An empty full replacement is an intentional clear. Keep the
+        // replacement marker until the roster reports the same/newer write so
+        // an older cached profile cannot reappear on the sender's screen.
+        delete optimisticProfileCache[userId];
+        optimisticProfileExpiresAt[userId] = Date.now() + OPTIMISTIC_PROFILE_TTL_MS;
+        optimisticProfileReplacesCurrent[userId] = true;
+    } else {
+        delete optimisticProfileCache[userId];
+        delete optimisticProfileExpiresAt[userId];
+        delete optimisticProfileUpdatedAt[userId];
+        delete optimisticProfileReplacesCurrent[userId];
+    }
+    notifyRosterListeners();
+}
+
+/** Clear the sender-side preview after a failed save or an explicit reset. */
+export function clearOptimisticProfileFlair(userId: string): void {
+    if (!optimisticProfileCache[userId] && !optimisticProfileExpiresAt[userId]) return;
+    delete optimisticProfileCache[userId];
+    delete optimisticProfileExpiresAt[userId];
+    delete optimisticProfileUpdatedAt[userId];
+    delete optimisticProfileReplacesCurrent[userId];
+    notifyRosterListeners();
 }
 
 /** Cheap, memoized: does ANY non-expired roster user carry an animated-avatar
  *  flair? Lets DMProfileFlair's page-wide <img>/background scan early-out
  *  entirely when nobody (besides possibly self) has avatar flair — the common
  *  case in most servers. The O(n) roster walk runs only when the underlying
- *  cache is replaced (~once/5 min); every other call is O(1). */
+ *  cache is replaced (~once/30 sec); every other call is O(1). */
 export function rosterHasAnyAvatarFlair(): boolean {
     ensureFresh();
-    if (!cache && !Object.keys(staleProfileCache).length) return false;
+    if (!cache) return false;
     const cacheStamp = cache?.fetchedAt ?? 0;
     if (avatarFlairFlag?.fetchedAt === cacheStamp) return avatarFlairFlag.value;
     let value = false;
-    const ids = new Set([
-        ...Object.keys(cache?.users ?? {}),
-        ...Object.keys(staleProfileCache)
-    ]);
-    for (const id of ids) {
+    for (const id of Object.keys(cache.users)) {
         const profile = getRosterProfileFlair(id);
         if (profile?.avatarAnimatedUrl) {
             value = true;

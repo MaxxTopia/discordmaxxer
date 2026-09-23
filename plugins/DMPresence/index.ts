@@ -23,7 +23,7 @@
 
 import { definePluginSettings } from "@api/Settings";
 import definePlugin, { OptionType } from "@utils/types";
-import { ApplicationAssetUtils, FluxDispatcher } from "@webpack/common";
+import { ApplicationAssetUtils, FluxDispatcher, React } from "@webpack/common";
 
 import { hasTier, Tier } from "../_dm-shared/vip";
 
@@ -75,6 +75,46 @@ const DEFAULT_BUTTON_LABEL = "Visit maxxtopia.com";
 const DEFAULT_BUTTON_URL = "https://maxxtopia.com";
 
 let timer: ReturnType<typeof setInterval> | null = null;
+
+type PresencePreset = {
+    id: string;
+    label: string;
+    blurb: string;
+    name: string;
+    details: string;
+    state: string;
+    activityType: string;
+};
+
+const PRESENCE_PRESETS: PresencePreset[] = [
+    {
+        id: "brand",
+        label: "Brand default",
+        blurb: "The recommended Discordmaxxer presence",
+        name: DEFAULT_NAME,
+        details: DEFAULT_DETAILS,
+        state: DEFAULT_STATE,
+        activityType: "playing"
+    },
+    {
+        id: "focus",
+        label: "Focus mode",
+        blurb: "A simple locked-in status for building or competing",
+        name: DEFAULT_NAME,
+        details: "Locked in",
+        state: "Building in public",
+        activityType: "playing"
+    },
+    {
+        id: "watching",
+        label: "Showcase mode",
+        blurb: "A softer profile for sharing what you are working on",
+        name: DEFAULT_NAME,
+        details: "Showing off the setup",
+        state: DEFAULT_STATE,
+        activityType: "watching"
+    }
+];
 
 function setActivity(activity: any | null) {
     FluxDispatcher.dispatch({
@@ -159,7 +199,111 @@ async function refresh() {
     setActivity(await buildActivity());
 }
 
+/**
+ * A visual companion to the four raw rich-presence fields below. Presets make
+ * the common choices discoverable while the fields remain available for
+ * MAXXER++ users who want exact custom copy.
+ */
+function PresencePresetPicker() {
+    const locked = isLocked();
+    const [selected, setSelected] = React.useState<string | null>(null);
+
+    const cards = PRESENCE_PRESETS.map(preset =>
+        React.createElement(
+            "button",
+            {
+                key: preset.id,
+                type: "button",
+                disabled: locked,
+                "aria-pressed": selected === preset.id,
+                "aria-label": `${preset.label}: ${preset.blurb}`,
+                onClick: () => {
+                    if (locked) return;
+                    settings.store.name = preset.name;
+                    settings.store.details = preset.details;
+                    settings.store.state = preset.state;
+                    settings.store.activityType = preset.activityType;
+                    setSelected(preset.id);
+                    refresh();
+                },
+                style: {
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 4,
+                    minHeight: 72,
+                    padding: "9px 10px",
+                    textAlign: "left",
+                    borderRadius: 8,
+                    border: `1px solid ${selected === preset.id ? "#ff6ec7" : "rgba(255,255,255,0.14)"}`,
+                    boxShadow: selected === preset.id ? "0 0 0 2px rgba(255,110,199,0.18)" : "none",
+                    background: "rgba(0,0,0,0.22)",
+                    color: "#fbefff",
+                    cursor: locked ? "not-allowed" : "pointer",
+                    opacity: locked ? 0.58 : 1,
+                    transition: "border-color 120ms ease, box-shadow 120ms ease"
+                }
+            },
+            React.createElement(
+                "span",
+                { style: { fontSize: 12, fontWeight: 700, lineHeight: 1.15 } },
+                `${selected === preset.id ? "✓ " : ""}${preset.label}`
+            ),
+            React.createElement(
+                "span",
+                { style: { fontSize: 10.5, color: "#cbd0e0", lineHeight: 1.3 } },
+                preset.blurb
+            ),
+            React.createElement(
+                "span",
+                { style: { fontSize: 10.5, color: "#a9b6ff", lineHeight: 1.3 } },
+                `${preset.activityType === "watching" ? "Watching" : "Playing"} ${preset.name} · ${preset.details}`
+            )
+        )
+    );
+
+    return React.createElement(
+        "div",
+        {
+            style: {
+                marginTop: 10,
+                padding: "11px 12px",
+                borderRadius: 9,
+                background: "linear-gradient(135deg, rgba(226,91,255,0.08), rgba(76,81,247,0.08))",
+                border: "1px solid rgba(226,91,255,0.25)"
+            }
+        },
+        React.createElement(
+            "div",
+            { style: { fontSize: 13, fontWeight: 700, color: "#fbefff", marginBottom: 3 } },
+            "✨ Pick a presence by purpose"
+        ),
+        React.createElement(
+            "div",
+            { style: { fontSize: 11.5, color: "#cbd0e0", opacity: 0.88, lineHeight: 1.45, marginBottom: 8 } },
+            locked
+                ? "Your tier uses the required Discordmaxxer presence. Custom presets and fields unlock at MAXXER++."
+                : "Choose a starting point, then fine-tune the fields below if you want custom copy."
+        ),
+        React.createElement(
+            "div",
+            {
+                style: {
+                    display: "grid",
+                    gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+                    gap: 7
+                }
+            },
+            cards
+        )
+    );
+}
+
 const settings = definePluginSettings({
+    picker: {
+        type: OptionType.COMPONENT,
+        description: "",
+        component: PresencePresetPicker
+    },
     enabled: {
         type: OptionType.BOOLEAN,
         description:

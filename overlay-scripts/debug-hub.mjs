@@ -7,15 +7,15 @@ const page = pages.find(p => p.url().includes("discord.com")) ?? pages[0];
 const result = await page.evaluate(() => {
     const v = globalThis.Vencord;
 
-    // 1) Test the setSetting path: write enable=true on DiscordmaxxerTheme, see if it sticks.
-    const before = v.PlainSettings?.plugins?.DiscordmaxxerTheme?.enable;
+    // 1) Test the setSetting path: write enable=true on DMTheme, see if it sticks.
+    const before = v.PlainSettings?.plugins?.DMTheme?.enable;
     try {
-        v.Settings.plugins.DiscordmaxxerTheme.enable = true;
+        v.Settings.plugins.DMTheme.enable = true;
     } catch (e) {
         return { writeTest: "THREW", error: String(e) };
     }
-    const afterPlain = v.PlainSettings?.plugins?.DiscordmaxxerTheme?.enable;
-    const afterProxy = v.Settings?.plugins?.DiscordmaxxerTheme?.enable;
+    const afterPlain = v.PlainSettings?.plugins?.DMTheme?.enable;
+    const afterProxy = v.Settings?.plugins?.DMTheme?.enable;
 
     // 2) Find Discord's user panel and inspect its structure.
     const userArea = document.querySelector('section[class*="panels-"]') ??

@@ -30,6 +30,83 @@
   values, accepts HTTPS-only banner links, and replaces the cache atomically;
   malformed or interrupted updates keep the prior safe state.
 
+## Profile flair/media safeguards (2026-09-22 candidate)
+
+- **Roster consistency:** the client replaces the current sanitized roster
+  instead of merging stale cosmetic fields, keeps the last good snapshot when
+  a refresh fails, retries after 30 seconds, and lets a successful profile
+  write paint the current self-view immediately.
+- **Cross-PC write safety:** profile writes carry `updatedAt`; a second PC with
+  an older snapshot receives a conflict response and must refresh before it can
+  overwrite newer flair. Expired or non-Discordmaxxer claims cannot publish.
+- **Media boundary:** local image/GIF/video files are never silently shared.
+  An explicit publish uploads to the R2-backed worker, caps object sizes,
+  supports `HEAD` and single-range reads for reliable rendering, rate-limits
+  uploads, and prunes old per-user objects. Native Discord broadcast remains a
+  separate one-time action and does not masquerade as shared roster state.
+- **Input boundary:** raw hex, theme IDs, rich-presence fields, and VIP claim
+  codes now have visual or guided paths first. Swatches/presets apply the
+  common choice immediately; advanced fields remain available where intended;
+  pasted claim codes are normalized locally, while the worker remains the
+  authority for entitlement and binding.
+- **Shortcut boundary:** CompactView, TournamentMode, and DMVoiceKeybinds now
+  record modifier shortcuts, normalize named keys across the renderer and
+  Electron paths, re-register edits immediately, and retain a focused-window
+  fallback when another app owns the OS-level combination.
+- **Plugin availability boundary:** default seeding, bundles, and the tour use
+  exact IDs from the pinned Vencord registry; old aliases migrate once, absent
+  legacy IDs are no longer seeded, and DM Hub exposes loaded/off/conditional/
+  unavailable status instead of silently creating dead toggles. DMTyping also
+  follows the pinned TypingTweaks row class and roster refresh lifecycle, while
+  DMGrant retains a legacy settings fallback and DMVotes does not poll a
+  locked-out account.
+- **Release gate:** this candidate is not live until the R2 bucket exists, the
+  worker and app are released as a tested pair, and a real second-client and
+  native-recipient check confirm the intended boundaries. Build and unit tests
+  cannot prove those external surfaces.
+
+## Follow-up local-media/rendering safeguards (2026-09-23 candidate)
+
+- **Appearance explainability:** the Profile Appearance Center labels each
+  gradient/banner/avatar layer as local, URL draft, shared roster, or unset and
+  exposes a renderer-health snapshot. This makes precedence and fallback
+  failures diagnosable without opening DevTools or guessing whether vanilla
+  Discord is involved.
+- **Reinstall recovery:** Export/Import appearance backup is an explicit,
+  private JSON backup of cosmetic settings and selected local media bytes. It
+  excludes claim codes and credentials, has a bounded input size, and never
+  uploads anything by itself. A real off-machine copy is still required for
+  disaster recovery.
+- **Local-file continuity:** a selected profile banner/avatar is copied into
+  Vencord's local IndexedDB after the user chooses it, so reopening the editor
+  or restarting Discordmaxxer on the same PC can restore the prepared file.
+  The UI distinguishes remembered files from session-only files. This is not a
+  Windows-reinstall backup and never silently uploads media; shared recovery
+  still requires the explicit R2-backed Publish as shared... action.
+- **Bounded profile operations:** profile writes, native profile URL reads, and
+  still-frame reads abort after 15 seconds; explicit shared media uploads abort
+  after 30 seconds and show a retryable error. A stalled worker or dead media
+  host therefore cannot leave the editor's busy state hanging forever. A
+  timed-out shared gradient write keeps the local gradient applied.
+- **Renderer workload bound:** profile-flair mutation scans are skipped while
+  the window is hidden, resumed with a fresh avatar sweep on visibility, and
+  debounced to a 120ms trailing interval before an animation-frame paint. The
+  two-second reconciliation timer also sleeps while hidden. This is a local
+  performance guard, not proof of low resource usage on every Discord surface;
+  native client/call testing remains the evidence gate.
+- **Media-failure fallback:** image/video probes mark a failing shared URL for
+  the session, restore Discord's original banner/avatar/background, and expose
+  the latest failure in renderer health. This prevents a dead host from
+  repeatedly flashing broken media on every mutation.
+- **Reduced-motion boundary:** the default reduced-motion guard suppresses
+  custom banner/avatar media while preserving theme gradients; TournamentMode
+  remains an explicit stronger performance gate. Both are user-visible in the
+  editor so a deliberate suppression is not mistaken for a broken gradient.
+- **Component-share safety:** banner-only, avatar-only, and gradient-only
+  profile-look codes are sanitized through the same bounded decoder and apply
+  only their named component. They cannot carry claim codes or silently clear
+  unrelated profile fields.
+
 ## Fix-class legend
 
 - **HOT** — fixable by a runtime toggle, no restart. True auto-failover possible.

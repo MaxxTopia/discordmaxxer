@@ -3,7 +3,7 @@
  * Copyright (c) 2026 Diggy
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * MAXXER++ tier perk — plugin votes. Surfaces a panel of candidate
+ * MAXXER++ tier perk — plugin votes. Surfaces a panel of concrete candidate
  * features that subscribers can vote on. Aggregate counts come from a
  * Cloudflare Worker (`discordmaxxer-votes`) backed by a KV store; HWID
  * dedup means a single rig can vote for each feature exactly once.
@@ -15,9 +15,9 @@
  *
  * Worker source: maxxtopia/votes-worker/{worker.js,wrangler.toml}.
  *
- * Top-voted candidate gets shipped in the next release. The candidate
- * list is hand-curated per release — Diggy edits CANDIDATES below and
- * runs `wrangler kv key delete count:<id>` for shipped items.
+ * Top-voted candidate gets shipped in the next release. The shared candidate
+ * list is hand-curated so every tally has a real label and an owner. Users
+ * can still save their own local request and copy it into #vip-chat/support.
  */
 
 import { definePluginSettings } from "@api/Settings";
@@ -40,6 +40,7 @@ declare global {
 const VIP_GATE = Tier.MAXXER_PLUS_PLUS;
 const VOTES_API = "https://discordmaxxer-votes.maxxtopia.workers.dev";
 const TALLY_REFRESH_MS = 30_000;
+const REQUEST_TIMEOUT_MS = 8_000;
 
 interface Candidate {
     id: string;        // stable slug, [a-z0-9-]+, used as KV key suffix
@@ -47,54 +48,61 @@ interface Candidate {
     blurb: string;
 }
 
-// Curated v0.7.0 candidate list. Removes shipped items each release;
-// always 5-8 candidates. Updated 2026-05-10 — twenty-mention-chimes
-// and real-sound-packs-extension shipped in this same release, so
-// they're out.
+// Curated 2026-09-23 candidate list. These are deliberately tied to real
+// profile/media/sync and voice pain points rather than filler features.
 const CANDIDATES: Candidate[] = [
     {
-        id: "voice-channel-themes",
-        name: "Tier-themed voice-channel audio cues",
+        id: "profile-look-backup",
+        name: "One-click profile look backup",
         blurb:
-            "Custom join/leave/mute SFX matched to your active theme — replaces Discord's defaults for MAXXER+/++."
+            "Export and restore your complete Discordmaxxer look — gradient, avatar, banner, theme, and presence — across PCs or after a reinstall."
     },
     {
-        id: "custom-cursor-byo",
-        name: "Bring-your-own cursor (PNG upload)",
+        id: "banner-only-profile-copy",
+        name: "Copy only a banner",
         blurb:
-            "MAXXER++ uploads a custom PNG cursor instead of picking from the bundled six. Local-only, never synced."
+            "Move a banner between profiles without overwriting the avatar, gradient, or the rest of the current flair."
     },
     {
-        id: "tournament-mode-hotkey",
-        name: "Tournament Mode global keyboard shortcut",
+        id: "media-library-restore",
+        name: "Profile media library and restore",
         blurb:
-            "One-key toggle to enter performance mode without alt-tabbing. Bind whatever you like."
+            "Keep GIFs and video sources organized with clear backup/restore guidance so local media is not lost after Windows is reinstalled."
     },
     {
-        id: "rich-presence-game-detector",
-        name: "Game-aware Rich Presence",
+        id: "profile-sync-status",
+        name: "Profile sync and conflict status",
         blurb:
-            "MAXXER++ presence shows your current game's name + elapsed time, not just 'Discordmaxxer'. Auto-detects from running processes."
+            "Show which PC and version last wrote shared flair, detect stale data, and offer refresh or restore instead of silently showing the wrong profile."
     },
     {
-        id: "plugin-spotlight-rotation",
-        name: "Hub Plugin Spotlight rotation",
+        id: "voice-screenshare-diagnostics",
+        name: "Voice and screenshare self-test",
         blurb:
-            "Auto-rotating featured-plugin card in the Hub showing one less-known Vencord plugin each launch with a one-click enable."
+            "A guided check for capture, audio, echo, and recovery with clear sender/recipient results instead of unexplained toggles."
     },
     {
-        id: "username-gradient-nameplates",
-        name: "Tier-color username gradient in chat",
+        id: "native-broadcast-guide",
+        name: "Clear native Discord broadcast guide",
         blurb:
-            "Your messages render with a subtle MAXXER+/++ gradient on the username — visible only to other Discordmaxxer users."
-    },
-    {
-        id: "afk-auto-deafen-sound",
-        name: "AFK auto-deafen with custom chime",
-        blurb:
-            "Auto-deafen + play your active chime when you go AFK in a voice channel. Also auto-undeafens on return."
+            "Explain the optional one-time vanilla Discord profile update, check what is actually supported, and show the exact limits before sending anything."
     }
 ];
+
+const MAX_SUGGESTIONS = 10;
+const MAX_SUGGESTION_LENGTH = 180;
+const SUGGESTIONS_KEY = "dm-votes-suggestions";
+
+const normalizeSuggestion = (value: string) => value.trim().replace(/\s+/g, " ").slice(0, MAX_SUGGESTION_LENGTH);
+
+const suggestionsStore = makePersistentValue<string[]>(SUGGESTIONS_KEY, [], raw => {
+    if (!Array.isArray(raw)) return null;
+    return raw
+        .filter((value): value is string => typeof value === "string")
+        .map(normalizeSuggestion)
+        .filter(Boolean)
+        .slice(0, MAX_SUGGESTIONS);
+});
 
 // Persisted via DataStore (IndexedDB). Was localStorage, which modern Discord
 // nukes → the "✓ Voted" state was lost every restart. (Server HWID-dedups, so
@@ -114,9 +122,19 @@ function persistVoted(set: Set<string>) {
     votedStore.set([...set]);
 }
 
+async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    try {
+        return await fetch(input, { ...init, signal: controller.signal });
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
 async function fetchTally(): Promise<Record<string, number>> {
     try {
-        const res = await fetch(`${VOTES_API}/tally`, { method: "GET" });
+        const res = await fetchWithTimeout(`${VOTES_API}/tally`, { method: "GET" });
         if (!res.ok) return {};
         const data = await res.json();
         return data?.counts ?? {};
@@ -132,7 +150,7 @@ async function submitVote(featureId: string): Promise<{ ok: boolean; alreadyVote
     if (!hwid) return { ok: false, alreadyVoted: false, count: 0, error: "no-hwid" };
 
     try {
-        const res = await fetch(`${VOTES_API}/vote`, {
+        const res = await fetchWithTimeout(`${VOTES_API}/vote`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ feature_id: featureId, hwid })
@@ -147,6 +165,163 @@ async function submitVote(featureId: string): Promise<{ ok: boolean; alreadyVote
     }
 }
 
+async function copySuggestion(value: string): Promise<boolean> {
+    try {
+        if (!navigator.clipboard?.writeText) return false;
+        await navigator.clipboard.writeText(`Discordmaxxer feature request: ${value}`);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+function SuggestionBox() {
+    const [draft, setDraft] = React.useState("");
+    const [suggestions, setSuggestions] = React.useState<string[]>(() => suggestionsStore.get());
+    const [saving, setSaving] = React.useState(false);
+
+    React.useEffect(() => {
+        let alive = true;
+        suggestionsStore.ready.then(() => {
+            if (alive) setSuggestions(suggestionsStore.get());
+        });
+        return () => { alive = false; };
+    }, []);
+
+    const handleAdd = async () => {
+        const value = normalizeSuggestion(draft);
+        if (!value || saving) return;
+
+        setSaving(true);
+        await suggestionsStore.ready;
+        const current = suggestionsStore.get();
+        const next = [value, ...current.filter(item => item !== value)].slice(0, MAX_SUGGESTIONS);
+        suggestionsStore.set(next);
+        setSuggestions(next);
+        setDraft("");
+        setSaving(false);
+        Toasts.show({
+            message: "Saved on this PC. Copy it into #vip-chat or support when you want it reviewed.",
+            id: Toasts.genId(),
+            type: Toasts.Type.SUCCESS,
+            options: { duration: 3500 }
+        });
+    };
+
+    const handleCopy = async (value: string) => {
+        const copied = await copySuggestion(value);
+        Toasts.show({
+            message: copied ? "Request copied — paste it into #vip-chat or support." : "Could not access the clipboard. Select and copy the request manually.",
+            id: Toasts.genId(),
+            type: copied ? Toasts.Type.SUCCESS : Toasts.Type.FAILURE,
+            options: { duration: 3500 }
+        });
+    };
+
+    const handleRemove = async (value: string) => {
+        await suggestionsStore.ready;
+        const next = suggestionsStore.get().filter(item => item !== value);
+        suggestionsStore.set(next);
+        setSuggestions(next);
+    };
+
+    return (
+        <div style={{
+            marginTop: "2px",
+            padding: "12px 14px",
+            borderRadius: "6px",
+            background: "rgba(120,150,255,0.06)",
+            border: "1px solid rgba(120,150,255,0.20)"
+        }}>
+            <div style={{ fontSize: "13px", fontWeight: 700, color: "#cbd8ff", marginBottom: "4px" }}>
+                💡 Have your own request?
+            </div>
+            <div style={{ fontSize: "11.5px", color: "#9fa9c2", lineHeight: 1.45, marginBottom: "8px" }}>
+                Save it locally on this PC, then copy it into <code>#vip-chat</code> or support. Custom requests are not silently sent as anonymous shared vote IDs.
+            </div>
+            <textarea
+                value={draft}
+                onChange={event => setDraft(event.currentTarget.value.slice(0, MAX_SUGGESTION_LENGTH))}
+                onKeyDown={event => {
+                    if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+                        event.preventDefault();
+                        void handleAdd();
+                    }
+                }}
+                placeholder="What should Discordmaxxer make easier?"
+                maxLength={MAX_SUGGESTION_LENGTH}
+                rows={2}
+                style={{
+                    width: "100%",
+                    boxSizing: "border-box",
+                    resize: "vertical",
+                    minHeight: "52px",
+                    padding: "8px 9px",
+                    borderRadius: "5px",
+                    border: "1px solid rgba(255,255,255,0.14)",
+                    background: "rgba(0,0,0,0.20)",
+                    color: "#e4e8f5",
+                    font: "inherit",
+                    fontSize: "12px"
+                }}
+                aria-label="Your Discordmaxxer feature request"
+            />
+            <div style={{ display: "flex", alignItems: "center", gap: "8px", marginTop: "7px" }}>
+                <span style={{ flex: 1, fontSize: "10.5px", color: "#7f89a5" }}>
+                    {draft.length}/{MAX_SUGGESTION_LENGTH} · Ctrl+Enter to save
+                </span>
+                <button
+                    onClick={() => void handleAdd()}
+                    disabled={!normalizeSuggestion(draft) || saving}
+                    style={{
+                        padding: "5px 10px",
+                        borderRadius: "4px",
+                        border: "1px solid rgba(120,150,255,0.35)",
+                        background: "rgba(120,150,255,0.15)",
+                        color: "#d6e0ff",
+                        cursor: !normalizeSuggestion(draft) || saving ? "default" : "pointer",
+                        opacity: !normalizeSuggestion(draft) || saving ? 0.5 : 1,
+                        font: "inherit",
+                        fontSize: "11px",
+                        fontWeight: 600
+                    }}
+                >
+                    {saving ? "Saving…" : "Save request"}
+                </button>
+            </div>
+
+            {suggestions.length > 0 && (
+                <div style={{ marginTop: "10px", display: "flex", flexDirection: "column", gap: "5px" }}>
+                    <div style={{ fontSize: "10.5px", color: "#7f89a5", textTransform: "uppercase", letterSpacing: "0.06em" }}>
+                        Saved on this PC
+                    </div>
+                    {suggestions.map(value => (
+                        <div key={value} style={{ display: "flex", alignItems: "center", gap: "7px" }}>
+                            <span style={{ flex: 1, minWidth: 0, fontSize: "11.5px", color: "#bcc3d3", overflowWrap: "anywhere" }}>
+                                {value}
+                            </span>
+                            <button
+                                onClick={() => void handleCopy(value)}
+                                style={{ padding: "3px 7px", borderRadius: "4px", border: "1px solid rgba(255,255,255,0.12)", background: "rgba(255,255,255,0.05)", color: "#cbd0e0", cursor: "pointer", font: "inherit", fontSize: "10.5px", whiteSpace: "nowrap" }}
+                            >
+                                Copy
+                            </button>
+                            <button
+                                onClick={() => void handleRemove(value)}
+                                aria-label={`Remove request: ${value}`}
+                                title="Remove request"
+                                style={{ padding: "3px 6px", borderRadius: "4px", border: "1px solid rgba(255,255,255,0.12)", background: "rgba(255,255,255,0.05)", color: "#9fa9c2", cursor: "pointer", font: "inherit", fontSize: "10.5px" }}
+                            >
+                                ×
+                            </button>
+                        </div>
+                    ))}
+                </div>
+            )}
+        </div>
+    );
+}
+
 function VotesPanel() {
     const allowed = hasTier(VIP_GATE);
     const [counts, setCounts] = React.useState<Record<string, number>>({});
@@ -155,6 +330,7 @@ function VotesPanel() {
     const [loading, setLoading] = React.useState(true);
 
     React.useEffect(() => {
+        if (!allowed) return;
         let alive = true;
         const refresh = async () => {
             const c = await fetchTally();
@@ -169,27 +345,31 @@ function VotesPanel() {
         votedStore.ready.then(() => { if (alive) setVoted(getVotedSet()); });
         const id = setInterval(refresh, TALLY_REFRESH_MS);
         return () => { alive = false; clearInterval(id); };
-    }, []);
+    }, [allowed]);
 
     if (!allowed) {
         return (
-            <div style={{
-                padding: "14px 16px",
-                borderRadius: "8px",
-                background: "linear-gradient(135deg, rgba(255,170,0,0.06), rgba(255,170,0,0.02))",
-                border: "1px solid rgba(255,170,0,0.18)"
-            }}>
-                <div style={{ fontSize: "14px", fontWeight: 700, color: "#FFD27A", marginBottom: "6px" }}>
-                    🔒 Plugin Votes — MAXXER++ only
+            <>
+                <div style={{
+                    padding: "14px 16px",
+                    borderRadius: "8px",
+                    background: "linear-gradient(135deg, rgba(255,170,0,0.06), rgba(255,170,0,0.02))",
+                    border: "1px solid rgba(255,170,0,0.18)"
+                }}>
+                    <div style={{ fontSize: "14px", fontWeight: 700, color: "#FFD27A", marginBottom: "6px" }}>
+                        🔒 Plugin Votes — MAXXER++ only
+                    </div>
+                    <div style={{ fontSize: "12.5px", color: "#bcc3d3", lineHeight: 1.5 }}>
+                        {tierGateMessage(VIP_GATE)}
+                    </div>
+                    <div style={{ fontSize: "11.5px", color: "#8a91a3", marginTop: "8px", lineHeight: 1.4 }}>
+                        MAXXER++ subscribers vote on what features get built next. The top-voted candidate
+                        ships in the next release. You can still write and copy a request below without upgrading.
+                        Visit <code>maxxtopia.com/discordmaxxer/vip</code> to upgrade.
+                    </div>
                 </div>
-                <div style={{ fontSize: "12.5px", color: "#bcc3d3", lineHeight: 1.5 }}>
-                    {tierGateMessage(VIP_GATE)}
-                </div>
-                <div style={{ fontSize: "11.5px", color: "#8a91a3", marginTop: "8px", lineHeight: 1.4 }}>
-                    MAXXER++ subscribers vote on what features get built next. The top-voted candidate
-                    ships in the next release. Visit <code>maxxtopia.com/discordmaxxer/vip</code> to upgrade.
-                </div>
-            </div>
+                <SuggestionBox />
+            </>
         );
     }
 
@@ -227,7 +407,9 @@ function VotesPanel() {
         });
     };
 
-    const total = Object.values(counts).reduce((a, b) => a + b, 0);
+    // Ignore retired/stale worker keys from older polls. Otherwise replacing
+    // a bad candidate list would make the visible total lie to the user.
+    const total = CANDIDATES.reduce((sum, candidate) => sum + (counts[candidate.id] ?? 0), 0);
     const sorted = [...CANDIDATES].sort((a, b) => (counts[b.id] ?? 0) - (counts[a.id] ?? 0));
 
     return (
@@ -306,6 +488,7 @@ function VotesPanel() {
                     </button>
                 );
             })}
+            <SuggestionBox />
         </div>
     );
 }
@@ -321,7 +504,7 @@ const settings = definePluginSettings({
 export default definePlugin({
     name: "DMVotes",
     description:
-        "MAXXER++ perk — vote on what ships next. Real-time HWID-bound voting backed by a Cloudflare Worker tally; one vote per rig per feature. The top-voted candidate ships in the next release.",
+        "MAXXER++ perk — vote on concrete roadmap candidates, or save and copy your own request. Shared votes are HWID-bound; custom requests stay local until you choose to share them.",
     authors: [{ name: "Diggy", id: 0n }],
     settings,
 

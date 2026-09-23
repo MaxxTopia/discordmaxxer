@@ -25,7 +25,7 @@
 import { definePluginSettings } from "@api/Settings";
 import { managedStyleRootNode } from "@api/Styles";
 import { createAndAppendStyle } from "@utils/css";
-import { Toasts } from "@webpack/common";
+import { React, Toasts } from "@webpack/common";
 import definePlugin, { OptionType } from "@utils/types";
 
 import { DEFAULT_THEME, THEME_ORDER, themeCss, themeFlairCss, THEMES, ThemeId } from "../_dm-shared/themes";
@@ -75,10 +75,115 @@ function optionLabel(id: ThemeId): string {
     return `${t.label} — ${t.blurb}`;
 }
 
+/**
+ * A visual companion to the legacy select. Theme names are useful for
+ * keyboard users, but a swatch + one-line preview makes the choice obvious
+ * without requiring anyone to understand a palette registry.
+ */
+function ThemePicker() {
+    const selected = settings.store.selected as ThemeId;
+    const cards = THEME_ORDER.map(id => {
+        const theme = THEMES[id];
+        const locked = theme.tierGate !== undefined && !hasTier(theme.tierGate);
+        const isSelected = selected === id && !locked;
+
+        return React.createElement(
+            "button",
+            {
+                key: id,
+                type: "button",
+                disabled: locked,
+                "aria-pressed": isSelected,
+                "aria-label": `${theme.label}${locked ? " locked" : ""}: ${theme.blurb}`,
+                title: locked ? `${theme.label} requires ${TIER_LABELS[theme.tierGate!]}` : `Use ${theme.label}`,
+                onClick: () => {
+                    if (locked) return;
+                    settings.store.selected = id;
+                    applyTheme(id);
+                },
+                style: {
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 5,
+                    minHeight: 70,
+                    padding: "8px 9px",
+                    textAlign: "left",
+                    borderRadius: 8,
+                    border: `1px solid ${isSelected ? theme.swatch.primary : "rgba(255,255,255,0.14)"}`,
+                    boxShadow: isSelected ? `0 0 0 2px ${theme.swatch.primary}33` : "none",
+                    background: "rgba(0,0,0,0.22)",
+                    color: "#fbefff",
+                    cursor: locked ? "not-allowed" : "pointer",
+                    opacity: locked ? 0.58 : 1,
+                    transition: "border-color 120ms ease, box-shadow 120ms ease"
+                }
+            },
+            React.createElement("span", {
+                style: {
+                    display: "block",
+                    height: 22,
+                    borderRadius: 5,
+                    background: `linear-gradient(135deg, ${theme.swatch.primary}, ${theme.swatch.secondary})`,
+                    boxShadow: `inset 0 0 0 1px rgba(255,255,255,0.18)`
+                }
+            }),
+            React.createElement(
+                "span",
+                { style: { fontSize: 12, fontWeight: 700, lineHeight: 1.1 } },
+                `${locked ? "🔒 " : isSelected ? "✓ " : ""}${theme.label}`
+            ),
+            React.createElement(
+                "span",
+                { style: { fontSize: 10.5, color: "#cbd0e0", lineHeight: 1.25 } },
+                locked ? `${TIER_LABELS[theme.tierGate!]} required` : theme.blurb
+            )
+        );
+    });
+
+    return React.createElement(
+        "div",
+        {
+            style: {
+                marginTop: 10,
+                padding: "11px 12px",
+                borderRadius: 9,
+                background: "linear-gradient(135deg, rgba(226,91,255,0.08), rgba(76,81,247,0.08))",
+                border: "1px solid rgba(226,91,255,0.25)"
+            }
+        },
+        React.createElement(
+            "div",
+            { style: { fontSize: 13, fontWeight: 700, color: "#fbefff", marginBottom: 3 } },
+            "🎨 Pick a theme by look"
+        ),
+        React.createElement(
+            "div",
+            { style: { fontSize: 11.5, color: "#cbd0e0", opacity: 0.88, lineHeight: 1.45, marginBottom: 8 } },
+            "Click a swatch to apply it instantly. The full color palette and optional theme flair update together."
+        ),
+        React.createElement(
+            "div",
+            {
+                style: {
+                    display: "grid",
+                    gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+                    gap: 7
+                }
+            },
+            cards
+        )
+    );
+}
+
 const settings = definePluginSettings({
+    picker: {
+        type: OptionType.COMPONENT,
+        description: "",
+        component: ThemePicker
+    },
     selected: {
         type: OptionType.SELECT,
-        description: "Theme palette — covers Discord's full color graph (background, text, brand, channels, scrollbars). Locked themes require MAXXER+ — pick one and we'll fall back to the default if you don't qualify.",
+        description: "Keyboard-friendly theme selector. The visual picker above is the easiest way to choose; both controls stay in sync.",
         default: DEFAULT_THEME,
         options: THEME_ORDER.map(id => ({
             label: optionLabel(id),

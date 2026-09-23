@@ -117,13 +117,15 @@ function tierFromClaimCache(): Tier {
     }
 }
 
-// Local grants are managed by the DiscordmaxxerGrant plugin (right-click any
-// user -> Grant Discordmaxxer Tier). We read them via Vencord.PlainSettings
-// instead of importing the plugin to avoid a circular dep — vip.ts gets
-// imported by plugins, including DiscordmaxxerGrant itself.
+// Local grants are managed by the DMGrant plugin (right-click any user -> Grant
+// Discordmaxxer Tier). We read them via Vencord.PlainSettings instead of
+// importing the plugin to avoid a circular dep — vip.ts gets imported by
+// plugins, including DMGrant itself. Keep the legacy key as a read-only
+// fallback for installations that have not completed the plugin rename.
 function getLocalGrants(): Record<string, Tier> {
     try {
-        const raw = (globalThis as any).Vencord?.PlainSettings?.plugins?.DiscordmaxxerGrant?.grants;
+        const plugins = (globalThis as any).Vencord?.PlainSettings?.plugins;
+        const raw = plugins?.DMGrant?.grants ?? plugins?.DiscordmaxxerGrant?.grants;
         if (!raw) return {};
         return JSON.parse(raw) as Record<string, Tier>;
     } catch {

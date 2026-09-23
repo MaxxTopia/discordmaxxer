@@ -63,12 +63,22 @@ function formatCodeForDisplay(code: string): string {
     return "MAXX-" + chunks.join("-");
 }
 
+function sanitizeCodeInput(value: string): string {
+    // Keep the field friendly while preserving the worker's exact
+    // normalization rules at submit time. The longest display form is
+    // MAXX- plus four groups of four characters (24 chars total).
+    return value.toUpperCase().replace(/[^0-9A-Z-]/g, "").slice(0, 24);
+}
+
 function ClaimPanel() {
     const [hwid, setHwid] = React.useState<string | null>(null);
     const [hwidErr, setHwidErr] = React.useState<string | null>(null);
     const [binding, setBinding] = React.useState<ClaimBinding | null>(() => readBinding());
     const [code, setCode] = React.useState("");
     const [claiming, setClaiming] = React.useState(false);
+
+    const codeProgress = normalizeCode(code).length;
+    const codeReady = isValidCode(code);
 
     React.useEffect(() => {
         let cancelled = false;
@@ -174,14 +184,24 @@ function ClaimPanel() {
                         type="text"
                         placeholder="MAXX-XXXX-XXXX-XXXX-XXXX"
                         value={code}
-                        onChange={e => setCode(e.target.value)}
+                        onChange={e => setCode(sanitizeCodeInput(e.target.value))}
+                        onPaste={e => {
+                            e.preventDefault();
+                            const pasted = e.clipboardData.getData("text").trim();
+                            setCode(pasted ? formatCodeForDisplay(pasted) : "");
+                        }}
                         onKeyDown={e => { if (e.key === "Enter") onClaim(); }}
                         spellCheck={false}
                         autoCapitalize="characters"
+                        autoComplete="off"
+                        maxLength={24}
                         disabled={claiming || !hwid}
                     />
+                    <div style={{ ...mono, marginTop: 6, color: codeReady ? "#65e6a5" : "#cbd0e0", opacity: 0.8 }}>
+                        {codeReady ? "✓ Code looks valid and is ready to redeem" : codeProgress ? `${Math.min(codeProgress, 16)}/16 code characters entered — paste a full code to auto-format` : "Paste a code or type the 16 characters; formatting is automatic"}
+                    </div>
                     <div style={{ marginTop: 10, display: "flex", gap: 8, alignItems: "center" }}>
-                        <button style={btn} onClick={onClaim} disabled={claiming || !hwid || !code.trim()}>
+                        <button style={btn} onClick={onClaim} disabled={claiming || !hwid || !codeReady}>
                             {claiming ? "Claiming…" : "Redeem"}
                         </button>
                         <span style={{ ...mono, opacity: 0.6 }}>

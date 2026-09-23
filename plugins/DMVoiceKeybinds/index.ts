@@ -22,7 +22,10 @@
 import { definePluginSettings } from "@api/Settings";
 import { findByPropsLazy } from "@webpack";
 import definePlugin, { OptionType } from "@utils/types";
-import { MediaEngineStore, Toasts } from "@webpack/common";
+import { MediaEngineStore, React, Toasts } from "@webpack/common";
+
+import { HotkeyPicker } from "../_dm-shared/HotkeyPicker";
+import { matchesHotkey, parseHotkey } from "../_dm-shared/hotkey";
 
 const MUTE_ID = "discordmaxxer.VoiceKeybinds.mute";
 const DEAFEN_ID = "discordmaxxer.VoiceKeybinds.deafen";
@@ -34,6 +37,7 @@ const VoiceActions = findByPropsLazy("setSelfMute", "setSelfDeaf");
 let muteGlobalRegistered = false;
 let deafenGlobalRegistered = false;
 let windowHandler: ((e: KeyboardEvent) => void) | null = null;
+let pluginStarted = false;
 
 function toast(message: string, active: boolean) {
     Toasts.show({
@@ -65,51 +69,51 @@ function toggleDeafen() {
     }
 }
 
-interface ParsedHotkey {
-    ctrl: boolean;
-    alt: boolean;
-    shift: boolean;
-    key: string;
-}
-
-function parseHotkey(hk: string): ParsedHotkey {
-    const parts = hk.toLowerCase().split("+").map(s => s.trim());
-    return {
-        ctrl: parts.includes("ctrl"),
-        alt: parts.includes("alt"),
-        shift: parts.includes("shift"),
-        key: parts[parts.length - 1] ?? ""
-    };
-}
-
-function matches(e: KeyboardEvent, hk: ParsedHotkey): boolean {
-    return (
-        e.ctrlKey === hk.ctrl &&
-        e.altKey === hk.alt &&
-        e.shiftKey === hk.shift &&
-        !e.metaKey &&
-        e.key.toLowerCase() === hk.key
-    );
-}
-
 // Re-register hotkeys after a settings edit. Without this, changing a hotkey
 // or toggling OS-level mode did nothing until the plugin was toggled off/on.
 function reapplyKeybinds() {
+    if (!pluginStarted) return;
     teardownKeybinds()
         .then(setupKeybinds)
         .catch(e => console.warn("[DMVoiceKeybinds] reapply failed:", e));
 }
 
+function VoiceHotkeyPicker() {
+    return React.createElement(
+        "div",
+        null,
+        React.createElement(HotkeyPicker, {
+            value: settings.store.muteHotkey,
+            defaultValue: "ctrl+alt+m",
+            label: "Mute shortcut",
+            description: "Record the shortcut used to toggle your microphone. Changes apply immediately.",
+            onChange: value => { settings.store.muteHotkey = value; }
+        }),
+        React.createElement(HotkeyPicker, {
+            value: settings.store.deafenHotkey,
+            defaultValue: "ctrl+alt+d",
+            label: "Deafen shortcut",
+            description: "Record the shortcut used to toggle deafen. Changes apply immediately.",
+            onChange: value => { settings.store.deafenHotkey = value; }
+        })
+    );
+}
+
 const settings = definePluginSettings({
+    picker: {
+        type: OptionType.COMPONENT,
+        description: "",
+        component: VoiceHotkeyPicker
+    },
     muteHotkey: {
         type: OptionType.STRING,
-        description: "Toggle self-mute (format: ctrl+alt+m). Works in-game when 'Use OS-level hotkeys' is on.",
+        description: "Advanced text value for the mute shortcut. Use the recorder above for the common path.",
         default: "ctrl+alt+m",
         onChange: reapplyKeybinds
     },
     deafenHotkey: {
         type: OptionType.STRING,
-        description: "Toggle self-deafen (format: ctrl+alt+d). Works in-game when 'Use OS-level hotkeys' is on.",
+        description: "Advanced text value for the deafen shortcut. Use the recorder above for the common path.",
         default: "ctrl+alt+d",
         onChange: reapplyKeybinds
     },
@@ -150,11 +154,11 @@ async function setupKeybinds() {
             const t = e.target as HTMLElement | null;
             const tag = t?.tagName?.toUpperCase();
             if (tag === "INPUT" || tag === "TEXTAREA" || t?.isContentEditable) return;
-            if (!muteGlobalRegistered && matches(e, mute)) {
+            if (!muteGlobalRegistered && matchesHotkey(e, mute)) {
                 e.preventDefault();
                 e.stopPropagation();
                 toggleMute();
-            } else if (!deafenGlobalRegistered && matches(e, deafen)) {
+            } else if (!deafenGlobalRegistered && matchesHotkey(e, deafen)) {
                 e.preventDefault();
                 e.stopPropagation();
                 toggleDeafen();
@@ -193,10 +197,12 @@ export default definePlugin({
     settings,
 
     start() {
+        pluginStarted = true;
         return setupKeybinds();
     },
 
     stop() {
+        pluginStarted = false;
         return teardownKeybinds();
     }
 });

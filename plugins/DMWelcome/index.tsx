@@ -18,22 +18,27 @@
 
 import { managedStyleRootNode } from "@api/Styles";
 import { definePluginSettings } from "@api/Settings";
+import { openPluginModal } from "@components/settings/tabs";
 import { createAndAppendStyle } from "@utils/css";
 import definePlugin, { OptionType } from "@utils/types";
 import { Toasts, UserStore } from "@webpack/common";
 
 import { BUNDLES } from "../_dm-shared/bundles";
 import { FEATURED_PLUGINS } from "../_dm-shared/featured";
-import { GRADIENT_PRESETS } from "../_dm-shared/gradientPresets";
+import { GradientPreset, GRADIENT_PRESETS } from "../_dm-shared/gradientPresets";
+import { getPluginHealthSummary } from "../_dm-shared/pluginHealth";
+import { getRosterProfileFlair, onRosterChange } from "../_dm-shared/roster";
 import { hasTier, Tier, TIER_LABELS } from "../_dm-shared/vip";
 
 // Bump this when new featured plugins are added to force the modal to re-show
 // on launch so existing users see the additions. Major content updates only —
 // not tiny copy tweaks.
-const WELCOME_VERSION = 2;
+const WELCOME_VERSION = 6;
 
 const ROOT_ID = "dm-welcome-root";
 const MODAL_ID = "dm-welcome-modal";
+
+let removeRosterListener: (() => void) | null = null;
 
 const BRAND_MARK =
     "data:image/png;base64,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";
@@ -68,22 +73,45 @@ function isPluginEnabled(name: string): boolean {
     return !!vencord()?.PlainSettings?.plugins?.[name]?.enabled;
 }
 
-function setPluginEnabled(name: string, value: boolean) {
+function setPluginEnabled(name: string, value: boolean): boolean {
     const v = vencord();
-    if (!v) return;
-    if (!v.Settings.plugins[name]) v.Settings.plugins[name] = {};
-    v.Settings.plugins[name].enabled = value;
+    if (!v?.Settings?.plugins) return false;
 
     // Start / stop the plugin so the change takes effect immediately. Stock
     // Vencord defers until restart, but for a tour where you click "enable"
     // and want to SEE the effect, eager start matters.
     const pluginObj = v.Plugins?.plugins?.[name];
-    if (!pluginObj) return;
+    if (!pluginObj) return false;
+    if (!v.Settings.plugins[name]) v.Settings.plugins[name] = {};
+    const previous = Boolean(v.Settings.plugins[name].enabled);
+    v.Settings.plugins[name].enabled = value;
     try {
         if (value) v.Plugins.startPlugin?.(pluginObj);
         else v.Plugins.stopPlugin?.(pluginObj);
+        return true;
     } catch (e) {
+        v.Settings.plugins[name].enabled = previous;
         console.warn(`[DMWelcome] ${value ? "start" : "stop"}Plugin(${name}) threw:`, e);
+        return false;
+    }
+}
+
+function openProfileFlairSettings(): boolean {
+    const plugin = vencord()?.Plugins?.plugins?.DMProfileFlair;
+    if (plugin) {
+        try {
+            openPluginModal(plugin);
+            return true;
+        } catch (e) {
+            console.warn("[DMWelcome] could not open DMProfileFlair modal:", e);
+        }
+    }
+    try {
+        vencord()?.Webpack?.Common?.SettingsRouter?.openUserSettings?.("vencord_plugins");
+        return true;
+    } catch (e) {
+        console.warn("[DMWelcome] could not open plugin settings:", e);
+        return false;
     }
 }
 
@@ -101,13 +129,6 @@ function setPluginSetting(plugin: string, key: string, value: boolean): boolean 
 function getPluginSettingString(plugin: string, key: string): string {
     const v = vencord()?.PlainSettings?.plugins?.[plugin]?.[key];
     return typeof v === "string" ? v : "";
-}
-
-function setPluginSettingString(plugin: string, key: string, value: string): boolean {
-    const v = vencord();
-    if (!v?.Settings?.plugins?.[plugin]) return false;
-    v.Settings.plugins[plugin][key] = value;
-    return true;
 }
 
 const CSS = `
@@ -342,6 +363,17 @@ const CSS = `
         opacity: 0.9;
         margin-top: 3px;
     }
+    .dmw-health-callout {
+        margin-top: 10px;
+        padding: 9px 10px;
+        border: 1px solid rgba(85,230,154,0.22);
+        border-radius: 8px;
+        background: rgba(85,230,154,0.06);
+        color: #ddb1ff;
+        font-size: 11px;
+        line-height: 1.45;
+    }
+    .dmw-health-callout b { color: #fbefff; }
 
     /* Profile gradient preset swatches */
     .dmw-grads {
@@ -376,6 +408,46 @@ const CSS = `
         text-shadow: 0 1px 2px rgba(0,0,0,0.7);
     }
     .dmw-grad.sel .dmw-grad-label::after { content: " ✓"; }
+    .dmw-custom-grad {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+        margin-top: 10px;
+        padding: 8px;
+        border: 1px solid rgba(226,91,255,0.22);
+        border-radius: 8px;
+        background: rgba(0,0,0,0.16);
+    }
+    .dmw-color-pick {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        color: #fbefff;
+        font-size: 10px;
+        font-weight: 700;
+    }
+    .dmw-color-pick input {
+        width: 34px;
+        height: 26px;
+        padding: 0;
+        border: 1px solid rgba(255,255,255,0.3);
+        border-radius: 5px;
+        background: transparent;
+        cursor: pointer;
+    }
+    .dmw-custom-apply {
+        border: 1px solid rgba(255,255,255,0.22);
+        border-radius: 5px;
+        padding: 6px 9px;
+        color: #fff;
+        background: linear-gradient(135deg, #e25bff, #4c51f7);
+        font-size: 10px;
+        font-weight: 700;
+        cursor: pointer;
+        font-family: inherit;
+    }
+    .dmw-custom-apply:hover { filter: brightness(1.12); }
     .dmw-grad-hint {
         font-size: 11px;
         color: #ddb1ff;
@@ -417,8 +489,18 @@ function bundleEnabledCount(plugins: string[]): number {
 }
 
 function gradientSectionHTML(): string {
-    const curP = getPluginSettingString("DMProfileFlair", "myThemeColorPrimary").toLowerCase();
-    const curS = getPluginSettingString("DMProfileFlair", "myThemeColorSecondary").toLowerCase();
+    const me = UserStore.getCurrentUser();
+    const shared = me?.id ? getRosterProfileFlair(me.id) : undefined;
+    const localP = getPluginSettingString("DMProfileFlair", "myThemeColorPrimary").toLowerCase();
+    const localS = getPluginSettingString("DMProfileFlair", "myThemeColorSecondary").toLowerCase();
+    // Show the choice that is actually painted on this install. This prevents
+    // an old shared red value from making a newly selected local preset look
+    // as if the tour ignored the click.
+    const curP = (localP || shared?.themeColorPrimary || "").toLowerCase();
+    const curS = (localS || shared?.themeColorSecondary || "").toLowerCase();
+    const selected = GRADIENT_PRESETS.find(g => g.primary.toLowerCase() === curP && g.secondary.toLowerCase() === curS);
+    const pickerPrimary = /^#[0-9a-f]{6}$/i.test(curP) ? curP : "#e25bff";
+    const pickerSecondary = /^#[0-9a-f]{6}$/i.test(curS) ? curS : "#4c51f7";
     const swatches = GRADIENT_PRESETS.map(g => {
         const sel = g.primary.toLowerCase() === curP && g.secondary.toLowerCase() === curS;
         return `<button class="dmw-grad ${sel ? "sel" : ""}" data-grad="${g.id}"
@@ -427,8 +509,19 @@ function gradientSectionHTML(): string {
             <span class="dmw-grad-label">${g.label}</span>
         </button>`;
     }).join("");
+    const hasSharedTheme = Boolean(shared?.themeColorPrimary || shared?.themeColorSecondary);
+    const hasLocalTheme = Boolean(localP || localS);
+    const stateLabel = hasLocalTheme ? "Current local" : hasSharedTheme ? "Current shared" : "Current";
+    const state = selected
+        ? `${stateLabel} gradient: <b>${selected.label}</b>.`
+        : `${stateLabel} gradient: custom colors.`;
     return `<div class="dmw-grads">${swatches}</div>
-        <div class="dmw-grad-hint">Primary on top, accent on bottom. Picking one sets your gradient — then <a data-action="open-flair">open Profile Flair</a> to save it or choose your own custom colors. Heads up: profile gradients show to other <b>Discordmaxxer</b> users, not to people on vanilla Discord.</div>`;
+        <div class="dmw-custom-grad">
+            <label class="dmw-color-pick">Top <input type="color" data-gradient-color="primary" value="${pickerPrimary}" /></label>
+            <label class="dmw-color-pick">Bottom <input type="color" data-gradient-color="secondary" value="${pickerSecondary}" /></label>
+            <button class="dmw-custom-apply" data-action="apply-custom-gradient">Apply custom blend</button>
+        </div>
+        <div class="dmw-grad-hint"><b>${state}</b> Click a swatch to apply instantly, or choose any two colors above. Picks paint this PC immediately. If you have a claim code they also sync across PCs and to other <b>Discordmaxxer</b> users; without one they stay local to this install. Profile gradients are free for every Discordmaxxer user. <a data-action="open-flair">Open Profile Flair</a> for local media or the optional one-time native Discord update. Vanilla Discord still does not render Discordmaxxer-only flair.</div>`;
 }
 
 function renderModalHTML(): string {
@@ -484,6 +577,7 @@ function renderModalHTML(): string {
                 aria-label="Toggle"></button>
         </div>`;
     }).join("");
+    const healthSummary = getPluginHealthSummary();
 
     return `<div id="${MODAL_ID}">
         <div class="dmw-head">
@@ -503,6 +597,7 @@ function renderModalHTML(): string {
 
         <div class="dmw-section">Quick-enable bundles</div>
         <div class="dmw-bundles">${bundleHTML}</div>
+        <div class="dmw-health-callout"><b>Compatibility check:</b> ${healthSummary}. “Loaded” means the plugin is present and enabled; service/account features still need their real external path. For the full per-plugin breakdown, open DM Hub → Plugin health.</div>
 
         <div class="dmw-section">Featured plugins</div>
         <div class="dmw-cards">${cardHTML}</div>
@@ -518,15 +613,53 @@ function enableBundle(bundleId: string) {
     const bundle = BUNDLES.find(b => b.id === bundleId);
     if (!bundle) return;
     let added = 0;
+    const unavailable: string[] = [];
     for (const id of bundle.plugins) {
         if (!isPluginEnabled(id)) {
-            setPluginEnabled(id, true);
-            added++;
+            if (setPluginEnabled(id, true)) added++;
+            else unavailable.push(id);
         }
     }
-    toast(added === 0
+    toast(added === 0 && unavailable.length === 0
         ? `${bundle.title}: already on ✓`
         : `${bundle.title}: enabled ${added} plugin${added === 1 ? "" : "s"} ✨`);
+    if (unavailable.length) {
+        toast(`${bundle.title}: unavailable in this build — ${unavailable.join(", ")}`, Toasts.Type.FAILURE);
+    }
+}
+
+let gradientApplying = false;
+
+async function applyGradientPreset(preset: GradientPreset): Promise<void> {
+    if (gradientApplying) return;
+    gradientApplying = true;
+    try {
+        // If Profile Flair was disabled, start it before asking for the
+        // authenticated publish bridge. This keeps the tour action complete
+        // instead of writing a draft that quietly never reaches the roster.
+        if (!isPluginEnabled("DMProfileFlair") && !setPluginEnabled("DMProfileFlair", true)) {
+            toast("Profile Flair could not start. Open its settings, enable it, then try this swatch again.", Toasts.Type.FAILURE);
+            openProfileFlairSettings();
+            return;
+        }
+        // Plugin start is synchronous on current Vencord builds. Yield one
+        // microtask so the bridge assignment is visible without a fragile
+        // arbitrary 50 ms delay.
+        await Promise.resolve();
+        const apply = (globalThis as any).__dmApplyProfileGradient as
+            ((primary: string, secondary: string, label?: string) => Promise<boolean>) | undefined;
+        if (typeof apply !== "function") {
+            toast("Profile Flair could not start. Open its settings, enable it, then try this swatch again.", Toasts.Type.FAILURE);
+            openProfileFlairSettings();
+            return;
+        }
+        toast(`Applying ${preset.label} to your Discordmaxxer profile…`, Toasts.Type.MESSAGE);
+        const ok = await apply(preset.primary, preset.secondary, preset.label);
+        if (rootEl) rootEl.innerHTML = renderModalHTML();
+        if (!ok) return;
+    } finally {
+        gradientApplying = false;
+    }
 }
 
 function handleClick(e: Event) {
@@ -549,7 +682,16 @@ function handleClick(e: Event) {
             return;
         }
         if (action === "open-flair") {
-            toast("Settings → Discordmaxxer → DMProfileFlair to save your gradient or pick custom colors", Toasts.Type.MESSAGE);
+            setPluginEnabled("DMProfileFlair", true);
+            if (!openProfileFlairSettings()) {
+                toast("Couldn't open Profile Flair settings. Find it under Discord settings → Discordmaxxer → Plugins.", Toasts.Type.FAILURE);
+            }
+            return;
+        }
+        if (action === "apply-custom-gradient") {
+            const primary = rootEl?.querySelector<HTMLInputElement>('[data-gradient-color="primary"]')?.value ?? "#e25bff";
+            const secondary = rootEl?.querySelector<HTMLInputElement>('[data-gradient-color="secondary"]')?.value ?? "#4c51f7";
+            void applyGradientPreset({ id: "custom", label: "Custom blend", primary, secondary });
             return;
         }
     }
@@ -558,17 +700,7 @@ function handleClick(e: Event) {
     if (gradEl) {
         const preset = GRADIENT_PRESETS.find(g => g.id === gradEl.dataset.grad);
         if (preset) {
-            // Gate the success toast on the write actually landing — if
-            // DMProfileFlair's settings bag isn't initialized the setters no-op,
-            // and a "set ✨" toast would be a lie.
-            const okA = setPluginSettingString("DMProfileFlair", "myThemeColorPrimary", preset.primary);
-            const okB = setPluginSettingString("DMProfileFlair", "myThemeColorSecondary", preset.secondary);
-            if (okA && okB) {
-                toast(`Gradient "${preset.label}" set — save it in Profile Flair to share it ✨`);
-                if (rootEl) rootEl.innerHTML = renderModalHTML();
-            } else {
-                toast("Couldn't set gradient — open Profile Flair once, then retry.", Toasts.Type.FAILURE);
-            }
+            void applyGradientPreset(preset);
         }
         return;
     }
@@ -593,7 +725,10 @@ function handleClick(e: Event) {
         if (toggleEl.dataset.plugin) {
             const id = toggleEl.dataset.plugin;
             const next = !isPluginEnabled(id);
-            setPluginEnabled(id, next);
+            if (!setPluginEnabled(id, next)) {
+                toast(`${id} is not available in this build. Check DM Hub → Plugin health.`, Toasts.Type.FAILURE);
+                return;
+            }
             toggleEl.classList.toggle("on", next);
             toast(`${id}: ${next ? "enabled" : "disabled"}`);
             return;
@@ -615,6 +750,11 @@ export function openWelcome() {
     if (!rootEl) return;
     rootEl.innerHTML = renderModalHTML();
     rootEl.classList.remove("hidden");
+}
+
+function refreshOpenModal() {
+    if (!rootEl || rootEl.classList.contains("hidden")) return;
+    rootEl.innerHTML = renderModalHTML();
 }
 
 function closeModal(markSeen: boolean) {
@@ -646,6 +786,10 @@ export default definePlugin({
     start() {
         style = createAndAppendStyle("dm-welcome", managedStyleRootNode);
         style.textContent = CSS;
+        // The first roster fetch is asynchronous. Repaint an already-open
+        // tour when it completes so the swatch selection reflects the shared
+        // profile, not whichever draft happened to be on this install.
+        removeRosterListener = onRosterChange(refreshOpenModal);
         exposeGlobalReopen();
 
         if (!shouldAutoOpen()) return;
@@ -678,6 +822,8 @@ export default definePlugin({
         rootEl = null;
         style?.remove();
         style = null;
+        removeRosterListener?.();
+        removeRosterListener = null;
         delete (globalThis as any).__dmReopenWelcome;
     }
 });

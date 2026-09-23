@@ -14,14 +14,19 @@ import { definePluginSettings } from "@api/Settings";
 import { managedStyleRootNode } from "@api/Styles";
 import { createAndAppendStyle } from "@utils/css";
 import definePlugin, { OptionType } from "@utils/types";
-import { Toasts } from "@webpack/common";
+import { React, Toasts } from "@webpack/common";
+
+import { HotkeyPicker } from "../_dm-shared/HotkeyPicker";
+import { matchesHotkey, parseHotkey } from "../_dm-shared/hotkey";
 
 const HOTKEY_ID = "discordmaxxer.CompactView";
+const DEFAULT_HOTKEY = "ctrl+alt+h";
 
 let style: HTMLStyleElement;
 let active = false;
 let hotkeyHandler: ((e: KeyboardEvent) => void) | null = null;
 let globalRegistered = false;
+let pluginStarted = false;
 
 function buildCss(): string {
     // Selectors verified via CDP inspection on real Discord (2026-05-05).
@@ -43,15 +48,22 @@ function buildCss(): string {
 }
 
 const settings = definePluginSettings({
+    picker: {
+        type: OptionType.COMPONENT,
+        description: "",
+        component: CompactHotkeyPicker
+    },
     hotkey: {
         type: OptionType.STRING,
-        description: "Hotkey to toggle (format: ctrl+alt+h). Works system-wide when 'Use OS-level hotkey' is on.",
-        default: "ctrl+alt+h"
+        description: "Use the recorder above for the common path, or type a shortcut like ctrl+alt+h. Changes apply immediately.",
+        default: DEFAULT_HOTKEY,
+        onChange: () => { if (pluginStarted) reapplyHotkey(); }
     },
     useGlobalHotkey: {
         type: OptionType.BOOLEAN,
         description: "Use OS-level hotkey (fires while Discord is unfocused — useful during screenshare).",
-        default: true
+        default: true,
+        onChange: () => { if (pluginStarted) reapplyHotkey(); }
     },
     hideServerList: {
         type: OptionType.BOOLEAN,
@@ -90,21 +102,14 @@ const settings = definePluginSettings({
     }
 });
 
-interface ParsedHotkey {
-    ctrl: boolean;
-    alt: boolean;
-    shift: boolean;
-    key: string;
-}
-
-function parseHotkey(hk: string): ParsedHotkey {
-    const parts = hk.toLowerCase().split("+").map(s => s.trim());
-    return {
-        ctrl: parts.includes("ctrl"),
-        alt: parts.includes("alt"),
-        shift: parts.includes("shift"),
-        key: parts[parts.length - 1] ?? ""
-    };
+function CompactHotkeyPicker() {
+    return React.createElement(HotkeyPicker, {
+        value: settings.store.hotkey,
+        defaultValue: DEFAULT_HOTKEY,
+        label: "Compact View shortcut",
+        description: "Record a shortcut that toggles the sidebars. OS-level mode works while Discord is unfocused; the window fallback remains available.",
+        onChange: value => { settings.store.hotkey = value; }
+    });
 }
 
 function refresh() {
@@ -125,6 +130,58 @@ function setActive(next: boolean) {
     });
 }
 
+function teardownHotkey() {
+    if (globalRegistered) {
+        (globalThis as any).VesktopNative?.globalHotkey?.unregister?.(HOTKEY_ID);
+        globalRegistered = false;
+    }
+    if (hotkeyHandler) {
+        window.removeEventListener("keydown", hotkeyHandler);
+        hotkeyHandler = null;
+    }
+}
+
+async function setupHotkey() {
+    teardownHotkey();
+
+    const native = (globalThis as any).VesktopNative;
+    const wantGlobal = settings.store.useGlobalHotkey && native?.globalHotkey?.register;
+
+    if (wantGlobal) {
+        try {
+            const ok = await native.globalHotkey.register(HOTKEY_ID, settings.store.hotkey, () => {
+                setActive(!active);
+            });
+            if (ok) {
+                globalRegistered = true;
+                console.log("[CompactView] OS-level hotkey registered");
+                return;
+            }
+            console.warn("[CompactView] OS-level register failed — falling back");
+        } catch (e) {
+            console.warn("[CompactView] OS-level register threw, falling back:", e);
+        }
+    }
+
+    const hk = parseHotkey(settings.store.hotkey);
+    hotkeyHandler = (e: KeyboardEvent) => {
+        // Discord's own keybind dispatcher gets first refusal. This
+        // fallback is only for combos the OS-level registration could not
+        // claim, so it must not steal a user's existing Discord keybind.
+        if (e.defaultPrevented) return;
+        if (matchesHotkey(e, hk)) {
+            e.preventDefault();
+            e.stopPropagation();
+            setActive(!active);
+        }
+    };
+    window.addEventListener("keydown", hotkeyHandler);
+}
+
+function reapplyHotkey() {
+    void setupHotkey().catch(e => console.warn("[CompactView] hotkey reapply failed:", e));
+}
+
 export default definePlugin({
     name: "CompactView",
     description: "Press Ctrl+Alt+H (configurable) to TOGGLE hiding Discord's sidebars (server rail, channel/DM list, member list). Built for vertical monitors and screenshare-heavy use. Each panel can be controlled independently in settings.",
@@ -133,57 +190,15 @@ export default definePlugin({
 
     async start() {
         style = createAndAppendStyle("dm-compact-view", managedStyleRootNode);
+        pluginStarted = true;
 
         if (settings.store.enabledOnStart) setActive(true);
-
-        const native = (globalThis as any).VesktopNative;
-        const wantGlobal = settings.store.useGlobalHotkey && native?.globalHotkey?.register;
-
-        if (wantGlobal) {
-            try {
-                const ok = await native.globalHotkey.register(HOTKEY_ID, settings.store.hotkey, () => {
-                    setActive(!active);
-                });
-                if (ok) {
-                    globalRegistered = true;
-                    console.log("[CompactView] OS-level hotkey registered");
-                    return;
-                }
-                console.warn("[CompactView] OS-level register failed — falling back");
-            } catch (e) {
-                console.warn("[CompactView] OS-level register threw, falling back:", e);
-            }
-        }
-
-        const hk = parseHotkey(settings.store.hotkey);
-        hotkeyHandler = (e: KeyboardEvent) => {
-            // Discord's own keybind dispatcher gets first refusal. This
-            // fallback is only for combos the OS-level registration could not
-            // claim, so it must not steal a user's existing Discord keybind.
-            if (e.defaultPrevented) return;
-            if (
-                e.ctrlKey === hk.ctrl &&
-                e.altKey === hk.alt &&
-                e.shiftKey === hk.shift &&
-                e.key.toLowerCase() === hk.key
-            ) {
-                e.preventDefault();
-                e.stopPropagation();
-                setActive(!active);
-            }
-        };
-        window.addEventListener("keydown", hotkeyHandler);
+        await setupHotkey();
     },
 
     stop() {
-        if (globalRegistered) {
-            (globalThis as any).VesktopNative?.globalHotkey?.unregister?.(HOTKEY_ID);
-            globalRegistered = false;
-        }
-        if (hotkeyHandler) {
-            window.removeEventListener("keydown", hotkeyHandler);
-            hotkeyHandler = null;
-        }
+        pluginStarted = false;
+        teardownHotkey();
         style?.remove();
         active = false;
         // Clear the persisted "on" mirror so the Hub toggle doesn't render ON

@@ -41,7 +41,10 @@ import { definePluginSettings } from "@api/Settings";
 import { managedStyleRootNode } from "@api/Styles";
 import { createAndAppendStyle } from "@utils/css";
 import definePlugin, { OptionType } from "@utils/types";
-import { FluxDispatcher, SelectedChannelStore, Toasts } from "@webpack/common";
+import { FluxDispatcher, React, SelectedChannelStore, Toasts } from "@webpack/common";
+
+import { HotkeyPicker } from "../_dm-shared/HotkeyPicker";
+import { matchesHotkey, parseHotkey } from "../_dm-shared/hotkey";
 
 const HOTKEY_ID = "discordmaxxer.TournamentMode";
 
@@ -50,6 +53,7 @@ let active = false;
 let hotkeyHandler: ((e: KeyboardEvent) => void) | null = null;
 let globalRegistered = false;
 let voiceSub: ((e: any) => void) | null = null;
+let pluginStarted = false;
 
 // Report voice-channel join/leave to the perf bridge. While Tournament Mode is
 // on, this keeps the renderer + GPU at full priority during a call/stream (the
@@ -91,15 +95,22 @@ const PERF_CSS = `
 `;
 
 const settings = definePluginSettings({
+    picker: {
+        type: OptionType.COMPONENT,
+        description: "",
+        component: TournamentHotkeyPicker
+    },
     hotkey: {
         type: OptionType.STRING,
-        description: "Hotkey to toggle (format: ctrl+alt+t). Works system-wide when 'Use OS-level hotkey' is on.",
-        default: "ctrl+alt+t"
+        description: "Advanced text value for the toggle shortcut. Use the recorder above for the common path.",
+        default: "ctrl+alt+t",
+        onChange: () => { if (pluginStarted) reapplyHotkey(); }
     },
     useGlobalHotkey: {
         type: OptionType.BOOLEAN,
         description: "Use OS-level hotkey (fires while you're in a game with Discord unfocused). Recommended ON for competitive use.",
-        default: true
+        default: true,
+        onChange: () => { if (pluginStarted) reapplyHotkey(); }
     },
     enabledOnStart: {
         type: OptionType.BOOLEAN,
@@ -146,21 +157,14 @@ const settings = definePluginSettings({
     }
 });
 
-interface ParsedHotkey {
-    ctrl: boolean;
-    alt: boolean;
-    shift: boolean;
-    key: string;
-}
-
-function parseHotkey(hk: string): ParsedHotkey {
-    const parts = hk.toLowerCase().split("+").map(s => s.trim());
-    return {
-        ctrl: parts.includes("ctrl"),
-        alt: parts.includes("alt"),
-        shift: parts.includes("shift"),
-        key: parts[parts.length - 1] ?? ""
-    };
+function TournamentHotkeyPicker() {
+    return React.createElement(HotkeyPicker, {
+        value: settings.store.hotkey,
+        defaultValue: "ctrl+alt+t",
+        label: "Tournament Mode shortcut",
+        description: "Record a shortcut to toggle performance mode. OS-level mode works while Discord is unfocused; the window fallback remains available.",
+        onChange: value => { settings.store.hotkey = value; }
+    });
 }
 
 function perfOptions() {
@@ -207,6 +211,57 @@ async function setActive(next: boolean) {
     });
 }
 
+function teardownHotkey() {
+    if (globalRegistered) {
+        (globalThis as any).VesktopNative?.globalHotkey?.unregister?.(HOTKEY_ID);
+        globalRegistered = false;
+    }
+    if (hotkeyHandler) {
+        window.removeEventListener("keydown", hotkeyHandler);
+        hotkeyHandler = null;
+    }
+}
+
+async function setupHotkey() {
+    teardownHotkey();
+
+    const native = (globalThis as any).VesktopNative;
+    const wantGlobal = settings.store.useGlobalHotkey && native?.globalHotkey?.register;
+
+    if (wantGlobal) {
+        try {
+            const ok = await native.globalHotkey.register(HOTKEY_ID, settings.store.hotkey, () => {
+                void setActive(!active);
+            });
+            if (ok) {
+                globalRegistered = true;
+                console.log("[TournamentMode] OS-level hotkey registered");
+                return;
+            }
+            console.warn("[TournamentMode] OS-level register failed (likely conflict) — falling back to window-focused");
+        } catch (e) {
+            console.warn("[TournamentMode] OS-level register threw, falling back:", e);
+        }
+    }
+
+    const hk = parseHotkey(settings.store.hotkey);
+    hotkeyHandler = (e: KeyboardEvent) => {
+        // Let Discord's own keybinds win when the OS-level registration
+        // was unavailable and this renderer fallback is active.
+        if (e.defaultPrevented) return;
+        if (matchesHotkey(e, hk)) {
+            e.preventDefault();
+            e.stopPropagation();
+            void setActive(!active);
+        }
+    };
+    window.addEventListener("keydown", hotkeyHandler);
+}
+
+function reapplyHotkey() {
+    void setupHotkey().catch(e => console.warn("[TournamentMode] hotkey reapply failed:", e));
+}
+
 export default definePlugin({
     name: "TournamentMode",
     description: "Press Ctrl+Alt+T (configurable) to toggle a real performance mode for gaming: drops Discord's process priority, requests a best-effort 30 fps renderer cap, kills Rich Presence, and pauses animated emoji/avatars/typing-dots. Safe to leave on permanently — only strips things with measurable CPU/GPU cost; cosmetic plugins stay fully active.",
@@ -215,6 +270,7 @@ export default definePlugin({
 
     async start() {
         style = createAndAppendStyle("dm-tournament-mode", managedStyleRootNode);
+        pluginStarted = true;
 
         // Track voice-channel state so the perf bridge can protect renderer+GPU
         // priority during calls/streaming. Report the current state once (in case
@@ -247,45 +303,11 @@ export default definePlugin({
             }
         }
 
-        const native = (globalThis as any).VesktopNative;
-        const wantGlobal = settings.store.useGlobalHotkey && native?.globalHotkey?.register;
-
-        if (wantGlobal) {
-            try {
-                const ok = await native.globalHotkey.register(HOTKEY_ID, settings.store.hotkey, () => {
-                    setActive(!active);
-                });
-                if (ok) {
-                    globalRegistered = true;
-                    console.log("[TournamentMode] OS-level hotkey registered");
-                    return;
-                }
-                console.warn("[TournamentMode] OS-level register failed (likely conflict) — falling back to window-focused");
-            } catch (e) {
-                console.warn("[TournamentMode] OS-level register threw, falling back:", e);
-            }
-        }
-
-        const hk = parseHotkey(settings.store.hotkey);
-        hotkeyHandler = (e: KeyboardEvent) => {
-            // Let Discord's own keybinds win when the OS-level registration
-            // was unavailable and this renderer fallback is active.
-            if (e.defaultPrevented) return;
-            if (
-                e.ctrlKey === hk.ctrl &&
-                e.altKey === hk.alt &&
-                e.shiftKey === hk.shift &&
-                e.key.toLowerCase() === hk.key
-            ) {
-                e.preventDefault();
-                e.stopPropagation();
-                setActive(!active);
-            }
-        };
-        window.addEventListener("keydown", hotkeyHandler);
+        await setupHotkey();
     },
 
     async stop() {
+        pluginStarted = false;
         if (active) {
             // Restore system state before unloading
             await setActive(false);
@@ -298,14 +320,7 @@ export default definePlugin({
             }
             voiceSub = null;
         }
-        if (globalRegistered) {
-            (globalThis as any).VesktopNative?.globalHotkey?.unregister?.(HOTKEY_ID);
-            globalRegistered = false;
-        }
-        if (hotkeyHandler) {
-            window.removeEventListener("keydown", hotkeyHandler);
-            hotkeyHandler = null;
-        }
+        teardownHotkey();
         style?.remove();
         active = false;
         // Ensure the persisted "on" mirror is cleared even if we started this

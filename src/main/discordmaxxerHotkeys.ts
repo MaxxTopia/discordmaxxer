@@ -26,6 +26,27 @@ const registered = new Map<string, string>();
 
 // Convert "ctrl+alt+t" to Electron's "CommandOrControl+Alt+T"
 function toElectronAccelerator(human: string): string {
+    const keyAliases: Record<string, string> = {
+        escape: "Escape",
+        esc: "Escape",
+        space: "Space",
+        arrowup: "Up",
+        up: "Up",
+        arrowdown: "Down",
+        down: "Down",
+        arrowleft: "Left",
+        left: "Left",
+        arrowright: "Right",
+        right: "Right",
+        pageup: "PageUp",
+        pagedown: "PageDown",
+        printscreen: "PrintScreen",
+        capslock: "Capslock",
+        numlock: "Numlock",
+        scrolllock: "Scrolllock",
+        plus: "Plus"
+    };
+
     return human
         .toLowerCase()
         .split("+")
@@ -35,6 +56,7 @@ function toElectronAccelerator(human: string): string {
             if (p === "alt") return "Alt";
             if (p === "shift") return "Shift";
             if (p === "meta" || p === "cmd" || p === "win") return "Super";
+            if (keyAliases[p]) return keyAliases[p];
             return p.length === 1 ? p.toUpperCase() : p;
         })
         .join("+");

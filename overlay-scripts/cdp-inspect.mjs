@@ -38,7 +38,7 @@ async function status() {
         if (!v) return { error: "Vencord global not found" };
         const plugins = v.Plugins?.plugins ?? {};
         const pluginSettings = v.PlainSettings?.plugins ?? {};
-        const watch = ["TournamentMode", "CompactView", "MassDelete", "DiscordmaxxerBadge", "DiscordmaxxerTheme", "VideoBackground", "DiscordmaxxerHub", "BetterGifPicker", "FavoriteGifSearch", "FakeNitro", "MessageLogger", "PinDMs", "VolumeBooster", "ClearURLs"];
+        const watch = ["TournamentMode", "CompactView", "MassDelete", "DMBadge", "DMTheme", "VideoBackground", "DMHub", "BetterGifPicker", "FakeNitro", "MessageLogger", "PinDMs", "VolumeBooster", "ClearURLs"];
         return {
             vencordPresent: true,
             totalPlugins: Object.keys(plugins).length,

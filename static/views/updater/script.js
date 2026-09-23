@@ -37,16 +37,35 @@
 
     document.getElementById("current-version").textContent = currentVersion;
     document.getElementById("new-version").textContent = update.version;
-    document.getElementById("release-notes").innerHTML = (update.releaseNotes ?? [])
+    const rawReleaseNotes = update.releaseNotes;
+    const releaseNotes = Array.isArray(rawReleaseNotes)
+        ? rawReleaseNotes
+        : rawReleaseNotes
+            ? [{ version: update.version, note: rawReleaseNotes }]
+            : [];
+    const renderedNotes = releaseNotes
         .map(
-            ({ version, note: html }) => `
+            ({ version, note: html }) => {
+                const cleaned = stripAuthorship(html);
+                return cleaned.trim()
+                    ? `
             <section>
                 <h3>Version ${version}</h3>
-                <div>${stripAuthorship(html).replace(/<\/?h([1-3])/g, (m, level) => m.replace(level, Number(level) + 3))}</div>
+                <div>${cleaned.replace(/<\/?h([1-3])/g, (m, level) => m.replace(level, Number(level) + 3))}</div>
             </section>
         `
+                    : "";
+            }
         )
         .join("\n");
+    document.getElementById("release-notes").innerHTML = renderedNotes || `
+        <p class="empty-notes">
+            This release did not include readable release notes.
+            <a href="https://github.com/MaxxTopia/discordmaxxer/releases/tag/${encodeURIComponent(update.version)}">
+                View the full release notes on GitHub
+            </a>
+        </p>
+    `;
 
     document.querySelectorAll("a").forEach(a => {
         a.target = "_blank";

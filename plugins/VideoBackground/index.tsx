@@ -11,9 +11,11 @@
  * settings panel shows the upgrade message; actual video injection only fires
  * when the tier check passes.
  *
- * Sources: http(s):// URL field, OR an "Upload local video" button that uses
- * URL.createObjectURL on a user-picked file (blob: URLs satisfy Discord's CSP).
- * Local picks are runtime-only — not persisted across reloads.
+ * Sources: http(s):// URL field, OR an "Upload local video" button. A picked
+ * local file is remembered in Discordmaxxer's DataStore (up to 200 MB), so it
+ * survives plugin toggles and app restarts on this PC. It is not cross-PC or
+ * Windows-reinstall backup; use a direct HTTPS URL or keep the original file
+ * separately for that.
  */
 
 import * as DataStore from "@api/DataStore";
@@ -32,8 +34,9 @@ const VIDEO_ID = "dm-video-bg";
 // Saved video bg slots — persisted via DataStore (IndexedDB). Tier-gated max:
 //   FREE = 1 (funnel: gives a taste, friction to swap pushes upgrade)
 //   MAXXER = 5 · MAXXER+ = 20 · MAXXER++ = unlimited
-// Local file uploads (blob: URLs) stay runtime-only — those are scratchpad
-// content, can't survive relaunch anyway, so they don't count toward slots.
+// Local file uploads (blob: URLs) are remembered separately in DataStore and
+// rebuilt on startup. They do not count toward URL slots because a blob URL is
+// machine-local and cannot be loaded by another install.
 // (Was localStorage, which modern Discord nukes → slots silently never saved.)
 const SLOTS_KEY = "dm-video-bg-slots";
 
@@ -476,13 +479,14 @@ async function restoreLocalFile() {
     }
 }
 
-function pickLocalFile() {
+function pickLocalFile(onPicked?: (file: File) => void) {
     const input = document.createElement("input");
     input.type = "file";
     input.accept = "video/*";
     input.onchange = () => {
         const file = input.files?.[0];
         if (!file) return;
+        onPicked?.(file);
         if (localBlobUrl) URL.revokeObjectURL(localBlobUrl);
         localBlobUrl = URL.createObjectURL(file);
 
@@ -511,7 +515,7 @@ function pickLocalFile() {
     input.click();
 }
 
-function clearLocalFile() {
+function clearLocalFile(onCleared?: () => void) {
     if (localBlobUrl) {
         URL.revokeObjectURL(localBlobUrl);
         localBlobUrl = null;
@@ -519,16 +523,48 @@ function clearLocalFile() {
     // Clearing means clearing: forget the remembered upload too, otherwise it
     // would silently come back on the next start.
     DataStore.del(LOCAL_FILE_KEY).catch(() => {});
+    onCleared?.();
     refresh();
 }
 
 function VideoControls() {
+    const [rememberedFile, setRememberedFile] = React.useState<{ name: string; size: number } | null>(null);
+
+    React.useEffect(() => {
+        let alive = true;
+        DataStore.get<File>(LOCAL_FILE_KEY).then(file => {
+            if (alive && file) setRememberedFile({ name: file.name || "local video", size: file.size });
+        }).catch(() => {});
+        return () => { alive = false; };
+    }, []);
+
     return (
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 8 }}>
-            <Button onClick={pickLocalFile} size={Button.Sizes.SMALL}>
+        <div style={{ marginTop: 8 }}>
+            <div style={{
+                padding: "8px 10px",
+                borderRadius: 7,
+                background: "rgba(72, 184, 255, 0.08)",
+                border: "1px solid rgba(72, 184, 255, 0.2)",
+                color: "#cbd0e0",
+                fontSize: 11.5,
+                lineHeight: 1.45
+            }}>
+                <b style={{ color: "#e9f7ff" }}>📌 Local-file behavior:</b> the selected video is remembered on this PC
+                through Discordmaxxer restarts (up to 200 MB). A Windows reinstall or another PC still needs the
+                original file again; direct HTTPS URLs are the portable option.
+                {rememberedFile && (
+                    <div style={{ marginTop: 4, color: "#9be7ff" }}>
+                        Remembered here: <b>{rememberedFile.name}</b> ({(rememberedFile.size / 1_048_576).toFixed(1)} MB)
+                    </div>
+                )}
+            </div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 8 }}>
+            <Button onClick={() => pickLocalFile(file => setRememberedFile(
+                file.size <= MAX_PERSIST_BYTES ? { name: file.name || "local video", size: file.size } : null
+            ))} size={Button.Sizes.SMALL}>
                 📁 Upload local video
             </Button>
-            <Button onClick={clearLocalFile} size={Button.Sizes.SMALL} color={Button.Colors.RED}>
+            <Button onClick={() => clearLocalFile(() => setRememberedFile(null))} size={Button.Sizes.SMALL} color={Button.Colors.RED}>
                 ✕ Clear upload
             </Button>
             <Button
@@ -552,6 +588,7 @@ function VideoControls() {
             >
                 🎬 Test with sample
             </Button>
+            </div>
         </div>
     );
 }
@@ -588,9 +625,13 @@ function SavedSlotsPanel() {
     };
 
     const onSaveCurrent = () => {
+        if (localBlobUrl) {
+            toast("The current source is a local file. It is already remembered on this PC; saved slots store portable HTTPS URLs only.", Toasts.Type.MESSAGE, 6000);
+            return;
+        }
         const url = (settings.store.videoUrl ?? "").trim();
         if (!url || !/^https?:\/\//i.test(url)) {
-            toast("Set a https:// video URL above before saving (local file uploads can't be saved to slots).", Toasts.Type.FAILURE);
+            toast("Set a direct https:// video URL above before saving a portable slot.", Toasts.Type.FAILURE);
             return;
         }
         if (atCap) {
@@ -680,7 +721,7 @@ function SavedSlotsPanel() {
             </div>
             {!hasTier(REQUIRED_TIER) && (
                 <div style={{ fontSize: 11.5, color: "#cbd0e0", marginBottom: 8, opacity: 0.85 }}>
-                    Saving is available at every tier (FREE saves 1). The video bg <em>feature</em> needs MAXXER+ to actually play — see settings above.
+                    Saving direct HTTPS URLs is available at every tier (FREE saves 1). A local upload is remembered separately on this PC; it is not a portable slot.
                 </div>
             )}
             <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
@@ -699,7 +740,7 @@ function SavedSlotsPanel() {
             </div>
             {slots.length === 0 ? (
                 <div style={{ fontSize: 11.5, color: "#8a91a3", marginTop: 10, fontStyle: "italic" }}>
-                    No saved slots yet. Paste a URL in the field above, optionally name it, then hit Save.
+                    No saved slots yet. Paste a direct HTTPS video URL, optionally name it, then hit Save. Local uploads use the separate remembered-file path above.
                 </div>
             ) : (
                 <div style={{ marginTop: 8 }}>
@@ -755,8 +796,8 @@ const settings = definePluginSettings({
             "Video URL — must be a DIRECT video file (the link itself ends in .mp4 or .webm). " +
             "YouTube, TikTok and other page links will NOT work: they serve a web page, not a video file. " +
             "TIP: upload your clip to catbox.moe (or any host that hands back a direct .mp4 link) and paste that link here — " +
-            "a URL keeps working after a restart, unlike a local upload. " +
-            "Or use 'Upload local video' below to play a file off your disk (held in memory only — cleared when you reload or restart Discordmaxxer).",
+            "a URL is the portable option that keeps working across PCs and Windows reinstalls. " +
+            "Or use 'Upload local video' below to play a file off your disk; Discordmaxxer remembers files up to 200 MB on this PC through app restarts, but it cannot restore them after a Windows reinstall unless you keep the original file.",
         default: "",
         onChange: refresh
     },

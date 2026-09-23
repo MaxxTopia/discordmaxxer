@@ -8,12 +8,12 @@ const page = pages.find(p => p.url().includes("discord.com")) ?? pages[0];
 const themeTest = await page.evaluate(() => {
     const v = globalThis.Vencord;
     const before = {
-        enable: v.PlainSettings?.plugins?.DiscordmaxxerTheme?.enable,
+        enable: v.PlainSettings?.plugins?.DMTheme?.enable,
         brand500: getComputedStyle(document.documentElement).getPropertyValue("--brand-500").trim()
     };
 
     // Find existing theme style elements
-    const existingStyles = Array.from(document.querySelectorAll('style[id*="dm-theme"], style[id*="DiscordmaxxerTheme"]'))
+    const existingStyles = Array.from(document.querySelectorAll('style[id*="dm-theme"]'))
         .map(s => ({ id: s.id, hasContent: !!s.textContent, contentLen: s.textContent?.length }));
 
     return { before, existingStyles };
@@ -27,7 +27,7 @@ const toggle1 = await page.evaluate(() => {
 await new Promise(r => setTimeout(r, 300));
 
 const toggle2 = await page.evaluate(() => {
-    const t = document.querySelector('.dm-hub-toggle[data-plugin="DiscordmaxxerTheme"]');
+    const t = document.querySelector('.dm-hub-toggle[data-plugin="DMTheme"]');
     if (!t) return { err: "no toggle in panel" };
     t.click();
     return { clicked: true, wasOn: t.classList.contains("on") };
@@ -37,9 +37,9 @@ await new Promise(r => setTimeout(r, 700));
 const after = await page.evaluate(() => {
     const v = globalThis.Vencord;
     return {
-        enable: v.PlainSettings?.plugins?.DiscordmaxxerTheme?.enable,
+        enable: v.PlainSettings?.plugins?.DMTheme?.enable,
         brand500: getComputedStyle(document.documentElement).getPropertyValue("--brand-500").trim(),
-        existingStyles: Array.from(document.querySelectorAll('style[id*="dm-theme"], style[id*="DiscordmaxxerTheme"]'))
+        existingStyles: Array.from(document.querySelectorAll('style[id*="dm-theme"]'))
             .map(s => ({ id: s.id, hasContent: !!s.textContent, contentLen: s.textContent?.length }))
     };
 });

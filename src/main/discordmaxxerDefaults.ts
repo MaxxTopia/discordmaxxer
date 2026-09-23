@@ -40,22 +40,18 @@ const PLUGINS_DEFAULT_ON: string[] = [
     "BetterFolders",
     "BetterSettings",
     "MentionAvatars",
-    "MoreQuickReact",
+    "MoreQuickReactions",
     "NewGuildSettings",
     "NoF1",
     "PinDMs",
     "ReadAllNotificationsButton",
-    "SelfForward",
     "TextReplace",
     "ThemeAttributes",
-    "ThemeLibrary",
     "WebKeybinds",
-    "WebScreenShareFix",
+    "WebScreenShareFixes",
     "BetterGifPicker",
-    "FavoriteGifSearch",
     // Privacy / telemetry kill
     "NoTrack", // disables /science + /tracking analytics endpoints
-    "BlockKrispWeb", // blocks Discord-funded Krisp noise-cancel from loading (privacy + CPU)
     "DisableCallIdle", // stops auto-voice-disconnect after 5 min (saves a heartbeat round-trip on idle)
     // Discordmaxxer custom plugins
     "TournamentMode",
@@ -178,6 +174,14 @@ function readSettingsSafe(): Record<string, any> | null {
 // off". Once a plugin is in this list, we never touch its enabled state again.
 const SEEDED_KEY = "discordmaxxerSeededPlugins";
 
+// Vencord renamed these plugins. Migrate a user's old setting once instead of
+// silently leaving an enabled orphan key that the current registry ignores.
+const PLUGIN_ID_ALIASES: Record<string, string> = {
+    MoreQuickReact: "MoreQuickReactions",
+    WebScreenShareFix: "WebScreenShareFixes"
+};
+const ALIASES_MIGRATED_KEY = "discordmaxxerPluginAliasesMigrated_v1";
+
 export function seedDiscordmaxxerDefaults() {
     const existing = readSettingsSafe();
 
@@ -201,6 +205,30 @@ export function seedDiscordmaxxerDefaults() {
     const seeded: string[] = Array.isArray(existing[SEEDED_KEY]) ? [...existing[SEEDED_KEY]] : [];
 
     let added = 0;
+    let migrated = false;
+
+    // Preserve the old enabled/disabled choice under the new Vencord name.
+    // These are settings-only keys; no account data is touched. Keep a marker
+    // so the migration is idempotent and does not rewrite the file every launch.
+    if (!existing[ALIASES_MIGRATED_KEY]) {
+        for (const [oldName, newName] of Object.entries(PLUGIN_ID_ALIASES)) {
+            if (plugins[oldName] && !plugins[newName]) {
+                plugins[newName] = { ...plugins[oldName] };
+                migrated = true;
+            }
+            if (seeded.includes(oldName) && !seeded.includes(newName)) {
+                seeded.push(newName);
+                migrated = true;
+            }
+            if (plugins[oldName]) {
+                delete plugins[oldName];
+                migrated = true;
+            }
+        }
+        existing[ALIASES_MIGRATED_KEY] = true;
+        migrated = true;
+    }
+
     for (const name of PLUGINS_DEFAULT_ON) {
         if (seeded.includes(name)) continue; // user has had the chance — leave alone
         plugins[name] = { ...(plugins[name] ?? {}), enabled: true };
@@ -225,7 +253,7 @@ export function seedDiscordmaxxerDefaults() {
         existing[FORCED_OFF_FLAG] = true;
     }
 
-    if (added === 0 && !forcedChanged) return;
+    if (added === 0 && !forcedChanged && !migrated) return;
 
     existing.plugins = plugins;
     existing[SEEDED_KEY] = seeded;

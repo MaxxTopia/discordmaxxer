@@ -17,6 +17,7 @@ import { openPluginModal } from "@components/settings/tabs";
 import { createAndAppendStyle } from "@utils/css";
 import definePlugin from "@utils/types";
 
+import { getPluginHealthSnapshot, renderPluginHealthHTML } from "../_dm-shared/pluginHealth";
 import { getMyTier, hasTier, Tier, TIER_LABELS } from "../_dm-shared/vip";
 
 const FAB_ID = "dm-hub-fab";
@@ -44,6 +45,7 @@ const FAB_LOGO_DATA =
 let panelRoot: HTMLDivElement | null = null;
 let style: HTMLStyleElement;
 let observer: MutationObserver | null = null;
+let healthExpanded = false;
 
 const HUB_CSS = `
     /* Toolbar button — renders the locked primary v1 mark on a transparent
@@ -274,6 +276,28 @@ function isPluginEnabled(name: string): boolean {
     return !!vencord()?.PlainSettings?.plugins?.[name]?.enabled;
 }
 
+function isPluginAvailable(name: string): boolean {
+    return Boolean(vencord()?.Plugins?.plugins?.[name]);
+}
+
+function setPluginEnabled(name: string, value: boolean): boolean {
+    const v = vencord();
+    const pluginObj = v?.Plugins?.plugins?.[name];
+    if (!v?.Settings?.plugins || !pluginObj) return false;
+    if (!v.Settings.plugins[name]) v.Settings.plugins[name] = {};
+    const previous = Boolean(v.Settings.plugins[name].enabled);
+    v.Settings.plugins[name].enabled = value;
+    try {
+        if (value) v.Plugins.startPlugin?.(pluginObj);
+        else v.Plugins.stopPlugin?.(pluginObj);
+        return true;
+    } catch (e) {
+        v.Settings.plugins[name].enabled = previous;
+        console.warn(`[DiscordmaxxerHub] ${value ? "start" : "stop"}Plugin(${name}) threw:`, e);
+        return false;
+    }
+}
+
 function getSetting(plugin: string, key: string): boolean {
     return !!vencord()?.PlainSettings?.plugins?.[plugin]?.[key];
 }
@@ -350,18 +374,26 @@ function renderPanelHTML(): string {
     const tier = getMyTier();
     const tierLabel = TIER_LABELS[tier];
     const tierClass = tier === Tier.FREE ? "free" : "";
+    const health = getPluginHealthSnapshot();
 
     const rows = QUICK_TOGGLES.map(t => {
-        if (!isPluginEnabled(t.plugin)) {
+        if (!isPluginAvailable(t.plugin)) {
             return `<div class="dm-hub-row" style="opacity:0.5">
                 <div class="dm-hub-row-label">${t.label}</div>
-                <span style="font-size:10px;color:#8b6aad">disabled</span>
-            </div>`;
+                <span style="font-size:10px;color:#ff9baa">unavailable</span>
+            </div>
+            <div class="dm-hub-info">Not present in this build. Open Health → Plugin health for details.</div>`;
         }
         if (t.minTier && !hasTier(t.minTier)) {
             return `<div class="dm-hub-row vip">
                 <div class="dm-hub-row-label">${t.label}<span class="dm-hub-row-tag">${TIER_LABELS[t.minTier]}</span></div>
                 <div class="dm-hub-toggle locked" data-locked="true"></div>
+            </div>`;
+        }
+        if (!isPluginEnabled(t.plugin)) {
+            return `<div class="dm-hub-row" style="opacity:0.5">
+                <div class="dm-hub-row-label">${t.label}</div>
+                <button class="dm-hub-action-btn" data-action="enable-plugin" data-plugin="${t.plugin}">Enable</button>
             </div>`;
         }
         if (!t.settingKey) {
@@ -396,6 +428,13 @@ function renderPanelHTML(): string {
             <button class="dm-hub-action-btn" data-action="open-tour">Open</button>
         </div>
         <div class="dm-hub-info">Browse featured plugins, enable bundles, and see what each one actually does — no settings-digging required.</div>
+        <div class="dm-hub-section">Health</div>
+        <div class="dm-hub-row">
+            <div class="dm-hub-row-label">🧪 Plugin health</div>
+            <button class="dm-hub-action-btn" data-action="toggle-health">${healthExpanded ? "Hide" : "View"}</button>
+        </div>
+        <div class="dm-hub-info">${health.summary}. “Loaded” means present and enabled; conditional features still need their service, account, or real-call path.</div>
+        ${healthExpanded ? renderPluginHealthHTML() : ""}
         <div class="dm-hub-section">Profile look</div>
         <div class="dm-hub-row">
             <div class="dm-hub-row-label">🎨 Edit profile flair</div>
@@ -431,7 +470,7 @@ function ensurePanelRoot() {
     document.body.appendChild(panelRoot);
 
     panelRoot.addEventListener("click", (e: any) => {
-        const t = e.target as HTMLElement;
+        const t = (e.target as HTMLElement).closest<HTMLElement>("[data-action],.dm-hub-toggle") ?? e.target as HTMLElement;
         if (t.dataset.action === "close") {
             panelRoot!.classList.add("hidden");
             return;
@@ -461,6 +500,29 @@ function ensurePanelRoot() {
         if (t.dataset.action === "open-profile-flair") {
             panelRoot!.classList.add("hidden");
             openDMProfileFlairSettings();
+            return;
+        }
+        if (t.dataset.action === "toggle-health") {
+            healthExpanded = !healthExpanded;
+            panelRoot!.innerHTML = renderPanelHTML();
+            return;
+        }
+        if (t.dataset.action === "refresh-health") {
+            panelRoot!.innerHTML = renderPanelHTML();
+            return;
+        }
+        if (t.dataset.action === "open-plugin-settings") {
+            panelRoot!.classList.add("hidden");
+            try {
+                vencord()?.Webpack?.Common?.SettingsRouter?.openUserSettings?.("vencord_plugins");
+            } catch (e) {
+                console.warn("[DiscordmaxxerHub] could not open plugin settings:", e);
+            }
+            return;
+        }
+        if (t.dataset.action === "enable-plugin" && t.dataset.plugin) {
+            setPluginEnabled(t.dataset.plugin, true);
+            panelRoot!.innerHTML = renderPanelHTML();
             return;
         }
         if (t.classList.contains("dm-hub-toggle") && !t.dataset.locked) {
@@ -549,6 +611,7 @@ function stopObserver() {
     document.getElementById(FAB_ID)?.remove();
     panelRoot?.remove();
     panelRoot = null;
+    healthExpanded = false;
 }
 
 export default definePlugin({
