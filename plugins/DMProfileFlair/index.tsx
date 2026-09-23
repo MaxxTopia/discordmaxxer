@@ -89,9 +89,6 @@ function clearLocalRenderMedia(kind?: "banner" | "avatar"): void {
     }
 }
 
-const reducedMotionFrameCache = new Map<string, string | null>();
-const reducedMotionFrameRequests = new Map<string, Promise<string | null>>();
-
 /** Lightweight diagnostics for the settings panel and support reports. Keep
  * this in memory only: it describes renderer work, never account data or
  * private media bytes. */
@@ -182,20 +179,12 @@ function toast(msg: string, type: any = Toasts.Type.SUCCESS, durationMs = 3000) 
 }
 
 /** TournamentMode integration: read the plugin's manuallyActive flag through
- *  Vencord's plain-settings tree. TournamentMode is the explicit hard pause
- *  for animated content (banner videos + animated avatars) when the user is
- *  gaming. Reduced-motion preferences use a cached still frame instead, so
- *  they do not make profile flair silently disappear. */
+ *  Vencord's plain-settings tree. TournamentMode is the only hard pause for
+ *  animated content (banner videos + animated avatars) when the user is
+ *  gaming. Windows/Discord reduced-motion preferences deliberately do not
+ *  alter profile flair; users asked for the custom look to remain visible. */
 export function isTournamentModeActive(): boolean {
     return !!(globalThis as any).Vencord?.PlainSettings?.plugins?.TournamentMode?.manuallyActive;
-}
-
-function prefersReducedMotion(): boolean {
-    try {
-        return !!settings.store.respectReducedMotion && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
-    } catch {
-        return false;
-    }
 }
 
 function shouldSuppressAnimatedFlair(): boolean {
@@ -259,52 +248,6 @@ function hasAuthoritativeRosterSnapshot(): boolean {
     return typeof fetchedAt === "number" && fetchedAt > 0;
 }
 
-async function requestReducedMotionFrame(url: string): Promise<string | null> {
-    const cached = reducedMotionFrameCache.get(url);
-    if (cached !== undefined) return cached;
-
-    const existing = reducedMotionFrameRequests.get(url);
-    if (existing) return existing;
-
-    const request = extractStillFrameFromUrl(url)
-        .then(frame => {
-            reducedMotionFrameCache.set(url, frame);
-            if (frame) scheduleScan();
-            return frame;
-        })
-        .catch(error => {
-            reducedMotionFrameCache.set(url, null);
-            console.warn("[DMProfileFlair] reduced-motion frame extraction failed:", error);
-            return null;
-        })
-        .finally(() => {
-            reducedMotionFrameRequests.delete(url);
-        });
-    reducedMotionFrameRequests.set(url, request);
-    return request;
-}
-
-function getMotionSafeMediaUrl(url: string): string {
-    // Reduced motion should remove animation, not make the user's flair
-    // disappear. While the first-frame PNG is being prepared, keep the media
-    // visible; the next scan swaps it to the cached still as soon as it is
-    // ready. TournamentMode remains the explicit hard pause for performance.
-    if (!prefersReducedMotion() || !isAnimatedUrl(url)) return url;
-    const cached = reducedMotionFrameCache.get(url);
-    if (cached) return cached;
-    void requestReducedMotionFrame(url);
-    return url;
-}
-
-function applyMotionFallback(flair: ProfileFlair | undefined, kind: "banner" | "avatar"): ProfileFlair | undefined {
-    if (!flair) return flair;
-    const key = kind === "banner" ? "bannerUrl" : "avatarAnimatedUrl";
-    const value = flair[key];
-    if (!value) return flair;
-    const rendered = getMotionSafeMediaUrl(value);
-    return rendered === value ? flair : { ...flair, [key]: rendered };
-}
-
 function getProfileFlairForRender(userId: string, kind: "banner" | "avatar" | "theme"): ProfileFlair | undefined {
     const shared = getRosterProfileFlair(userId);
     const me = UserStore.getCurrentUser?.();
@@ -316,7 +259,7 @@ function getProfileFlairForRender(userId: string, kind: "banner" | "avatar" | "t
         // account (or contains an older value) from making the profile look
         // blank after an update.
         const key = kind === "banner" ? "bannerUrl" : "avatarAnimatedUrl";
-        if (!me?.id || me.id !== userId) return applyMotionFallback(shared, kind);
+        if (!me?.id || me.id !== userId) return shared;
         const value = getLocalMediaValue(kind);
         // The current user's local choice wins immediately, including over an
         // older shared value. This makes picking a file or changing a URL feel
@@ -324,7 +267,7 @@ function getProfileFlairForRender(userId: string, kind: "banner" | "avatar" | "t
         const merged = value
             ? { ...(shared ?? {}), [key]: value }
             : shared;
-        return applyMotionFallback(merged, kind);
+        return merged;
     }
 
     if (!me?.id || me.id !== userId) return shared;
@@ -384,10 +327,10 @@ export function getEffectiveFlairForUser(
     if (!flair) return null;
 
     if ((kind === "banner" || kind === "avatar") && isTournamentModeActive()) {
-        // TournamentMode is the explicit performance pause. Reduced-motion
-        // media has already been converted to a cached still-frame source by
-        // getProfileFlairForRender(). Theme colors remain visible in both
-        // modes.
+        // TournamentMode is the only performance pause. Windows/Discord
+        // reduced-motion preferences intentionally do not rewrite the media
+        // URL, so custom animated flair remains animated outside TournamentMode.
+        // Theme colors remain visible in both modes.
         return null;
     }
     return flair;
@@ -2097,11 +2040,9 @@ function FlairEditor() {
                     These are three independent layers. The badge tells you where each layer comes from;
                     <b> Why am I seeing this?</b> explains the current local, shared, native, or performance boundary.
                 </div>
-                {prefersReducedMotion() && (
-                    <div role="status" style={{ marginTop: 7, padding: "6px 8px", borderRadius: 5, background: "rgba(255, 207, 112, 0.11)", border: "1px solid rgba(255, 207, 112, 0.35)", color: "#ffcf70", fontSize: 10.5, lineHeight: 1.4 }}>
-                        Reduced motion is enabled. Custom animated banner/avatar media will show its first frame after it is prepared, while TournamentMode can still pause media completely.
-                    </div>
-                )}
+                <div role="status" style={{ marginTop: 7, padding: "6px 8px", borderRadius: 5, background: "rgba(155, 231, 255, 0.09)", border: "1px solid rgba(155, 231, 255, 0.28)", color: "#bfefff", fontSize: 10.5, lineHeight: 1.4 }}>
+                    Windows/Discord reduced-motion settings do not replace your custom banner or avatar with a still frame. TournamentMode is the only mode that pauses animated flair.
+                </div>
                 <div style={appearanceGridStyle}>
                     {(["gradient", "banner", "avatar"] as const).map(kind => {
                         const label = kind === "gradient" ? "🌈 Gradient" : kind === "banner" ? "🖼️ Banner" : "👤 Avatar";
@@ -2138,7 +2079,7 @@ function FlairEditor() {
                     <div role="status" aria-live="polite" style={{ marginTop: 7, fontSize: 10.5, lineHeight: 1.45, color: "#cbd0e0" }}>
                         Scans: {health.scanCount} · visible banners: {health.visibleBanners} · visible avatars: {health.visibleAvatars} · applied layers: {health.appliedBanners + health.appliedThemes + health.appliedAvatars}.
                         {health.lastFailure ? <> Last fallback: <b>{health.lastFailure}</b>.</> : " No media fallback failures recorded."}
-                        {tmActive ? " TournamentMode is reducing media work." : prefersReducedMotion() ? " Reduced-motion preference is reducing media work." : " Media scanning is active only for visible surfaces when the performance gate is enabled."}
+                        {tmActive ? " TournamentMode is pausing animated media." : " Animated flair is active; Windows/Discord reduced-motion settings do not override it."}
                     </div>
                 )}
             </div>
@@ -2622,7 +2563,7 @@ const settings = definePluginSettings({
     respectReducedMotion: {
         type: OptionType.BOOLEAN,
         description:
-            "When Windows or Discord requests reduced motion, show a cached first frame instead of animating custom banner/avatar media. TournamentMode still pauses media completely; theme gradients continue to render.",
+            "Compatibility setting retained for existing installs. DMProfileFlair intentionally keeps custom banner/avatar animation visible despite Windows or Discord reduced-motion settings; TournamentMode is the only performance pause.",
         default: true
     }
 });
@@ -2804,6 +2745,21 @@ function containsMessageArea(el: HTMLElement): boolean {
     return !!el.querySelector(MESSAGE_AREA_SEL);
 }
 
+// Discord has used all of these class families for the profile popout and
+// full-profile modal. Keep one selector for identity/cleanup so a painted
+// avatar is not immediately restored just because this build chose a modal
+// class instead of the older popout class.
+const PROFILE_SURFACE_ROOT_SELECTOR = [
+    '[class*="user-profile-popout"]',
+    '[class*="userProfileModal"]',
+    '[class*="user-profile-modal"]',
+    '[class*="userPopout"]',
+    '[class*="user-popout"]',
+    '[class*="profileModal"]',
+    '[class*="profile-modal"]',
+    '[role="dialog"]'
+].join(", ");
+
 /** Given a banner, resolve the profile popout / full-profile container that we
  *  paint theme colors + banners onto.
  *
@@ -2833,9 +2789,7 @@ function findProfileContainerFromBanner(banner: HTMLElement): HTMLElement | null
     // must colour too. Climb to it exactly as before, and use the root only to
     // guarantee we never escape the popout (escaping is how we ended up painting
     // the whole DM chat container in the first place).
-    const popoutRoot = banner.closest<HTMLElement>(
-        '[class*="user-profile-popout"], [class*="userProfileModal"], [class*="userPopout"], [role="dialog"]'
-    );
+    const popoutRoot = banner.closest<HTMLElement>(PROFILE_SURFACE_ROOT_SELECTOR);
 
     let el: HTMLElement | null = banner.parentElement;
     while (el && el !== document.body) {
@@ -3185,7 +3139,7 @@ function applyTheme(container: HTMLElement, primary?: string, secondary?: string
     container.setAttribute("data-dm-flair-theme-applied", "1");
 }
 
-function applyAvatar(avatar: HTMLImageElement, url: string) {
+function applyAvatar(avatar: HTMLImageElement, url: string, userId?: string) {
     // Idempotency MUST compare against the URL we last applied (stashed on the
     // element), NOT against `avatar.src`. The browser normalizes/encodes the
     // src it reads back (dm-media:// scheme, percent-encoding, trailing
@@ -3213,6 +3167,7 @@ function applyAvatar(avatar: HTMLImageElement, url: string) {
         noteProfileFlairFailure(`avatar media failed and was restored (${url.slice(0, 80)})`);
     };
     avatar.src = url;
+    if (userId) avatar.dataset.dmFlairAvatarUserId = userId;
     avatar.dataset.dmFlairAppliedUrl = url;
     avatar.setAttribute("data-dm-flair-avatar-applied", "1");
 }
@@ -3220,7 +3175,7 @@ function applyAvatar(avatar: HTMLImageElement, url: string) {
 /** Background-image variant for call surfaces / Stage tiles that render the
  *  avatar as a <div style="background-image: ..."> instead of <img>. Stash
  *  the original inline backgroundImage so stop() can restore it. */
-function applyBackgroundAvatar(el: HTMLElement, url: string) {
+function applyBackgroundAvatar(el: HTMLElement, url: string, userId?: string) {
     const newBg = `url("${url}")`;
     if (el.dataset.dmFlairAppliedBgUrl === url) return;
     if (el.dataset.dmFlairFailedBgUrl === url) return;
@@ -3230,6 +3185,7 @@ function applyBackgroundAvatar(el: HTMLElement, url: string) {
         el.dataset.dmFlairOriginalBgPriority = el.style.getPropertyPriority("background-image");
     }
     el.style.setProperty("background-image", newBg, "important");
+    if (userId) el.dataset.dmFlairAvatarUserId = userId;
     el.dataset.dmFlairAppliedBgUrl = url;
     el.setAttribute("data-dm-flair-bg-avatar-applied", "1");
     const probe = new Image();
@@ -3248,6 +3204,7 @@ function restoreAvatar(avatar: HTMLImageElement) {
     const original = avatar.dataset.dmFlairOriginalSrc;
     if (original && avatar.src !== original) avatar.src = original;
     delete avatar.dataset.dmFlairOriginalSrc;
+    delete avatar.dataset.dmFlairAvatarUserId;
     delete avatar.dataset.dmFlairAppliedUrl;
     delete avatar.dataset.dmFlairFailedUrl;
     avatar.removeAttribute("data-dm-flair-avatar-applied");
@@ -3263,12 +3220,16 @@ function restoreBackgroundAvatar(el: HTMLElement) {
     delete el.dataset.dmFlairBgOriginalCaptured;
     delete el.dataset.dmFlairOriginalBg;
     delete el.dataset.dmFlairOriginalBgPriority;
+    delete el.dataset.dmFlairAvatarUserId;
     delete el.dataset.dmFlairAppliedBgUrl;
     delete el.dataset.dmFlairFailedBgUrl;
     el.removeAttribute("data-dm-flair-bg-avatar-applied");
 }
 
 function userIdForAppliedAvatar(element: Element): string | null {
+    const appliedUserId = validSnowflake(element instanceof HTMLElement ? element.dataset.dmFlairAvatarUserId : null);
+    if (appliedUserId) return appliedUserId;
+
     const original = element instanceof HTMLImageElement
         ? element.dataset.dmFlairOriginalSrc ?? ""
         : element instanceof HTMLElement
@@ -3277,9 +3238,7 @@ function userIdForAppliedAvatar(element: Element): string | null {
     const fromCdn = original.match(/\/avatars\/(\d{17,20})\//);
     if (fromCdn) return fromCdn[1];
 
-    const profileRoot = element.closest<HTMLElement>(
-        '[class*="user-profile-popout"], [class*="userProfileModal"], [class*="userPopout"], [role="dialog"]'
-    );
+    const profileRoot = element.closest<HTMLElement>(PROFILE_SURFACE_ROOT_SELECTOR);
     return profileRoot ? getUserIdFromContainer(profileRoot) : null;
 }
 
@@ -3398,7 +3357,7 @@ function scanForPopouts(_root: ParentNode = document) {
             const userId = m[1];
             const avatarFlair = resolveForScan(userId, "avatar");
             if (avatarFlair?.avatarAnimatedUrl) {
-                applyAvatar(el, avatarFlair.avatarAnimatedUrl);
+                applyAvatar(el, avatarFlair.avatarAnimatedUrl, userId);
             }
         });
         // Background-image avatar tiles — some call surfaces (notably the
@@ -3417,7 +3376,7 @@ function scanForPopouts(_root: ParentNode = document) {
             const userId = m[1];
             const avatarFlair = resolveForScan(userId, "avatar");
             if (!avatarFlair?.avatarAnimatedUrl) return;
-            applyBackgroundAvatar(el, avatarFlair.avatarAnimatedUrl);
+            applyBackgroundAvatar(el, avatarFlair.avatarAnimatedUrl, userId);
         });
         // Profile-view fallback: large avatars (≥60px) that don't have a CDN
         // URL we could match (default-avatar users). Resolve the profile owner
@@ -3425,10 +3384,10 @@ function scanForPopouts(_root: ParentNode = document) {
         const fallback = findProfileViewAvatars();
         for (const a of fallback) {
             if (a.dataset.dmFlairAvatarApplied) continue;
-            const container = findProfileContainerFromBanner(a as any) ?? a.closest('[class*="user-profile-popout"]') ?? a.parentElement;
+            const container = a.closest<HTMLElement>(PROFILE_SURFACE_ROOT_SELECTOR) ?? findProfileContainerFromBanner(a as any) ?? a.parentElement;
             const userId = container ? getUserIdFromContainer(container) : null;
             const flair = userId ? resolveForScan(userId, "avatar") : null;
-            if (flair?.avatarAnimatedUrl) applyAvatar(a, flair.avatarAnimatedUrl);
+            if (flair?.avatarAnimatedUrl && userId) applyAvatar(a, flair.avatarAnimatedUrl, userId);
         }
         // Warn once if the current user has a default avatar.
         if (me && !me.avatar && selfHasAvatarFlair && !defaultAvatarWarned) {

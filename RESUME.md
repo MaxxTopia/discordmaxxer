@@ -5,6 +5,38 @@
 > `CLAUDE.md` ("Operational facts" section). Those three are enough to build,
 > ship, and maintain without prior context.
 
+## 2026-09-23 post-v0.7.68 profile media candidate — local only
+
+Diggy reported that the banner was still rendering as a single frame and the
+avatar was missing from the full-profile surface even though both saved URLs
+return HTTP 200 with `image/gif`. The remaining still-frame behavior was in
+DMProfileFlair itself: the old reduced-motion path extracted and substituted a
+cached PNG whenever Windows/Discord reported reduced motion. This candidate
+removes that conversion completely. The original animated URL now reaches the
+renderer unchanged; TournamentMode's `manuallyActive` flag is the only media
+pause.
+
+The avatar cleanup path also now stores the resolved owner ID on each painted
+avatar and recognizes the newer full-profile modal selector families. That
+prevents a valid self avatar from being restored immediately when Discord uses
+a default/non-CDN source or recycles a modal node. The Appearance Center and
+renderer diagnostics now explain the actual rule instead of claiming that
+reduced motion will produce a first frame. The legacy setting remains only for
+config compatibility and no longer changes media rendering.
+
+Candidate verification passed `pnpm test`, `pnpm build`, strict
+`DM_STRICT_REBRAND=1 pnpm overlay:vencord`, `node overlay-scripts/verify-build.mjs`,
+`pnpm verifyPlugins`, and `git diff --check`. The candidate is not version
+bumped, pushed, packaged, or published; the source checkpoint is committed
+locally. A running-client animation check and second-PC/recipient check remain
+external gates; the attached profile screenshot is evidence of the affected
+surface, not playback proof.
+
+Best next action: reload the dev client from this checkout and confirm the
+banner advances frames and the avatar remains applied with TournamentMode off;
+then toggle TournamentMode on/off to verify the intentional pause/resume. Only
+after that should this candidate be bumped and released as a new app version.
+
 ## 2026-09-23 v0.7.68 public release — live
 
 Release commit `eee9e4118dd15d1bf34a3f97ccf6f728cd2e1064` and tag `v0.7.68`
