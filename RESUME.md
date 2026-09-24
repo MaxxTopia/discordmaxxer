@@ -5,7 +5,7 @@
 > `CLAUDE.md` ("Operational facts" section). Those three are enough to build,
 > ship, and maintain without prior context.
 
-## 2026-09-24 profile visuals and display-name styles — validated source candidate
+## 2026-09-24 profile visuals and display-name styles — source pushed; updater held
 
 This follow-up combines the more discoverable profile Appearance Center and
 tour shortcuts with the new `DMDisplayNameStyle` gallery: 30 distinct local
@@ -33,17 +33,19 @@ the earlier reduced-motion behavior and no longer matches this candidate. Take
 a fresh capture from the updated gallery before using visual evidence publicly.
 
 The smoke packages are still labeled `0.7.68`, which is already the public
-release. They are not updater artifacts for this candidate. The source tree is
-validated on the `codex/profile-flair-local-media` branch; changes have not yet
-been pushed by this entry. Source push is authorized for this handoff, but no
-new version tag or updater release may be created until Diggy completes the
-required real voice call and screenshare-with-audio test on the target Windows
-setup. Vanilla-client rendering, second-PC sync, and signed-in profile surfaces
-remain unverified.
+release. They are not updater artifacts for this candidate. The reviewed source
+was pushed to `origin/main` as commit
+`8bc63448f304aede0c7bc70be3d3cfc242594c93`; the remote branch SHA was verified.
+No new version tag or updater artifact was created, so this source push alone
+does not deliver the new features to installed clients. A new updater release
+must wait until Diggy completes the required real voice call and
+screenshare-with-audio test on the target Windows setup. Vanilla-client
+rendering, second-PC sync, and signed-in profile surfaces remain unverified.
 
-Best next action: push the reviewed source changes to `main`, leave the release
-untagged, then have Diggy run the real voice/screenshare gate before preparing
-the next version and updater release.
+Best next action: Diggy runs the real voice/screenshare-with-audio gate on the
+target Windows setup; after it passes, prepare the next version and updater
+release. Capture a fresh gallery screenshot before using visual evidence
+publicly.
 
 ## 2026-09-23 profile-look discovery and sharing follow-up — local candidate only
 
