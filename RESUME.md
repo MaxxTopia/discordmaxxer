@@ -5,7 +5,7 @@
 > `CLAUDE.md` ("Operational facts" section). Those three are enough to build,
 > ship, and maintain without prior context.
 
-## 2026-09-24 profile visuals and display-name styles — v0.7.69 candidate; tag pending
+## 2026-09-24 profile visuals and display-name styles — v0.7.69 published
 
 This follow-up combines the more discoverable profile Appearance Center and
 tour shortcuts with the new `DMDisplayNameStyle` gallery: 30 distinct local
@@ -44,16 +44,25 @@ rendering, and second-PC sync remain unverified. The validator's visual phase
 did not find the Hub FAB on the Discord login screen, so that phase is not proof
 of signed-in Hub appearance.
 
-The source base (`41e782c`) is already on `origin/main`; the version bump and
-this note remain local until committed. No `v0.7.69` tag or updater artifact
-exists yet. After committing only the intended release files, push the main
-commit, create/push `v0.7.69`, wait for the release workflow, and verify the
-published assets and updater manifest. Populate human-readable GitHub release
-notes so the in-app updater has useful change details. Capture a fresh gallery
-image before using visual evidence publicly.
+Release commit `1ba11028b19e308c1718635ffc5cba521ece9c78` and tag `v0.7.69`
+are pushed to `origin`; the GitHub Release workflow `35982960773` completed
+successfully. The published release includes the x64 and ARM64 ZIPs, Windows
+installer, blockmap, and `latest.yml`. The release body now has user-facing
+notes, and the public `releases/latest/download/latest.yml` returned HTTP 200
+with version `0.7.69` and the matching installer path. This verifies release
+publication and updater metadata, not that an installed user's client has
+already fetched or applied the update.
 
-Best next action: commit the scoped version bump and this release checkpoint,
-then push the main commit and create the already-authorized version tag.
+The prior gallery image at `docs/evidence/display-name-style-showcase.png` is
+still untracked and intentionally preserved; it was not included in the push.
+Take a fresh capture from the updated gallery before using visual evidence
+publicly. Signed-in profile visuals, vanilla-client rendering, second-PC sync,
+and real voice/screenshare remain unverified (the last was explicitly waived
+for this profile-only release).
+
+Best next action: install/update to `0.7.69` and inspect the name-style gallery,
+Plugin Tour, and DM Hub on a signed-in profile; separately test vanilla-client
+visibility only for effects intended to cross that client boundary.
 
 ## 2026-09-23 profile-look discovery and sharing follow-up — local candidate only
 
