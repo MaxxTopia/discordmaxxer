@@ -5,10 +5,14 @@
 > `CLAUDE.md` ("Operational facts" section). Those three are enough to build,
 > ship, and maintain without prior context.
 
-## 2026-09-24 profile flair consistency and automatic name styling — v0.7.70 release
+## 2026-09-24 profile flair consistency and automatic name styling — v0.7.70 published
 
-Based on the published v0.7.69 source, this isolated worktree now has a local
-candidate for four related rendering issues. Published shared-roster fields
+Public stable release `v0.7.70` is live: [GitHub Release](https://github.com/MaxxTopia/discordmaxxer/releases/tag/v0.7.70). Release commit `984fb060465c2436a92a9f87012e8a6848c75293` and tag `v0.7.70` are pushed to `origin`; [GitHub Actions run 36046453622](https://github.com/MaxxTopia/discordmaxxer/actions/runs/36046453622) completed successfully, including the Maxxtopia release notification. The release is not a draft or prerelease. Published assets include x64 and ARM64 ZIPs, the NSIS setup EXE, its blockmap, and `latest.yml`. The public `latest.yml` endpoint returned HTTP 200 and advertises version `0.7.70` with `Discordmaxxer-Setup-0.7.70.exe`. The release description now contains user-facing notes and the Discordmaxxer-only visibility boundary. Release publication and updater metadata are verified; a signed-in installed-client update and second-PC visual behavior still need Diggy's test.
+
+Updater notes are present too: the client sets `fullChangelog = true` and reads GitHub's release feed when the generated `latest.yml` has no embedded notes. The public Atom feed was checked and contains the v0.7.70 release notes. The blank `release_notes` YAML value is therefore not evidence that the in-app updater will show an empty changelog.
+
+Based on the published v0.7.69 source, this release addresses four related
+rendering issues. Published shared-roster fields
 are canonical across installs; old per-PC banner/avatar/gradient values only
 act as fallbacks when the roster has no value, while deliberate new picks
 still preview immediately. This prevents stale local Crimson/Cotton Candy
@@ -37,9 +41,9 @@ profile, animated media, right-side/DM name surfaces, and cross-PC roster
 behavior were not tested. The x64/ARM64 ZIPs and NSIS installer plus blockmap
 were built locally. The pre-existing untracked `docs/evidence/` content was
 preserved and excluded. The canonical checkout was left untouched. The
-candidate is ready for the authorized v0.7.70 publish; its exact commit,
-workflow result, public release notes, and updater manifest must be recorded
-after publication.
+The source commit and public release are now recorded above. Voice and
+screenshare remain outside this profile-only release scope and are not
+universal publication gates.
 
 Still needs signed-in client proof: open profile popouts quickly and confirm
 the animated avatar advances without a stock-frame flash; inspect profile,
