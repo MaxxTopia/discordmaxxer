@@ -850,7 +850,7 @@ function getSurface(element: HTMLElement): Surface | null {
         if (/user.?popout|user.?profile|profile.?modal|profile.?header/.test(semantic)) return "profile";
         if (/message|chat.?content|markup|reply/.test(semantic)) return "message";
         if (/member|guild.?member|people|friend/.test(semantic)) return "member";
-        if (/recipient|private.?channel|dm.?channel/.test(semantic)) return "dm";
+        if (/recipient|private.?channel|dm.?channel|channel.?header|dm.?header/.test(semantic)) return "dm";
         if (/panels|user.?panel|account.?panel|account.?details/.test(semantic)) return "self";
         current = current.parentElement;
         depth++;
@@ -906,7 +906,8 @@ function shouldApply(element: HTMLElement): { surface: Surface } | null {
     if (!settings.store.active || !isVisibleLeafName(element)) return null;
     const surface = getSurface(element);
     if (!surface || !surfaceEnabled(surface)) return null;
-    if (settings.store.styleOtherNames !== true && !isOwnName(element, surface)) return null;
+    const automaticOtherNameSurface = surface === "profile" || surface === "member" || surface === "dm";
+    if (settings.store.styleOtherNames !== true && !automaticOtherNameSurface && !isOwnName(element, surface)) return null;
     return { surface };
 }
 
@@ -1313,7 +1314,7 @@ const settings = definePluginSettings({
     },
     styleOtherNames: {
         type: OptionType.BOOLEAN,
-        description: "Also style other visible Discord users locally. Off by default so the plugin reads as your identity, not a global recolor.",
+        description: "Also style other visible names on message and less-common Discord surfaces. Profile popouts, member/right-side lists, and DM headers are styled automatically when their own surface toggle is on.",
         default: false,
         onChange: () => scheduleScan()
     },
@@ -1331,19 +1332,19 @@ const settings = definePluginSettings({
     },
     memberList: {
         type: OptionType.BOOLEAN,
-        description: "Apply to member lists, friend lists, and other user rows when Style other names is enabled.",
+        description: "Apply automatically to member lists, friend lists, and right-side user rows. Style other names is not required for these surfaces.",
         default: true,
         onChange: () => scheduleScan()
     },
     dmList: {
         type: OptionType.BOOLEAN,
-        description: "Apply to DM recipient and private-channel rows when Style other names is enabled.",
+        description: "Apply automatically to DM recipient rows and DM/channel headers. Style other names is not required for these surfaces.",
         default: true,
         onChange: () => scheduleScan()
     },
     messages: {
         type: OptionType.BOOLEAN,
-        description: "Apply to message author labels when Style other names is enabled. Off by default to keep chat dense and readable.",
+        description: "Apply to message author labels. Off by default to keep chat dense and readable; enable Style other names too if you want broad styling on other uncommon surfaces.",
         default: false,
         onChange: () => scheduleScan()
     }
@@ -1352,7 +1353,7 @@ const settings = definePluginSettings({
 export default definePlugin({
     name: "DMDisplayNameStyle",
     description:
-        `Creative local display-name styling with ${PRESET_ORDER.length} presets, bundled offline Great Vibes, Fraktur, and comic typefaces, flame/swash/spark ornaments, Custom Lab colors, and per-surface scope. Other-name styling is opt-in. Motion does not follow the OS reduced-motion preference; Tournament Mode pauses it automatically. This does not edit your account; open Discord's native profile editor for the separate account-level Display Name Styles feature.`,
+        `Creative local display-name styling with ${PRESET_ORDER.length} presets, bundled offline Great Vibes, Fraktur, and comic typefaces, flame/swash/spark ornaments, Custom Lab colors, and per-surface scope. Profile popouts, member/right-side lists, and DM headers style other users automatically; message authors remain opt-in. Motion does not follow the OS reduced-motion preference; Tournament Mode pauses it automatically. This does not edit your account; open Discord's native profile editor for the separate account-level Display Name Styles feature.`,
     authors: [{ name: "Diggy", id: 0n }],
     settings,
 

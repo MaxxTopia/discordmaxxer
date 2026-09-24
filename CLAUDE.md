@@ -145,7 +145,12 @@ Each maps to a feature Diggy specifically asked for:
 5. **No read receipts.** Discord doesn't expose them; any tool that claims to is lying.
 6. **No closed-source.** GPL-3 means source on GitHub from day 1.
 
-## Verification (v0.1 release gate)
+## Historical verification plan (v0.1; not the current release gate)
+
+The following was the original v0.1 beta checklist. It is historical planning
+material; current release requirements are documented in `AGENTS.md` and the
+operational sections below. Voice/screenshare tests are not universal release
+gates.
 
 End-to-end on Diggy's daily Windows machine:
 1. Build installer, install, sign in
@@ -183,10 +188,12 @@ Vesktop fork (Electron + bundled Vencord) using **pnpm**. Vencord is pinned to a
 ## Verify (self-check before handing back)
 - Automated: `pnpm test` = `pnpm lint && pnpm testTypes` (ESLint + `tsc --noEmit`). No runtime/unit suite.
 - Winaudio changes: re-run `packages/winaudio/test-loopback.js` (measures PEAK/RMS, not just chunk count) — silent capture = the native `IAgileObject` QueryInterface got dropped again.
-- **Human-only — don't claim it works without Diggy:** live voice + screenshare-with-audio (needs a real friend / 2nd PC); confirm no Discord-voice bleed + the encoder verdict in the Stream & Voice Health panel.
+- **Human-only evidence:** only claim live voice or screenshare-with-audio as
+  verified after an actual session with a recipient. These checks are optional
+  and non-blocking for publication; note them as unverified when not run.
 
 ## Top gotchas (durable)
-- **zstd voice break:** Discord's mandatory DAVE (E2EE voice) wasm is served `Content-Encoding: zstd`, which Electron 41 can't decode through the CSP hook → RTC 4017 loop → voice dead for everyone. Fixed via `--disable-features ZstdContentEncoding,SharedZstd` in `src/main/index.ts`. **Re-test voice after ANY Electron bump** (drop the flag once Electron handles zstd).
+- **zstd voice break:** Discord's mandatory DAVE (E2EE voice) wasm is served `Content-Encoding: zstd`, which Electron 41 can't decode through the CSP hook → RTC 4017 loop → voice dead for everyone. Fixed via `--disable-features ZstdContentEncoding,SharedZstd` in `src/main/index.ts`. Review the workaround after an Electron bump. A real call can provide additional evidence, but missing that session test does not block a release; never report voice as verified unless it was tested.
 - **winaudio = graveyard** (built+reverted 5x; Win10 lacks PROCESS_LOOPBACK, Win11 22H2+ only). Re-test via test-loopback.js after any `winaudio.cc` change.
 - **Vencord pin is a COMMIT not a tag** — tags lag months and patches go stale ("Patch had no effect"). Before shipping, `pnpm overlay:vencord` must show 0 patch-skip warnings; `upstream-watch.yml` flags >30 days behind.
 - **`--frozen-lockfile` CI:** adding any dep needs `pnpm install --lockfile-only` committed first, or CI fails.

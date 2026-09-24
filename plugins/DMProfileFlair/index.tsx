@@ -84,16 +84,23 @@ interface LocalRenderMedia {
 // visible in the profile itself, not only inside the editor preview. The
 // IndexedDB copy is restored into this map when the plugin starts.
 const localRenderMedia: Partial<Record<"banner" | "avatar", LocalRenderMedia>> = {};
+const sessionLocalMediaPreview = new Set<"banner" | "avatar">();
+let sessionThemePreview: ProfileFlair | null | undefined;
 
-function setLocalRenderMedia(kind: "banner" | "avatar", media: LocalRenderMedia): void {
+function setLocalRenderMedia(kind: "banner" | "avatar", media: LocalRenderMedia, userSelected = false): void {
     localRenderMedia[kind] = media;
+    if (userSelected) sessionLocalMediaPreview.add(kind);
 }
 
 function clearLocalRenderMedia(kind?: "banner" | "avatar"): void {
-    if (kind) delete localRenderMedia[kind];
+    if (kind) {
+        delete localRenderMedia[kind];
+        sessionLocalMediaPreview.delete(kind);
+    }
     else {
         delete localRenderMedia.banner;
         delete localRenderMedia.avatar;
+        sessionLocalMediaPreview.clear();
     }
 }
 
@@ -261,41 +268,39 @@ function getProfileFlairForRender(userId: string, kind: "banner" | "avatar" | "t
     const me = UserStore.getCurrentUser?.();
 
     if (kind !== "theme") {
-        // Other viewers use the shared roster. For the current user, a local
-        // draft/file is the immediate source of truth; if it is absent, keep
-        // the shared field. This prevents a healthy roster that omits the
-        // account (or contains an older value) from making the profile look
-        // blank after an update.
+        // A published field is canonical on every install. Old local editor
+        // URLs / remembered files must not override it, or the same account
+        // can show different banners/avatars on two PCs. A local choice is a
+        // preview/fallback only until that field has been published.
         const key = kind === "banner" ? "bannerUrl" : "avatarAnimatedUrl";
         if (!me?.id || me.id !== userId) return shared;
         const value = getLocalMediaValue(kind);
-        // The current user's local choice wins immediately, including over an
-        // older shared value. This makes picking a file or changing a URL feel
-        // instant; other Discordmaxxer users still resolve the shared roster.
-        const merged = value
-            ? { ...(shared ?? {}), [key]: value }
-            : shared;
-        return merged;
+        if (sessionLocalMediaPreview.has(kind) && value) return { ...(shared ?? {}), [key]: value };
+        if (shared?.[key]) return shared;
+        return value ? { ...(shared ?? {}), [key]: value } : shared;
     }
 
     if (!me?.id || me.id !== userId) return shared;
 
+    // A just-selected preset/editor value should paint immediately, even if
+    // this install has an older published gradient. Once the write succeeds,
+    // the shared roster takes over again. A null preview is an explicit local
+    // clear while an update is pending or when the user clears only this PC.
+    if (sessionThemePreview !== undefined) {
+        return sessionThemePreview === null
+            ? { ...(shared ?? {}), themeColorPrimary: "", themeColorSecondary: "" }
+            : { ...(shared ?? {}), ...sessionThemePreview };
+    }
+
+    // A roster gradient is shared account state. Per-install color settings
+    // are only a local fallback when no shared gradient exists; otherwise an
+    // old Cotton Candy draft could mask the account's published Crimson
+    // colors on one PC and make identical accounts look different.
+    if (shared?.themeColorPrimary || shared?.themeColorSecondary) return shared;
+
     const local = getLocalThemeFlair();
     if (!local) return shared;
-    if (!shared) return local;
-
-    // The current user's local selection wins immediately. This is important
-    // for the free gradient path: an old shared red value must not make a
-    // newly picked Cotton Candy preset look broken while the shared write is
-    // still pending, unavailable, or waiting for a claim. Other users still
-    // use the shared roster only, so this cannot leak a private local choice.
-    // Fill missing fields from the shared profile so a one-color local draft
-    // still paints a complete gradient.
-    return {
-        ...shared,
-        ...(local.themeColorPrimary ? { themeColorPrimary: local.themeColorPrimary } : {}),
-        ...(local.themeColorSecondary ? { themeColorSecondary: local.themeColorSecondary } : {})
-    };
+    return local;
 }
 
 /** Repaint an already-open profile immediately after a local or optimistic
@@ -341,10 +346,9 @@ export function getEffectiveFlairForUser(
     if (kind === "theme" && !s.showOthersThemeColors) return null;
     if (isFlairHiddenForUser(userId)) return null;
 
-    // Shared media is preferred. During the initial/failed roster sync, the
-    // current user's saved direct URL can be shown as a self-only fallback;
-    // other users still resolve media from the shared roster only. Theme
-    // colors remain local-first because gradients are free and instant.
+    // Published roster values are canonical across installs. A fresh local
+    // choice previews immediately for the current user; old per-PC settings
+    // are only fallbacks when no shared field exists.
     const flair = getProfileFlairForRender(userId, kind) ?? null;
     if (!flair) return null;
 
@@ -494,6 +498,7 @@ async function applySharedGradient(primary: string, secondary: string, _label?: 
         themeColorSecondary: nextSecondary
     };
 
+    sessionThemePreview = profile;
     const auth = getProfileAuth(false);
     if (!auth) {
         settings.store.myThemeColorPrimary = nextPrimary;
@@ -531,6 +536,8 @@ async function applySharedGradient(primary: string, secondary: string, _label?: 
     }
 
     recordRecentPicks("", "", nextPrimary, nextSecondary);
+    sessionThemePreview = undefined;
+    repaintProfileFlairNow();
     return true;
 }
 
@@ -939,18 +946,22 @@ function applyProfileLookConfig(config: ProfileLookConfig, only?: ProfileLookCom
     // with an intentionally omitted field should leave that field alone.
     if (flair.bannerUrl !== undefined) {
         s.myBannerUrl = flair.bannerUrl;
+        sessionLocalMediaPreview.add("banner");
         changed++;
     }
     if (flair.avatarAnimatedUrl !== undefined) {
         s.myAvatarAnimatedUrl = flair.avatarAnimatedUrl;
+        sessionLocalMediaPreview.add("avatar");
         changed++;
     }
     if (flair.themeColorPrimary !== undefined) {
         s.myThemeColorPrimary = flair.themeColorPrimary;
+        sessionThemePreview = { ...(sessionThemePreview && sessionThemePreview !== null ? sessionThemePreview : {}), themeColorPrimary: flair.themeColorPrimary };
         changed++;
     }
     if (flair.themeColorSecondary !== undefined) {
         s.myThemeColorSecondary = flair.themeColorSecondary;
+        sessionThemePreview = { ...(sessionThemePreview && sessionThemePreview !== null ? sessionThemePreview : {}), themeColorSecondary: flair.themeColorSecondary };
         changed++;
     }
     const nameStyle = only === "nameStyle" ? config.nameStyle : only ? undefined : config.nameStyle;
@@ -974,6 +985,9 @@ function applyProfileLookConfig(config: ProfileLookConfig, only?: ProfileLookCom
             const value = presence[key];
             if (value !== undefined && writeVencordSetting("DMPresence", key, value, skipped)) changed++;
         }
+    }
+    if (flair.bannerUrl !== undefined || flair.avatarAnimatedUrl !== undefined || flair.themeColorPrimary !== undefined || flair.themeColorSecondary !== undefined) {
+        repaintProfileFlairNow();
     }
     return { changed, skipped: [...skipped] };
 }
@@ -1429,7 +1443,7 @@ function FlairEditor() {
         };
         localMediaRef.current = next;
         setLocalMedia(next);
-        setLocalRenderMedia(kind, { url: dataUri, isVideo });
+        setLocalRenderMedia(kind, { url: dataUri, isVideo }, true);
         repaintProfileFlairNow();
         toast(kind === "banner"
             ? `Banner file ready${remembered ? " and remembered on this PC" : " for this session"}. Publish it for cross-PC Discordmaxxer sharing, or use a one-time Discord action.`
@@ -1526,6 +1540,8 @@ function FlairEditor() {
                 );
                 return;
             }
+            sessionLocalMediaPreview.clear();
+            sessionThemePreview = undefined;
             let restored = 0;
             if (saved.bannerUrl !== undefined) { s.myBannerUrl = saved.bannerUrl; restored++; }
             if (saved.avatarAnimatedUrl !== undefined) { s.myAvatarAnimatedUrl = saved.avatarAnimatedUrl; restored++; }
@@ -1588,8 +1604,10 @@ function FlairEditor() {
             if (!url) return;
             const ok = await postFlairUpdate({ bannerUrl: url }, false);
             if (ok) {
+                sessionLocalMediaPreview.delete("banner");
                 s.myBannerUrl = url;
                 recordRecentPicks(url, "", "", "");
+                repaintProfileFlairNow();
                 toast("✅ Shared banner published — other Discordmaxxer clients can now load it.", Toasts.Type.SUCCESS, 6000);
             }
         } finally {
@@ -1614,8 +1632,10 @@ function FlairEditor() {
             if (!url) return;
             const ok = await postFlairUpdate({ avatarAnimatedUrl: url }, false);
             if (ok) {
+                sessionLocalMediaPreview.delete("avatar");
                 s.myAvatarAnimatedUrl = url;
                 recordRecentPicks("", url, "", "");
+                repaintProfileFlairNow();
                 toast("✅ Shared avatar published — other Discordmaxxer clients can now load it.", Toasts.Type.SUCCESS, 6000);
             }
         } finally {
@@ -1643,10 +1663,10 @@ function FlairEditor() {
         // Save is merge-only. A new PC may not have the old avatar URL in its
         // local settings yet; editing the banner must not erase the published
         // avatar. Explicit clear buttons below handle deletion field by field.
-        if (banner) proposed.bannerUrl = banner;
-        if (avatar) proposed.avatarAnimatedUrl = avatar;
-        if (primary) proposed.themeColorPrimary = primary;
-        if (secondary) proposed.themeColorSecondary = secondary;
+        if (sessionLocalMediaPreview.has("banner") && banner) proposed.bannerUrl = banner;
+        if (sessionLocalMediaPreview.has("avatar") && avatar) proposed.avatarAnimatedUrl = avatar;
+        if (sessionThemePreview?.themeColorPrimary !== undefined && primary) proposed.themeColorPrimary = primary;
+        if (sessionThemePreview?.themeColorSecondary !== undefined && secondary) proposed.themeColorSecondary = secondary;
         if (!Object.keys(proposed).length) {
             toast(
                 localMedia.banner
@@ -1671,6 +1691,12 @@ function FlairEditor() {
             }
             if (primary) s.myThemeColorPrimary = primary;
             if (secondary) s.myThemeColorSecondary = secondary;
+            if (primary || secondary) {
+                sessionThemePreview = {
+                    ...(primary ? { themeColorPrimary: primary } : {}),
+                    ...(secondary ? { themeColorSecondary: secondary } : {})
+                };
+            }
             repaintProfileFlairNow();
             recordRecentPicks("", "", primary, secondary);
             toast(
@@ -1686,9 +1712,19 @@ function FlairEditor() {
         // still rejects a free-gradient write.
         if (primary) s.myThemeColorPrimary = primary;
         if (secondary) s.myThemeColorSecondary = secondary;
+        if (primary || secondary) {
+            sessionThemePreview = {
+                ...(primary ? { themeColorPrimary: primary } : {}),
+                ...(secondary ? { themeColorSecondary: secondary } : {})
+            };
+        }
         if (primary || secondary) repaintProfileFlairNow();
         const ok = await postFlairUpdate(proposed, false);
         if (ok) {
+            if (proposed.bannerUrl) sessionLocalMediaPreview.delete("banner");
+            if (proposed.avatarAnimatedUrl) sessionLocalMediaPreview.delete("avatar");
+            if (proposed.themeColorPrimary !== undefined || proposed.themeColorSecondary !== undefined) sessionThemePreview = undefined;
+            repaintProfileFlairNow();
             // Push the just-saved values to the recents history so Diggy can
             // swap back like Discord's recent-avatars picker.
             recordRecentPicks(
@@ -1742,6 +1778,7 @@ function FlairEditor() {
         if (!getProfileAuth(false)) {
             s.myThemeColorPrimary = "";
             s.myThemeColorSecondary = "";
+            sessionThemePreview = null;
             repaintProfileFlairNow();
             toast("Cleared the local profile gradient. Your shared roster gradient is unchanged until you authenticate.", Toasts.Type.MESSAGE, 6000);
             return;
@@ -1749,9 +1786,11 @@ function FlairEditor() {
         setBusy(true);
         s.myThemeColorPrimary = "";
         s.myThemeColorSecondary = "";
+        sessionThemePreview = null;
         repaintProfileFlairNow();
         const ok = await postFlairUpdate({ themeColorPrimary: "", themeColorSecondary: "" }, false);
         if (ok) {
+            sessionThemePreview = undefined;
             repaintProfileFlairNow();
         }
         setBusy(false);
@@ -1764,6 +1803,7 @@ function FlairEditor() {
             s.myAvatarAnimatedUrl = "";
             s.myThemeColorPrimary = "";
             s.myThemeColorSecondary = "";
+            sessionThemePreview = null;
             await Promise.all([forgetLocalMedia("banner"), forgetLocalMedia("avatar")]);
             repaintProfileFlairNow();
             toast("Cleared this install's local profile flair. A claim is needed to clear shared roster flair.", Toasts.Type.MESSAGE, 6000);
@@ -1776,6 +1816,8 @@ function FlairEditor() {
             s.myAvatarAnimatedUrl = "";
             s.myThemeColorPrimary = "";
             s.myThemeColorSecondary = "";
+            sessionLocalMediaPreview.clear();
+            sessionThemePreview = undefined;
             await Promise.all([forgetLocalMedia("banner"), forgetLocalMedia("avatar")]);
             repaintProfileFlairNow();
         }
@@ -2026,26 +2068,41 @@ function FlairEditor() {
     const publishedFlair = currentUser?.id ? getRosterProfileFlair(currentUser.id) : undefined;
     const localTheme = getLocalThemeFlair();
     const rosterReady = hasAuthoritativeRosterSnapshot();
+    const hasPublishedTheme = !!(publishedFlair?.themeColorPrimary || publishedFlair?.themeColorSecondary);
+    const baseTheme = hasPublishedTheme ? publishedFlair : localTheme;
+    const visibleTheme = sessionThemePreview === null
+        ? undefined
+        : sessionThemePreview !== undefined
+            ? { ...(baseTheme ?? {}), ...sessionThemePreview }
+            : baseTheme;
     const sourceFor = (kind: "gradient" | "banner" | "avatar"): string => {
-        if (kind === "gradient") return localTheme
-            ? "Local • instant"
-            : publishedFlair?.themeColorPrimary || publishedFlair?.themeColorSecondary
-                ? "Shared roster"
-                : "Not set";
-        if (localMedia[kind]) return "Local file • preview";
+        if (kind === "gradient") {
+            if (sessionThemePreview !== undefined) return sessionThemePreview === null ? "Local clear • this session" : "Local preview • this session";
+            if (hasPublishedTheme) return "Shared roster";
+            return localTheme ? "Local fallback • this PC" : "Not set";
+        }
+        const sharedUrl = publishedFlair?.[kind === "banner" ? "bannerUrl" : "avatarAnimatedUrl"];
+        if (sessionLocalMediaPreview.has(kind)) return localMedia[kind] ? "Local file • preview" : "Local URL • preview";
+        if (sharedUrl) return "Shared roster";
+        if (localMedia[kind]) return "Local file • this PC";
         const draft = kind === "banner" ? s.myBannerUrl.trim() : s.myAvatarAnimatedUrl.trim();
-        return draft ? (rosterReady ? "URL draft" : "Local draft • this PC") : publishedFlair?.[kind === "banner" ? "bannerUrl" : "avatarAnimatedUrl"]
-            ? "Shared roster"
-            : "Not set";
+        return draft ? (rosterReady ? "Local URL • this PC" : "Local URL • roster offline") : "Not set";
     };
     const explanationFor = (kind: "gradient" | "banner" | "avatar"): string => {
         if (kind === "gradient") {
-            if (localTheme) return "Your local gradient wins for your own open profile, so a new preset should paint immediately. A claim publishes it across PCs; without one it stays on this install.";
-            if (publishedFlair?.themeColorPrimary || publishedFlair?.themeColorSecondary) return "This gradient came from the shared Discordmaxxer roster. It is independent from your banner and avatar.";
-            return "No gradient is currently selected. Pick a preset or choose two colors below.";
+            if (sessionThemePreview === null) return "The gradient is cleared in this session. If a shared gradient exists, the published value is unchanged until you clear it while authenticated.";
+            if (sessionThemePreview !== undefined) return "This is your instant local preview. Save it to publish the colors; after publishing, the shared roster is canonical on every PC.";
+            if (hasPublishedTheme) return "This gradient comes from the shared Discordmaxxer roster and should match on every install. Older per-PC color settings no longer override it.";
+            if (localTheme) return "No shared gradient is published, so this saved local fallback appears only on this PC. Pick a preset and save with a claim to sync it.";
+            return "No gradient is currently selected. Pick a preset or choose two colors below; the new choice previews immediately.";
         }
+        const sharedUrl = publishedFlair?.[kind === "banner" ? "bannerUrl" : "avatarAnimatedUrl"];
         const media = localMedia[kind];
-        if (media) return `${kind === "banner" ? "Banner" : "Avatar"} file is a local preview. Publish it for cross-PC Discordmaxxer visibility, or use the one-time native Discord action separately.`;
+        if (sessionLocalMediaPreview.has(kind)) return media
+            ? `${kind === "banner" ? "Banner" : "Avatar"} file is an instant local preview. Publish it for cross-PC Discordmaxxer visibility, or use the one-time native Discord action separately.`
+            : `This URL is an instant local preview. Save it to publish; the shared roster becomes canonical across PCs.`;
+        if (sharedUrl) return "This media comes from the shared roster and is the same value other Discordmaxxer installs should render. An older URL or remembered file on this PC will not replace it.";
+        if (media) return `${kind === "banner" ? "Banner" : "Avatar"} file is saved locally on this PC only. Publish it for cross-PC Discordmaxxer visibility, or use the one-time native Discord action separately.`;
         const draft = kind === "banner" ? s.myBannerUrl.trim() : s.myAvatarAnimatedUrl.trim();
         if (draft && !rosterReady) {
             if (!URL_RE.test(draft)) {
@@ -2053,8 +2110,7 @@ function FlairEditor() {
             }
             return "The shared roster is temporarily unavailable, so your saved URL is being shown on this PC only. Save it after roster sync recovers to make it visible to other Discordmaxxer users and your other PC.";
         }
-        if (draft) return "This URL is an editor draft. Save it to the shared roster, or replace it with a local file if you do not want to hunt for a URL.";
-        if (publishedFlair?.[kind === "banner" ? "bannerUrl" : "avatarAnimatedUrl"]) return "This media is coming from the shared roster. If it fails, Discordmaxxer restores the normal Discord media and records the failure here.";
+        if (draft) return "This saved URL is a local fallback because the shared roster has no value for this field. Edit it and choose Save to publish the URL.";
         return "No shared media is set. Choose a local file or paste a direct HTTPS URL.";
     };
     const appearanceCenterStyle: React.CSSProperties = {
@@ -2092,6 +2148,7 @@ function FlairEditor() {
                 <div style={{ ...noteStyle, marginBottom: 0 }}>
                     These are three independent layers. The badge tells you where each layer comes from;
                     <b> Why am I seeing this?</b> explains the current local, shared, native, or performance boundary.
+                    Published roster fields are canonical across PCs; older per-install drafts are only fallbacks when no shared field exists.
                 </div>
                 <div role="status" style={{ marginTop: 7, padding: "6px 8px", borderRadius: 5, background: "rgba(155, 231, 255, 0.09)", border: "1px solid rgba(155, 231, 255, 0.28)", color: "#bfefff", fontSize: 10.5, lineHeight: 1.4 }}>
                     Windows/Discord reduced-motion settings do not replace your custom banner or avatar with a still frame. TournamentMode is the only mode that pauses animated flair.
@@ -2100,7 +2157,7 @@ function FlairEditor() {
                     {(["gradient", "banner", "avatar"] as const).map(kind => {
                         const label = kind === "gradient" ? "🌈 Gradient" : kind === "banner" ? "🖼️ Banner" : "👤 Avatar";
                         const preview = kind === "gradient"
-                            ? <div style={{ height: 28, borderRadius: 4, background: `linear-gradient(180deg, ${localTheme?.themeColorPrimary ?? publishedFlair?.themeColorPrimary ?? "#29223a"}, ${localTheme?.themeColorSecondary ?? publishedFlair?.themeColorSecondary ?? "#17131d"})` }} />
+                            ? <div style={{ height: 28, borderRadius: 4, background: `linear-gradient(180deg, ${visibleTheme?.themeColorPrimary ?? "#29223a"}, ${visibleTheme?.themeColorSecondary ?? "#17131d"})` }} />
                             : <div style={{ height: 28, borderRadius: 4, background: "rgba(255,255,255,0.06)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12 }}>{localMedia[kind] ? (localMedia[kind]!.isVideo ? "🎬 local video" : "🖼️ local file") : sourceFor(kind)}</div>;
                         return (
                             <div key={kind} style={appearanceCardStyle}>
@@ -2150,7 +2207,11 @@ function FlairEditor() {
                                     key={url}
                                     title={url}
                                     style={thumbButtonStyle}
-                                    onClick={() => { s.myBannerUrl = url; }}
+                                    onClick={() => {
+                                        s.myBannerUrl = url;
+                                        sessionLocalMediaPreview.add("banner");
+                                        repaintProfileFlairNow();
+                                    }}
                                 >
                                     {/\.(mp4|webm|mov)(\?|$)/i.test(url)
                                         ? <span style={{ ...bannerThumbImg, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14 }}>🎬</span>
@@ -2167,7 +2228,11 @@ function FlairEditor() {
                                     key={url}
                                     title={url}
                                     style={thumbButtonStyle}
-                                    onClick={() => { s.myAvatarAnimatedUrl = url; }}
+                                    onClick={() => {
+                                        s.myAvatarAnimatedUrl = url;
+                                        sessionLocalMediaPreview.add("avatar");
+                                        repaintProfileFlairNow();
+                                    }}
                                 >
                                     <img src={url} alt="" style={avatarThumbImg} onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }} />
                                 </button>
@@ -2185,7 +2250,12 @@ function FlairEditor() {
                                         key={pair}
                                         title={`${p} → ${sec}`}
                                         style={thumbButtonStyle}
-                                        onClick={() => { s.myThemeColorPrimary = p; s.myThemeColorSecondary = sec; }}
+                                        onClick={() => {
+                                            s.myThemeColorPrimary = p;
+                                            s.myThemeColorSecondary = sec;
+                                            sessionThemePreview = { themeColorPrimary: p, themeColorSecondary: sec };
+                                            repaintProfileFlairNow();
+                                        }}
                                     >
                                         <span style={colorSwatch(p, sec)} />
                                     </button>
@@ -2542,7 +2612,11 @@ const settings = definePluginSettings({
             "For a downloaded GIF/image/video, use Choose banner file then Publish as shared banner to upload it to the shared roster, " +
             "or use the one-time Discord buttons. Recommended: 600×240; images ≤5MB and videos ≤15MB. " +
             "This is a local draft until Save; profile rendering follows the shared roster on every PC. TournamentMode pauses custom banner rendering.",
-        default: ""
+        default: "",
+        onChange: () => {
+            sessionLocalMediaPreview.add("banner");
+            repaintProfileFlairNow();
+        }
     },
     myAvatarAnimatedUrl: {
         type: OptionType.STRING,
@@ -2552,7 +2626,11 @@ const settings = definePluginSettings({
             "Use Choose avatar file in the editor for a local preview, shared GIF/image publish, or one-time real-Discord broadcast. " +
             "Recommended size: 160×160 square. Animated avatar rendering is suppressed while TournamentMode is active. " +
             "This is a local draft until Save; profile rendering follows the shared roster on every PC. Member-list/chat/voice replacement also requires you to have a custom Discord avatar rather than Discord's default wordmark.",
-        default: ""
+        default: "",
+        onChange: () => {
+            sessionLocalMediaPreview.add("avatar");
+            repaintProfileFlairNow();
+        }
     },
     myThemeColorPrimary: {
         type: OptionType.STRING,
@@ -2561,7 +2639,13 @@ const settings = definePluginSettings({
             "Accepts #RRGGBB, RRGGBB (no #), or 0xRRGGBB — auto-normalized. " +
             "Empty by default (no gradient) — pick a preset in the welcome screen or set your own here. " +
             "Free for every Discordmaxxer user. Without a claim code it stays on this install; with a claim it syncs through the shared roster. Clear to remove your gradient.",
-        default: ""
+        default: "",
+        onChange: () => {
+            const current = sessionThemePreview && sessionThemePreview !== null ? sessionThemePreview : {};
+            const raw = settings.store.myThemeColorPrimary.trim();
+            sessionThemePreview = { ...current, themeColorPrimary: normalizeColor(raw) ?? raw };
+            repaintProfileFlairNow();
+        }
     },
     myThemeColorSecondary: {
         type: OptionType.STRING,
@@ -2569,7 +2653,13 @@ const settings = definePluginSettings({
             "[Channel G · FREE] Secondary theme color — BOTTOM of the profile gradient. " +
             "Accepts #RRGGBB, RRGGBB (no #), or 0xRRGGBB — auto-normalized. " +
             "Empty by default (no gradient) — paired with the primary above once both are set. Free for every Discordmaxxer user; a claim is only needed for cross-PC/shared sync.",
-        default: ""
+        default: "",
+        onChange: () => {
+            const current = sessionThemePreview && sessionThemePreview !== null ? sessionThemePreview : {};
+            const raw = settings.store.myThemeColorSecondary.trim();
+            sessionThemePreview = { ...current, themeColorSecondary: normalizeColor(raw) ?? raw };
+            repaintProfileFlairNow();
+        }
     },
     manualClaimCode: {
         type: OptionType.STRING,
@@ -2703,6 +2793,12 @@ function buildCss(): string {
         [data-dm-flair-banner-applied] > img:first-child {
             visibility: hidden !important;
         }
+        /* Suppress the stock avatar only while a profile-view flair image is
+           loading. The fast profile observer swaps the URL before first paint;
+           this guard prevents a static-frame flash if the asset needs a beat. */
+        [data-dm-flair-avatar-pending="1"] {
+            visibility: hidden !important;
+        }
         /* Video banner overlay — covers the banner area, click-through, low
            paint cost (one composited surface). */
         .dm-flair-banner-video {
@@ -2782,14 +2878,37 @@ function findAvatarImgsForUser(userId: string): HTMLImageElement[] {
     return out;
 }
 
-/** Profile-view-only avatars (popout 80px, full profile 120px). Used as a
- *  fallback when we couldn't read currentUser?.id yet (very early startup). */
-function findProfileViewAvatars(): HTMLImageElement[] {
+// Profile surfaces have changed class names over time. Keep the fast path
+// narrower than PROFILE_SURFACE_ROOT_SELECTOR: a generic dialog may be a
+// settings modal, while these semantic roots are Discord user profiles.
+const PROFILE_FAST_SCAN_ROOT_SELECTOR = [
+    '[class*="user-profile-popout"]',
+    '[class*="userProfileModal"]',
+    '[class*="user-profile-modal"]',
+    '[class*="userPopout"]',
+    '[class*="user-popout"]',
+    '[class*="profileModal"]',
+    '[class*="profile-modal"]'
+].join(", ");
+const PROFILE_BANNER_SELECTOR = '[class*="banner__"], [class*="profileBanner"], [class*="userProfileBanner"]';
+
+function profileFastRootFor(element: Element): HTMLElement | null {
+    const semanticRoot = element.closest<HTMLElement>(PROFILE_FAST_SCAN_ROOT_SELECTOR);
+    if (semanticRoot) return semanticRoot;
+
+    // Some Discord builds only expose the profile as a dialog. Require a
+    // profile banner marker so unrelated dialogs are never treated as users.
+    const dialog = element.closest<HTMLElement>('[role="dialog"]');
+    return dialog?.querySelector(PROFILE_BANNER_SELECTOR) ? dialog : null;
+}
+
+/** Profile-view-only avatars (popout 80px, full profile 120px). */
+function findProfileViewAvatars(root: ParentNode = document): HTMLImageElement[] {
     const out: HTMLImageElement[] = [];
-    document.querySelectorAll('img[class*="avatar__"]').forEach(c => {
+    root.querySelectorAll('img[class*="avatar__"]').forEach(c => {
         const el = c as HTMLImageElement;
         const r = el.getBoundingClientRect();
-        if (r.width >= 60 && r.height >= 60 && shouldInspectVisibleElement(el, true)) out.push(el);
+        if (r.width >= 60 && r.height >= 60 && profileFastRootFor(el) && shouldInspectVisibleElement(el, true)) out.push(el);
     });
     return out;
 }
@@ -2829,6 +2948,34 @@ const PROFILE_SURFACE_ROOT_SELECTOR = [
     '[class*="profile-modal"]',
     '[role="dialog"]'
 ].join(", ");
+
+function profileRootsFromMutations(records: MutationRecord[]): HTMLElement[] {
+    const roots = new Set<HTMLElement>();
+    const consider = (element: Element) => {
+        const root = profileFastRootFor(element);
+        if (root) roots.add(root);
+        element.querySelectorAll(PROFILE_FAST_SCAN_ROOT_SELECTOR).forEach(candidate => roots.add(candidate as HTMLElement));
+        const dialog = element.matches('[role="dialog"]')
+            ? element as HTMLElement
+            : element.closest<HTMLElement>('[role="dialog"]');
+        if (dialog?.querySelector(PROFILE_BANNER_SELECTOR)) roots.add(dialog);
+        element.querySelectorAll<HTMLElement>('[role="dialog"]').forEach(candidate => {
+            if (candidate.querySelector(PROFILE_BANNER_SELECTOR)) roots.add(candidate);
+        });
+    };
+
+    for (const record of records) {
+        for (const node of record.addedNodes) {
+            if (node instanceof Element) consider(node);
+            else if (node.parentElement) consider(node.parentElement);
+        }
+        if (record.target instanceof Element) consider(record.target);
+    }
+
+    return [...roots].filter(root =>
+        !containsMessageArea(root) && (root.querySelector(PROFILE_BANNER_SELECTOR) || root.querySelector('img[class*="avatar__"]'))
+    );
+}
 
 /** Given a banner, resolve the profile popout / full-profile container that we
  *  paint theme colors + banners onto.
@@ -3210,6 +3357,16 @@ function applyTheme(container: HTMLElement, primary?: string, secondary?: string
 }
 
 function applyAvatar(avatar: HTMLImageElement, url: string, userId?: string) {
+    const isProfileView = !!profileFastRootFor(avatar);
+    const markPending = () => {
+        if (!isProfileView) return;
+        avatar.setAttribute("data-dm-flair-avatar-pending", "1");
+        const clearPending = () => {
+            if (avatar.dataset.dmFlairAppliedUrl === url) avatar.removeAttribute("data-dm-flair-avatar-pending");
+        };
+        avatar.addEventListener("load", clearPending, { once: true });
+        avatar.addEventListener("error", clearPending, { once: true });
+    };
     // Idempotency MUST compare against the URL we last applied (stashed on the
     // element), NOT against `avatar.src`. The browser normalizes/encodes the
     // src it reads back (dm-media:// scheme, percent-encoding, trailing
@@ -3225,10 +3382,15 @@ function applyAvatar(avatar: HTMLImageElement, url: string, userId?: string) {
     // flair owns this node, and re-assert that invariant if Discord recycles
     // the attributes onto the same element.
     if (avatar.dataset.dmFlairAppliedUrl === url) {
-        if (avatar.hasAttribute("srcset") || avatar.hasAttribute("sizes") || avatar.src !== url) {
+        // Compare the literal attribute, not the normalized `.src` property.
+        // Discord can rewrite the property form for custom schemes, making a
+        // stable image look different on every scan and re-triggering loads.
+        if (avatar.hasAttribute("srcset") || avatar.hasAttribute("sizes") || avatar.getAttribute("src") !== url) {
+            markPending();
             avatar.removeAttribute("srcset");
             avatar.removeAttribute("sizes");
             avatar.src = url;
+            if (isProfileView && avatar.complete && avatar.naturalWidth > 0) avatar.removeAttribute("data-dm-flair-avatar-pending");
         }
         return;
     }
@@ -3257,12 +3419,14 @@ function applyAvatar(avatar: HTMLImageElement, url: string, userId?: string) {
         avatar.dataset.dmFlairFailedUrl = url;
         noteProfileFlairFailure(`avatar media failed and was restored (${url.slice(0, 80)})`);
     };
+    markPending();
     avatar.removeAttribute("srcset");
     avatar.removeAttribute("sizes");
     avatar.src = url;
     if (userId) avatar.dataset.dmFlairAvatarUserId = userId;
     avatar.dataset.dmFlairAppliedUrl = url;
     avatar.setAttribute("data-dm-flair-avatar-applied", "1");
+    if (isProfileView && avatar.complete && avatar.naturalWidth > 0) avatar.removeAttribute("data-dm-flair-avatar-pending");
 }
 
 /** Background-image variant for call surfaces / Stage tiles that render the
@@ -3315,6 +3479,7 @@ function restoreAvatar(avatar: HTMLImageElement) {
     delete avatar.dataset.dmFlairAvatarUserId;
     delete avatar.dataset.dmFlairAppliedUrl;
     delete avatar.dataset.dmFlairFailedUrl;
+    avatar.removeAttribute("data-dm-flair-avatar-pending");
     avatar.removeAttribute("data-dm-flair-avatar-applied");
 }
 
@@ -3369,6 +3534,55 @@ function cleanupAppliedAvatars(mediaSuppressed: boolean) {
             : undefined;
         if (!expected || expected !== element.dataset.dmFlairAppliedBgUrl) restoreBackgroundAvatar(element);
     });
+}
+
+function scanProfileSurfaceFast(root: HTMLElement): void {
+    if (!root.isConnected || document.hidden || containsMessageArea(root)) return;
+    const rootRect = root.getBoundingClientRect();
+    if (rootRect.width <= 0 || rootRect.height <= 0) return;
+    try {
+        const computed = window.getComputedStyle(root);
+        if (computed.display === "none" || computed.visibility === "hidden") return;
+    } catch { /* Continue with DOM identity checks if computed styles are unavailable. */ }
+
+    const mediaSuppressed = shouldSuppressAnimatedFlair();
+    let ownerId = getUserIdFromContainer(root);
+    const banners: HTMLElement[] = [];
+    if (root.matches(PROFILE_BANNER_SELECTOR)) banners.push(root);
+    root.querySelectorAll<HTMLElement>(PROFILE_BANNER_SELECTOR).forEach(banner => banners.push(banner));
+
+    for (const banner of banners) {
+        const rect = banner.getBoundingClientRect();
+        if (rect.width < 200 || rect.height < 50 || !shouldInspectVisibleElement(banner)) continue;
+        const container = findProfileContainerFromBanner(banner);
+        if (!container) continue;
+        const userId = ownerId ?? getUserIdFromContainer(container);
+        if (!userId) continue;
+        ownerId = userId;
+
+        const bannerFlair = resolveFlairForUserId(userId, "banner");
+        const suppressBanner = mediaSuppressed && !!bannerFlair?.bannerUrl && isAnimatedUrl(bannerFlair.bannerUrl);
+        if (bannerFlair?.bannerUrl && !suppressBanner) {
+            applyBanner(banner, bannerFlair.bannerUrl);
+        } else clearBanner(banner);
+
+        const themeFlair = resolveFlairForUserId(userId, "theme");
+        if (themeFlair?.themeColorPrimary || themeFlair?.themeColorSecondary) {
+            applyTheme(container, themeFlair.themeColorPrimary, themeFlair.themeColorSecondary);
+        } else clearTheme(container);
+    }
+
+    if (!ownerId) return;
+    const avatarFlair = resolveFlairForUserId(ownerId, "avatar");
+    if (!avatarFlair?.avatarAnimatedUrl || shouldSuppressAnimatedFlair()) return;
+    for (const avatar of findProfileViewAvatars(root)) {
+        const src = avatar.currentSrc || avatar.src || "";
+        const srcUserId = src.match(/\/avatars\/(\d{17,20})\//)?.[1];
+        const userId = srcUserId ?? ownerId;
+        if (userId !== ownerId) continue;
+        const flair = userId === ownerId ? avatarFlair : resolveFlairForUserId(userId, "avatar");
+        if (flair?.avatarAnimatedUrl) applyAvatar(avatar, flair.avatarAnimatedUrl, userId);
+    }
 }
 
 function scanForPopouts(_root: ParentNode = document) {
@@ -3486,17 +3700,6 @@ function scanForPopouts(_root: ParentNode = document) {
             if (!avatarFlair?.avatarAnimatedUrl) return;
             applyBackgroundAvatar(el, avatarFlair.avatarAnimatedUrl, userId);
         });
-        // Profile-view fallback: large avatars (≥60px) that don't have a CDN
-        // URL we could match (default-avatar users). Resolve the profile owner
-        // and apply that user's published roster avatar too.
-        const fallback = findProfileViewAvatars();
-        for (const a of fallback) {
-            if (a.dataset.dmFlairAvatarApplied) continue;
-            const container = a.closest<HTMLElement>(PROFILE_SURFACE_ROOT_SELECTOR) ?? findProfileContainerFromBanner(a as any) ?? a.parentElement;
-            const userId = container ? getUserIdFromContainer(container) : null;
-            const flair = userId ? resolveForScan(userId, "avatar") : null;
-            if (flair?.avatarAnimatedUrl && userId) applyAvatar(a, flair.avatarAnimatedUrl, userId);
-        }
         // Warn once if the current user has a default avatar.
         if (me && !me.avatar && selfHasAvatarFlair && !defaultAvatarWarned) {
             defaultAvatarWarned = true;
@@ -3505,6 +3708,19 @@ function scanForPopouts(_root: ParentNode = document) {
                 Toasts.Type.MESSAGE,
                 10000
             );
+        }
+    }
+
+    // Keep profile-view fallback avatars outside the throttled page-wide sweep.
+    // A newly opened popout should not wait up to 750ms, and default Discord
+    // avatars have no CDN user id in their src to catch in the sweep above.
+    if (!mediaSuppressed) {
+        for (const avatar of findProfileViewAvatars()) {
+            if (avatar.dataset.dmFlairAvatarApplied) continue;
+            const root = profileFastRootFor(avatar);
+            const userId = root ? getUserIdFromContainer(root) : null;
+            const flair = userId ? resolveForScan(userId, "avatar") : null;
+            if (flair?.avatarAnimatedUrl && userId) applyAvatar(avatar, flair.avatarAnimatedUrl, userId);
         }
     }
     profileRenderHealth.visibleBanners = banners.length;
@@ -3536,7 +3752,13 @@ function startObserver() {
     if (observer) return;
     lastAvatarSweepAt = 0;
     document.addEventListener("visibilitychange", onVisibilityChange);
-    observer = new MutationObserver(scheduleScan);
+    observer = new MutationObserver(records => {
+        // Discord may paint the stock avatar before the regular debounced page
+        // scan runs. Only inspect newly affected profile roots synchronously;
+        // the expensive page-wide pass remains coalesced below.
+        for (const root of profileRootsFromMutations(records)) scanProfileSurfaceFast(root);
+        scheduleScan();
+    });
     observer.observe(document.body, { childList: true, subtree: true });
     scanForPopouts(document);
     // Low-frequency safety net for changes the childList observer can't see

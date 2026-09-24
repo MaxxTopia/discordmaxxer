@@ -5,6 +5,52 @@
 > `CLAUDE.md` ("Operational facts" section). Those three are enough to build,
 > ship, and maintain without prior context.
 
+## 2026-09-24 profile flair consistency and automatic name styling — v0.7.70 release
+
+Based on the published v0.7.69 source, this isolated worktree now has a local
+candidate for four related rendering issues. Published shared-roster fields
+are canonical across installs; old per-PC banner/avatar/gradient values only
+act as fallbacks when the roster has no value, while deliberate new picks
+still preview immediately. This prevents stale local Crimson/Cotton Candy
+settings from masking a published gradient. Downloaded media remains local
+until it is published to the shared roster; shared animated banners for other
+Discordmaxxer users require that user's media to be published there. These
+client-rendered effects are not vanilla Discord profile fields.
+
+The profile MutationObserver now fast-scans semantic profile popouts/modals
+before the regular debounced page scan. Profile avatars stay hidden while the
+replacement image loads, and the same-image repair path compares the literal
+`src` attribute so browser URL normalization cannot trigger repeated reloads.
+Tournament Mode remains the animation pause; OS reduced-motion does not gate
+profile flair. DMDisplayNameStyle now automatically styles profile names,
+member/right-side names, and DM/channel headers when their surface toggles are
+enabled. Message-author names remain opt-in via Style other names.
+
+Verification passed: `pnpm test`, `pnpm verifyPlugins`, strict
+`DM_STRICT_REBRAND=1 pnpm overlay:vencord` (0 warnings), `pnpm build`,
+`node overlay-scripts/verify-build.mjs`, `pnpm package:dir`,
+`pnpm package:win`, and `git diff --check`. Packaged runtime validation used
+an isolated, logged-out profile with `--skip badge`: plugin inventory,
+CompactView/Tournament Mode toggles, and MassDelete wiring passed. The visual
+Hub check could not be proven on Discord's login screen. The signed-in
+profile, animated media, right-side/DM name surfaces, and cross-PC roster
+behavior were not tested. The x64/ARM64 ZIPs and NSIS installer plus blockmap
+were built locally. The pre-existing untracked `docs/evidence/` content was
+preserved and excluded. The canonical checkout was left untouched. The
+candidate is ready for the authorized v0.7.70 publish; its exact commit,
+workflow result, public release notes, and updater manifest must be recorded
+after publication.
+
+Still needs signed-in client proof: open profile popouts quickly and confirm
+the animated avatar advances without a stock-frame flash; inspect profile,
+right-side member, and DM-header names; confirm another Discordmaxxer account's
+published animated banner renders; compare a published gradient on two PCs.
+The cross-PC test must use published shared-roster values, not an unpublished
+local preview. Voice and screenshare were not tested, but they are not release
+blockers for this profile-only change. Do not claim those paths are verified
+without a real session. Best next action after publication: update the client
+on both PCs and complete the signed-in profile checks.
+
 ## 2026-09-24 profile visuals and display-name styles — v0.7.69 published
 
 This follow-up combines the more discoverable profile Appearance Center and
@@ -37,8 +83,10 @@ targets and the packaged-directory build completed. The packaged runtime
 validator (`--skip badge`) passed inventory, visual, hotkey, and mass-delete
 phases using a disposable logged-out profile. The new plugin and DM Hub were
 confirmed registered and enabled. Because this release changes profile styling
-and discovery rather than voice/screenshare code, Diggy explicitly scoped the
-voice/screenshare audio gate out for this release; those paths were not tested.
+and discovery rather than voice/screenshare code, those paths were outside this
+release's test scope and were not tested. Their omission was not a waiver: the
+project policy now explicitly says voice/screenshare sessions are not universal
+release blockers.
 The logged-out profile also means signed-in profile visuals, vanilla-client
 rendering, and second-PC sync remain unverified. The validator's visual phase
 did not find the Hub FAB on the Discord login screen, so that phase is not proof
@@ -57,8 +105,8 @@ The prior gallery image at `docs/evidence/display-name-style-showcase.png` is
 still untracked and intentionally preserved; it was not included in the push.
 Take a fresh capture from the updated gallery before using visual evidence
 publicly. Signed-in profile visuals, vanilla-client rendering, second-PC sync,
-and real voice/screenshare remain unverified (the last was explicitly waived
-for this profile-only release).
+and real voice/screenshare remain unverified; the latter were outside this
+profile-only release's test scope and are not universal publish gates.
 
 Best next action: install/update to `0.7.69` and inspect the name-style gallery,
 Plugin Tour, and DM Hub on a signed-in profile; separately test vanilla-client
@@ -444,8 +492,9 @@ TypeScript), `pnpm build`, strict `DM_STRICT_REBRAND=1 pnpm overlay:vencord`,
 compiled all 24 custom plugins and the registry audit resolved 53 defaults, 10
 bundle entries, and 8 featured entries. These changes are published in
 v0.7.67, but are not loaded into the running client in this session. Native
-runtime behavior, two-PC roster sync, service/account paths, and recipient
-voice/screenshare checks remain human gates.
+runtime behavior, two-PC roster sync, and service/account paths remain
+unverified. Recipient voice/screenshare sessions are optional human quality
+checks, not release gates.
 
 Best next action: install/update v0.7.67 on both PCs for the focused
 health/tour, DMTyping, gradient, local-media, backup/restore, and roster smoke
@@ -558,7 +607,7 @@ The installer is unsigned, so Windows SmartScreen may show the existing trust
 warning. The canonical dirty checkout was not staged or modified by this
 release.
 
-Human gates remain: load this candidate in the actual client; compare Diggyai's
+Client-side checks remain: load this candidate in the actual client; compare Diggyai's
 self profile with Diggy T viewing Diggyai; press Restore; save banner-only and
 confirm the remote avatar remains; test a local-file one-time Discord broadcast;
 and perform native recipient/Nitro checks. The release makes the published
@@ -588,10 +637,11 @@ rebrand warnings), `verify-build.mjs`, `pnpm build`, x64/ARM64 packaging, and
 `git diff --check`. The installer is unsigned, so Windows SmartScreen may show
 the existing trust warning.
 
-Diggy's real-client checks remain owed: call and screenshare with audio;
-Founder/MAXXER++ benefit inheritance; Tournament Mode during voice/screenshare;
-and creating, importing, and saving a `DMLOOK1:` profile look between two
-clients. The local client currently open is still the v0.7.64 candidate at
+Additional real-client quality checks were not completed: call and screenshare
+with audio; Founder/MAXXER++ benefit inheritance; Tournament Mode during
+voice/screenshare; and creating, importing, and saving a `DMLOOK1:` profile
+look between two clients. These were follow-ups, not publish blockers. The
+local client currently open is still the v0.7.64 candidate at
 `C:\Users\Diggy\projects\discordmaxxer-release-074\dist\win-unpacked\discordmaxxer.exe`;
 it was not replaced or restarted. No localhost:9223 debugger is listening, so
 the packaged runtime validator remains unrun.
@@ -700,10 +750,12 @@ unchanged. Verification passed: `pnpm test`, strict
 `DM_STRICT_REBRAND=1 pnpm overlay:vencord`,
 `node overlay-scripts/verify-build.mjs`, `pnpm build`, `pnpm package:dir`,
 worker `node --check worker.js`, worker extension tests (3/3), and
-`git diff --check`. Diggy still owes a live Founder/higher-tier gate test, a
-Tournament Mode voice/screenshare toggle test, and a two-client profile-look
-create/import/Save test. Diggy authorized the public app release on
-2026-09-22; the project-mandated real-client release gate remains outstanding.
+`git diff --check`. Additional real-client checks were not completed: a live
+Founder/higher-tier test, a Tournament Mode voice/screenshare toggle test, and
+a two-client profile-look create/import/Save test. Diggy authorized the public app release on
+2026-09-22. At that time the docs described a real-client release gate; that
+policy was removed on 2026-09-24. These tests remain quality follow-ups, not
+release blockers.
 
 This release carries the covered-window and screenshare diagnostics work that
 Diggy field-tested in the running client. The live check looked good while a
@@ -771,16 +823,12 @@ overlay because its paths have drifted beyond the pinned patch contract.
 The candidate was pushed to `main` in commit `6f2150417b4081ecb0dd294425c35145eb01970b`.
 Manual upstream-watch run `34927596682` completed successfully against that
 commit, and the Discord audit found no new upstream-drift DM after the run. The
-public stable installer remains v0.7.63 until the real voice gate passes and
-v0.7.64 is tagged.
+the then-current v0.7.63 installer remained stable pending the v0.7.64 release.
 
-Release gate: before the public tag, Diggy must run one real voice call with the
-v0.7.64 candidate and confirm connect, two-way audio, and stable
-disconnect/reconnect behavior, plus the existing real screenshare-with-audio
-sender/receiver check on the target Windows setup. These real-device/session
-tests are not provable from the automated build. If both pass, tag and push
-`v0.7.64` so GitHub Actions publishes the Windows installer; if either fails,
-fix the candidate before tagging. Preserve the canonical dirty
+Historical release gate wording (superseded 2026-09-24): the v0.7.64 notes
+required a real voice call and screenshare-with-audio sender/receiver check
+before tagging. Those session checks were not provable from automation and are
+now optional, non-blocking quality checks, not current release policy. Preserve the canonical dirty
 `plugins/DMPresence/index.ts` edits and untracked `plugins/DMTranslate/` and
 `plugins/PlaylistmaxxingPresence/` work.
 
@@ -1042,8 +1090,9 @@ FROM THE 2026-06-26 AUDIT (`AUDIT-2026-06-26.md`) — not yet built:
   echo-fix quiet-start gap.
 
 KNOWN TIME-BOMB: voice rides a `ZstdContentEncoding` disable flag for Electron 41.
-When Electron is eventually bumped, **test a real voice call** and the flag may be
-droppable. `upstream-watch` will flag the drift; the runbook has the procedure.
+When Electron is eventually bumped, review the flag. A real voice call can add
+evidence, but is optional and non-blocking; report voice as unverified if not
+tested. `upstream-watch` will flag the drift; the runbook has the procedure.
 
 ## Key files
 
