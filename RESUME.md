@@ -5,7 +5,7 @@
 > `CLAUDE.md` ("Operational facts" section). Those three are enough to build,
 > ship, and maintain without prior context.
 
-## 2026-09-24 profile visuals and display-name styles — source pushed; updater held
+## 2026-09-24 profile visuals and display-name styles — v0.7.69 candidate; tag pending
 
 This follow-up combines the more discoverable profile Appearance Center and
 tour shortcuts with the new `DMDisplayNameStyle` gallery: 30 distinct local
@@ -32,20 +32,28 @@ is retained locally but excluded from the source push: its subtitle describes
 the earlier reduced-motion behavior and no longer matches this candidate. Take
 a fresh capture from the updated gallery before using visual evidence publicly.
 
-The smoke packages are still labeled `0.7.68`, which is already the public
-release. They are not updater artifacts for this candidate. The reviewed source
-was pushed to `origin/main` as commit
-`8bc63448f304aede0c7bc70be3d3cfc242594c93`; the remote branch SHA was verified.
-No new version tag or updater artifact was created, so this source push alone
-does not deliver the new features to installed clients. A new updater release
-must wait until Diggy completes the required real voice call and
-screenshare-with-audio test on the target Windows setup. Vanilla-client
-rendering, second-PC sync, and signed-in profile surfaces remain unverified.
+The package version has been bumped locally to `0.7.69`. Both Windows package
+targets and the packaged-directory build completed. The packaged runtime
+validator (`--skip badge`) passed inventory, visual, hotkey, and mass-delete
+phases using a disposable logged-out profile. The new plugin and DM Hub were
+confirmed registered and enabled. Because this release changes profile styling
+and discovery rather than voice/screenshare code, Diggy explicitly scoped the
+voice/screenshare audio gate out for this release; those paths were not tested.
+The logged-out profile also means signed-in profile visuals, vanilla-client
+rendering, and second-PC sync remain unverified. The validator's visual phase
+did not find the Hub FAB on the Discord login screen, so that phase is not proof
+of signed-in Hub appearance.
 
-Best next action: Diggy runs the real voice/screenshare-with-audio gate on the
-target Windows setup; after it passes, prepare the next version and updater
-release. Capture a fresh gallery screenshot before using visual evidence
-publicly.
+The source base (`41e782c`) is already on `origin/main`; the version bump and
+this note remain local until committed. No `v0.7.69` tag or updater artifact
+exists yet. After committing only the intended release files, push the main
+commit, create/push `v0.7.69`, wait for the release workflow, and verify the
+published assets and updater manifest. Populate human-readable GitHub release
+notes so the in-app updater has useful change details. Capture a fresh gallery
+image before using visual evidence publicly.
+
+Best next action: commit the scoped version bump and this release checkpoint,
+then push the main commit and create the already-authorized version tag.
 
 ## 2026-09-23 profile-look discovery and sharing follow-up — local candidate only
 
