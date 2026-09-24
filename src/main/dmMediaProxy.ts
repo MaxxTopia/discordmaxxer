@@ -244,6 +244,17 @@ protocol.registerSchemesAsPrivileged([
             //   this Chromium rejects with "Media load rejected by
             //   URL safety check" before even fetching.
         }
+    },
+    {
+        scheme: "vesktop",
+        privileges: {
+            // Bundled display-name fonts are loaded as CORS fonts by Discord's
+            // https origin. The handler adds Access-Control-Allow-Origin only
+            // for the small allowlist of font files and Discord client hosts.
+            corsEnabled: true,
+            supportFetchAPI: true,
+            secure: true
+        }
     }
 ]);
 

@@ -38,10 +38,17 @@ export const FEATURED_PLUGINS: FeaturedPlugin[] = [
     {
         id: "DMProfileFlair",
         title: "Custom banners, animated PFPs + profile themes",
-        oneLiner: "Choose a free local gradient or local media. Shared media needs the profile-media service and an eligible claim; native Discord changes are separate one-time actions. Other Discordmaxxer users see shared flair; vanilla Discord does not render Discordmaxxer-only flair.",
-        where: "Open Profile Flair for Publish as shared..., Copy banner only, and the native Discord actions.",
+        oneLiner: "Choose a free local gradient or media, share eligible media with other Discordmaxxer installs, or use the separate one-time controls for Discord's own profile fields.",
+        where: "Open Appearance Center to copy/import one field, publish shared media, or reach Discord's native profile editor.",
         emoji: "✨",
         gif: "featured/dmprofileflair.gif"
+    },
+    {
+        id: "DMDisplayNameStyle",
+        title: "Style your display name",
+        oneLiner: "Browse 30 local looks with script, blackletter, comic fonts, flame tips, swashes, sparks, color, glow, and motion. For account-wide styles in standard Discord, use its separate native editor; your real name is unchanged here.",
+        where: "Use Browse local looks for this client's visual grid, or Native name styles for Discord's account editor.",
+        emoji: "✦"
     },
     {
         id: "FakeNitro",

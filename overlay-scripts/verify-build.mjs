@@ -60,7 +60,7 @@ const rendererPath = join(VDIST, "vencordDesktopRenderer.js");
 if (existsSync(rendererPath)) {
     const renderer = readFileSync(rendererPath, "utf8");
     // Critical custom plugins — if any of these is absent, the overlay is broken.
-    const REQUIRED_PLUGINS = ["TournamentMode", "DMVoiceKeybinds", "DMVoiceGuard", "DMHub", "DMTierFlair"];
+    const REQUIRED_PLUGINS = ["TournamentMode", "DMVoiceKeybinds", "DMVoiceGuard", "DMHub", "DMTierFlair", "DMDisplayNameStyle"];
     for (const name of REQUIRED_PLUGINS) {
         if (renderer.includes(name)) ok(`plugin "${name}" compiled into renderer`);
         else fail(`plugin "${name}" NOT found in renderer bundle — overlay failed to include custom plugins`);

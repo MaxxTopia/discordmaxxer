@@ -50,6 +50,7 @@ export const CUSTOM_PLUGIN_HEALTH: readonly CustomPluginHealth[] = [
     { id: "DMPresence", label: "Rich Presence", kind: "conditional", note: "Requires the local Rich Presence path; Tournament Mode intentionally disables arRPC." },
     { id: "DMPrivacy", label: "Privacy Controls", kind: "ready", note: "Local consent and privacy settings; remote configuration must fail open." },
     { id: "DMProfileFlair", label: "Profile Flair", kind: "conditional", note: "Local gradients work offline; shared media needs the profile-media service and an eligible claim." },
+    { id: "DMDisplayNameStyle", label: "Display Name Style", kind: "ready", note: "Local-only name styling with bundled offline script, Fraktur, and comic typefaces; the real Discord name is unchanged." },
     { id: "DMStreamMute", label: "Stream Audio Mute", kind: "conditional", note: "Applies to supported incoming screenshare audio paths; verify in a real call." },
     { id: "DMTheme", label: "Maxxer Theme", kind: "ready", note: "Local cosmetic theme picker." },
     { id: "DMTierFlair", label: "Tier Flair", kind: "conditional", note: "Uses the sanitized roster and current entitlement state." },

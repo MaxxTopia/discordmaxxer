@@ -9,6 +9,8 @@
  * truncated or hand-edited value before it reaches Vencord settings.
  */
 
+import { DisplayNameStylePresetId, isDisplayNameStylePresetId } from "./displayNameStylePresets";
+
 export const PROFILE_LOOK_SHARE_PREFIX = "DMLOOK1:";
 const SHARE_VERSION = 1;
 const MAX_CODE_LENGTH = 6000;
@@ -16,6 +18,15 @@ const HTTPS_URL_RE = /^https:\/\/[^\s"']+$/i;
 const COLOR_RE = /^#[0-9a-f]{6}$/i;
 const THEME_ID_RE = /^[a-z0-9_-]{1,40}$/i;
 const ACTIVITY_RE = /^(playing|watching|competing)$/;
+const NAME_STYLE_CHOICES = {
+    customGlow: ["0.28", "0.58", "0.82"],
+    fontFamily: ["preset", "system", "display", "rounded", "script", "gothic", "comic", "hand", "future", "western", "mono", "serif", "pixel"],
+    fontWeight: ["preset", "550", "650", "750", "900"],
+    letterSpacing: ["preset", "-0.015em", "0em", "0.04em", "0.075em"],
+    casing: ["preset", "normal", "uppercase", "smallCaps"],
+    effect: ["preset", "clean", "soft", "neon", "outline", "holo", "fire"],
+    motion: ["preset", "none", "breathe", "shimmer", "scan", "flicker", "twinkle", "electric"]
+} as const;
 
 export interface SharedProfileFlair {
     bannerUrl?: string;
@@ -34,6 +45,20 @@ export interface SharedProfilePresence {
     showButton?: boolean;
 }
 
+export interface SharedDisplayNameStyle {
+    preset: DisplayNameStylePresetId;
+    customPrimary?: string;
+    customSecondary?: string;
+    customGlow?: typeof NAME_STYLE_CHOICES.customGlow[number];
+    fontFamily?: typeof NAME_STYLE_CHOICES.fontFamily[number];
+    fontWeight?: typeof NAME_STYLE_CHOICES.fontWeight[number];
+    letterSpacing?: typeof NAME_STYLE_CHOICES.letterSpacing[number];
+    casing?: typeof NAME_STYLE_CHOICES.casing[number];
+    effect?: typeof NAME_STYLE_CHOICES.effect[number];
+    motion?: typeof NAME_STYLE_CHOICES.motion[number];
+    animate?: boolean;
+}
+
 export interface ProfileLookConfig {
     version: 1;
     flair: SharedProfileFlair;
@@ -42,6 +67,7 @@ export interface ProfileLookConfig {
         enableFlair?: boolean;
     };
     presence?: SharedProfilePresence;
+    nameStyle?: SharedDisplayNameStyle;
 }
 
 export type DecodeProfileLookResult =
@@ -125,11 +151,28 @@ function sanitizeConfig(raw: any): ProfileLookConfig | null {
         if (typeof raw.presence?.[key] === "boolean") presence[key] = raw.presence[key];
     }
 
+    const nameStyle: Partial<SharedDisplayNameStyle> = {};
+    if (raw.nameStyle && typeof raw.nameStyle === "object" && isDisplayNameStylePresetId(raw.nameStyle.preset)) {
+        nameStyle.preset = raw.nameStyle.preset;
+        for (const key of ["customPrimary", "customSecondary"] as const) {
+            const value = cleanColor(raw.nameStyle[key]);
+            if (value) nameStyle[key] = value;
+        }
+        for (const key of Object.keys(NAME_STYLE_CHOICES) as Array<keyof typeof NAME_STYLE_CHOICES>) {
+            const value = raw.nameStyle[key];
+            if (typeof value === "string" && (NAME_STYLE_CHOICES[key] as readonly string[]).includes(value)) {
+                (nameStyle as any)[key] = value;
+            }
+        }
+        if (typeof raw.nameStyle.animate === "boolean") nameStyle.animate = raw.nameStyle.animate;
+    }
+
     return {
         version: 1,
         flair,
         ...(Object.keys(theme).length ? { theme } : {}),
-        ...(Object.keys(presence).length ? { presence } : {})
+        ...(Object.keys(presence).length ? { presence } : {}),
+        ...(Object.keys(nameStyle).length ? { nameStyle: nameStyle as SharedDisplayNameStyle } : {})
     };
 }
 

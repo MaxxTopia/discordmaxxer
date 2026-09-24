@@ -5,6 +5,181 @@
 > `CLAUDE.md` ("Operational facts" section). Those three are enough to build,
 > ship, and maintain without prior context.
 
+## 2026-09-24 profile visuals and display-name styles — validated source candidate
+
+This follow-up combines the more discoverable profile Appearance Center and
+tour shortcuts with the new `DMDisplayNameStyle` gallery: 30 distinct local
+presets, bundled offline script/gothic/comic typefaces, ornaments, color and
+typography overrides, and optional motion effects. Motion ignores Windows
+reduced-motion as requested but is gated by Tournament Mode. Profile-look
+sharing can copy/import only the name style without replacing the banner,
+avatar, or gradient. Existing controls were retained; the style changes only
+the local rendered name, not the Discord account name or vanilla clients.
+
+Verification completed: combined `pnpm test` (ESLint + TypeScript),
+`pnpm verifyPlugins`, strict `DM_STRICT_REBRAND=1 pnpm overlay:vencord`,
+`node overlay-scripts/verify-build.mjs`, `pnpm build`, `pnpm package:dir`,
+`pnpm package:win`, and `git diff --check` passed. The packaged client was
+opened with a disposable, logged-out profile; `validate-all.mjs --skip badge`
+passed inventory, visual, hotkey, and mass-delete phases. The new plugin
+started in that runtime, selected `Flamekissed` with its bundled Great Vibes
+font, and set its motion-blocked state when Tournament Mode was activated.
+The badge phase was skipped because it writes account settings. No Discord
+account was signed in or changed.
+
+The existing gallery screenshot at `docs/evidence/display-name-style-showcase.png`
+is retained locally but excluded from the source push: its subtitle describes
+the earlier reduced-motion behavior and no longer matches this candidate. Take
+a fresh capture from the updated gallery before using visual evidence publicly.
+
+The smoke packages are still labeled `0.7.68`, which is already the public
+release. They are not updater artifacts for this candidate. The source tree is
+validated on the `codex/profile-flair-local-media` branch; changes have not yet
+been pushed by this entry. Source push is authorized for this handoff, but no
+new version tag or updater release may be created until Diggy completes the
+required real voice call and screenshare-with-audio test on the target Windows
+setup. Vanilla-client rendering, second-PC sync, and signed-in profile surfaces
+remain unverified.
+
+Best next action: push the reviewed source changes to `main`, leave the release
+untagged, then have Diggy run the real voice/screenshare gate before preparing
+the next version and updater release.
+
+## 2026-09-23 profile-look discovery and sharing follow-up — local candidate only
+
+Added direct, additive entry points to the existing profile surfaces: the
+Plugin Tour now links to the local Display Name Style gallery and Discord's
+native profile editor; DM Hub has the same separate routes. The Appearance
+Center also links to Discord's native editor. Existing controls and presets
+remain in place, and the tour does not force a new first-run popup.
+
+Profile-look codes can now include a display-name style, with separate
+"Copy name style only" and "Import name style only" actions. The import path
+uses a shared preset-ID allowlist and whitelisted values, and writes only the
+name-style plugin settings; it does not overwrite avatar, banner, or gradient.
+Older version-1 codes remain supported. Copy/import feedback distinguishes
+local plugin settings from account-level profile edits.
+
+Compatibility check: the custom font, ornament, and animation presets are
+painted locally by DMDisplayNameStyle. Discord documents its own account-level
+Display Name Styles and native profile editor, but this checkout has no
+supported handoff that converts arbitrary plugin CSS/ornaments into those
+native saved styles. The UI now explains the separate routes instead of
+claiming that every profile field is universally client-only or promising
+that custom local effects appear in vanilla Discord. No Discord account was
+changed; native account writes and vanilla-recipient rendering were not tested.
+
+Verification: `pnpm test`, `pnpm verifyPlugins`, strict
+`DM_STRICT_REBRAND=1 pnpm overlay:vencord`,
+`node overlay-scripts/verify-build.mjs`, and `git diff --check` passed. The
+overlay build contains DMDisplayNameStyle and its registration checks pass.
+These changes remain local, uncommitted, and unpublished. Existing dirty files
+and untracked assets were preserved; no files or controls were intentionally
+removed. Visual interaction with the tour/hub and a real vanilla-client
+recipient check remain unverified.
+
+Best next action: inspect the additive shortcuts and component-only
+name-style import in the running client; separately confirm the supported
+native editor path on an account before making any native-profile claim.
+
+## 2026-09-23 display-name style plugin — local candidate only
+
+Added the new `DMDisplayNameStyle` plugin. It offers 30 local-only presets,
+including script (`Velvet Script`, `Moonlit Script`, `Flamekissed`), gothic,
+arcade, luxe, and dream styles; three bundled offline typefaces (Great Vibes,
+Unifraktur Cook, and Bangers); custom two-color controls; and font, weight,
+spacing, casing, finish, motion, and per-surface overrides. Its settings gallery
+has a live sample for the selected look and mood filters. Motion options include
+breathing, shimmer, scan, flame flicker, spark twinkle, and electric flashes.
+OS reduced-motion settings do not affect this plugin. Tournament Mode is the
+automatic animation stop; the plugin's Animate toggle and each preset's Still
+choice remain available for manual control.
+
+The plugin is now default-on for new/unseeded installs and discoverable from
+the Plugin Tour, DM Hub quick toggles, featured cards, Plugin Health, and the
+overlay build registry. The selector only paints the display-name leaf; it no
+longer captures Discord's whole account label wrapper, including username and
+status text. The candidate renderer was rebuilt and reloaded from this
+checkout. Runtime rule check: with Windows reduced-motion enabled, the live
+client reported Tournament Mode=false, the Neon Arcade preset's shimmer
+effect, and `dm-display-name-shimmer` with a 3.8s duration and running play
+state. The window was hidden during automation, so its animation timeline did
+not advance there; visible frame progression and a live Tournament Mode
+on/off toggle remain unverified. The old saved `respectReducedMotion: true`
+value remains inert; the setting is removed from this plugin's controls and is
+no longer read by its code. A PII-safe gallery screenshot is saved at
+`docs/evidence/display-name-style-showcase.png`.
+
+Latest verification: `pnpm test`, `pnpm overlay:vencord`, and
+`git diff --check` passed; the rebuilt renderer was loaded in the running local
+client. The source changes remain uncommitted and have not been pushed,
+packaged, or published. The
+Tournament Mode `manuallyActive` gate remains in place in code; a live on/off
+toggle was not exercised during this check. The styling is intentionally
+Discordmaxxer-local: the real Discord name, mentions, search, accessibility
+label, and vanilla Discord rendering remain unchanged. Native/vanilla
+recipient proof and a second-PC check remain external gates.
+
+Best next action: review the candidate in the running client, then decide
+whether to commit and release this plugin with the existing profile-flair
+follow-up changes.
+
+## 2026-09-23 avatar visibility + gradient tour follow-up — local only
+
+The self-profile avatar was visibly 80x80 but Discord marks its actual `<img>`
+with `aria-hidden="true"`; the accessible wrapper carries the useful profile
+semantics. The avatar-only visibility checks in
+`plugins/DMProfileFlair/index.tsx` now allow that attribute after the element
+has matched Discord's avatar class/CDN checks. Banner scanning keeps the
+normal hidden-element guard. The idempotent source repair also avoids comparing
+Chromium's proxied `currentSrc`, so a healthy GIF is not restarted on every
+scan.
+
+`plugins/DMWelcome/index.tsx` now adds the current validated profile gradient
+as a `Current profile` swatch in the Plugin Tour when the active pair is a
+custom `#RRGGBB` combination. Named presets, including Cotton Candy, remain
+available. The isolated v0.7.68 candidate was rebuilt and relaunched from this
+checkout. Runtime checks showed the self avatar applied, complete with natural
+dimensions 480x266; two one-second avatar clips had different hashes. Turning
+TournamentMode on removed the applied avatar markers, and turning it back off
+restored them. The Plugin Tour showed both `Current profile` and `Cotton Candy`.
+`pnpm test`, strict `pnpm overlay:vencord`,
+`node overlay-scripts/verify-build.mjs`, and `git diff --check` passed.
+
+These source changes are still uncommitted and have not been pushed, packaged,
+or published. The runtime proof is renderer-local; native recipient/vanilla
+Discord visibility and a second-PC check remain external gates.
+
+Best next action: Diggy confirms the avatar animation in the running client
+with TournamentMode off, then decide whether to commit and release this
+follow-up.
+
+## 2026-09-23 avatar responsive-source follow-up — local only
+
+The saved self-avatar source is a real multi-frame GIF (97 frames), so the
+remaining still-frame symptom was not caused by a missing animated asset. The
+Discord avatar image node also carries responsive `srcset`/`sizes` candidates;
+setting only `src` could leave Chromium painting the static `currentSrc` while
+DMProfileFlair marked the node as applied.
+
+`plugins/DMProfileFlair/index.tsx` now captures the original avatar attributes,
+removes and reasserts `srcset`/`sizes` while flair owns the node, re-applies that
+invariant when Discord recycles the same node, and restores the original
+attributes on failure or cleanup. The isolated v0.7.68 candidate was rebuilt
+and relaunched from this checkout; startup confirmed it is using the rebuilt
+candidate renderer. `pnpm test`, strict `pnpm overlay:vencord`,
+`node overlay-scripts/verify-build.mjs`, and `git diff --check` passed.
+
+This source change is still uncommitted and has not been pushed, packaged, or
+published. Native playback could not be independently observed because the
+computer-use surface did not expose the Electron window; a self-profile check
+with TournamentMode off remains the runtime gate. Toggle TournamentMode on and
+off afterward to confirm the intentional pause/resume behavior.
+
+Best next action: Diggy refreshes the self profile in the running candidate and
+confirms that the avatar advances frames; only then decide whether to commit
+and release this follow-up.
+
 ## 2026-09-23 post-v0.7.68 profile media candidate — local only
 
 Diggy reported that the banner was still rendering as a single frame and the

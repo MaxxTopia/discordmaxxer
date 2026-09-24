@@ -59,6 +59,7 @@ const PLUGINS_DEFAULT_ON: string[] = [
     "MassDelete",
     "DMBadge",
     "DMProfileFlair", // user-set custom banner / animated avatar / theme colors
+    "DMDisplayNameStyle", // local display-name presets; real Discord name stays unchanged
     "DMTheme",
     "VideoBackground",
     "DMHub",

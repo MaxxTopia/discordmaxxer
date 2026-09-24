@@ -3,9 +3,9 @@
  * Copyright (c) 2026 Diggy
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * User-set custom profile flair, visible only to other Discordmaxxer clients
- * (same architecture as DiscordmaxxerBadge Channel A — fetched from the public
- * tier roster, rendered client-side, vanilla Discord never sees it).
+ * User-set profile flair stored in Discordmaxxer's roster and rendered by
+ * compatible clients. This does not write those visual fields into the user's
+ * Discord account; separate one-time controls update native profile fields.
  *
  *   E) Custom banner — image or short MP4 URL, replaces Discord's banner
  *      in profile popouts. Requires MAXXER.
@@ -50,6 +50,7 @@ import {
     setOptimisticProfileFlair
 } from "../_dm-shared/roster";
 import { decodeProfileLook, encodeProfileLook, ProfileLookConfig } from "../_dm-shared/profileLookShare";
+import { isDisplayNameStylePresetId } from "../_dm-shared/displayNameStylePresets";
 import { GRADIENT_PRESETS } from "../_dm-shared/gradientPresets";
 import { Tier } from "../_dm-shared/vip";
 import { normalizeCode, readBinding } from "../_dm-shared/vipClaim";
@@ -64,7 +65,14 @@ const URL_RE = /^https:\/\/[^\s"']{1,242}$/;
 // non-HTTPS schemes or CSS-breaking quotes into the renderer.
 const LOCAL_DRAFT_URL_RE = /^https:\/\/[^\s"']{1,2048}$/;
 const COLOR_RE = /^#[0-9a-fA-F]{6}$/;
-type ProfileLookComponent = keyof ProfileFlair | "gradient";
+type ProfileLookComponent = keyof ProfileFlair | "gradient" | "nameStyle";
+
+function profileLookComponentLabel(component: ProfileLookComponent): string {
+    if (component === "bannerUrl") return "banner";
+    if (component === "avatarAnimatedUrl") return "animated avatar";
+    if (component === "gradient") return "gradient";
+    return "display-name style";
+}
 
 interface LocalRenderMedia {
     url: string;
@@ -301,6 +309,20 @@ function repaintProfileFlairNow(): void {
         console.warn("[DMProfileFlair] immediate gradient repaint failed:", e);
     }
     scheduleScan();
+}
+
+function openNativeProfileSettings(): void {
+    try {
+        const router = (globalThis as any).Vencord?.Webpack?.Common?.SettingsRouter;
+        if (typeof router?.openUserSettings !== "function") {
+            toast("Couldn't open Discord's profile editor. Open User Settings → Profiles manually.", Toasts.Type.FAILURE);
+            return;
+        }
+        router.openUserSettings("my_account_panel");
+    } catch (e) {
+        console.warn("[DMProfileFlair] could not open Discord's profile editor:", e);
+        toast("Couldn't open Discord's profile editor. Open User Settings → Profiles manually.", Toasts.Type.FAILURE);
+    }
 }
 
 /** Single point all render hooks call to decide what (if anything) to render
@@ -844,9 +866,19 @@ function readPlainPluginSettings(name: string): Record<string, any> {
 function readProfileLookConfig(): Omit<ProfileLookConfig, "version"> {
     const theme = readPlainPluginSettings("DMTheme");
     const presence = readPlainPluginSettings("DMPresence");
+    const nameStyleSettings = readPlainPluginSettings("DMDisplayNameStyle");
     const s = settings.store;
     const primary = normalizeColor(s.myThemeColorPrimary) ?? undefined;
     const secondary = normalizeColor(s.myThemeColorSecondary) ?? undefined;
+    const nameStyle = isDisplayNameStylePresetId(nameStyleSettings.preset)
+        ? {
+            preset: nameStyleSettings.preset,
+            ...Object.fromEntries([
+                "customPrimary", "customSecondary", "customGlow", "fontFamily", "fontWeight",
+                "letterSpacing", "casing", "effect", "motion", "animate"
+            ].flatMap(key => nameStyleSettings[key] !== undefined ? [[key, nameStyleSettings[key]]] : []))
+        } as ProfileLookConfig["nameStyle"]
+        : undefined;
 
     return {
         flair: {
@@ -867,7 +899,8 @@ function readProfileLookConfig(): Omit<ProfileLookConfig, "version"> {
             ...(typeof presence.state === "string" ? { state: presence.state } : {}),
             ...(typeof presence.showElapsed === "boolean" ? { showElapsed: presence.showElapsed } : {}),
             ...(typeof presence.showButton === "boolean" ? { showButton: presence.showButton } : {})
-        }
+        },
+        ...(nameStyle ? { nameStyle } : {})
     };
 }
 
@@ -891,14 +924,16 @@ function applyProfileLookConfig(config: ProfileLookConfig, only?: ProfileLookCom
     const s = settings.store;
     const skipped = new Set<string>();
     let changed = 0;
-    const flair: ProfileLookConfig["flair"] = only === "gradient"
-        ? {
-            ...(config.flair?.themeColorPrimary !== undefined ? { themeColorPrimary: config.flair.themeColorPrimary } : {}),
-            ...(config.flair?.themeColorSecondary !== undefined ? { themeColorSecondary: config.flair.themeColorSecondary } : {})
-        }
-        : only
-            ? { [only]: config.flair?.[only] }
-            : config.flair ?? {};
+    const flair: ProfileLookConfig["flair"] = only === "nameStyle"
+        ? {}
+        : only === "gradient"
+            ? {
+                ...(config.flair?.themeColorPrimary !== undefined ? { themeColorPrimary: config.flair.themeColorPrimary } : {}),
+                ...(config.flair?.themeColorSecondary !== undefined ? { themeColorSecondary: config.flair.themeColorSecondary } : {})
+            }
+            : only
+                ? { [only]: config.flair?.[only] }
+                : config.flair ?? {};
     // Share codes are patches, not destructive full-state restores. A
     // banner-only code must not blank the recipient's avatar, and a full look
     // with an intentionally omitted field should leave that field alone.
@@ -917,6 +952,16 @@ function applyProfileLookConfig(config: ProfileLookConfig, only?: ProfileLookCom
     if (flair.themeColorSecondary !== undefined) {
         s.myThemeColorSecondary = flair.themeColorSecondary;
         changed++;
+    }
+    const nameStyle = only === "nameStyle" ? config.nameStyle : only ? undefined : config.nameStyle;
+    if (nameStyle) {
+        for (const key of [
+            "preset", "customPrimary", "customSecondary", "customGlow", "fontFamily", "fontWeight",
+            "letterSpacing", "casing", "effect", "motion", "animate"
+        ] as const) {
+            const value = nameStyle[key];
+            if (value !== undefined && writeVencordSetting("DMDisplayNameStyle", key, value, skipped)) changed++;
+        }
     }
     const theme = only ? undefined : config.theme;
     if (theme) {
@@ -1534,7 +1579,7 @@ function FlairEditor() {
         const media = localMedia.banner;
         if (!media) return;
         if (!confirm(
-            "Publish this banner as your shared Discordmaxxer banner? A public copy will be uploaded to MaxxTopia profile media storage and saved to your roster profile so it can appear on your other PCs and to other Discordmaxxer users. Vanilla Discord will not show the Discordmaxxer-only gradient/flair, and this is separate from Send banner once."
+            "Publish this banner as shared Discordmaxxer media? A copy will be uploaded to MaxxTopia profile media storage and saved to your roster so it can appear on your other PCs and to other Discordmaxxer users. This does not change your Discord account. To update the banner shown by standard Discord clients, use Send banner once or Discord's native profile editor; Discord's own Nitro and format rules still apply."
         )) return;
         setBusy(true);
         try {
@@ -1742,11 +1787,13 @@ function FlairEditor() {
             const current = readProfileLookConfig();
             const hasComponent = only === "gradient"
                 ? current.flair.themeColorPrimary !== undefined || current.flair.themeColorSecondary !== undefined
+                : only === "nameStyle"
+                    ? current.nameStyle?.preset !== undefined
                 : only
                     ? current.flair[only] !== undefined
                     : true;
             if (only && !hasComponent) {
-                setShareMessage("Set a " + (only === "bannerUrl" ? "banner" : only === "avatarAnimatedUrl" ? "animated avatar" : "gradient") + " first.");
+                setShareMessage("Choose a " + profileLookComponentLabel(only) + " first.");
                 return;
             }
             const flair: ProfileLookConfig["flair"] = only === "gradient"
@@ -1757,11 +1804,13 @@ function FlairEditor() {
                 : only
                     ? { [only]: current.flair[only] }
                     : current.flair;
-            const code = encodeProfileLook(only ? { flair } : current);
+            const code = only === "nameStyle"
+                ? encodeProfileLook({ flair: {}, nameStyle: current.nameStyle })
+                : encodeProfileLook(only ? { flair } : current);
             setShareCode(code);
             const copied = await copyProfileLookCode(code);
             setShareMessage(copied
-                ? (only ? "Copied a " + (only === "bannerUrl" ? "banner-only" : only === "avatarAnimatedUrl" ? "avatar-only" : "gradient-only") + " code." : "Copied the full cosmetic look.")
+                ? (only ? "Copied a " + profileLookComponentLabel(only) + "-only code." : "Copied the full cosmetic look.")
                 : "Code ready below. Clipboard access was unavailable, so copy it from the box.");
         } catch (e) {
             console.warn("[DMProfileFlair] profile-look encode failed:", e);
@@ -1777,10 +1826,14 @@ function FlairEditor() {
         }
         const result = applyProfileLookConfig(decoded.value, only);
         if (only && result.changed === 0) {
-            setShareMessage("That code does not contain a " + (only === "bannerUrl" ? "banner" : only === "avatarAnimatedUrl" ? "animated avatar" : "gradient") + ".");
+            setShareMessage(result.skipped.length
+                ? `Could not import ${profileLookComponentLabel(only)}. Enable ${result.skipped.join(" and ")} first.`
+                : `That code does not contain a ${profileLookComponentLabel(only)}.`);
             return;
         }
-        setShareMessage(result.skipped.length
+        setShareMessage(only === "nameStyle"
+            ? `Imported ${result.changed} local name-style settings. This does not update your real Discord profile.`
+            : result.skipped.length
             ? `Imported ${result.changed} cosmetic fields. Enable ${result.skipped.join(" and ")} to apply every shared setting.`
             : `Imported ${result.changed} cosmetic fields. Click Save to Discordmaxxer to publish the flair fields to the roster.`);
         setShareImport("");
@@ -2152,11 +2205,11 @@ function FlairEditor() {
                 </div>
             )}
             <div style={noteStyle}>
-                <b>Discordmaxxer look:</b> these values are saved to the shared roster and
-                rendered for every Discordmaxxer user, including you. These fields are
+                <b>Client-rendered look:</b> these values are saved to the shared roster and
+                rendered by compatible Discordmaxxer clients, including yours. These fields are
                 per-install drafts until you click Save; the published roster is what
                 determines the look on every PC. <b>Real Discord look:</b> the optional
-                broadcast section below makes a separate one-time account change.
+                controls below make separate one-time account changes through Discord's profile system.
                 Worker validates each roster field — banner needs MAXXER, animated avatar
                 needs MAXXER+, and profile gradients are free for every Discordmaxxer user.
                 A valid Discordmaxxer claim is required only to publish shared values
@@ -2250,7 +2303,8 @@ function FlairEditor() {
                     through Discordmaxxer restarts when local storage succeeds; Publish saves a
                     copy to the shared roster across PCs. Export a private backup before a Windows
                     reinstall if you want to restore the local file bytes without hunting for the
-                    original again. The custom gradient/flair remains Discordmaxxer-only.
+                    original again. Local gradients and roster media remain client-rendered; use the
+                    separate one-time Discord profile controls for account fields supported by Discord.
                 </div>
                 <input
                     ref={backupFileInput}
@@ -2381,9 +2435,10 @@ function FlairEditor() {
                 <div style={broadcastTitleStyle}>🔗 Share your profile look</div>
                 <div style={broadcastNoteStyle}>
                     Create a portable code for the whole cosmetic look, or copy just one field.
-                    A banner-only code cannot overwrite the recipient's avatar or colors.
+                    Banner, avatar, gradient, and name-style-only codes touch only that component.
                     Codes contain cosmetic settings only — never your claim code, Discord account id,
-                    tier, or worker credentials. Imported flair is local until you click Save to Discordmaxxer.
+                    tier, or worker credentials. Imported profile flair is local until you click Save to Discordmaxxer;
+                    name-style settings stay in the local plugin. Neither import changes your real Discord profile.
                 </div>
                 <div style={btnRow}>
                     <Button size={Button.Sizes.SMALL} color={Button.Colors.PRIMARY} onClick={onCreateProfileLookShare} disabled={busy}>
@@ -2397,6 +2452,9 @@ function FlairEditor() {
                     </Button>
                     <Button size={Button.Sizes.SMALL} color={Button.Colors.PRIMARY} onClick={() => void onCreateProfileLookShare("gradient")} disabled={busy}>
                         Copy gradient only
+                    </Button>
+                    <Button size={Button.Sizes.SMALL} color={Button.Colors.PRIMARY} onClick={() => void onCreateProfileLookShare("nameStyle")} disabled={busy}>
+                        Copy name style only
                     </Button>
                 </div>
                 {shareCode && (
@@ -2429,6 +2487,9 @@ function FlairEditor() {
                     <Button size={Button.Sizes.SMALL} color={Button.Colors.PRIMARY} onClick={() => onImportProfileLookShare("gradient")} disabled={busy || !shareImport.trim()}>
                         Import gradient only
                     </Button>
+                    <Button size={Button.Sizes.SMALL} color={Button.Colors.PRIMARY} onClick={() => onImportProfileLookShare("nameStyle")} disabled={busy || !shareImport.trim()}>
+                        Import name style only
+                    </Button>
                 </div>
                 {shareMessage && <div style={{ ...noteStyle, marginTop: 8, marginBottom: 0 }}>{shareMessage}</div>}
             </div>
@@ -2436,9 +2497,11 @@ function FlairEditor() {
             <div style={broadcastWrapStyle}>
                 <div style={broadcastTitleStyle}>📡 Optional: update your real Discord profile</div>
                 <div style={broadcastNoteStyle}>
-                    The Save button above updates the <b>Discordmaxxer-only</b> look. These buttons
-                    make a separate, one-time change to your <b>real Discord profile</b>; they do
-                    not make the roster flair appear in vanilla Discord and never re-assert themselves.
+                    Save updates the local overlay settings and, when authenticated, the shared
+                    roster for compatible Discordmaxxer clients. It does not save those values to
+                    your Discord account. These buttons make separate, one-time changes to fields
+                    in your <b>Discord profile</b>; Discord clients can render those account fields,
+                    but roster media and local effects are not copied into the account and are never re-asserted.
                     <br /><br />
                     <b>Theme gradient:</b> Nitro-gated when Discord renders it. <b>Static avatar:</b>
                     normally works on free. <b>Animated avatar + any banner:</b> Discord requires Nitro.
@@ -2458,6 +2521,9 @@ function FlairEditor() {
                     </Button>
                     <Button size={Button.Sizes.SMALL} color={Button.Colors.PRIMARY} onClick={onBroadcastStillBanner} disabled={busy}>
                         Set banner's first frame once
+                    </Button>
+                    <Button size={Button.Sizes.SMALL} color={Button.Colors.PRIMARY} onClick={openNativeProfileSettings} disabled={busy}>
+                        Open Discord profile editor
                     </Button>
                 </div>
             </div>
@@ -2653,10 +2719,14 @@ function buildCss(): string {
     `;
 }
 
-function isElementVisibleOnScreen(element: Element): boolean {
+function isElementVisibleOnScreen(element: Element, includeAriaHidden = false): boolean {
     if (document.hidden) return false;
     const node = element as HTMLElement;
-    if (node.getAttribute("aria-hidden") === "true") return false;
+    // Discord marks the <img> inside an accessible avatar wrapper as
+    // aria-hidden="true" because the wrapper owns the accessible label. The
+    // image is still the visible paint target, so avatar-specific callers opt
+    // in after they have verified the URL is a Discord avatar CDN URL.
+    if (!includeAriaHidden && node.getAttribute("aria-hidden") === "true") return false;
     const rect = node.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0 || rect.bottom < 0 || rect.right < 0 || rect.top > window.innerHeight || rect.left > window.innerWidth) {
         return false;
@@ -2669,8 +2739,8 @@ function isElementVisibleOnScreen(element: Element): boolean {
     }
 }
 
-function shouldInspectVisibleElement(element: Element): boolean {
-    return !settings.store.scanOnlyVisibleProfiles || isElementVisibleOnScreen(element);
+function shouldInspectVisibleElement(element: Element, includeAriaHidden = false): boolean {
+    return !settings.store.scanOnlyVisibleProfiles || isElementVisibleOnScreen(element, includeAriaHidden);
 }
 
 /** Find all profile banner elements page-wide. Modern Discord uses
@@ -2707,7 +2777,7 @@ function findAvatarImgsForUser(userId: string): HTMLImageElement[] {
     document.querySelectorAll("img").forEach(img => {
         const el = img as HTMLImageElement;
         const src = el.currentSrc || el.src || "";
-        if (src.includes(needle) && shouldInspectVisibleElement(el)) out.push(el);
+        if (src.includes(needle) && shouldInspectVisibleElement(el, true)) out.push(el);
     });
     return out;
 }
@@ -2719,7 +2789,7 @@ function findProfileViewAvatars(): HTMLImageElement[] {
     document.querySelectorAll('img[class*="avatar__"]').forEach(c => {
         const el = c as HTMLImageElement;
         const r = el.getBoundingClientRect();
-        if (r.width >= 60 && r.height >= 60 && shouldInspectVisibleElement(el)) out.push(el);
+        if (r.width >= 60 && r.height >= 60 && shouldInspectVisibleElement(el, true)) out.push(el);
     });
     return out;
 }
@@ -3147,7 +3217,21 @@ function applyAvatar(avatar: HTMLImageElement, url: string, userId?: string) {
     // the very next scan — which re-assigns src → triggers an image reload →
     // emits a mutation → wakes the observer → re-scans → re-assigns... a
     // self-sustaining CPU/network loop for as long as the avatar is on screen.
-    if (avatar.dataset.dmFlairAppliedUrl === url) return;
+    //
+    // Discord's responsive avatar component also supplies `srcset`. Setting
+    // only `src` does not necessarily change `currentSrc`, so Chromium can
+    // keep painting Discord's static CDN candidate while our data marker says
+    // the animated flair was applied. Remove the responsive candidates while
+    // flair owns this node, and re-assert that invariant if Discord recycles
+    // the attributes onto the same element.
+    if (avatar.dataset.dmFlairAppliedUrl === url) {
+        if (avatar.hasAttribute("srcset") || avatar.hasAttribute("sizes") || avatar.src !== url) {
+            avatar.removeAttribute("srcset");
+            avatar.removeAttribute("sizes");
+            avatar.src = url;
+        }
+        return;
+    }
     // Already proven dead this session — don't reapply a URL that 404s / serves
     // a host's "removed" stub (e.g. a deleted imgur link returns a 503-byte
     // image/png egg). Reapplying would just flash the broken icon every scan.
@@ -3156,16 +3240,25 @@ function applyAvatar(avatar: HTMLImageElement, url: string, userId?: string) {
     if (!avatar.dataset.dmFlairOriginalSrc) {
         avatar.dataset.dmFlairOriginalSrc = avatar.src;
     }
+    if (!avatar.dataset.dmFlairOriginalAttrsCaptured) {
+        avatar.dataset.dmFlairOriginalAttrsCaptured = "1";
+        avatar.dataset.dmFlairOriginalSrcPresent = avatar.hasAttribute("src") ? "1" : "0";
+        avatar.dataset.dmFlairOriginalSrcsetPresent = avatar.hasAttribute("srcset") ? "1" : "0";
+        avatar.dataset.dmFlairOriginalSizesPresent = avatar.hasAttribute("sizes") ? "1" : "0";
+        avatar.dataset.dmFlairOriginalSrcset = avatar.getAttribute("srcset") ?? "";
+        avatar.dataset.dmFlairOriginalSizes = avatar.getAttribute("sizes") ?? "";
+    }
     // If the flair URL fails to load, restore the real Discord avatar instead
     // of leaving a broken-image icon. Marks the URL failed so the page-wide
     // scan won't re-apply it on the next mutation/interval pass.
     avatar.onerror = () => {
         avatar.onerror = null;
+        restoreAvatar(avatar);
         avatar.dataset.dmFlairFailedUrl = url;
-        const orig = avatar.dataset.dmFlairOriginalSrc;
-        if (orig && avatar.src !== orig) avatar.src = orig;
         noteProfileFlairFailure(`avatar media failed and was restored (${url.slice(0, 80)})`);
     };
+    avatar.removeAttribute("srcset");
+    avatar.removeAttribute("sizes");
     avatar.src = url;
     if (userId) avatar.dataset.dmFlairAvatarUserId = userId;
     avatar.dataset.dmFlairAppliedUrl = url;
@@ -3201,9 +3294,24 @@ function applyBackgroundAvatar(el: HTMLElement, url: string, userId?: string) {
 
 function restoreAvatar(avatar: HTMLImageElement) {
     avatar.onerror = null;
-    const original = avatar.dataset.dmFlairOriginalSrc;
-    if (original && avatar.src !== original) avatar.src = original;
+    if (avatar.dataset.dmFlairOriginalAttrsCaptured) {
+        if (avatar.dataset.dmFlairOriginalSrcsetPresent === "1") avatar.setAttribute("srcset", avatar.dataset.dmFlairOriginalSrcset ?? "");
+        else avatar.removeAttribute("srcset");
+        if (avatar.dataset.dmFlairOriginalSizesPresent === "1") avatar.setAttribute("sizes", avatar.dataset.dmFlairOriginalSizes ?? "");
+        else avatar.removeAttribute("sizes");
+        if (avatar.dataset.dmFlairOriginalSrcPresent === "1") avatar.setAttribute("src", avatar.dataset.dmFlairOriginalSrc ?? "");
+        else avatar.removeAttribute("src");
+    } else {
+        const original = avatar.dataset.dmFlairOriginalSrc;
+        if (original && avatar.src !== original) avatar.src = original;
+    }
     delete avatar.dataset.dmFlairOriginalSrc;
+    delete avatar.dataset.dmFlairOriginalAttrsCaptured;
+    delete avatar.dataset.dmFlairOriginalSrcPresent;
+    delete avatar.dataset.dmFlairOriginalSrcsetPresent;
+    delete avatar.dataset.dmFlairOriginalSizesPresent;
+    delete avatar.dataset.dmFlairOriginalSrcset;
+    delete avatar.dataset.dmFlairOriginalSizes;
     delete avatar.dataset.dmFlairAvatarUserId;
     delete avatar.dataset.dmFlairAppliedUrl;
     delete avatar.dataset.dmFlairFailedUrl;
@@ -3349,7 +3457,7 @@ function scanForPopouts(_root: ParentNode = document) {
         lastAvatarSweepAt = Date.now();
         document.querySelectorAll("img").forEach(img => {
             const el = img as HTMLImageElement;
-            if (!shouldInspectVisibleElement(el)) return;
+            if (!shouldInspectVisibleElement(el, true)) return;
             const src = el.currentSrc || el.src || "";
             const m = src.match(/\/avatars\/(\d{17,20})\//);
             if (!m) return;
@@ -3367,7 +3475,7 @@ function scanForPopouts(_root: ParentNode = document) {
         // than as an <img>. Scan every element with an inline backgroundImage
         // that matches the avatar CDN pattern and override the URL.
         document.querySelectorAll<HTMLElement>('[style*="/avatars/"]').forEach(el => {
-            if (!shouldInspectVisibleElement(el)) return;
+            if (!shouldInspectVisibleElement(el, true)) return;
             const bg = el.style.backgroundImage;
             if (!bg) return;
             const m = bg.match(/\/avatars\/(\d{17,20})\//);

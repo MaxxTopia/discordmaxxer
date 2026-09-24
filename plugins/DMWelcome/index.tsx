@@ -33,7 +33,7 @@ import { hasTier, Tier, TIER_LABELS } from "../_dm-shared/vip";
 // Bump this when new featured plugins are added to force the modal to re-show
 // on launch so existing users see the additions. Major content updates only —
 // not tiny copy tweaks.
-const WELCOME_VERSION = 6;
+const WELCOME_VERSION = 7;
 
 const ROOT_ID = "dm-welcome-root";
 const MODAL_ID = "dm-welcome-modal";
@@ -111,6 +111,40 @@ function openProfileFlairSettings(): boolean {
         return true;
     } catch (e) {
         console.warn("[DMWelcome] could not open plugin settings:", e);
+        return false;
+    }
+}
+
+function openDisplayNameStyleSettings(): boolean {
+    const v = vencord();
+    const plugin = v?.Plugins?.plugins?.DMDisplayNameStyle;
+    if (plugin) {
+        try {
+            openPluginModal(plugin);
+            return true;
+        } catch (e) {
+            console.warn("[DMWelcome] could not open DMDisplayNameStyle modal:", e);
+        }
+    }
+    try {
+        const router = v?.Webpack?.Common?.SettingsRouter;
+        if (typeof router?.openUserSettings !== "function") return false;
+        router.openUserSettings("vencord_plugins");
+        return true;
+    } catch (e) {
+        console.warn("[DMWelcome] could not open Display Name Style settings:", e);
+        return false;
+    }
+}
+
+function openNativeProfileSettings(): boolean {
+    try {
+        const router = vencord()?.Webpack?.Common?.SettingsRouter;
+        if (typeof router?.openUserSettings !== "function") return false;
+        router.openUserSettings("my_account_panel");
+        return true;
+    } catch (e) {
+        console.warn("[DMWelcome] could not open Discord's profile settings:", e);
         return false;
     }
 }
@@ -302,6 +336,31 @@ const CSS = `
         opacity: 0.9;
         line-height: 1.4;
     }
+    .dmw-card-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-top: 8px;
+    }
+    .dmw-card-action {
+        border: 1px solid rgba(255,110,199,0.35);
+        border-radius: 7px;
+        padding: 5px 8px;
+        background: rgba(255,110,199,0.12);
+        color: #ffe8f6;
+        font: inherit;
+        font-size: 10px;
+        font-weight: 650;
+        cursor: pointer;
+    }
+    .dmw-card-action:hover {
+        background: rgba(255,110,199,0.22);
+        border-color: rgba(255,110,199,0.62);
+    }
+    .dmw-card-action.secondary {
+        border-color: rgba(74,115,255,0.38);
+        background: rgba(74,115,255,0.12);
+    }
     .dmw-where {
         font-size: 11px;
         color: #f3af19;
@@ -488,6 +547,26 @@ function bundleEnabledCount(plugins: string[]): number {
     return plugins.reduce((n, p) => n + (isPluginEnabled(p) ? 1 : 0), 0);
 }
 
+function getTourGradientPresets(): GradientPreset[] {
+    const me = UserStore.getCurrentUser();
+    const shared = me?.id ? getRosterProfileFlair(me.id) : undefined;
+    const localPrimary = getPluginSettingString("DMProfileFlair", "myThemeColorPrimary").trim().toLowerCase();
+    const localSecondary = getPluginSettingString("DMProfileFlair", "myThemeColorSecondary").trim().toLowerCase();
+    const primary = localPrimary || shared?.themeColorPrimary?.trim().toLowerCase() || "";
+    const secondary = localSecondary || shared?.themeColorSecondary?.trim().toLowerCase() || "";
+    if (!/^#[0-9a-f]{6}$/i.test(primary) || !/^#[0-9a-f]{6}$/i.test(secondary)) return GRADIENT_PRESETS;
+    if (GRADIENT_PRESETS.some(g => g.primary.toLowerCase() === primary && g.secondary.toLowerCase() === secondary)) {
+        return GRADIENT_PRESETS;
+    }
+    // Keep a custom/shared profile from becoming an unselectable mystery
+    // state. It is a real option in the tour, and clicking it re-applies the
+    // exact pair currently visible on this install.
+    return [
+        { id: "current-profile", label: "Current profile", primary, secondary },
+        ...GRADIENT_PRESETS
+    ];
+}
+
 function gradientSectionHTML(): string {
     const me = UserStore.getCurrentUser();
     const shared = me?.id ? getRosterProfileFlair(me.id) : undefined;
@@ -498,10 +577,11 @@ function gradientSectionHTML(): string {
     // as if the tour ignored the click.
     const curP = (localP || shared?.themeColorPrimary || "").toLowerCase();
     const curS = (localS || shared?.themeColorSecondary || "").toLowerCase();
-    const selected = GRADIENT_PRESETS.find(g => g.primary.toLowerCase() === curP && g.secondary.toLowerCase() === curS);
+    const tourPresets = getTourGradientPresets();
+    const selected = tourPresets.find(g => g.primary.toLowerCase() === curP && g.secondary.toLowerCase() === curS);
     const pickerPrimary = /^#[0-9a-f]{6}$/i.test(curP) ? curP : "#e25bff";
     const pickerSecondary = /^#[0-9a-f]{6}$/i.test(curS) ? curS : "#4c51f7";
-    const swatches = GRADIENT_PRESETS.map(g => {
+    const swatches = tourPresets.map(g => {
         const sel = g.primary.toLowerCase() === curP && g.secondary.toLowerCase() === curS;
         return `<button class="dmw-grad ${sel ? "sel" : ""}" data-grad="${g.id}"
             style="background:linear-gradient(180deg, ${g.primary} 0%, ${g.secondary} 100%)"
@@ -521,7 +601,7 @@ function gradientSectionHTML(): string {
             <label class="dmw-color-pick">Bottom <input type="color" data-gradient-color="secondary" value="${pickerSecondary}" /></label>
             <button class="dmw-custom-apply" data-action="apply-custom-gradient">Apply custom blend</button>
         </div>
-        <div class="dmw-grad-hint"><b>${state}</b> Click a swatch to apply instantly, or choose any two colors above. Picks paint this PC immediately. If you have a claim code they also sync across PCs and to other <b>Discordmaxxer</b> users; without one they stay local to this install. Profile gradients are free for every Discordmaxxer user. <a data-action="open-flair">Open Profile Flair</a> for local media or the optional one-time native Discord update. Vanilla Discord still does not render Discordmaxxer-only flair.</div>`;
+        <div class="dmw-grad-hint"><b>${state}</b> Click a swatch to apply instantly, or choose any two colors above. Picks paint this PC immediately. If you have a claim code they also sync across PCs and to other <b>Discordmaxxer</b> users; without one they stay local to this install. Profile gradients are free for every Discordmaxxer user. <a data-action="open-flair">Open Appearance Center</a> for local media or its optional one-time Discord profile actions, or <a data-action="open-native-profile">open Discord's profile editor</a>. Local effects and roster media do not change your Discord account; native profile edits are saved separately by Discord.</div>`;
 }
 
 function renderModalHTML(): string {
@@ -561,6 +641,17 @@ function renderModalHTML(): string {
         const where = p.where
             ? `<div class="dmw-where">📍 ${p.where}</div>`
             : "";
+        const profileActions = p.id === "DMProfileFlair"
+            ? `<div class="dmw-card-actions">
+                <button type="button" class="dmw-card-action" data-action="open-flair">Open Appearance Center</button>
+                <button type="button" class="dmw-card-action secondary" data-action="open-native-profile">Discord profile editor</button>
+            </div>`
+            : p.id === "DMDisplayNameStyle"
+                ? `<div class="dmw-card-actions">
+                    <button type="button" class="dmw-card-action" data-action="open-name-style">Browse local looks</button>
+                    <button type="button" class="dmw-card-action secondary" data-action="open-native-profile">Native name styles</button>
+                </div>`
+                : "";
         const preview = p.gif
             ? `<img src="vesktop://static/${p.gif}" alt="" onerror="this.replaceWith(Object.assign(document.createElement('span'), { textContent: '${p.emoji}' }))" />`
             : p.emoji;
@@ -570,6 +661,7 @@ function renderModalHTML(): string {
                 <div class="dmw-card-title">${p.title} ${tierBadge}</div>
                 <p>${p.oneLiner}</p>
                 ${where}
+                ${profileActions}
             </div>
             <button class="dmw-toggle ${enabled ? "on" : ""} ${gated ? "locked" : ""}"
                 data-plugin="${p.id}"
@@ -682,9 +774,24 @@ function handleClick(e: Event) {
             return;
         }
         if (action === "open-flair") {
+            closeModal(false);
             setPluginEnabled("DMProfileFlair", true);
             if (!openProfileFlairSettings()) {
                 toast("Couldn't open Profile Flair settings. Find it under Discord settings → Discordmaxxer → Plugins.", Toasts.Type.FAILURE);
+            }
+            return;
+        }
+        if (action === "open-name-style") {
+            closeModal(false);
+            if (!openDisplayNameStyleSettings()) {
+                toast("Couldn't open Display Name Style settings. Find it under Discord settings → Discordmaxxer → Plugins.", Toasts.Type.FAILURE);
+            }
+            return;
+        }
+        if (action === "open-native-profile") {
+            closeModal(false);
+            if (!openNativeProfileSettings()) {
+                toast("Couldn't open Discord's profile settings. Open User Settings → Profiles manually.", Toasts.Type.FAILURE);
             }
             return;
         }
@@ -698,7 +805,7 @@ function handleClick(e: Event) {
 
     const gradEl = rawTarget.closest<HTMLElement>("[data-grad]");
     if (gradEl) {
-        const preset = GRADIENT_PRESETS.find(g => g.id === gradEl.dataset.grad);
+        const preset = getTourGradientPresets().find(g => g.id === gradEl.dataset.grad);
         if (preset) {
             void applyGradientPreset(preset);
         }

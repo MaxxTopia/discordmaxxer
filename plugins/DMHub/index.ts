@@ -261,6 +261,7 @@ interface QuickToggle {
 const QUICK_TOGGLES: QuickToggle[] = [
     { plugin: "VideoBackground", label: "🌟 Video Background", settingKey: "enable", minTier: Tier.MAXXER_PLUS, note: "Set URL in Discordmaxxer plugin settings" },
     { plugin: "DMTheme", label: "🎨 Maxxer Theme", settingKey: "enable" },
+    { plugin: "DMDisplayNameStyle", label: "✦ Display Name Style", settingKey: "active", note: "Browse 30 looks in the visual grid", noRestart: true },
     { plugin: "TournamentMode", label: "🎮 Tournament Mode", settingKey: "manuallyActive", note: "Or press Ctrl+Alt+T", noRestart: true },
     { plugin: "CompactView", label: "📐 Compact View", settingKey: "manuallyActive", note: "Or press Ctrl+Alt+H", noRestart: true },
     { plugin: "MassDelete", label: "🗑️ Mass-Delete menu", settingKey: "enableContextMenu", note: "OPT-IN — TOS risk" },
@@ -370,6 +371,31 @@ function openDMProfileFlairSettings() {
     }
 }
 
+function openDMDisplayNameStyleSettings() {
+    const plugin = vencord()?.Plugins?.plugins?.DMDisplayNameStyle;
+    if (plugin) {
+        try {
+            openPluginModal(plugin);
+            return;
+        } catch (e) {
+            console.warn("[DiscordmaxxerHub] could not open DMDisplayNameStyle modal:", e);
+        }
+    }
+    try {
+        vencord()?.Webpack?.Common?.SettingsRouter?.openUserSettings?.("vencord_plugins");
+    } catch (e) {
+        console.warn("[DiscordmaxxerHub] could not open Display Name Style settings:", e);
+    }
+}
+
+function openNativeProfileSettings() {
+    try {
+        vencord()?.Webpack?.Common?.SettingsRouter?.openUserSettings?.("my_account_panel");
+    } catch (e) {
+        console.warn("[DiscordmaxxerHub] could not open Discord's account profile settings:", e);
+    }
+}
+
 function renderPanelHTML(): string {
     const tier = getMyTier();
     const tierLabel = TIER_LABELS[tier];
@@ -437,6 +463,16 @@ function renderPanelHTML(): string {
         ${healthExpanded ? renderPluginHealthHTML() : ""}
         <div class="dm-hub-section">Profile look</div>
         <div class="dm-hub-row">
+            <div class="dm-hub-row-label">✦ Browse display-name looks</div>
+            <button class="dm-hub-action-btn" data-action="open-name-style">Open</button>
+        </div>
+        <div class="dm-hub-info">Open the visual grid of 30 fonts, colors, finishes, and motion presets. This changes the local rendering; Discord's own native style editor is below.</div>
+        <div class="dm-hub-row">
+            <div class="dm-hub-row-label">🌐 Discord profile editor</div>
+            <button class="dm-hub-action-btn" data-action="open-native-profile">Open</button>
+        </div>
+        <div class="dm-hub-info">Opens My Account settings only. Use Edit Profiles for Discord's native name style, avatar, banner, and theme controls; no account change is made here.</div>
+        <div class="dm-hub-row">
             <div class="dm-hub-row-label">🎨 Edit profile flair</div>
             <button class="dm-hub-action-btn" data-action="open-profile-flair">Open</button>
         </div>
@@ -500,6 +536,16 @@ function ensurePanelRoot() {
         if (t.dataset.action === "open-profile-flair") {
             panelRoot!.classList.add("hidden");
             openDMProfileFlairSettings();
+            return;
+        }
+        if (t.dataset.action === "open-name-style") {
+            panelRoot!.classList.add("hidden");
+            openDMDisplayNameStyleSettings();
+            return;
+        }
+        if (t.dataset.action === "open-native-profile") {
+            panelRoot!.classList.add("hidden");
+            openNativeProfileSettings();
             return;
         }
         if (t.dataset.action === "toggle-health") {
