@@ -669,7 +669,7 @@ function renderModalHTML(): string {
                 aria-label="Toggle"></button>
         </div>`;
     }).join("");
-    const healthSummary = getPluginHealthSummary();
+    const compatibilitySummary = getPluginHealthSummary();
 
     return `<div id="${MODAL_ID}">
         <div class="dmw-head">
@@ -689,7 +689,7 @@ function renderModalHTML(): string {
 
         <div class="dmw-section">Quick-enable bundles</div>
         <div class="dmw-bundles">${bundleHTML}</div>
-        <div class="dmw-health-callout"><b>Compatibility check:</b> ${healthSummary}. “Loaded” means the plugin is present and enabled; service/account features still need their real external path. For the full per-plugin breakdown, open DM Hub → Plugin health.</div>
+        <div class="dmw-health-callout"><b>Compatibility check:</b> ${compatibilitySummary}. “Loaded” means the plugin is present and enabled; service/account features still need their real external path.</div>
 
         <div class="dmw-section">Featured plugins</div>
         <div class="dmw-cards">${cardHTML}</div>
@@ -833,7 +833,7 @@ function handleClick(e: Event) {
             const id = toggleEl.dataset.plugin;
             const next = !isPluginEnabled(id);
             if (!setPluginEnabled(id, next)) {
-                toast(`${id} is not available in this build. Check DM Hub → Plugin health.`, Toasts.Type.FAILURE);
+                toast(`${id} is not included in this build.`, Toasts.Type.FAILURE);
                 return;
             }
             toggleEl.classList.toggle("on", next);

@@ -242,8 +242,13 @@ async function doFetch(): Promise<void> {
         const ctrl = new AbortController();
         const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
         let res: Response;
+        const refreshUrl = `${ROSTER_URL}?dmx_refresh=${Date.now()}`;
         try {
-            res = await fetch(ROSTER_URL, { cache: "no-cache", signal: ctrl.signal });
+            res = await fetch(refreshUrl, {
+                cache: "no-store",
+                headers: { "Cache-Control": "no-cache", Pragma: "no-cache" },
+                signal: ctrl.signal
+            });
         } finally {
             clearTimeout(timer);
         }

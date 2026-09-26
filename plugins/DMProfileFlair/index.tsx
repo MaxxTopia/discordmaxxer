@@ -53,7 +53,7 @@ import { decodeProfileLook, encodeProfileLook, ProfileLookConfig } from "../_dm-
 import { isDisplayNameStylePresetId } from "../_dm-shared/displayNameStylePresets";
 import { GRADIENT_PRESETS } from "../_dm-shared/gradientPresets";
 import { Tier } from "../_dm-shared/vip";
-import { normalizeCode, readBinding } from "../_dm-shared/vipClaim";
+import { isValidCode, normalizeCode, readBinding } from "../_dm-shared/vipClaim";
 
 const WORKER_PROFILE_URL = "https://optmaxxing-vip.maxxtopia.workers.dev/profile";
 const WORKER_PROFILE_MEDIA_URL = "https://optmaxxing-vip.maxxtopia.workers.dev/profile-media";
@@ -380,13 +380,20 @@ function getProfileAuth(showError = true): ProfileAuth | null {
     // to disk via main process, independent of localStorage).
     let claimCode = "";
     const binding = readBinding();
-    if (binding?.code) {
+    const manualCode = settings.store.manualClaimCode?.trim();
+    if (manualCode) {
+        // An explicitly configured manual code must win over a stale local
+        // binding; otherwise users cannot recover when that binding is no
+        // longer recognized by the profile service.
+        claimCode = normalizeCode(manualCode);
+        if (!isValidCode(claimCode)) {
+            if (showError) {
+                toast("That manual claim code has an invalid format. Paste the full MAXX-XXXX-XXXX-XXXX-XXXX code.", Toasts.Type.FAILURE, 6000);
+            }
+            return null;
+        }
+    } else if (binding?.code) {
         claimCode = binding.code;
-    } else if (settings.store.manualClaimCode?.trim()) {
-        // Use the shared normalizer so a pasted "MAXX-AAAA-BBBB-CCCC-DDDD"
-        // becomes the canonical 16-char code. The ad-hoc strip here only
-        // removed dashes, leaving the MAXX prefix → a 20-char mismatch.
-        claimCode = normalizeCode(settings.store.manualClaimCode);
     }
     if (!claimCode) {
         if (showError) {
@@ -398,6 +405,17 @@ function getProfileAuth(showError = true): ProfileAuth | null {
         return null;
     }
     return { userId: me.id, claimCode };
+}
+
+function explainProfileAuthError(serverError: string): string | undefined {
+    const normalized = serverError.toLowerCase();
+    if (normalized.includes("unknown claimcode")) {
+        return "The profile service has no redeemed record for this code. Manual entry only supplies a code; it does not redeem one. Check its status in Discordmaxxer VIP Claim, then retry. If you believe it was already claimed, confirm you entered that exact code and are signed into the Discord account it was claimed for.";
+    }
+    if (normalized.includes("claimcode does not match userid")) {
+        return "This claim is linked to a different Discord account. Switch to the account it was claimed for; manual entry cannot transfer it.";
+    }
+    return undefined;
 }
 
 async function postFlairUpdate(profile: Partial<ProfileFlair>, replace: boolean): Promise<boolean> {
@@ -427,7 +445,7 @@ async function postFlairUpdate(profile: Partial<ProfileFlair>, replace: boolean)
                 toast("Save stopped: this profile changed on another PC. Refresh finished; review the current look and save again.", Toasts.Type.FAILURE, 7000);
                 return false;
             }
-            const friendlyError = res.status === 410
+            const friendlyError = explainProfileAuthError(serverError) ?? (res.status === 410
                 ? "Your Discordmaxxer claim has expired. Reclaim it, then try again."
                 : res.status === 429
                     ? "Too many profile updates. Wait a moment and try again."
@@ -435,7 +453,7 @@ async function postFlairUpdate(profile: Partial<ProfileFlair>, replace: boolean)
                         ? "This claim is for another Maxxtopia product, not Discordmaxxer."
                         : /https|250/i.test(serverError)
                 ? "Use a direct HTTPS media URL that is 250 characters or fewer. A webpage link or local file will not work here."
-                : serverError;
+                : serverError);
             toast(`Save failed: ${friendlyError}`, Toasts.Type.FAILURE, 6000);
             return false;
         }
@@ -1304,9 +1322,9 @@ async function uploadLocalMedia(media: LocalMediaSelection): Promise<string | nu
         const body = await res.json().catch(() => ({}));
         if (!res.ok) {
             const serverError = String(body?.error ?? res.status);
-            const friendlyError = /storage.*not configured|media storage/i.test(serverError)
+            const friendlyError = explainProfileAuthError(serverError) ?? (/storage.*not configured|media storage/i.test(serverError)
                 ? "shared local-file publishing is not live on the profile worker yet"
-                : serverError;
+                : serverError);
             toast(`Publish failed: ${friendlyError}`, Toasts.Type.FAILURE, 7000);
             return null;
         }
@@ -2664,10 +2682,10 @@ const settings = definePluginSettings({
     manualClaimCode: {
         type: OptionType.STRING,
         description:
-            "Optional fallback: paste your VIP claim code (the MAXX-XXXX-XXXX-XXXX-XXXX you redeemed) here " +
-            "if Save → 'Save to Discordmaxxer' tells you it can't find your binding. Discord disables " +
-            "localStorage in modern builds which breaks the normal binding-read path; this setting is " +
-            "persisted to disk via Vencord, so it survives. Auto-normalized (dashes + case ignored).",
+            "Optional override: paste your already-redeemed VIP claim code (MAXX-XXXX-XXXX-XXXX-XXXX) here. " +
+            "When set, it takes priority over this install's saved binding. Manual entry does not redeem " +
+            "a code; it must already be recognized and linked to the Discord account you're signed into. " +
+            "Auto-normalized (dashes + case ignored).",
         default: ""
     },
     // Hidden — JSON-stringified history of the last MAX_RECENTS values for
@@ -2738,18 +2756,29 @@ let defaultAvatarWarned = false;
 let removeRosterListener: (() => void) | null = null;
 let lastAvatarSweepAt = 0;
 const AVATAR_SWEEP_INTERVAL_MS = 750;
+let lastRosterRefreshAt = 0;
+const ROSTER_FOCUS_REFRESH_INTERVAL_MS = 30_000;
 let scanTimer: number | null = null;
 let scanFrame: number | null = null;
 const SCAN_DEBOUNCE_MS = 120;
+function refreshRosterForVisibleSurface(): void {
+    if (document.hidden) return;
+    lastAvatarSweepAt = 0;
+    scheduleScan();
+    const now = Date.now();
+    if (now - lastRosterRefreshAt < ROSTER_FOCUS_REFRESH_INTERVAL_MS) return;
+    lastRosterRefreshAt = now;
+    refreshRoster().catch(e => console.warn("[DMProfileFlair] focused roster refresh failed:", e));
+}
 const onVisibilityChange = () => {
     if (!document.hidden) {
         // A hidden window does not need DOM reconciliation. Force the next
         // visible pass to include avatars that may have changed while Discord
         // was backgrounded.
-        lastAvatarSweepAt = 0;
-        scheduleScan();
+        refreshRosterForVisibleSurface();
     }
 };
+const onRosterFocus = () => refreshRosterForVisibleSurface();
 
 
 /** True if a URL is marked as video media or ends in a typical video extension. Used to decide whether to
@@ -3752,6 +3781,7 @@ function startObserver() {
     if (observer) return;
     lastAvatarSweepAt = 0;
     document.addEventListener("visibilitychange", onVisibilityChange);
+    window.addEventListener("focus", onRosterFocus);
     observer = new MutationObserver(records => {
         // Discord may paint the stock avatar before the regular debounced page
         // scan runs. Only inspect newly affected profile roots synchronously;
@@ -3773,7 +3803,9 @@ function stopObserver() {
     observer?.disconnect();
     observer = null;
     lastAvatarSweepAt = 0;
+    lastRosterRefreshAt = 0;
     document.removeEventListener("visibilitychange", onVisibilityChange);
+    window.removeEventListener("focus", onRosterFocus);
     if (scanTimer !== null) { clearTimeout(scanTimer); scanTimer = null; }
     if (scanFrame !== null) { window.cancelAnimationFrame(scanFrame); scanFrame = null; }
     if (rescanTimer !== null) { clearInterval(rescanTimer); rescanTimer = null; }
@@ -3811,7 +3843,7 @@ export default definePlugin({
         // Resolve the roster immediately so an already-open profile does not
         // depend on the next profile open or the two-second DOM poll. The
         // listener above repaints when this asynchronous fetch completes.
-        refreshRoster().catch(e => console.warn("[DMProfileFlair] roster refresh failed:", e));
+        refreshRosterForVisibleSurface();
     },
 
     stop() {

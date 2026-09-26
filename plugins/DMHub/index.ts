@@ -17,7 +17,6 @@ import { openPluginModal } from "@components/settings/tabs";
 import { createAndAppendStyle } from "@utils/css";
 import definePlugin from "@utils/types";
 
-import { getPluginHealthSnapshot, renderPluginHealthHTML } from "../_dm-shared/pluginHealth";
 import { getMyTier, hasTier, Tier, TIER_LABELS } from "../_dm-shared/vip";
 
 const FAB_ID = "dm-hub-fab";
@@ -45,7 +44,6 @@ const FAB_LOGO_DATA =
 let panelRoot: HTMLDivElement | null = null;
 let style: HTMLStyleElement;
 let observer: MutationObserver | null = null;
-let healthExpanded = false;
 
 const HUB_CSS = `
     /* Toolbar button — renders the locked primary v1 mark on a transparent
@@ -388,27 +386,17 @@ function openDMDisplayNameStyleSettings() {
     }
 }
 
-function openNativeProfileSettings() {
-    try {
-        vencord()?.Webpack?.Common?.SettingsRouter?.openUserSettings?.("my_account_panel");
-    } catch (e) {
-        console.warn("[DiscordmaxxerHub] could not open Discord's account profile settings:", e);
-    }
-}
-
 function renderPanelHTML(): string {
     const tier = getMyTier();
     const tierLabel = TIER_LABELS[tier];
     const tierClass = tier === Tier.FREE ? "free" : "";
-    const health = getPluginHealthSnapshot();
-
     const rows = QUICK_TOGGLES.map(t => {
         if (!isPluginAvailable(t.plugin)) {
             return `<div class="dm-hub-row" style="opacity:0.5">
                 <div class="dm-hub-row-label">${t.label}</div>
                 <span style="font-size:10px;color:#ff9baa">unavailable</span>
             </div>
-            <div class="dm-hub-info">Not present in this build. Open Health → Plugin health for details.</div>`;
+            <div class="dm-hub-info">This plugin is not included in the current build.</div>`;
         }
         if (t.minTier && !hasTier(t.minTier)) {
             return `<div class="dm-hub-row vip">
@@ -454,24 +442,12 @@ function renderPanelHTML(): string {
             <button class="dm-hub-action-btn" data-action="open-tour">Open</button>
         </div>
         <div class="dm-hub-info">Browse featured plugins, enable bundles, and see what each one actually does — no settings-digging required.</div>
-        <div class="dm-hub-section">Health</div>
-        <div class="dm-hub-row">
-            <div class="dm-hub-row-label">🧪 Plugin health</div>
-            <button class="dm-hub-action-btn" data-action="toggle-health">${healthExpanded ? "Hide" : "View"}</button>
-        </div>
-        <div class="dm-hub-info">${health.summary}. “Loaded” means present and enabled; conditional features still need their service, account, or real-call path.</div>
-        ${healthExpanded ? renderPluginHealthHTML() : ""}
         <div class="dm-hub-section">Profile look</div>
         <div class="dm-hub-row">
             <div class="dm-hub-row-label">✦ Browse display-name looks</div>
             <button class="dm-hub-action-btn" data-action="open-name-style">Open</button>
         </div>
-        <div class="dm-hub-info">Open the visual grid of 30 fonts, colors, finishes, and motion presets. This changes the local rendering; Discord's own native style editor is below.</div>
-        <div class="dm-hub-row">
-            <div class="dm-hub-row-label">🌐 Discord profile editor</div>
-            <button class="dm-hub-action-btn" data-action="open-native-profile">Open</button>
-        </div>
-        <div class="dm-hub-info">Opens My Account settings only. Use Edit Profiles for Discord's native name style, avatar, banner, and theme controls; no account change is made here.</div>
+        <div class="dm-hub-info">Open the visual grid of 30 fonts, colors, finishes, and motion presets. These effects change only how profiles are rendered in Discordmaxxer.</div>
         <div class="dm-hub-row">
             <div class="dm-hub-row-label">🎨 Edit profile flair</div>
             <button class="dm-hub-action-btn" data-action="open-profile-flair">Open</button>
@@ -541,20 +517,6 @@ function ensurePanelRoot() {
         if (t.dataset.action === "open-name-style") {
             panelRoot!.classList.add("hidden");
             openDMDisplayNameStyleSettings();
-            return;
-        }
-        if (t.dataset.action === "open-native-profile") {
-            panelRoot!.classList.add("hidden");
-            openNativeProfileSettings();
-            return;
-        }
-        if (t.dataset.action === "toggle-health") {
-            healthExpanded = !healthExpanded;
-            panelRoot!.innerHTML = renderPanelHTML();
-            return;
-        }
-        if (t.dataset.action === "refresh-health") {
-            panelRoot!.innerHTML = renderPanelHTML();
             return;
         }
         if (t.dataset.action === "open-plugin-settings") {
@@ -657,7 +619,6 @@ function stopObserver() {
     document.getElementById(FAB_ID)?.remove();
     panelRoot?.remove();
     panelRoot = null;
-    healthExpanded = false;
 }
 
 export default definePlugin({
