@@ -84,6 +84,27 @@ interface WidgetIdentity {
 const EMPTY_IDENTITY: WidgetIdentity = { appId: "", configId: "", heroAssetKey: "", heroImageUrl: "", appIconUrl: "", rankIconKey: "", rankIconName: "", peakIconKey: "", peakIconName: "" };
 const parseId = (raw: any): WidgetIdentity => ({ appId: String(raw?.appId ?? ""), configId: String(raw?.configId ?? ""), heroAssetKey: String(raw?.heroAssetKey ?? ""), heroImageUrl: String(raw?.heroImageUrl ?? ""), appIconUrl: String(raw?.appIconUrl ?? ""), rankIconKey: String(raw?.rankIconKey ?? ""), rankIconName: String(raw?.rankIconName ?? ""), peakIconKey: String(raw?.peakIconKey ?? ""), peakIconName: String(raw?.peakIconName ?? ""), widgetStyle: typeof raw?.widgetStyle === "string" ? raw.widgetStyle : undefined, topLayout: raw?.topLayout === "hero" || raw?.topLayout === "contained" ? raw.topLayout : undefined, bottomLayout: raw?.bottomLayout === "stats" || raw?.bottomLayout === "progress" ? raw.bottomLayout : undefined });
 
+// Discord keeps the published widget config remotely, while DMWidget's
+// editor draft (including game IDs and keys) is local. Keep a small, safe
+// snapshot of the public part of the config so a reinstall can restore the
+// visible fields without ever pretending that a private API key was recovered.
+interface PublishedWidgetSnapshot {
+    appName: string;
+    configId: string;
+    title: string;
+    topLayout: "hero" | "contained";
+    bottomLayout: "stats" | "progress";
+    stats: string[];
+    progressLabel: string;
+    progressPercent: number;
+    heroAssetKey: string;
+    appIconUrl: string;
+    updatedAt: string;
+}
+
+const publishedWidgetSnapshots = new Map<string, PublishedWidgetSnapshot>();
+const publishedWidgetHydrated = new Set<string>();
+
 // Multiple widgets = one Discord app per game template ("slot"). The slot key
 // IS the gameTemplate value ("fortnite" / "valorant" / "none"), so the template
 // picker doubles as "which widget am I editing", each deploys its own app, and
@@ -136,6 +157,8 @@ async function ensureSlots(): Promise<void> {
         }
 
         activeSlotsAccountId = accountId;
+        publishedWidgetSnapshots.clear();
+        publishedWidgetHydrated.clear();
         if (archived) {
             slots.set(archived);
         } else if (previousAccountId && previousAccountId !== accountId) {
@@ -813,6 +836,19 @@ async function refreshGameSlot(tpl: string, announce = false): Promise<boolean> 
 // Manual "Refresh now" button — refreshes the slot the picker is on.
 const refreshGame = (announce = false) => refreshGameSlot(slotKeyOf(), announce);
 
+function privateCredentialsMissingForSlot(slotKey: string): boolean {
+    const draft = settings.store as any;
+    if (slotKey === "valorant") {
+        const riotId = String(draft.valRiotId ?? "").trim();
+        const hash = riotId.indexOf("#");
+        return hash < 1 || hash === riotId.length - 1 || !String(draft.valApiKey ?? "").trim();
+    }
+    if (slotKey === "fortnite") {
+        return !String(draft.fnIgn ?? "").trim() || !String(draft.fnApiKey ?? "").trim();
+    }
+    return false;
+}
+
 // Timer — refresh EVERY deployed game slot (so FN + Valorant both stay live).
 async function refreshAllGames(): Promise<{ updated: number; failed: number; }> {
     await ensureSlots();
@@ -867,12 +903,7 @@ async function deployWidget(): Promise<void> {
     // Update click turn that missing draft into a blank Valorant/Fortnite
     // publish; the gallery skin is already safe to apply locally.
     if (SNOWFLAKE.test(id.appId)) {
-        const draft = settings.store as any;
-        const missingValorantDraft = slotKey === "valorant"
-            && (!String(draft.valRiotId ?? "").includes("#") || !String(draft.valApiKey ?? "").trim());
-        const missingFortniteDraft = slotKey === "fortnite"
-            && (!String(draft.fnIgn ?? "").trim() || !String(draft.fnApiKey ?? "").trim());
-        if (missingValorantDraft || missingFortniteDraft) {
+        if (privateCredentialsMissingForSlot(slotKey)) {
             const game = slotKey === "valorant" ? "Riot ID (Name#Tag) + HenrikDev key" : "Epic IGN + Fortnite API key";
             toast(`Existing ${SLOT_LABEL[slotKey] ?? slotKey} widget recovered. Re-enter your ${game} before Update existing widget; changing the skin is already applied locally and will not erase the published card.`, Toasts.Type.MESSAGE, 10000);
             return;
@@ -1411,6 +1442,149 @@ function profileWidgetConfigId(widget: any): string {
         widget?.data?.application?.configId
     ];
     return candidates.map(value => String(value ?? "")).find(value => SNOWFLAKE.test(value)) ?? "";
+}
+
+function publishedConfigField(config: any, surface: string, component: string, field: string): any {
+    return config?.surfaces?.[surface]?.components?.[component]?.fields?.[field];
+}
+
+function publishedConfigText(config: any, surface: string, component: string, field: string): string {
+    return String(publishedConfigField(config, surface, component, field)?.value ?? "").trim();
+}
+
+function publishedConfigAsset(config: any, surface: string, component: string, field: string): string {
+    const value = publishedConfigField(config, surface, component, field);
+    return value?.value_type === "application_asset" ? String(value.value ?? "").trim() : "";
+}
+
+function publishedWidgetSnapshot(application: any, config: any): PublishedWidgetSnapshot {
+    const stats = Array.from({ length: 6 }, (_, index) => {
+        const component = `stat_${index + 1}`;
+        const label = publishedConfigText(config, "widget_bottom", component, "label");
+        const value = publishedConfigText(config, "widget_bottom", component, "value");
+        return label && value ? `${label} | ${value}` : label || value;
+    });
+    const progressRaw = Number(publishedConfigField(config, "widget_bottom", "progress", "current")?.value ?? 0);
+    const progressPercent = Number.isFinite(progressRaw) ? (progressRaw <= 1 ? progressRaw * 100 : progressRaw) : 0;
+    const top = config?.surfaces?.widget_top;
+    const topImage = top?.components?.contained_image ? "contained_image" : "hero_image";
+    const heroAssetKey = publishedConfigAsset(config, "widget_top", topImage, "image")
+        || publishedConfigAsset(config, "add_widget_preview", "hero_image", "image")
+        || publishedConfigAsset(config, "mini_profile", "hero_image", "image");
+    const appId = String(application?.id ?? config?.application?.id ?? "");
+    const icon = String(application?.icon ?? config?.application?.icon ?? "").trim();
+    const appIconUrl = icon
+        ? (/^https?:\/\//i.test(icon) ? icon : `https://cdn.discordapp.com/app-icons/${appId}/${icon}.png?size=128`)
+        : "";
+    return {
+        appName: String(application?.name ?? config?.application?.name ?? config?.display_name ?? "").trim(),
+        configId: String(config?.config_id ?? config?.configId ?? ""),
+        title: publishedConfigText(config, "widget_top", "title", "text"),
+        topLayout: top?.layout === "widget_top_contained" ? "contained" : "hero",
+        bottomLayout: config?.surfaces?.widget_bottom?.layout === "widget_bottom_progress" ? "progress" : "stats",
+        stats,
+        progressLabel: publishedConfigText(config, "widget_bottom", "objective", "name"),
+        progressPercent: Math.max(0, Math.min(100, progressPercent)),
+        heroAssetKey,
+        appIconUrl,
+        updatedAt: String(config?.updated_at ?? "")
+    };
+}
+
+function parsePublishedNumber(value: string): number | undefined {
+    const match = String(value ?? "").replace(/,/g, "").match(/-?\d+(?:\.\d+)?/);
+    if (!match) return undefined;
+    const number = Number(match[0]);
+    return Number.isFinite(number) ? number : undefined;
+}
+
+function publishedStatParts(raw: string): { label: string; value: string; } {
+    const divider = String(raw ?? "").indexOf("|");
+    return divider < 0
+        ? { label: "", value: String(raw ?? "").trim() }
+        : { label: String(raw).slice(0, divider).trim(), value: String(raw).slice(divider + 1).trim() };
+}
+
+async function hydratePublishedWidgetContent(slotKey: string): Promise<PublishedWidgetSnapshot | null> {
+    await ensureSlots();
+    const id = getSlot(slotKey);
+    if (!SNOWFLAKE.test(id.appId)) return null;
+    const cached = publishedWidgetSnapshots.get(slotKey);
+    try {
+        const application = await apiGet(`/applications/${id.appId}`);
+        const list = await apiGet(`/applications/${id.appId}/widget-configs`);
+        const configs: any[] = Array.isArray(list) ? list : list?.configs ?? [];
+        const config = configs.find(item => String(item?.config_id ?? item?.configId ?? "") === id.configId)
+            ?? configs.find(item => item?.status === "published")
+            ?? configs[0];
+        if (!config) return cached ?? null;
+        const snapshot = publishedWidgetSnapshot(application, config);
+        const next: WidgetIdentity = {
+            ...id,
+            configId: snapshot.configId || id.configId,
+            heroAssetKey: id.heroAssetKey || snapshot.heroAssetKey,
+            appIconUrl: id.appIconUrl || snapshot.appIconUrl,
+            topLayout: id.topLayout ?? snapshot.topLayout,
+            bottomLayout: id.bottomLayout ?? snapshot.bottomLayout
+        };
+        if (JSON.stringify(next) !== JSON.stringify(id)) setSlot(slotKey, next);
+        publishedWidgetSnapshots.set(slotKey, snapshot);
+        return snapshot;
+    } catch (error) {
+        console.warn("[DMWidget] published widget content recovery failed:", error);
+        return cached ?? null;
+    }
+}
+
+function applyPublishedWidgetSnapshot(slotKey: string, snapshot: PublishedWidgetSnapshot): void {
+    if (publishedWidgetHydrated.has(slotKey)) return;
+    const store = settings.store as any;
+    const fill = (key: string, value: string, defaults: string[] = []) => {
+        const current = String(store[key] ?? "").trim();
+        if (value && (!current || defaults.includes(current))) store[key] = value;
+    };
+    const stats = snapshot.stats.map(publishedStatParts);
+    fill("appIconUrl", snapshot.appIconUrl);
+    if (snapshot.topLayout === "hero" || snapshot.topLayout === "contained") store.topLayout = snapshot.topLayout;
+    if (snapshot.bottomLayout === "stats" || snapshot.bottomLayout === "progress") store.bottomLayout = snapshot.bottomLayout;
+    if (snapshot.bottomLayout === "progress") {
+        fill("progressLabel", snapshot.progressLabel, ["Level 1", "Progress"]);
+        if (snapshot.progressPercent > 0 && (Number(store.progressPercent) === 50 || !Number.isFinite(Number(store.progressPercent)))) store.progressPercent = snapshot.progressPercent;
+    }
+
+    if (slotKey === "none") {
+        fill("appName", snapshot.appName, ["My Widget"]);
+        fill("widgetTitle", snapshot.title, ["My Widget"]);
+        for (let index = 0; index < stats.length; index++) fill(`stat${index + 1}`, snapshot.stats[index]);
+    } else if (slotKey === "fortnite") {
+        fill("fnIgn", snapshot.title || snapshot.appName, ["Fortnite"]);
+        fill("fnUnrealRank", stats[0]?.value);
+        fill("fnEarnings", stats[1]?.value.replace(/^💵\s*/u, ""), ["$0"]);
+        const placement = stats.find(item => /best|placement/i.test(item.label));
+        fill("fnTopPlacement", placement?.value ?? "");
+        const wins = parsePublishedNumber(stats[2]?.value ?? "");
+        const kd = parsePublishedNumber(stats[3]?.value ?? "");
+        const hours = parsePublishedNumber(stats[4]?.value ?? "");
+        const kills = parsePublishedNumber(stats[5]?.value ?? "");
+        fnStats = { ...(fnStats ?? {}), ...(wins === undefined ? {} : { wins }), ...(kd === undefined ? {} : { kd }), ...(hours === undefined ? {} : { minutesPlayed: hours * 60 }), ...(kills === undefined ? {} : { kills }) };
+    } else if (slotKey === "valorant") {
+        // Discord publishes the visible Riot name but never the private tag or
+        // HenrikDev key. Keep the preview useful while leaving the valid
+        // Name#Tag field empty rather than inventing a credential.
+        const rr = parsePublishedNumber(stats[1]?.value ?? "");
+        const recentWR = parsePublishedNumber(stats[4]?.value ?? "");
+        const avgKD = parsePublishedNumber(stats[5]?.value ?? "");
+        valStats = {
+            ...(valStats ?? {}),
+            rank: stats[0]?.value || valStats?.rank,
+            ...(rr === undefined ? {} : { rr }),
+            peak: stats[2]?.value || valStats?.peak,
+            mainAgent: stats[3]?.value || valStats?.mainAgent,
+            ...(recentWR === undefined ? {} : { recentWR }),
+            ...(avgKD === undefined ? {} : { avgKD: avgKD.toFixed(2) })
+        };
+    }
+    publishedWidgetHydrated.add(slotKey);
 }
 
 function inferWidgetSlot(application: any, fallback: string): string {
@@ -2144,28 +2318,62 @@ function WidgetStylePicker() {
 
 function WidgetEditor() {
     const [busy, setBusy] = React.useState(false);
+    const [recoveryNote, setRecoveryNote] = React.useState("");
     const [, force] = React.useState(0);
     const live = settings.use(["appIconUrl", "heroImageUrl", "gameTemplate", "valHeroPreset", "fnHeroPreset"]);
     const slotKey = String(live.gameTemplate ?? "none") || "none";
     React.useEffect(() => {
         let active = true;
-        void ensureSlots()
-            .then(() => refreshAttachedWidgetStyles(true))
-            .catch(error => console.warn("[DMWidget] widget editor recovery failed:", error))
-            .finally(() => {
-                if (!active) return;
-                const recovered = getSlot(slotKey);
-                const store = settings.store as any;
-                if (SNOWFLAKE.test(recovered.appId)) {
-                    if (recovered.heroImageUrl && recovered.heroImageUrl !== store.heroImageUrl) store.heroImageUrl = recovered.heroImageUrl;
-                    if (recovered.appIconUrl !== store.appIconUrl) store.appIconUrl = recovered.appIconUrl;
+        setRecoveryNote("");
+        void (async () => {
+            await ensureSlots();
+            await refreshAttachedWidgetStyles(true);
+            const store = settings.store as any;
+            const current = getSlot(slotKey);
+            // A fresh install often opens on Custom even though the account has
+            // a Valorant/Fortnite card. Make the recovered card the editor
+            // target so the user does not have to guess which picker restores
+            // the remote fields.
+            if (!SNOWFLAKE.test(current.appId)) {
+                const recoveredTarget = ["valorant", "fortnite", "none"].find(key => SNOWFLAKE.test(getSlot(key).appId));
+                if (active && recoveredTarget && recoveredTarget !== slotKey) {
+                    store.gameTemplate = recoveredTarget;
+                    setRecoveryNote(`Found your existing ${SLOT_LABEL[recoveredTarget] ?? recoveredTarget} widget — opening its recovered editor.`);
+                    force(x => x + 1);
+                    return;
                 }
-                force(x => x + 1);
-            });
+            }
+            const snapshot = await hydratePublishedWidgetContent(slotKey);
+            if (snapshot) {
+                applyPublishedWidgetSnapshot(slotKey, snapshot);
+                if (active) {
+                    const credentialHint = slotKey === "valorant" || slotKey === "fortnite"
+                        ? " Private game credentials remain local and are only needed for live stat refresh/update."
+                        : "";
+                    setRecoveryNote(`Published ${SLOT_LABEL[slotKey] ?? slotKey} content recovered from Discord.${credentialHint}`);
+                }
+            }
+            if (!active) return;
+            const recovered = getSlot(slotKey);
+            if (SNOWFLAKE.test(recovered.appId)) {
+                if (recovered.heroImageUrl && recovered.heroImageUrl !== store.heroImageUrl) store.heroImageUrl = recovered.heroImageUrl;
+                if (recovered.appIconUrl && recovered.appIconUrl !== store.appIconUrl) store.appIconUrl = recovered.appIconUrl;
+            }
+            force(x => x + 1);
+        })().catch(error => {
+            console.warn("[DMWidget] widget editor recovery failed:", error);
+            if (active) setRecoveryNote("Discord kept the widget attached, but its published fields could not be read right now. Try Refresh after the client reconnects.");
+        });
         return () => { active = false; };
     }, [slotKey]);
     const id = getSlot(slotKey);
     const created = SNOWFLAKE.test(id.appId);
+    const privateCredentialsMissing = created && privateCredentialsMissingForSlot(slotKey);
+    const privateCredentialLabel = slotKey === "valorant"
+        ? "Riot ID (Name#Tag) and HenrikDev key"
+        : slotKey === "fortnite"
+            ? "Epic IGN and Fortnite API key"
+            : "private game credentials";
     const previewHero = heroUrlFor(slotKey, id);
     // Summary of every deployed widget (so multi-widget is legible).
     const allSlots = Object.entries(slots.get()).filter(([, v]) => SNOWFLAKE.test(v.appId)).map(([k]) => SLOT_LABEL[k] ?? k);
@@ -2191,11 +2399,17 @@ function WidgetEditor() {
                 {allSlots.length > 0 && <div style={{ marginTop: 3 }}>On your board: {allSlots.join(" · ")} — switch the <i>Game template</i> above to add/edit another.</div>}
             </div>
 
-            {created && live.gameTemplate === "valorant" && !String((settings.store as any).valRiotId ?? "").trim() && (
+            {recoveryNote && (
+                <div style={{ border: "1px solid var(--status-positive, #23a55a)", borderRadius: 8, padding: "8px 12px", fontSize: 12.5, lineHeight: 1.45, color: "var(--text-muted)" }}>
+                    <b style={{ color: "var(--text-positive, #23a55a)" }}>✓ Published widget recovery</b> {recoveryNote}
+                </div>
+            )}
+
+            {privateCredentialsMissing && (
                 <div style={{ border: "1px solid var(--status-warning, #e6a817)", borderRadius: 8, padding: "8px 12px", fontSize: 12.5, lineHeight: 1.45, color: "var(--text-muted)" }}>
                     <b style={{ color: "var(--text-normal)" }}>This widget was recovered from your profile.</b> Discord stores the published card,
-                    not your private Riot ID or HenrikDev API key, so those fields cannot be reconstructed after a reinstall or account switch.
-                    Re-enter them only if you want live Valorant stat refreshes; the existing widget and its skin can still be updated.
+                    not your private {privateCredentialLabel}, so those fields cannot be reconstructed after a reinstall or account switch.
+                    You do not need to re-enter them just to apply a skin in Discordmaxxer. Re-enter them only for live stat refreshes or a remote card-content update.
                 </div>
             )}
 
@@ -2228,6 +2442,11 @@ function WidgetEditor() {
 
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                 <Button disabled={busy} onClick={() => run(deployWidget)}>{created ? "Update existing widget" : "Create my widget"}</Button>
+                {privateCredentialsMissing && (
+                    <Button disabled={busy} color={Button.Colors.BRAND} onClick={() => run(() => republishSelectedWidgetStyle(slotKey))}>
+                        Apply skin in Discordmaxxer
+                    </Button>
+                )}
                 {created && (live.gameTemplate === "fortnite" || live.gameTemplate === "valorant") && (
                     <Button disabled={busy} color={Button.Colors.BRAND} onClick={() => run(() => refreshGame(true))}>Refresh {live.gameTemplate === "valorant" ? "Valorant" : "Fortnite"} stats now</Button>
                 )}
