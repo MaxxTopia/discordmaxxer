@@ -95,12 +95,55 @@ const slots = makePersistentValue<Slots>("dm-widget-slots", {}, raw => {
     for (const k of Object.keys(raw)) out[k] = parseId((raw as any)[k]);
     return out;
 });
+// The old store was global to the Discordmaxxer install. That meant switching
+// between DiggyAI and DiggyT could make one account's local app ids appear to
+// vanish or, worse, make the editor point at the other account's app. Keep the
+// old key for backwards compatibility, but archive the recovered identities by
+// Discord account once the current user is known.
+type AccountSlots = Record<string, Slots>;
+const accountSlots = makePersistentValue<AccountSlots>("dm-widget-slots-by-account", {}, raw => {
+    if (typeof raw !== "object" || raw === null) return null;
+    const out: AccountSlots = {};
+    for (const accountId of Object.keys(raw)) {
+        const value = (raw as any)[accountId];
+        if (typeof value !== "object" || value === null) continue;
+        const scoped: Slots = {};
+        for (const k of Object.keys(value)) scoped[k] = parseId(value[k]);
+        out[accountId] = scoped;
+    }
+    return out;
+});
 // Legacy single-widget store — migrated into a slot on first load.
 const legacyIdentity = makePersistentValue<WidgetIdentity>("dm-widget-identity", EMPTY_IDENTITY, raw => (raw && typeof raw === "object" ? parseId(raw) : null));
 
 let slotsMigrated = false;
+let activeSlotsAccountId = "";
 async function ensureSlots(): Promise<void> {
-    await slots.ready; await legacyIdentity.ready;
+    await slots.ready; await accountSlots.ready; await legacyIdentity.ready;
+
+    const accountId = String(UserStore.getCurrentUser()?.id ?? "");
+    if (accountId && activeSlotsAccountId !== accountId) {
+        const previousAccountId = activeSlotsAccountId;
+        const previousSlots = slots.get();
+        const archived = accountSlots.get()[accountId];
+
+        // The first account seen owns any pre-v0.7.73 unscoped data. On a real
+        // account switch, save the previous account before loading the new one.
+        if (previousAccountId && previousAccountId !== accountId) {
+            accountSlots.set({ ...accountSlots.get(), [previousAccountId]: previousSlots });
+        } else if (!previousAccountId && !archived && Object.keys(previousSlots).length > 0) {
+            accountSlots.set({ ...accountSlots.get(), [accountId]: previousSlots });
+        }
+
+        activeSlotsAccountId = accountId;
+        if (archived) {
+            slots.set(archived);
+        } else if (previousAccountId && previousAccountId !== accountId) {
+            // Do not leak the previous account's app ids into a new account.
+            slots.set({});
+        }
+    }
+
     if (slotsMigrated) return;
     slotsMigrated = true;
     if (Object.keys(slots.get()).length === 0) {
@@ -108,11 +151,16 @@ async function ensureSlots(): Promise<void> {
         if (SNOWFLAKE.test(legacy.appId)) {
             const key = String((settings.store as any).gameTemplate ?? "none") || "none";
             slots.set({ [key]: legacy });
+            if (activeSlotsAccountId) accountSlots.set({ ...accountSlots.get(), [activeSlotsAccountId]: { [key]: legacy } });
         }
     }
 }
 const getSlot = (key: string): WidgetIdentity => ({ ...EMPTY_IDENTITY, ...(slots.get()[key] ?? {}) });
-const setSlot = (key: string, v: WidgetIdentity): void => slots.set({ ...slots.get(), [key]: v });
+const setSlot = (key: string, v: WidgetIdentity): void => {
+    const next = { ...slots.get(), [key]: v };
+    slots.set(next);
+    if (activeSlotsAccountId) accountSlots.set({ ...accountSlots.get(), [activeSlotsAccountId]: next });
+};
 const slotKeyOf = (): string => String((settings.store as any).gameTemplate ?? "none") || "none";
 // Game slots that currently have a deployed app (for auto-refresh).
 const deployedGameSlots = (): string[] => Object.entries(slots.get()).filter(([k, v]) => (k === "fortnite" || k === "valorant") && SNOWFLAKE.test(v.appId)).map(([k]) => k);
@@ -608,7 +656,7 @@ async function publishSurfaces(appId: string, configId: string, slotKey: string,
 
 async function attachToProfile(appId: string, userId: string) {
     let widgets: any[] = [];
-    try { const prof = await apiGet(`/users/${userId}/profile`); widgets = Array.isArray(prof?.widgets) ? prof.widgets : []; } catch { widgets = []; }
+    try { const prof = await apiGet(`/users/${userId}/profile`); widgets = profileWidgetEntries(prof) ?? []; } catch { widgets = []; }
     if (!widgets.some(w => w?.data?.application_id === appId)) widgets = [{ data: { type: "application", application_id: appId } }, ...widgets];
     await apiPut("/users/@me/widgets", { widgets });
 }
@@ -671,21 +719,26 @@ let widgetStylePublishSerial = 0;
 async function republishSelectedWidgetStyle(slotKey: string): Promise<void> {
     const request = ++widgetStylePublishSerial;
     await ensureSlots();
+    // The local slot can be empty after a reinstall, an account switch, or a
+    // DataStore migration even though the widget is still attached to this
+    // account's profile. Recover it before deciding that the skin is preview-only.
+    await refreshAttachedWidgetStyles(true);
     const id = getSlot(slotKey);
     scheduleWidgetSkinScan();
     if (!SNOWFLAKE.test(id.appId)) {
         toast(`${SLOT_LABEL[slotKey] ?? slotKey} skin saved and applied in Discordmaxxer. Create/Update will publish its supported layout and image.`, Toasts.Type.MESSAGE, 6500);
         return;
     }
-    toast(`${SLOT_LABEL[slotKey] ?? slotKey} skin applied here — refreshing the Discord widget card…`, Toasts.Type.MESSAGE, 3500);
-    const error = await republishConfig(slotKey);
+    // A skin is a Discordmaxxer renderer feature, not a Discord widget-v2
+    // field. Do not rebuild the remote card from an empty post-reinstall form
+    // just because the user picked a new skin; that would replace a perfectly
+    // good published card with blank stats. The existing app identity has been
+    // recovered above, so the renderer can apply the skin immediately. The
+    // deliberate Update action remains the place where supported card fields
+    // are sent to Discord after the user reviews the recovered form.
     if (request !== widgetStylePublishSerial) return;
     scheduleWidgetSkinScan();
-    if (error) {
-        toast(`Skin is active in Discordmaxxer, but Discord's widget refresh failed: ${error}. Press Create/Update to retry the supported fields.`, Toasts.Type.FAILURE, 9000);
-    } else {
-        toast(`${SLOT_LABEL[slotKey] ?? slotKey} skin published. Reopen the profile if Discord is holding an old card snapshot.`, Toasts.Type.SUCCESS, 6500);
-    }
+    toast(`${SLOT_LABEL[slotKey] ?? slotKey} skin applied to your existing widget in Discordmaxxer. Your published card was left unchanged; review the fields before choosing Update existing widget.`, Toasts.Type.SUCCESS, 8000);
 }
 
 // Fetch a specific game slot's live stats (native, no CORS) and re-publish it.
@@ -781,6 +834,10 @@ async function deployWidget(): Promise<void> {
     if (nameErr) { toast(nameErr, Toasts.Type.FAILURE, 8000); return; }
 
     await ensureSlots();
+    // Rehydrate an app/config that is still on this account's profile before
+    // falling back to the create flow. This keeps a reinstall or account
+    // switch from silently creating a duplicate widget.
+    await refreshAttachedWidgetStyles(true);
     const slotKey = slotKeyOf();
     let id: WidgetIdentity = getSlot(slotKey);
 
@@ -795,7 +852,30 @@ async function deployWidget(): Promise<void> {
             const ownerId = String(app?.owner?.id ?? app?.team?.owner_user_id ?? "");
             if (ownerId && ownerId !== me.id) { id = { ...EMPTY_IDENTITY }; setSlot(slotKey, id); }
         } catch (e: any) {
-            if (e?.status === 403 || e?.status === 404) { id = { ...EMPTY_IDENTITY }; setSlot(slotKey, id); }
+            // A profile-attached app is still a valid update target even when
+            // Discord temporarily hides its metadata. Only discard a stale
+            // local id when the current profile did not just prove that this
+            // app belongs to the active account.
+            if ((e?.status === 403 || e?.status === 404) && !attachedWidgetSlots.has(id.appId)) {
+                id = { ...EMPTY_IDENTITY }; setSlot(slotKey, id);
+            }
+        }
+    }
+
+    // Reinstall/account recovery can recover the published app without
+    // recovering private game credentials. Never let an apparently normal
+    // Update click turn that missing draft into a blank Valorant/Fortnite
+    // publish; the gallery skin is already safe to apply locally.
+    if (SNOWFLAKE.test(id.appId)) {
+        const draft = settings.store as any;
+        const missingValorantDraft = slotKey === "valorant"
+            && (!String(draft.valRiotId ?? "").includes("#") || !String(draft.valApiKey ?? "").trim());
+        const missingFortniteDraft = slotKey === "fortnite"
+            && (!String(draft.fnIgn ?? "").trim() || !String(draft.fnApiKey ?? "").trim());
+        if (missingValorantDraft || missingFortniteDraft) {
+            const game = slotKey === "valorant" ? "Riot ID (Name#Tag) + HenrikDev key" : "Epic IGN + Fortnite API key";
+            toast(`Existing ${SLOT_LABEL[slotKey] ?? slotKey} widget recovered. Re-enter your ${game} before Update existing widget; changing the skin is already applied locally and will not erase the published card.`, Toasts.Type.MESSAGE, 10000);
+            return;
         }
     }
 
@@ -886,7 +966,7 @@ async function removeFromProfile(): Promise<void> {
     if (!id.appId) { toast("No widget to remove.", Toasts.Type.MESSAGE); return; }
     try {
         let widgets: any[] = [];
-        try { const prof = await apiGet(`/users/${me.id}/profile`); widgets = Array.isArray(prof?.widgets) ? prof.widgets : []; } catch { widgets = []; }
+        try { const prof = await apiGet(`/users/${me.id}/profile`); widgets = profileWidgetEntries(prof) ?? []; } catch { widgets = []; }
         await apiPut("/users/@me/widgets", { widgets: widgets.filter(w => w?.data?.application_id !== id.appId) });
         setSlot(slotKey, { ...EMPTY_IDENTITY }); // forget this slot so status resets
         toast("Widget removed from your profile board. (Your app stays in the Developer Portal — delete it there if you want.)", Toasts.Type.MESSAGE, 7000);
@@ -906,7 +986,7 @@ async function moveToTop(): Promise<void> {
     if (!me?.id || !SNOWFLAKE.test(id.appId)) { toast("Create this widget first.", Toasts.Type.FAILURE); return; }
     try {
         let widgets: any[] = [];
-        try { const prof = await apiGet(`/users/${me.id}/profile`); widgets = Array.isArray(prof?.widgets) ? prof.widgets : []; } catch { widgets = []; }
+        try { const prof = await apiGet(`/users/${me.id}/profile`); widgets = profileWidgetEntries(prof) ?? []; } catch { widgets = []; }
         const mine = widgets.filter(w => w?.data?.application_id === id.appId);
         if (!mine.length) { toast("This card isn't on your board yet — hit Create first.", Toasts.Type.FAILURE); return; }
         const rest = widgets.filter(w => w?.data?.application_id !== id.appId);
@@ -1321,12 +1401,73 @@ function profileWidgetApplicationId(widget: any): string {
     return candidates.map(value => String(value ?? "")).find(value => SNOWFLAKE.test(value)) ?? "";
 }
 
+function profileWidgetConfigId(widget: any): string {
+    const candidates = [
+        widget?.data?.config_id,
+        widget?.data?.configId,
+        widget?.config_id,
+        widget?.configId,
+        widget?.data?.application?.config_id,
+        widget?.data?.application?.configId
+    ];
+    return candidates.map(value => String(value ?? "")).find(value => SNOWFLAKE.test(value)) ?? "";
+}
+
 function inferWidgetSlot(application: any, fallback: string): string {
     const name = String(application?.name ?? application?.description ?? "").toLowerCase();
     if (/valorant|^val(?:\s|$)|riot/.test(name)) return "valorant";
     if (/fortnite|^fort(?:\s|$)|epic/.test(name)) return "fortnite";
-    if (Object.prototype.hasOwnProperty.call(slots.get(), "none")) return "none";
-    return fallback;
+    // Unknown app names are custom cards. Falling back to the currently open
+    // template used to put a recovered custom card into the Fortnite/Valorant
+    // slot and made the editor look blank when the picker changed.
+    // If Discord rejects application metadata, however, the current game
+    // template is the only useful clue and lets an existing Val/Fort card
+    // hydrate instead of forcing a duplicate create flow.
+    if (!name && (fallback === "valorant" || fallback === "fortnite")) return fallback;
+    return "none";
+}
+
+async function recoverAttachedWidgetIdentity(
+    slotKey: string,
+    appId: string,
+    configIdHint = ""
+): Promise<void> {
+    if (!SNOWFLAKE.test(appId)) return;
+    const current = getSlot(slotKey);
+    // Never replace a different locally-known app in the same slot. A user can
+    // have several cards on a board; only fill an empty slot or complete the
+    // exact app that is already mapped to it.
+    if (SNOWFLAKE.test(current.appId) && current.appId !== appId) return;
+
+    let configId = SNOWFLAKE.test(configIdHint) ? configIdHint : current.configId;
+    if (!SNOWFLAKE.test(configId)) {
+        try {
+            const list = await apiGet(`/applications/${appId}/widget-configs`);
+            const arr: any[] = Array.isArray(list) ? list : list?.configs ?? [];
+            const found = arr.map(item => String(item?.config_id ?? item?.configId ?? item?.id ?? ""))
+                .find(value => SNOWFLAKE.test(value));
+            if (found) configId = found;
+        } catch { /* a private/pre-GA app may hide config metadata */ }
+    }
+
+    let heroAssetKey = current.heroAssetKey;
+    if (!heroAssetKey) {
+        try {
+            const list = await apiGet(`/applications/${appId}/assets`);
+            const arr: any[] = Array.isArray(list) ? list : list?.assets ?? [];
+            heroAssetKey = arr.map(asset => String(asset?.key ?? asset?.name ?? ""))
+                .find(value => value.startsWith("hero")) ?? "";
+        } catch { /* republishConfig has its own best-effort asset recovery */ }
+    }
+
+    const next: WidgetIdentity = {
+        ...current,
+        appId,
+        configId: configId || current.configId,
+        heroAssetKey: heroAssetKey || current.heroAssetKey,
+        widgetStyle: current.widgetStyle ?? selectedWidgetPreset().id
+    };
+    if (JSON.stringify(next) !== JSON.stringify(current)) setSlot(slotKey, next);
 }
 
 async function refreshAttachedWidgetStyles(force = false): Promise<void> {
@@ -1344,9 +1485,10 @@ async function refreshAttachedWidgetStyles(force = false): Promise<void> {
             console.warn("[DMWidget] profile widget list missing; keeping the last attached skin map");
             return;
         }
-        const ids: string[] = Array.from(new Set<string>(widgets
-            .map(profileWidgetApplicationId)
-            .filter((id: string) => SNOWFLAKE.test(id))));
+        const entries = widgets
+            .map(widget => ({ widget, appId: profileWidgetApplicationId(widget), configId: profileWidgetConfigId(widget) }))
+            .filter(entry => SNOWFLAKE.test(entry.appId));
+        const ids: string[] = Array.from(new Set<string>(entries.map(entry => entry.appId)));
         const stored = new Map<string, string>();
         for (const [slotKey, identity] of Object.entries(slots.get())) {
             if (SNOWFLAKE.test(identity.appId)) stored.set(identity.appId, slotKey);
@@ -1360,6 +1502,8 @@ async function refreshAttachedWidgetStyles(force = false): Promise<void> {
                 try { application = await apiGet(`/applications/${appId}`); } catch { /* a private app may reject metadata */ }
                 slotKey = inferWidgetSlot(application, slotKeyOf());
             }
+            const entry = entries.find(item => item.appId === appId);
+            await recoverAttachedWidgetIdentity(slotKey, appId, entry?.configId ?? "");
             nextSlots.set(appId, slotKey);
             nextStyles.set(appId, presetForSlot(slotKey));
         }
@@ -1709,7 +1853,7 @@ function WidgetStylePicker() {
         if (localHeroUrl.current) URL.revokeObjectURL(localHeroUrl.current);
         localHeroUrl.current = "";
         setLocalHero(null);
-        void ensureSlots().then(async () => {
+        void ensureSlots().then(() => refreshAttachedWidgetStyles(true)).then(async () => {
             const slot = getSlot(template);
             const initial = template === initialSlotKey;
             const preset = WIDGET_STYLE_PRESETS.find(item => item.id === slot.widgetStyle)
@@ -2002,25 +2146,29 @@ function WidgetEditor() {
     const [busy, setBusy] = React.useState(false);
     const [, force] = React.useState(0);
     const live = settings.use(["appIconUrl", "heroImageUrl", "gameTemplate", "valHeroPreset", "fnHeroPreset"]);
-    React.useEffect(() => { ensureSlots().then(() => force(x => x + 1)); }, []);
     const slotKey = String(live.gameTemplate ?? "none") || "none";
-    const id = getSlot(slotKey);
-    const created = !!id.appId;
-    const previewHero = heroUrlFor(slotKey, id);
-    // Switching to an already-deployed slot loads ITS saved hero/icon into the
-    // editing buffer, so each widget shows its own image (guarded to not loop:
-    // only writes when the value actually differs). New/empty slots keep the
-    // current draft untouched.
     React.useEffect(() => {
-        ensureSlots().then(() => {
-            const s = getSlot(slotKey);
-            if (!s.appId) return;
-            if (s.heroImageUrl && s.heroImageUrl !== (settings.store as any).heroImageUrl) (settings.store as any).heroImageUrl = s.heroImageUrl;
-            if (s.appIconUrl !== (settings.store as any).appIconUrl) (settings.store as any).appIconUrl = s.appIconUrl;
-        });
+        let active = true;
+        void ensureSlots()
+            .then(() => refreshAttachedWidgetStyles(true))
+            .catch(error => console.warn("[DMWidget] widget editor recovery failed:", error))
+            .finally(() => {
+                if (!active) return;
+                const recovered = getSlot(slotKey);
+                const store = settings.store as any;
+                if (SNOWFLAKE.test(recovered.appId)) {
+                    if (recovered.heroImageUrl && recovered.heroImageUrl !== store.heroImageUrl) store.heroImageUrl = recovered.heroImageUrl;
+                    if (recovered.appIconUrl !== store.appIconUrl) store.appIconUrl = recovered.appIconUrl;
+                }
+                force(x => x + 1);
+            });
+        return () => { active = false; };
     }, [slotKey]);
+    const id = getSlot(slotKey);
+    const created = SNOWFLAKE.test(id.appId);
+    const previewHero = heroUrlFor(slotKey, id);
     // Summary of every deployed widget (so multi-widget is legible).
-    const allSlots = Object.entries(slots.get()).filter(([, v]) => !!v.appId).map(([k]) => SLOT_LABEL[k] ?? k);
+    const allSlots = Object.entries(slots.get()).filter(([, v]) => SNOWFLAKE.test(v.appId)).map(([k]) => SLOT_LABEL[k] ?? k);
 
     const run = async (fn: () => Promise<void>) => {
         setBusy(true);
@@ -2038,10 +2186,18 @@ function WidgetEditor() {
 
             <div style={{ fontSize: 13, color: "var(--text-muted)" }}>
                 Editing the <b style={{ color: "var(--text-normal)" }}>{SLOT_LABEL[slotKey] ?? slotKey}</b> widget:{" "}
-                {created ? <b style={{ color: "var(--text-normal)" }}>created ✓</b> : "not created yet"}
+                {created ? <b style={{ color: "var(--text-positive, #23a55a)" }}>existing widget recovered ✓</b> : "not linked to this Discord account yet"}
                 {created && <span> — app id <code>{id.appId}</code></span>}
                 {allSlots.length > 0 && <div style={{ marginTop: 3 }}>On your board: {allSlots.join(" · ")} — switch the <i>Game template</i> above to add/edit another.</div>}
             </div>
+
+            {created && live.gameTemplate === "valorant" && !String((settings.store as any).valRiotId ?? "").trim() && (
+                <div style={{ border: "1px solid var(--status-warning, #e6a817)", borderRadius: 8, padding: "8px 12px", fontSize: 12.5, lineHeight: 1.45, color: "var(--text-muted)" }}>
+                    <b style={{ color: "var(--text-normal)" }}>This widget was recovered from your profile.</b> Discord stores the published card,
+                    not your private Riot ID or HenrikDev API key, so those fields cannot be reconstructed after a reinstall or account switch.
+                    Re-enter them only if you want live Valorant stat refreshes; the existing widget and its skin can still be updated.
+                </div>
+            )}
 
             {(live.appIconUrl?.trim() || previewHero) && (
                 <div style={{ display: "flex", gap: 14, alignItems: "flex-end", flexWrap: "wrap" }}>
@@ -2071,7 +2227,7 @@ function WidgetEditor() {
             )}
 
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                <Button disabled={busy} onClick={() => run(deployWidget)}>{created ? "Update my widget" : "Create my widget"}</Button>
+                <Button disabled={busy} onClick={() => run(deployWidget)}>{created ? "Update existing widget" : "Create my widget"}</Button>
                 {created && (live.gameTemplate === "fortnite" || live.gameTemplate === "valorant") && (
                     <Button disabled={busy} color={Button.Colors.BRAND} onClick={() => run(() => refreshGame(true))}>Refresh {live.gameTemplate === "valorant" ? "Valorant" : "Fortnite"} stats now</Button>
                 )}
