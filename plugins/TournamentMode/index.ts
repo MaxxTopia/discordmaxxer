@@ -47,6 +47,7 @@ import { HotkeyPicker } from "../_dm-shared/HotkeyPicker";
 import { matchesHotkey, parseHotkey } from "../_dm-shared/hotkey";
 
 const HOTKEY_ID = "discordmaxxer.TournamentMode";
+const TOURNAMENT_MODE_EVENT = "discordmaxxer:tournament-mode-changed";
 
 let style: HTMLStyleElement;
 let active = false;
@@ -54,6 +55,23 @@ let hotkeyHandler: ((e: KeyboardEvent) => void) | null = null;
 let globalRegistered = false;
 let voiceSub: ((e: any) => void) | null = null;
 let pluginStarted = false;
+
+/**
+ * Keep cosmetic plugins on the same runtime truth as the performance mode.
+ * PlainSettings is persisted, so it can briefly describe the previous
+ * renderer session during an update/reload. The runtime mirror is reset on
+ * every plugin start and the event makes dependent renderers repaint
+ * immediately when the hotkey or Hub toggle changes state.
+ */
+function publishRuntimeState(): void {
+    try {
+        (globalThis as any).__dmTournamentModeActive = active;
+        window.dispatchEvent(new CustomEvent(TOURNAMENT_MODE_EVENT, { detail: { active } }));
+    } catch {
+        // Renderer teardown can race plugin shutdown; the persisted setting is
+        // still updated by setActive and the next start will publish again.
+    }
+}
 
 // Report voice-channel join/leave to the perf bridge. While Tournament Mode is
 // on, this keeps the renderer + GPU at full priority during a call/stream (the
@@ -183,6 +201,7 @@ async function syncNativePerf() {
 
 async function setActive(next: boolean) {
     active = next;
+    publishRuntimeState();
     if (style) style.textContent = active ? PERF_CSS : "";
     // Mirror to settings so the Hub's toggle button reflects current state
     // even when the user flipped via hotkey (not via the toggle).
@@ -271,6 +290,11 @@ export default definePlugin({
     async start() {
         style = createAndAppendStyle("dm-tournament-mode", managedStyleRootNode);
         pluginStarted = true;
+        // A previous renderer can have left the persisted mirror set to true
+        // even though this fresh plugin instance starts inactive. Establish a
+        // known runtime baseline before other plugins read it.
+        active = false;
+        publishRuntimeState();
 
         // Track voice-channel state so the perf bridge can protect renderer+GPU
         // priority during calls/streaming. Report the current state once (in case
@@ -301,6 +325,8 @@ export default definePlugin({
                     console.warn("[TournamentMode] startup perf-state reset failed:", e);
                 }
             }
+            try { settings.store.manuallyActive = false; } catch { /* settings not init */ }
+            publishRuntimeState();
         }
 
         await setupHotkey();
@@ -327,5 +353,6 @@ export default definePlugin({
         // session inactive (enabledOnStart=false) with a stale saved value —
         // otherwise the Hub toggle shows ON while the feature is OFF.
         try { settings.store.manuallyActive = false; } catch { /* settings not init */ }
+        publishRuntimeState();
     }
 });

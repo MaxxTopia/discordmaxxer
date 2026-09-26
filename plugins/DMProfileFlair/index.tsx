@@ -193,12 +193,17 @@ function toast(msg: string, type: any = Toasts.Type.SUCCESS, durationMs = 3000) 
     });
 }
 
-/** TournamentMode integration: read the plugin's manuallyActive flag through
- *  Vencord's plain-settings tree. TournamentMode is the only hard pause for
+const TOURNAMENT_MODE_EVENT = "discordmaxxer:tournament-mode-changed";
+
+/** TournamentMode integration: prefer the current runtime mirror, then fall
+ *  back to the plain-settings tree for compatibility with older clients.
+ *  TournamentMode is the only hard pause for
  *  animated content (banner videos + animated avatars) when the user is
  *  gaming. Windows/Discord reduced-motion preferences deliberately do not
  *  alter profile flair; users asked for the custom look to remain visible. */
 export function isTournamentModeActive(): boolean {
+    const runtime = (globalThis as any).__dmTournamentModeActive;
+    if (typeof runtime === "boolean") return runtime;
     return !!(globalThis as any).Vencord?.PlainSettings?.plugins?.TournamentMode?.manuallyActive;
 }
 
@@ -2754,6 +2759,7 @@ let observer: MutationObserver | null = null;
 let rescanTimer: number | null = null;
 let defaultAvatarWarned = false;
 let removeRosterListener: (() => void) | null = null;
+let removeTournamentModeListener: (() => void) | null = null;
 let lastAvatarSweepAt = 0;
 const AVATAR_SWEEP_INTERVAL_MS = 750;
 let lastRosterRefreshAt = 0;
@@ -3835,6 +3841,15 @@ export default definePlugin({
         // authenticated publish as the full Profile Flair editor.
         (globalThis as any).__dmApplyProfileGradient = applySharedGradient;
         removeRosterListener = onRosterChange(scheduleScan);
+        const onTournamentModeChanged = () => {
+            // Turning Tournament Mode off must restore animated media on an
+            // already-open profile immediately; waiting for the safety sweep
+            // made the feature look broken after an update/reload.
+            defaultAvatarWarned = false;
+            repaintProfileFlairNow();
+        };
+        window.addEventListener(TOURNAMENT_MODE_EVENT, onTournamentModeChanged);
+        removeTournamentModeListener = () => window.removeEventListener(TOURNAMENT_MODE_EVENT, onTournamentModeChanged);
         startObserver();
         // Restore remembered local files independently of the editor so a
         // restart/update does not leave the profile surface blank until the
@@ -3849,6 +3864,8 @@ export default definePlugin({
     stop() {
         removeRosterListener?.();
         removeRosterListener = null;
+        removeTournamentModeListener?.();
+        removeTournamentModeListener = null;
         stopObserver();
         clearLocalRenderMedia();
         style?.remove();

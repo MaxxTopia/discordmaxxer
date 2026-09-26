@@ -1258,6 +1258,7 @@ const widgetSkinRoots = new Map<HTMLElement, WidgetSkinSnapshot>();
 const widgetApplicationCache = new WeakMap<HTMLElement, { appId: string | null; checkedAt: number; }>();
 let widgetSkinStyleElement: HTMLStyleElement | null = null;
 let widgetSkinObserver: MutationObserver | null = null;
+let removeTournamentModeListener: (() => void) | null = null;
 let widgetSkinTimer: number | null = null;
 let widgetSkinFrame: number | null = null;
 let widgetSkinRescanTimer: number | null = null;
@@ -1273,10 +1274,51 @@ let attachedWidgetRefreshAt = 0;
 let attachedWidgetRefreshPromise: Promise<void> | null = null;
 const ATTACHED_WIDGET_REFRESH_INTERVAL_MS = 30_000;
 
+function selectedWidgetPreset(): WidgetStylePreset {
+    return WIDGET_STYLE_PRESETS.find(item => item.id === String((settings.store as any).widgetStyle ?? ""))
+        ?? WIDGET_STYLE_PRESETS[0];
+}
+
 function presetForSlot(slotKey: string): WidgetStylePreset {
     const slot = getSlot(slotKey);
     return WIDGET_STYLE_PRESETS.find(item => item.id === slot.widgetStyle)
-        ?? WIDGET_STYLE_PRESETS[0];
+        // If an update left the per-slot DataStore entry behind, the global
+        // gallery selection is still a useful recovery style. This keeps a
+        // published card visibly skinned instead of silently falling back to
+        // plain Discord until the user opens the editor again.
+        ?? selectedWidgetPreset();
+}
+
+function profileWidgetEntries(profile: any): any[] | null {
+    const candidates = [
+        profile?.widgets,
+        profile?.user_profile?.widgets,
+        profile?.user?.profile?.widgets,
+        profile?.profile?.widgets,
+        profile?.data?.widgets
+    ];
+    // Prefer a populated list when Discord exposes both a stale/empty
+    // top-level field and the current nested profile field. Falling back to
+    // an empty array is still useful for a genuine no-widgets response.
+    return candidates.find((value) => Array.isArray(value) && value.length > 0)
+      ?? candidates.find(Array.isArray)
+      ?? null;
+}
+
+function profileWidgetApplicationId(widget: any): string {
+    const candidates = [
+        widget?.data?.application_id,
+        widget?.data?.applicationId,
+        widget?.application_id,
+        widget?.applicationId,
+        widget?.data?.application?.id,
+        widget?.data?.application?.application_id,
+        widget?.data?.application?.applicationId,
+        widget?.application?.id,
+        widget?.application?.application_id,
+        widget?.application?.applicationId
+    ];
+    return candidates.map(value => String(value ?? "")).find(value => SNOWFLAKE.test(value)) ?? "";
 }
 
 function inferWidgetSlot(application: any, fallback: string): string {
@@ -1297,8 +1339,13 @@ async function refreshAttachedWidgetStyles(force = false): Promise<void> {
         const me = UserStore.getCurrentUser();
         if (!me?.id) return;
         const profile = await apiGet(`/users/${me.id}/profile`);
-        const ids: string[] = Array.from(new Set<string>((Array.isArray(profile?.widgets) ? profile.widgets : [])
-            .map((widget: any) => String(widget?.data?.application_id ?? ""))
+        const widgets = profileWidgetEntries(profile);
+        if (!widgets) {
+            console.warn("[DMWidget] profile widget list missing; keeping the last attached skin map");
+            return;
+        }
+        const ids: string[] = Array.from(new Set<string>(widgets
+            .map(profileWidgetApplicationId)
             .filter((id: string) => SNOWFLAKE.test(id))));
         const stored = new Map<string, string>();
         for (const [slotKey, identity] of Object.entries(slots.get())) {
@@ -1346,7 +1393,10 @@ function knownWidgetStyles(): Map<string, WidgetStylePreset> {
     for (const [slotKey, identity] of Object.entries(slots.get())) {
         if (!SNOWFLAKE.test(identity.appId)) continue;
         const preset = WIDGET_STYLE_PRESETS.find(item => item.id === identity.widgetStyle) ?? WIDGET_STYLE_PRESETS[0];
-        out.set(identity.appId, preset);
+        // The reconciled profile map knows which app is actually attached and
+        // can carry the gallery fallback after an update. Do not overwrite it
+        // with an older slot default.
+        if (!out.has(identity.appId)) out.set(identity.appId, preset);
         // Keep the slot key in the attribute contract for diagnostics without
         // adding another style rule; app IDs remain the source of truth.
         void slotKey;
@@ -1574,6 +1624,9 @@ function startWidgetSkinRenderer(): void {
     widgetSkinStyleElement.textContent = WIDGET_CLIENT_SKIN_CSS;
     (document.head || document.documentElement).appendChild(widgetSkinStyleElement);
     document.addEventListener("visibilitychange", onWidgetSkinVisibilityChange);
+    const onTournamentModeChanged = () => scheduleWidgetSkinScan();
+    window.addEventListener("discordmaxxer:tournament-mode-changed", onTournamentModeChanged);
+    removeTournamentModeListener = () => window.removeEventListener("discordmaxxer:tournament-mode-changed", onTournamentModeChanged);
     const attach = () => {
         if (run !== widgetSkinRun || !document.body || widgetSkinObserver) return;
         widgetSkinObserver = new MutationObserver(records => {
@@ -1589,6 +1642,8 @@ function startWidgetSkinRenderer(): void {
 function stopWidgetSkinRenderer(): void {
     widgetSkinRun++;
     document.removeEventListener("visibilitychange", onWidgetSkinVisibilityChange);
+    removeTournamentModeListener?.();
+    removeTournamentModeListener = null;
     widgetSkinObserver?.disconnect();
     widgetSkinObserver = null;
     if (widgetSkinTimer !== null) { clearTimeout(widgetSkinTimer); widgetSkinTimer = null; }
@@ -1608,6 +1663,8 @@ function onWidgetSkinVisibilityChange(): void {
 }
 
 function isWidgetPreviewMotionPaused(): boolean {
+    const runtime = (globalThis as any).__dmTournamentModeActive;
+    if (typeof runtime === "boolean") return runtime;
     return (globalThis as any).Vencord?.PlainSettings?.plugins?.TournamentMode?.manuallyActive === true;
 }
 
