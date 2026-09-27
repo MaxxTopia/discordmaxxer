@@ -78,11 +78,12 @@ interface WidgetIdentity {
     peakIconKey: string;  // uploaded rank-badge asset for the peak-rank stat cell
     peakIconName: string;
     widgetStyle?: string;
+    widgetStyleSource?: "local" | "remote" | "default";
     topLayout?: "hero" | "contained";
     bottomLayout?: "stats" | "progress";
 }
 const EMPTY_IDENTITY: WidgetIdentity = { appId: "", configId: "", heroAssetKey: "", heroImageUrl: "", appIconUrl: "", rankIconKey: "", rankIconName: "", peakIconKey: "", peakIconName: "" };
-const parseId = (raw: any): WidgetIdentity => ({ appId: String(raw?.appId ?? ""), configId: String(raw?.configId ?? ""), heroAssetKey: String(raw?.heroAssetKey ?? ""), heroImageUrl: String(raw?.heroImageUrl ?? ""), appIconUrl: String(raw?.appIconUrl ?? ""), rankIconKey: String(raw?.rankIconKey ?? ""), rankIconName: String(raw?.rankIconName ?? ""), peakIconKey: String(raw?.peakIconKey ?? ""), peakIconName: String(raw?.peakIconName ?? ""), widgetStyle: typeof raw?.widgetStyle === "string" ? raw.widgetStyle : undefined, topLayout: raw?.topLayout === "hero" || raw?.topLayout === "contained" ? raw.topLayout : undefined, bottomLayout: raw?.bottomLayout === "stats" || raw?.bottomLayout === "progress" ? raw.bottomLayout : undefined });
+const parseId = (raw: any): WidgetIdentity => ({ appId: String(raw?.appId ?? ""), configId: String(raw?.configId ?? ""), heroAssetKey: String(raw?.heroAssetKey ?? ""), heroImageUrl: String(raw?.heroImageUrl ?? ""), appIconUrl: String(raw?.appIconUrl ?? ""), rankIconKey: String(raw?.rankIconKey ?? ""), rankIconName: String(raw?.rankIconName ?? ""), peakIconKey: String(raw?.peakIconKey ?? ""), peakIconName: String(raw?.peakIconName ?? ""), widgetStyle: typeof raw?.widgetStyle === "string" ? raw.widgetStyle : undefined, widgetStyleSource: raw?.widgetStyleSource === "local" || raw?.widgetStyleSource === "remote" || raw?.widgetStyleSource === "default" ? raw.widgetStyleSource : undefined, topLayout: raw?.topLayout === "hero" || raw?.topLayout === "contained" ? raw.topLayout : undefined, bottomLayout: raw?.bottomLayout === "stats" || raw?.bottomLayout === "progress" ? raw.bottomLayout : undefined });
 
 // Discord keeps the published widget config remotely, while DMWidget's
 // editor draft (including game IDs and keys) is local. Keep a small, safe
@@ -739,6 +740,24 @@ async function republishConfig(slotKey: string): Promise<string | null> {
 
 let widgetStylePublishSerial = 0;
 
+async function syncRemoteWidgetStyle(slotKey: string): Promise<boolean> {
+    const id = getSlot(slotKey);
+    if (!SNOWFLAKE.test(id.appId)) return false;
+    try {
+        const application = await apiGet(`/applications/${id.appId}`);
+        if (!application || !Object.prototype.hasOwnProperty.call(application, "description")) return false;
+        const currentDescription = typeof application.description === "string" ? application.description : "";
+        const preset = WIDGET_STYLE_PRESETS.find(item => item.id === id.widgetStyle) ?? selectedWidgetPreset();
+        const description = remoteWidgetDescriptionFor(currentDescription, preset);
+        if (!description) return false;
+        if (description !== currentDescription) await apiPatch(`/applications/${id.appId}`, { description });
+        return true;
+    } catch (error) {
+        console.warn("[DMWidget] cross-install widget skin sync failed:", error);
+        return false;
+    }
+}
+
 async function republishSelectedWidgetStyle(slotKey: string): Promise<void> {
     const request = ++widgetStylePublishSerial;
     await ensureSlots();
@@ -759,9 +778,12 @@ async function republishSelectedWidgetStyle(slotKey: string): Promise<void> {
     // recovered above, so the renderer can apply the skin immediately. The
     // deliberate Update action remains the place where supported card fields
     // are sent to Discord after the user reviews the recovered form.
+    const synced = await syncRemoteWidgetStyle(slotKey);
     if (request !== widgetStylePublishSerial) return;
     scheduleWidgetSkinScan();
-    toast(`${SLOT_LABEL[slotKey] ?? slotKey} skin applied to your existing widget in Discordmaxxer. Your published card was left unchanged; review the fields before choosing Update existing widget.`, Toasts.Type.SUCCESS, 8000);
+    toast(synced
+        ? `${SLOT_LABEL[slotKey] ?? slotKey} skin applied in Discordmaxxer and synced to this widget for your other Discordmaxxer installs. Your published card was left unchanged.`
+        : `${SLOT_LABEL[slotKey] ?? slotKey} skin applied in Discordmaxxer on this PC. Cross-install sync was unavailable, so your published card was left unchanged.`, Toasts.Type.SUCCESS, 8500);
 }
 
 // Fetch a specific game slot's live stats (native, no CORS) and re-publish it.
@@ -1109,14 +1131,16 @@ function importConfig(code: string): string | null {
         for (const key of Object.keys(media)) {
             const m = media[key] || {};
             const existing = getSlot(key);
+            let importedStyle = false;
             const next: WidgetIdentity = {
                 ...existing,
                 heroImageUrl: String(m.heroImageUrl ?? existing.heroImageUrl ?? ""),
                 appIconUrl: String(m.appIconUrl ?? existing.appIconUrl ?? "")
             };
-            if (typeof m.widgetStyle === "string" && WIDGET_STYLE_PRESETS.some(preset => preset.id === m.widgetStyle)) next.widgetStyle = m.widgetStyle;
-            if (m.topLayout === "hero" || m.topLayout === "contained") next.topLayout = m.topLayout;
-            if (m.bottomLayout === "stats" || m.bottomLayout === "progress") next.bottomLayout = m.bottomLayout;
+            if (typeof m.widgetStyle === "string" && WIDGET_STYLE_PRESETS.some(preset => preset.id === m.widgetStyle)) { next.widgetStyle = m.widgetStyle; importedStyle = true; }
+            if (m.topLayout === "hero" || m.topLayout === "contained") { next.topLayout = m.topLayout; importedStyle = true; }
+            if (m.bottomLayout === "stats" || m.bottomLayout === "progress") { next.bottomLayout = m.bottomLayout; importedStyle = true; }
+            if (importedStyle) next.widgetStyleSource = "local";
             setSlot(key, next);
             n++;
         }
@@ -1197,6 +1221,39 @@ const WIDGET_STYLE_PRESETS: WidgetStylePreset[] = [
     { id: "pixelOverdrive", name: "Vesper Hunt", mood: "Midnight / lantern chase", glyph: "✶", accent: "#ff6a8f", secondary: "#ffd36a", surface: "#0c0d1a", topLayout: "contained", bottomLayout: "stats", motion: "pursuit", frame: "nocturne", ornament: "fang" },
     { id: "solarFlare", name: "Solar Cathedral", mood: "Noon king / radiant", glyph: "☼", accent: "#ffe3a0", secondary: "#f06b4d", surface: "#24100d", topLayout: "hero", bottomLayout: "stats", motion: "solar", frame: "halo", ornament: "flare" }
 ];
+
+// A skin is rendered by Discordmaxxer, not by Discord's native widget card.
+// Keep a compact marker on the self-owned application so another Discordmaxxer
+// install can recover the same choice without rewriting the published card.
+const REMOTE_WIDGET_STYLE_RE = /\[DMWSTYLE1:([A-Za-z0-9+/=_-]+)\]/;
+const REMOTE_WIDGET_STYLE_ALL_RE = /\[DMWSTYLE1:[A-Za-z0-9+/=_-]+\]/g;
+
+function remoteWidgetStyleFromApplication(application: any): { style: string; topLayout: "hero" | "contained"; bottomLayout: "stats" | "progress"; } | null {
+    const match = String(application?.description ?? "").match(REMOTE_WIDGET_STYLE_RE);
+    if (!match) return null;
+    try {
+        const raw = JSON.parse(b64decode(match[1]));
+        if (!raw || typeof raw !== "object") return null;
+        if (typeof raw.style !== "string" || !WIDGET_STYLE_PRESETS.some(preset => preset.id === raw.style)) return null;
+        const preset = WIDGET_STYLE_PRESETS.find(item => item.id === raw.style) ?? WIDGET_STYLE_PRESETS[0];
+        return {
+            style: raw.style,
+            topLayout: raw.topLayout === "hero" || raw.topLayout === "contained" ? raw.topLayout : preset.topLayout,
+            bottomLayout: raw.bottomLayout === "stats" || raw.bottomLayout === "progress" ? raw.bottomLayout : preset.bottomLayout
+        };
+    } catch {
+        return null;
+    }
+}
+
+function remoteWidgetDescriptionFor(description: unknown, preset: WidgetStylePreset): string | null {
+    const base = String(description ?? "").replace(REMOTE_WIDGET_STYLE_ALL_RE, "").replace(/\s+$/, "");
+    const marker = `[DMWSTYLE1:${b64encode(JSON.stringify({ v: 1, style: preset.id, topLayout: preset.topLayout, bottomLayout: preset.bottomLayout }))}]`;
+    const next = base ? `${base}\n\n${marker}` : marker;
+    // Discord caps application descriptions. Never replace a user's existing
+    // description with a truncated value just to sync a cosmetic preference.
+    return next.length <= 4000 ? next : null;
+}
 
 const WIDGET_PREVIEW_MOTION_CSS = `
 @keyframes dm-widget-preview-scan { from { transform: translateY(-70%); } to { transform: translateY(280%); } }
@@ -1383,6 +1440,7 @@ const attachedWidgetStyles = new Map<string, WidgetStylePreset>();
 const attachedWidgetSlots = new Map<string, string>();
 let attachedWidgetRefreshAt = 0;
 let attachedWidgetRefreshPromise: Promise<void> | null = null;
+let widgetStyleRefreshTimer: number | null = null;
 const ATTACHED_WIDGET_REFRESH_INTERVAL_MS = 30_000;
 
 function selectedWidgetPreset(): WidgetStylePreset {
@@ -1639,7 +1697,8 @@ async function recoverAttachedWidgetIdentity(
         appId,
         configId: configId || current.configId,
         heroAssetKey: heroAssetKey || current.heroAssetKey,
-        widgetStyle: current.widgetStyle ?? selectedWidgetPreset().id
+        widgetStyle: current.widgetStyle ?? selectedWidgetPreset().id,
+        widgetStyleSource: current.widgetStyleSource ?? "default"
     };
     if (JSON.stringify(next) !== JSON.stringify(current)) setSlot(slotKey, next);
 }
@@ -1672,12 +1731,18 @@ async function refreshAttachedWidgetStyles(force = false): Promise<void> {
         for (const appId of ids) {
             let slotKey = stored.get(appId) ?? "";
             let application: any = null;
-            if (!slotKey) {
-                try { application = await apiGet(`/applications/${appId}`); } catch { /* a private app may reject metadata */ }
-                slotKey = inferWidgetSlot(application, slotKeyOf());
-            }
+            try { application = await apiGet(`/applications/${appId}`); } catch { /* a private app may reject metadata */ }
+            if (!slotKey) slotKey = inferWidgetSlot(application, slotKeyOf());
             const entry = entries.find(item => item.appId === appId);
             await recoverAttachedWidgetIdentity(slotKey, appId, entry?.configId ?? "");
+            const remoteStyle = remoteWidgetStyleFromApplication(application);
+            const current = getSlot(slotKey);
+            // A deliberate choice on this install wins. An older slot without a
+            // source marker is eligible for recovery from the owning app.
+            if (remoteStyle && current.widgetStyleSource !== "local") {
+                const next = { ...current, widgetStyle: remoteStyle.style, widgetStyleSource: "remote" as const, topLayout: remoteStyle.topLayout, bottomLayout: remoteStyle.bottomLayout };
+                if (JSON.stringify(next) !== JSON.stringify(current)) setSlot(slotKey, next);
+            }
             nextSlots.set(appId, slotKey);
             nextStyles.set(appId, presetForSlot(slotKey));
         }
@@ -2104,7 +2169,7 @@ function WidgetStylePicker() {
         // Discordmaxxer card keeps the selected preset's progress/stats intent
         // so switching templates never silently strips an attribute.
         const nextBottomLayout = preset.bottomLayout;
-        setSlot(template, { ...current, widgetStyle: preset.id, topLayout: preset.topLayout, bottomLayout: nextBottomLayout });
+        setSlot(template, { ...current, widgetStyle: preset.id, widgetStyleSource: "local", topLayout: preset.topLayout, bottomLayout: nextBottomLayout });
         store.widgetStyle = preset.id;
         store.topLayout = preset.topLayout;
         store.bottomLayout = nextBottomLayout;
@@ -2416,6 +2481,7 @@ function WidgetEditor() {
                 {created ? <b style={{ color: "var(--text-positive, #23a55a)" }}>existing widget recovered ✓</b> : "not linked to this Discord account yet"}
                 {created && <span> — app id <code>{id.appId}</code></span>}
                 {allSlots.length > 0 && <div style={{ marginTop: 3 }}>On your board: {allSlots.join(" · ")} — switch the <i>Game template</i> above to add/edit another.</div>}
+                {created && <div style={{ marginTop: 3 }}>Skin/layout choices are Discordmaxxer-only. Apply skin syncs a small marker to this owned widget app so your other Discordmaxxer installs can recover it; the native published card stays unchanged.</div>}
             </div>
 
             {recoveryNote && (
@@ -2676,6 +2742,7 @@ export default definePlugin({
             scheduleWidgetSkinScan();
             await refreshAttachedWidgetStyles(true);
         });
+        widgetStyleRefreshTimer = window.setInterval(() => { void refreshAttachedWidgetStyles(); }, ATTACHED_WIDGET_REFRESH_INTERVAL_MS);
         setTimeout(() => { refreshAllGames(); }, 20_000);
         fnRefreshTimer = setInterval(() => { refreshAllGames(); }, 30 * 60_000);
         // Let DMHub (or any surface) trigger a manual stats refresh — mirrors the
@@ -2695,6 +2762,7 @@ export default definePlugin({
     },
     stop() {
         stopWidgetSkinRenderer();
+        if (widgetStyleRefreshTimer !== null) { clearInterval(widgetStyleRefreshTimer); widgetStyleRefreshTimer = null; }
         if (fnRefreshTimer) { clearInterval(fnRefreshTimer); fnRefreshTimer = null; }
         delete (globalThis as any).__dmWidgetRefresh;
         delete (globalThis as any).__dmWidgetReskin;
