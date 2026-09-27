@@ -2062,6 +2062,8 @@ function WidgetStylePicker() {
     const selected = WIDGET_STYLE_PRESETS.find(preset => preset.id === slot.widgetStyle)
         ?? WIDGET_STYLE_PRESETS.find(preset => preset.id === fallbackStyle)
         ?? WIDGET_STYLE_PRESETS[0];
+    const existingWidget = SNOWFLAKE.test(slot.appId)
+        || Array.from(attachedWidgetSlots.entries()).some(([appId, slotKey]) => slotKey === template && SNOWFLAKE.test(appId));
     const topLayout = live.topLayout === "contained" ? "contained" : live.topLayout === "hero" ? "hero" : slot.topLayout ?? selected.topLayout;
     const bottomLayout = live.bottomLayout === "progress" ? "progress" : live.bottomLayout === "stats" ? "stats" : slot.bottomLayout ?? selected.bottomLayout;
     const previewHero = localHero?.slotKey === template ? localHero.url : heroUrlFor(template, slot);
@@ -2161,6 +2163,9 @@ function WidgetStylePicker() {
             <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
                 <div style={{ fontSize: 14, fontWeight: 800, letterSpacing: ".01em" }}>✦ Choose a widget skin</div>
                 <span style={{ fontSize: 11, color: selected.accent }}>{SLOT_LABEL[template] ?? template} · {selected.name}</span>
+            </div>
+            <div style={{ marginTop: 8, padding: "8px 10px", borderRadius: 8, border: `1px solid ${existingWidget ? "rgba(35,165,90,.55)" : "rgba(255,255,255,.12)"}`, background: existingWidget ? "rgba(35,165,90,.10)" : "rgba(0,0,0,.14)", fontSize: 11.5, lineHeight: 1.45, color: "#c9ced9" }}>
+                {existingWidget ? <><b style={{ color: "#7ee2a8" }}>Existing widget found.</b> Choose a skin and it applies to this widget in Discordmaxxer immediately — no Riot ID, Name#Tag, or HenrikDev key is needed. Updating the published card's stats/content is a separate action below.</> : <>For a widget already on your profile, skin selection is local to Discordmaxxer and does not need game credentials. New game cards only need credentials when you want live stats.</>}
             </div>
             <div style={{ margin: "10px 0 12px", padding: 10, borderRadius: 9, border: "1px solid rgba(255,255,255,.12)", background: "rgba(0,0,0,.14)" }}>
                 <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
@@ -2319,9 +2324,16 @@ function WidgetStylePicker() {
 function WidgetEditor() {
     const [busy, setBusy] = React.useState(false);
     const [recoveryNote, setRecoveryNote] = React.useState("");
+    const [showPrivateCredentials, setShowPrivateCredentials] = React.useState(false);
     const [, force] = React.useState(0);
-    const live = settings.use(["appIconUrl", "heroImageUrl", "gameTemplate", "valHeroPreset", "fnHeroPreset"]);
+    const live = settings.use([
+        "appIconUrl", "heroImageUrl", "gameTemplate", "valHeroPreset", "fnHeroPreset",
+        "valRiotId", "valApiKey", "fnIgn", "fnApiKey"
+    ]);
     const slotKey = String(live.gameTemplate ?? "none") || "none";
+    const id = getSlot(slotKey);
+    const created = SNOWFLAKE.test(id.appId);
+    const isGameWidget = slotKey === "valorant" || slotKey === "fortnite";
     React.useEffect(() => {
         let active = true;
         setRecoveryNote("");
@@ -2366,8 +2378,11 @@ function WidgetEditor() {
         });
         return () => { active = false; };
     }, [slotKey]);
-    const id = getSlot(slotKey);
-    const created = SNOWFLAKE.test(id.appId);
+    React.useEffect(() => {
+        // A recovered widget starts in skin-only mode. A new game widget starts
+        // with its live-stat fields visible so the first publish is obvious.
+        setShowPrivateCredentials(!created);
+    }, [slotKey, created]);
     const privateCredentialsMissing = created && privateCredentialsMissingForSlot(slotKey);
     const privateCredentialLabel = slotKey === "valorant"
         ? "Riot ID (Name#Tag) and HenrikDev key"
@@ -2375,6 +2390,10 @@ function WidgetEditor() {
             ? "Epic IGN and Fortnite API key"
             : "private game credentials";
     const previewHero = heroUrlFor(slotKey, id);
+    const credentialInputStyle: React.CSSProperties = {
+        width: "100%", boxSizing: "border-box", border: "1px solid var(--background-modifier-accent)",
+        borderRadius: 6, background: "var(--background-secondary)", color: "var(--text-normal)", padding: "7px 9px", fontSize: 13
+    };
     // Summary of every deployed widget (so multi-widget is legible).
     const allSlots = Object.entries(slots.get()).filter(([, v]) => SNOWFLAKE.test(v.appId)).map(([k]) => SLOT_LABEL[k] ?? k);
 
@@ -2440,15 +2459,52 @@ function WidgetEditor() {
                 </div>
             )}
 
+            {isGameWidget && created && !showPrivateCredentials && (
+                <div style={{ border: "1px solid var(--background-modifier-accent)", borderRadius: 8, padding: "8px 12px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap", fontSize: 12.5, lineHeight: 1.45, color: "var(--text-muted)" }}>
+                    <span><b style={{ color: "var(--text-normal)" }}>Skin-only mode is active.</b> Your existing card can be styled without private game credentials.</span>
+                    <Button size={Button.Sizes.SMALL} color={Button.Colors.PRIMARY} disabled={busy} onClick={() => setShowPrivateCredentials(true)}>Edit live stats/content</Button>
+                </div>
+            )}
+
+            {isGameWidget && (!created || showPrivateCredentials) && (
+                <div style={{ border: "1px solid var(--background-modifier-accent)", borderRadius: 8, padding: "10px 12px", display: "flex", flexDirection: "column", gap: 8 }}>
+                    <div style={{ fontSize: 12.5, lineHeight: 1.45, color: "var(--text-muted)" }}>
+                        <b style={{ color: "var(--text-normal)" }}>{slotKey === "valorant" ? "Valorant live-stat credentials" : "Fortnite live-stat credentials"}</b> — optional for skin-only styling; needed only to fetch live stats or publish a card-content update. These values stay on this PC.
+                    </div>
+                    {slotKey === "valorant" ? <>
+                        <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12, color: "var(--text-muted)" }}>
+                            Riot ID (Name#Tag)
+                            <input aria-label="Riot ID Name Tag" value={String(live.valRiotId ?? "")} placeholder="Diggy#NA1" style={credentialInputStyle} onChange={event => { (settings.store as any).valRiotId = event.currentTarget.value; force(value => value + 1); }} />
+                        </label>
+                        <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12, color: "var(--text-muted)" }}>
+                            HenrikDev API key
+                            <input aria-label="HenrikDev API key" type="password" autoComplete="off" value={String(live.valApiKey ?? "")} placeholder="Paste your HenrikDev key" style={credentialInputStyle} onChange={event => { (settings.store as any).valApiKey = event.currentTarget.value; force(value => value + 1); }} />
+                        </label>
+                    </> : <>
+                        <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12, color: "var(--text-muted)" }}>
+                            Epic display name
+                            <input aria-label="Epic display name" value={String(live.fnIgn ?? "")} placeholder="Your exact Epic username" style={credentialInputStyle} onChange={event => { (settings.store as any).fnIgn = event.currentTarget.value; force(value => value + 1); }} />
+                        </label>
+                        <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12, color: "var(--text-muted)" }}>
+                            Fortnite API key
+                            <input aria-label="Fortnite API key" type="password" autoComplete="off" value={String(live.fnApiKey ?? "")} placeholder="Paste your fortnite-api.com key" style={credentialInputStyle} onChange={event => { (settings.store as any).fnApiKey = event.currentTarget.value; force(value => value + 1); }} />
+                        </label>
+                    </>}
+                    {created && <Button size={Button.Sizes.SMALL} color={Button.Colors.PRIMARY} disabled={busy} onClick={() => setShowPrivateCredentials(false)}>Hide private fields</Button>}
+                </div>
+            )}
+
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                <Button disabled={busy} onClick={() => run(deployWidget)}>{created ? "Update existing widget" : "Create my widget"}</Button>
-                {privateCredentialsMissing && (
+                {created ? <>
                     <Button disabled={busy} color={Button.Colors.BRAND} onClick={() => run(() => republishSelectedWidgetStyle(slotKey))}>
-                        Apply skin in Discordmaxxer
+                        Apply skin to existing widget
                     </Button>
-                )}
+                    <Button disabled={busy || (isGameWidget && privateCredentialsMissing)} onClick={() => run(deployWidget)}>
+                        {isGameWidget && privateCredentialsMissing ? "Update card content (credentials needed)" : "Update widget content"}
+                    </Button>
+                </> : <Button disabled={busy} onClick={() => run(deployWidget)}>Create my widget</Button>}
                 {created && (live.gameTemplate === "fortnite" || live.gameTemplate === "valorant") && (
-                    <Button disabled={busy} color={Button.Colors.BRAND} onClick={() => run(() => refreshGame(true))}>Refresh {live.gameTemplate === "valorant" ? "Valorant" : "Fortnite"} stats now</Button>
+                    <Button disabled={busy || privateCredentialsMissing} color={Button.Colors.BRAND} onClick={() => run(() => refreshGame(true))}>{privateCredentialsMissing ? "Refresh stats (credentials needed)" : `Refresh ${live.gameTemplate === "valorant" ? "Valorant" : "Fortnite"} stats now`}</Button>
                 )}
                 {created && <Button disabled={busy} onClick={() => run(moveToTop)}>Move to top</Button>}
                 {created && <Button disabled={busy} color={Button.Colors.RED} onClick={() => run(removeFromProfile)}>Remove from profile</Button>}
@@ -2500,8 +2556,11 @@ const settings = definePluginSettings({
         hidden() { return true; },
         options: WIDGET_STYLE_PRESETS.map((preset, index) => ({ label: preset.name, value: preset.id, default: index === 0 }))
     },
-    fnIgn: { type: OptionType.STRING, description: "Your exact Fortnite (Epic) username - capitals, spaces and symbols must match. Your Fortnite career stats must be set to Public in-game.", default: "", hidden() { return (this.store as any).gameTemplate !== "fortnite"; } },
-    fnApiKey: { type: OptionType.STRING, description: "Your free Fortnite stats key from fortnite-api.com (sign in with Discord at dash.fortnite-api.com). Stays on your PC; treat it like a password.", default: "", hidden() { return (this.store as any).gameTemplate !== "fortnite"; } },
+    // These are rendered in WidgetEditor so a recovered widget opens in
+    // credential-free skin mode. The fields remain in settings.store for live
+    // stats and content updates, but are never required to apply a skin.
+    fnIgn: { type: OptionType.STRING, description: "Optional for an existing widget; only used for Fortnite live stats/content updates.", default: "", hidden() { return true; } },
+    fnApiKey: { type: OptionType.STRING, description: "Optional for an existing widget; only used for Fortnite live stats/content updates. Stays on this PC.", default: "", hidden() { return true; } },
     fnAccountType: {
         type: OptionType.SELECT,
         description: "Which platform your Epic account mainly signs in through.",
@@ -2526,8 +2585,8 @@ const settings = definePluginSettings({
     fnEarnings: { type: OptionType.STRING, description: "Your total earnings to show, e.g. '$8,500'. Leave '$0' if none. (Typed in.)", default: "$0", hidden() { return (this.store as any).gameTemplate !== "fortnite"; } },
     fnChapterSeason: { type: OptionType.STRING, description: "Chapter/season shown in the small header, e.g. 'Ch 6 S3'. Leave blank for just 'Fn'.", default: "", hidden() { return (this.store as any).gameTemplate !== "fortnite"; } },
     fnTopPlacement: { type: OptionType.STRING, description: "Best tournament finish to show, e.g. '15th LCQ'. Leave blank to skip.", default: "", hidden() { return (this.store as any).gameTemplate !== "fortnite"; } },
-    valRiotId: { type: OptionType.STRING, description: "Your Valorant Riot ID as Name#Tag, e.g. 'Diggy#NA1'.", default: "", hidden() { return (this.store as any).gameTemplate !== "valorant"; } },
-    valApiKey: { type: OptionType.STRING, description: "Your free HenrikDev Valorant key (get it in the HenrikDev Discord). Stays on your PC; treat it like a password.", default: "", hidden() { return (this.store as any).gameTemplate !== "valorant"; } },
+    valRiotId: { type: OptionType.STRING, description: "Optional for an existing widget; only used for Valorant live stats/content updates.", default: "", hidden() { return true; } },
+    valApiKey: { type: OptionType.STRING, description: "Optional for an existing widget; only used for Valorant live stats/content updates. Stays on this PC.", default: "", hidden() { return true; } },
     valRegion: {
         type: OptionType.SELECT,
         description: "Your Valorant account region.",
