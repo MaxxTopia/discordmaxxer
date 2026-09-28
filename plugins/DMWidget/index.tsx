@@ -1423,7 +1423,8 @@ const WIDGET_SKIN_ATTRS = [
 ];
 const WIDGET_SKIN_VARS = ["--dmw-skin-accent", "--dmw-skin-secondary", "--dmw-skin-surface"];
 const widgetSkinRoots = new Map<HTMLElement, WidgetSkinSnapshot>();
-const widgetApplicationCache = new WeakMap<HTMLElement, { appId: string | null; checkedAt: number; }>();
+type WidgetCardMatch = { appId: string; root: HTMLElement; };
+const widgetApplicationCache = new WeakMap<HTMLElement, { match: WidgetCardMatch | null; checkedAt: number; }>();
 let widgetSkinStyleElement: HTMLStyleElement | null = null;
 let widgetSkinObserver: MutationObserver | null = null;
 let removeTournamentModeListener: (() => void) | null = null;
@@ -1438,6 +1439,7 @@ let widgetSkinRun = 0;
 // slot's selected design before scanning visible cards.
 const attachedWidgetStyles = new Map<string, WidgetStylePreset>();
 const attachedWidgetSlots = new Map<string, string>();
+const attachedWidgetHints = new Map<string, string[]>();
 let attachedWidgetRefreshAt = 0;
 let attachedWidgetRefreshPromise: Promise<void> | null = null;
 let widgetStyleRefreshTimer: number | null = null;
@@ -1728,6 +1730,7 @@ async function refreshAttachedWidgetStyles(force = false): Promise<void> {
         }
         const nextStyles = new Map<string, WidgetStylePreset>();
         const nextSlots = new Map<string, string>();
+        const nextHints = new Map<string, string[]>();
         for (const appId of ids) {
             let slotKey = stored.get(appId) ?? "";
             let application: any = null;
@@ -1745,11 +1748,24 @@ async function refreshAttachedWidgetStyles(force = false): Promise<void> {
             }
             nextSlots.set(appId, slotKey);
             nextStyles.set(appId, presetForSlot(slotKey));
+            const identity = getSlot(slotKey);
+            const labels = [
+                String(application?.name ?? ""),
+                SLOT_LABEL[slotKey] ?? slotKey,
+                slotKey === "valorant" ? "Val" : "",
+                slotKey === "fortnite" ? "Fort" : "",
+                identity.heroAssetKey
+            ]
+                .map(value => value.trim())
+                .filter(value => value.length >= 3);
+            nextHints.set(appId, Array.from(new Set(labels)));
         }
         attachedWidgetStyles.clear();
         attachedWidgetSlots.clear();
+        attachedWidgetHints.clear();
         for (const [appId, preset] of nextStyles) attachedWidgetStyles.set(appId, preset);
         for (const [appId, slotKey] of nextSlots) attachedWidgetSlots.set(appId, slotKey);
+        for (const [appId, labels] of nextHints) attachedWidgetHints.set(appId, labels);
     })();
     attachedWidgetRefreshPromise = task;
     try {
@@ -1787,6 +1803,30 @@ function knownWidgetStyles(): Map<string, WidgetStylePreset> {
     return out;
 }
 
+function knownWidgetHints(): Map<string, string[]> {
+    const out = new Map<string, string[]>();
+    const add = (appId: string, values: string[]) => {
+        if (!SNOWFLAKE.test(appId)) return;
+        const current = out.get(appId) ?? [];
+        for (const value of values) {
+            const clean = String(value ?? "").trim();
+            if (clean.length >= 3 && !/^(none|custom|my widget)$/i.test(clean) && !current.includes(clean)) current.push(clean);
+        }
+        if (current.length) out.set(appId, current);
+    };
+    for (const [appId, labels] of attachedWidgetHints) add(appId, labels);
+    for (const [slotKey, identity] of Object.entries(slots.get())) {
+        if (!SNOWFLAKE.test(identity.appId)) continue;
+        add(identity.appId, [
+            SLOT_LABEL[slotKey] ?? slotKey,
+            slotKey === "valorant" ? "Val" : "",
+            slotKey === "fortnite" ? "Fort" : "",
+            identity.heroAssetKey
+        ]);
+    }
+    return out;
+}
+
 const WIDGET_APPLICATION_ID_ATTRIBUTES = [
     "data-application-id",
     "data-application_id",
@@ -1809,6 +1849,14 @@ function domApplicationId(element: Element, known: Set<string>): string | null {
             const value = node.getAttribute(attribute);
             if (value && known.has(value)) return value;
         }
+        // Board releases have also put the snowflake in an aria label or a
+        // versioned data payload. Comparing every attribute value is cheaper
+        // and more reliable than guessing each new attribute name.
+        try {
+            for (const attribute of Array.from(node.attributes)) {
+                if (known.has(attribute.value.trim())) return attribute.value.trim();
+            }
+        } catch { /* ignore a node that is being removed */ }
         const id = node.getAttribute("id");
         if (id && known.has(id)) return id;
     }
@@ -1822,15 +1870,15 @@ function domApplicationId(element: Element, known: Set<string>): string | null {
     return null;
 }
 
-function reactApplicationId(element: Element, known: Set<string>): string | null {
+function reactApplicationId(element: Element, known: Set<string>, maxBudget = 1800, maxDepth = 18): string | null {
     const roots = Object.keys(element).filter(key => key.startsWith("__reactFiber") || key.startsWith("__reactProps"));
     const seen = new WeakSet<object>();
     const queue: Array<{ value: any; depth: number; hint: string; }> = roots.map(key => ({ value: (element as any)[key], depth: 0, hint: key }));
-    let budget = 6000;
+    let budget = maxBudget;
     while (queue.length && budget-- > 0) {
         const item = queue.shift()!;
         const value = item.value;
-        if (!value || (typeof value !== "object" && typeof value !== "function") || item.depth > 24) continue;
+        if (!value || (typeof value !== "object" && typeof value !== "function") || item.depth > maxDepth) continue;
         if (seen.has(value)) continue;
         seen.add(value);
         let keys: string[];
@@ -1868,6 +1916,13 @@ const WIDGET_CARD_SELECTOR = [
     '[class*="cardsList"] > li > div',
     '[class*="profile"] [role="listitem"]',
     '[class*="profile"] article',
+    '[class*="profile"] [role="button"]',
+    '[class*="board"] [role="listitem"]',
+    '[class*="Board"] [role="listitem"]',
+    '[data-list-item-id*="application" i]',
+    '[role="article"]',
+    '[role="listitem"]',
+    'article',
     'li[role="listitem"]'
 ].join(",");
 const WIDGET_MUTATION_SELECTOR = [
@@ -1875,33 +1930,79 @@ const WIDGET_MUTATION_SELECTOR = [
     WIDGET_CARD_SELECTOR
 ].join(",");
 
-function widgetApplicationId(element: HTMLElement, known: Set<string>): string | null {
+const WIDGET_CARD_MAX_ANCESTOR_DEPTH = 20;
+
+function widgetCardRoot(element: HTMLElement): HTMLElement {
+    let current: HTMLElement | null = element;
+    let fallback = element;
+    for (let depth = 0; current && depth < WIDGET_CARD_MAX_ANCESTOR_DEPTH; depth++, current = current.parentElement) {
+        try {
+            if (!current.matches(WIDGET_CARD_SELECTOR)) continue;
+            const rect = current.getBoundingClientRect();
+            if (rect.width >= 120 && rect.height >= 40) return current;
+            fallback = current;
+        } catch { /* ignore a tearing/partially-mounted node */ }
+    }
+    return fallback;
+}
+
+function escapeWidgetHint(value: string): string {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function hintedWidgetApplicationId(element: HTMLElement, hints: Map<string, string[]>): string | null {
+    if (!hints.size) return null;
+    const root = widgetCardRoot(element);
+    let text = "";
+    let html = "";
+    try {
+        text = String(root.textContent ?? "").replace(/\s+/g, " ").trim();
+        html = root.outerHTML.slice(0, 80_000).toLowerCase();
+    } catch { return null; }
+    const matches: string[] = [];
+    for (const [appId, labels] of hints) {
+        const found = labels.some(label => {
+            const clean = label.trim().toLowerCase();
+            if (clean.length < 3) return false;
+            const boundary = new RegExp(`(?:^|\\s|[·•|:/-])${escapeWidgetHint(clean)}(?:$|\\s|[·•|:/-])`, "i");
+            return boundary.test(text) || (clean.length >= 8 && html.includes(clean));
+        });
+        if (found) matches.push(appId);
+    }
+    return matches.length === 1 ? matches[0] : null;
+}
+
+function widgetApplicationMatch(element: HTMLElement, known: Set<string>, hints: Map<string, string[]>): WidgetCardMatch | null {
     const now = Date.now();
     const cached = widgetApplicationCache.get(element);
     // React props are expensive to walk. Keep successful lookups longer and
     // negative lookups for the duration of the normal reconciliation window so
     // unrelated Discord updates do not repeatedly inspect the same card tree.
-    const cacheTtl = cached?.appId ? 5000 : 2600;
+    const cacheTtl = cached?.match ? 5000 : 2600;
     if (cached && now - cached.checkedAt < cacheTtl)
-        return cached.appId && known.has(cached.appId) ? cached.appId : null;
-    const remember = (appId: string | null, related?: HTMLElement): string | null => {
-        const value = { appId, checkedAt: now };
+        return cached.match && known.has(cached.match.appId) && cached.match.root.isConnected ? cached.match : null;
+    const remember = (appId: string | null, related?: HTMLElement): WidgetCardMatch | null => {
+        const match = appId ? { appId, root: widgetCardRoot(related ?? element) } : null;
+        const value = { match, checkedAt: now };
         widgetApplicationCache.set(element, value);
         if (related && related !== element) widgetApplicationCache.set(related, value);
-        return appId;
+        if (match && match.root !== element) widgetApplicationCache.set(match.root, value);
+        return match;
     };
     // Prefer the visible card. The DOM fallback covers the full Board's
     // application wrapper, where Discord may not expose the id on the first
     // React host node at all.
     const directReactId = reactApplicationId(element, known);
-    if (directReactId) return remember(directReactId);
+    if (directReactId) return remember(directReactId, element);
     const directDomId = domApplicationId(element, known);
-    if (directDomId) return remember(directDomId);
+    if (directDomId) return remember(directDomId, element);
     let current: HTMLElement | null = element;
-    for (let depth = 0; current && depth < 7; depth++, current = current.parentElement) {
+    for (let depth = 0; current && depth < WIDGET_CARD_MAX_ANCESTOR_DEPTH; depth++, current = current.parentElement) {
         const appId = reactApplicationId(current, known) ?? domApplicationId(current, known);
         if (appId) return remember(appId, current);
     }
+    const hintedId = hintedWidgetApplicationId(element, hints);
+    if (hintedId) return remember(hintedId, widgetCardRoot(element));
     return remember(null);
 }
 
@@ -1946,6 +2047,7 @@ function scanWidgetSkinCards(): void {
     const seen = new Set<HTMLElement>();
     if (active.size) {
         const known = new Set(active.keys());
+        const hints = knownWidgetHints();
         // Put explicit application-id hosts first, then use the broad fallback
         // only for Discord's full Board cards whose id is hidden in React. A
         // bounded list protects the main renderer from turning a skin refresh
@@ -1954,14 +2056,26 @@ function scanWidgetSkinCards(): void {
         const explicitSelector = WIDGET_APPLICATION_ID_ATTRIBUTES.map(attribute => `[${attribute}]`).join(",");
         for (const candidate of Array.from(document.querySelectorAll<HTMLElement>(explicitSelector)).slice(0, 180)) candidateSet.add(candidate);
         for (const candidate of Array.from(document.querySelectorAll<HTMLElement>(WIDGET_CARD_SELECTOR)).slice(0, 540)) candidateSet.add(candidate);
-        for (const candidate of Array.from(candidateSet).slice(0, 640)) {
-            const appId = widgetApplicationId(candidate, known);
-            const preset = appId ? active.get(appId) : undefined;
-            if (!preset) continue;
-            const rect = candidate.getBoundingClientRect();
-            if (rect.width < 20 || rect.height < 12) continue;
-            seen.add(candidate);
-            applyWidgetSkin(candidate, preset, appId!);
+        const inspect = (candidates: Iterable<HTMLElement>, limit: number) => {
+            for (const candidate of Array.from(candidates).slice(0, limit)) {
+                const match = widgetApplicationMatch(candidate, known, hints);
+                const preset = match ? active.get(match.appId) : undefined;
+                if (!match || !preset || seen.has(match.root)) continue;
+                const root = match.root;
+                const rect = root.getBoundingClientRect();
+                if (rect.width < 20 || rect.height < 12) continue;
+                seen.add(root);
+                applyWidgetSkin(root, preset, match.appId);
+            }
+        };
+        inspect(candidateSet, 640);
+        if (seen.size < active.size) {
+            // Some Board builds expose the application only through a
+            // descendant image and React props on a wrapper with no stable
+            // class. Only pay for these media anchors when the normal bounded
+            // card pass did not find every attached widget.
+            const mediaCandidates = Array.from(document.querySelectorAll<HTMLElement>('img, [style*="background-image"]')).slice(0, 360);
+            inspect(mediaCandidates, mediaCandidates.length);
         }
     }
     for (const root of Array.from(widgetSkinRoots.keys())) {
