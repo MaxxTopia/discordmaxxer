@@ -27,9 +27,10 @@ import { Tier } from "./vip";
 // Live worker /roster endpoint — same Cloudflare Worker that handles VIP
 // claims (see optimizationmaxxing/vip-worker/worker.js). Each /claim writes
 // to KV and invalidates the worker's in-memory roster cache, so a freshly
-// claimed user appears in the roster within seconds. Worker and client both
-// use a 30 second freshness window so profile flair and tier changes converge
-// without leaving a viewer on yesterday's cached entitlement.
+// claimed user appears in the roster within the bounded 30-second freshness
+// window. The Worker owns the shared edge cache; the client keeps its local
+// last-known-good snapshot and uses a normal cacheable GET so refreshes do not
+// create a unique URL or an unnecessary CORS preflight.
 const ROSTER_URL = "https://optmaxxing-vip.maxxtopia.workers.dev/roster";
 
 const CACHE_TTL_MS = 30 * 1000; // 30 seconds; matches the worker cache
@@ -242,11 +243,11 @@ async function doFetch(): Promise<void> {
         const ctrl = new AbortController();
         const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
         let res: Response;
-        const refreshUrl = `${ROSTER_URL}?dmx_refresh=${Date.now()}`;
         try {
-            res = await fetch(refreshUrl, {
-                cache: "no-store",
-                headers: { "Cache-Control": "no-cache", Pragma: "no-cache" },
+            res = await fetch(ROSTER_URL, {
+                // Revalidate the browser entry, while allowing the Worker to
+                // serve its shared 30-second edge response without KV reads.
+                cache: "no-cache",
                 signal: ctrl.signal
             });
         } finally {

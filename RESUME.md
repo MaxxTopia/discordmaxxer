@@ -5,6 +5,37 @@
 > `CLAUDE.md` ("Operational facts" section). Those three are enough to build,
 > ship, and maintain without prior context.
 
+## 2026-09-28 shared-roster read-budget repair — v0.7.79 candidate
+
+The `optmaxxing-vip` Worker now checks a fixed 30-second Cache API key before
+reading the shared `VIP_CLAIMS` KV namespace. The key deliberately ignores the
+old client's `dmx_refresh` query parameter, so existing released clients can
+reuse a warm roster response. The client candidate also removed its unique
+refresh URL and custom cache-control headers, which avoids unnecessary cache
+misses and CORS preflights. Roster payload shape, sanitization, local 30-second
+freshness, retry/backoff, last-known-good, and optimistic profile behavior are
+unchanged.
+
+Worker verification: `node --check worker.js`, 10 Worker tests including a
+quota-shaped warm-cache test with an active read circuit and zero additional KV
+get/list calls, Wrangler dry-run, deployment version
+`aeba463c-dd1f-4038-88d4-9ad0c0cb5a72`, and live KV-free
+`/healthz` HTTP 200 (`kv: not_checked`). The Worker source checkout contains
+pre-existing hardening WIP, so it was deployed from the current verified
+working tree without staging unrelated files.
+
+Client verification in isolated checkout
+`C:\Users\Diggy\projects\discordmaxxer-roster-read-budget`: `pnpm test`,
+strict pinned-Vencord overlay (81 applied, 0 warnings), artifact verification,
+`pnpm build`, and `pnpm package:dir` passed. This candidate is local and not
+tagged, pushed, or publicly released. Signed-in Discord behavior, cross-PC
+roster freshness, and post-reset live roster cache hits still need validation.
+
+Best next action: after the KV daily window resets, make one controlled roster
+request and inspect the response/cache behavior, then decide whether to publish
+the v0.7.79 client patch. Do not use repeated live roster probes while quota is
+exhausted.
+
 ## 2026-09-24 profile flair consistency and automatic name styling — v0.7.70 published
 
 Public stable release `v0.7.70` is live: [GitHub Release](https://github.com/MaxxTopia/discordmaxxer/releases/tag/v0.7.70). Release commit `984fb060465c2436a92a9f87012e8a6848c75293` and tag `v0.7.70` are pushed to `origin`; [GitHub Actions run 36046453622](https://github.com/MaxxTopia/discordmaxxer/actions/runs/36046453622) completed successfully, including the Maxxtopia release notification. The release is not a draft or prerelease. Published assets include x64 and ARM64 ZIPs, the NSIS setup EXE, its blockmap, and `latest.yml`. The public `latest.yml` endpoint returned HTTP 200 and advertises version `0.7.70` with `Discordmaxxer-Setup-0.7.70.exe`. The release description now contains user-facing notes and the Discordmaxxer-only visibility boundary. Release publication and updater metadata are verified; a signed-in installed-client update and second-PC visual behavior still need Diggy's test.
