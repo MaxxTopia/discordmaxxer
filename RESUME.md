@@ -5,7 +5,7 @@
 > `CLAUDE.md` ("Operational facts" section). Those three are enough to build,
 > ship, and maintain without prior context.
 
-## 2026-09-29 v0.7.82 DMWidget editor and existing-widget skin repair — release candidate
+## 2026-09-29 v0.7.82 DMWidget editor and existing-widget skin repair — published
 
 The published v0.7.81 mitigation stopped the renderer crash, but it also
 removed the direct plugin-editor call and only opened the generic Plugins
@@ -14,21 +14,21 @@ Profile Widget screen still did not open. The running USB test client was also
 loading `E:\discordmaxxer-overlay-rebuild-20260925`, not the C: release
 worktree, so early retests were against the stale fallback bundle.
 
-The v0.7.82 candidate restores the real `openPluginModal(plugin)` path for DMWidget,
+The v0.7.82 release restores the real `openPluginModal(plugin)` path for DMWidget,
 DMProfileFlair, and DMDisplayNameStyle, and patches Vencord's current
 PluginModal to use the stable legacy modal primitives that remain available in
 the supported Discord runtime. The active USB bundle was preserved at
 `E:\discordmaxxer-active-dist-before-editor-repair-20260929` before installing
-the candidate.
+the release candidate.
 
 Verification: `pnpm test`, `pnpm build:dev`, `pnpm overlay:vencord` (0
 warnings), `node overlay-scripts/verify-build.mjs`, `git diff --check`, and
 the overlay script syntax check passed. A live CDP test in the USB Electron
 client clicked DMHub → Create/Edit Profile Widget and found the recovered
 Valorant editor (`existing widget recovered`) with no crash overlay and no
-generic-settings fallback. The candidate is ready for the documented release
-gate. v0.7.81 remains the public baseline until the v0.7.82 commit and tag are
-pushed.
+generic-settings fallback. The source commit
+`298096aab793e496a1a7ecd752f373ed5a90d0a1` and tag
+`v0.7.82` are now pushed to `origin/main`.
 
 Additional live verification: selecting Frosted Glass changed the picker,
 preview data-style, colors, frame, ornament, and motion immediately. Applying
@@ -40,10 +40,21 @@ closed and reopened successfully with the skin still selected. This proves the
 local Discordmaxxer renderer path; it does not prove vanilla Discord rendering
 or a second physical PC.
 
-Best next action: run the documented strict release gates and packaging, then
-publish v0.7.82 under the user's conditional authorization. Diggy's
-installed-client update and the second-PC signed-in widget check remain
-separate runtime tests.
+Release proof: local production build, strict overlay (0 warnings), artifact
+verification, x64 and ARM64 Windows packaging, and the logged-in CDP validator
+all passed. GitHub test run
+`https://github.com/MaxxTopia/discordmaxxer/actions/runs/36643661423` and
+release run
+`https://github.com/MaxxTopia/discordmaxxer/actions/runs/36643665119` passed.
+The public release is
+`https://github.com/MaxxTopia/discordmaxxer/releases/tag/v0.7.82`, with the
+attempt-#5 notes and all five Windows assets; the cache-busted `latest.yml`
+returned HTTP 200 and advertises version `0.7.82`.
+
+Remaining runtime boundary: the direct editor/skin test proves the local
+Discordmaxxer renderer path, not every account state on a second physical PC
+or Discord's vanilla client renderer. Diggy's installed-client update and
+second-PC signed-in widget check remain the next user-owned visual tests.
 
 ## 2026-09-29 v0.7.81 editor crash fix — published
 
