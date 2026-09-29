@@ -5,7 +5,7 @@
 > `CLAUDE.md` ("Operational facts" section). Those three are enough to build,
 > ship, and maintain without prior context.
 
-## 2026-09-28 shared-roster read-budget repair — v0.7.79 candidate
+## 2026-09-28 shared-roster read-budget repair — v0.7.79 release gate cleared
 
 The `optmaxxing-vip` Worker now checks a fixed 30-second Cache API key before
 reading the shared `VIP_CLAIMS` KV namespace. The key deliberately ignores the
@@ -19,22 +19,29 @@ unchanged.
 Worker verification: `node --check worker.js`, 10 Worker tests including a
 quota-shaped warm-cache test with an active read circuit and zero additional KV
 get/list calls, Wrangler dry-run, deployment version
-`aeba463c-dd1f-4038-88d4-9ad0c0cb5a72`, and live KV-free
+`bfb7c77b-b139-4c56-a8b6-fd0f17c82bd2`, and live KV-free
 `/healthz` HTTP 200 (`kv: not_checked`). The Worker source checkout contains
 pre-existing hardening WIP, so it was deployed from the current verified
 working tree without staging unrelated files.
 
+Cloudflare analytics reported 106,118 reads for this namespace on 2026-09-28
+and 730 on the new UTC day before the controlled probe. One post-reset
+`/roster` request returned HTTP 200, the expected JSON envelope, and
+`x-roster-cache: miss`; no repeated live probes were made.
+
 Client verification in isolated checkout
 `C:\Users\Diggy\projects\discordmaxxer-roster-read-budget`: `pnpm test`,
 strict pinned-Vencord overlay (81 applied, 0 warnings), artifact verification,
-`pnpm build`, and `pnpm package:dir` passed. This candidate is local and not
-tagged, pushed, or publicly released. Signed-in Discord behavior, cross-PC
-roster freshness, and post-reset live roster cache hits still need validation.
+`pnpm build`, and `pnpm package:dir` passed. The candidate is still local and
+not tagged, pushed, or publicly released. The automated release gate is clear
+and the owner has authorized publishing. Signed-in Discord behavior, cross-PC
+roster freshness, and the installed client update path remain runtime checks;
+the controlled probe proves the Worker response path, not the Discord UI.
 
-Best next action: after the KV daily window resets, make one controlled roster
-request and inspect the response/cache behavior, then decide whether to publish
-the v0.7.79 client patch. Do not use repeated live roster probes while quota is
-exhausted.
+Best next action: publish the already-tested v0.7.79 candidate, verify the
+GitHub Actions release assets and updater manifest, then complete the normal
+signed-in Discord profile check. Do not use repeated live roster probes while
+quota is exhausted.
 
 ## 2026-09-24 profile flair consistency and automatic name styling — v0.7.70 published
 
