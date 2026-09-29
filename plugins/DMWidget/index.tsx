@@ -160,6 +160,18 @@ async function ensureSlots(): Promise<void> {
         activeSlotsAccountId = accountId;
         publishedWidgetSnapshots.clear();
         publishedWidgetHydrated.clear();
+        // Runtime attachment maps belong to the signed-in account too. Clear
+        // them before loading another account so a profile card cannot briefly
+        // inherit the previous account's skin or application hints.
+        attachedWidgetStyles.clear();
+        attachedWidgetSlots.clear();
+        attachedWidgetHints.clear();
+        attachedWidgetRefreshAt = 0;
+        // Let the new account start its own reconciliation immediately. The
+        // old task remains harmless because it checks the account before every
+        // commit, and its finally block will not clear a newer task.
+        attachedWidgetRefreshPromise = null;
+        widgetApplicationCacheEpoch++;
         if (archived) {
             slots.set(archived);
         } else if (previousAccountId && previousAccountId !== accountId) {
@@ -739,18 +751,29 @@ async function republishConfig(slotKey: string): Promise<string | null> {
 }
 
 let widgetStylePublishSerial = 0;
+let widgetStyleSyncQueue: Promise<void> = Promise.resolve();
 
-async function syncRemoteWidgetStyle(slotKey: string): Promise<boolean> {
+async function syncRemoteWidgetStyle(slotKey: string, request: number): Promise<boolean> {
+    // Style selection is user-visible and can be changed several times while
+    // Discord is reading the application. Discard stale requests before they
+    // can overwrite the newest selection.
+    if (request !== widgetStylePublishSerial) return false;
     const id = getSlot(slotKey);
     if (!SNOWFLAKE.test(id.appId)) return false;
     try {
         const application = await apiGet(`/applications/${id.appId}`);
         if (!application || !Object.prototype.hasOwnProperty.call(application, "description")) return false;
+        if (request !== widgetStylePublishSerial) return false;
+        const latest = getSlot(slotKey);
+        if (latest.appId !== id.appId || latest.widgetStyle !== id.widgetStyle) return false;
         const currentDescription = typeof application.description === "string" ? application.description : "";
         const preset = WIDGET_STYLE_PRESETS.find(item => item.id === id.widgetStyle) ?? selectedWidgetPreset();
         const description = remoteWidgetDescriptionFor(currentDescription, preset);
         if (!description) return false;
-        if (description !== currentDescription) await apiPatch(`/applications/${id.appId}`, { description });
+        if (description !== currentDescription) {
+            if (request !== widgetStylePublishSerial) return false;
+            await apiPatch(`/applications/${id.appId}`, { description });
+        }
         return true;
     } catch (error) {
         console.warn("[DMWidget] cross-install widget skin sync failed:", error);
@@ -758,7 +781,16 @@ async function syncRemoteWidgetStyle(slotKey: string): Promise<boolean> {
     }
 }
 
-async function republishSelectedWidgetStyle(slotKey: string): Promise<void> {
+function queueRemoteWidgetStyleSync(slotKey: string, request: number): Promise<boolean> {
+    const result = widgetStyleSyncQueue.then(
+        () => syncRemoteWidgetStyle(slotKey, request),
+        () => syncRemoteWidgetStyle(slotKey, request)
+    );
+    widgetStyleSyncQueue = result.then(() => undefined, () => undefined);
+    return result;
+}
+
+async function republishSelectedWidgetStyleUnsafe(slotKey: string): Promise<void> {
     const request = ++widgetStylePublishSerial;
     await ensureSlots();
     // The local slot can be empty after a reinstall, an account switch, or a
@@ -783,7 +815,7 @@ async function republishSelectedWidgetStyle(slotKey: string): Promise<void> {
     // recovered above, so the renderer can apply the skin immediately. The
     // deliberate Update action remains the place where supported card fields
     // are sent to Discord after the user reviews the recovered form.
-    const synced = await syncRemoteWidgetStyle(slotKey);
+    const synced = await queueRemoteWidgetStyleSync(slotKey, request);
     if (request !== widgetStylePublishSerial) return;
     const rendered = scanWidgetSkinCards();
     scheduleWidgetSkinScan();
@@ -793,6 +825,15 @@ async function republishSelectedWidgetStyle(slotKey: string): Promise<void> {
     toast(synced
         ? `${SLOT_LABEL[slotKey] ?? slotKey} skin synced for your other Discordmaxxer installs.${renderedNote} Your published card was left unchanged.`
         : `${SLOT_LABEL[slotKey] ?? slotKey} skin saved on this PC.${renderedNote} Cross-install sync was unavailable, so your published card was left unchanged.`, rendered > 0 ? Toasts.Type.SUCCESS : Toasts.Type.MESSAGE, 8500);
+}
+
+async function republishSelectedWidgetStyle(slotKey: string): Promise<void> {
+    try {
+        await republishSelectedWidgetStyleUnsafe(slotKey);
+    } catch (error) {
+        console.warn("[DMWidget] applying a widget skin failed safely:", error);
+        toast("DMWidget could not apply that skin right now. Your existing published widget was left unchanged; try again after the profile finishes loading.", Toasts.Type.FAILURE, 8000);
+    }
 }
 
 // Fetch a specific game slot's live stats (native, no CORS) and re-publish it.
@@ -890,6 +931,13 @@ async function refreshAllGames(): Promise<{ updated: number; failed: number; }> 
         else failed++;
     }
     return { updated, failed };
+}
+
+// Background timers are intentionally fire-and-forget, but a rejected
+// refresh must never become an unhandled promise that destabilizes the
+// renderer. Manual callers still receive their own result/error handling.
+function scheduleStatsRefresh(): void {
+    void refreshAllGames().catch(error => console.warn("[DMWidget] scheduled stats refresh failed:", error));
 }
 
 // ---- the whole flow --------------------------------------------------------
@@ -1447,6 +1495,11 @@ let widgetSkinFrame: number | null = null;
 let widgetSkinRescanTimer: number | null = null;
 let widgetSkinLastScanAt = 0;
 let widgetSkinRun = 0;
+// The editor is a large settings surface, not a Discord profile Board. Do not
+// scan it while it mounts: its cards/buttons can match Discord's generic
+// widget selectors and a renderer scan during that mount is pure risk.
+let widgetSkinEditorMounts = 0;
+const widgetSkinEditorOpen = (): boolean => widgetSkinEditorMounts > 0;
 // The local slot can outlive an app replacement or an account switch. Keep a
 // second runtime map for the application IDs that Discord says are actually
 // attached to the current profile board, then reconcile those IDs back to the
@@ -1727,8 +1780,16 @@ async function refreshAttachedWidgetStyles(force = false): Promise<void> {
     const task = (async () => {
         await ensureSlots();
         const me = UserStore.getCurrentUser();
-        if (!me?.id) return;
-        const profile = await apiGet(`/users/${me.id}/profile`);
+        if (!me?.id) {
+            attachedWidgetStyles.clear();
+            attachedWidgetSlots.clear();
+            attachedWidgetHints.clear();
+            widgetApplicationCacheEpoch++;
+            return;
+        }
+        const accountId = String(me.id);
+        const profile = await apiGet(`/users/${accountId}/profile`);
+        if (String(UserStore.getCurrentUser()?.id ?? "") !== accountId || activeSlotsAccountId !== accountId) return;
         const widgets = profileWidgetEntries(profile);
         if (!widgets) {
             console.warn("[DMWidget] profile widget list missing; keeping the last attached skin map");
@@ -1746,12 +1807,15 @@ async function refreshAttachedWidgetStyles(force = false): Promise<void> {
         const nextSlots = new Map<string, string>();
         const nextHints = new Map<string, string[]>();
         for (const appId of ids) {
+            if (String(UserStore.getCurrentUser()?.id ?? "") !== accountId || activeSlotsAccountId !== accountId) return;
             let slotKey = stored.get(appId) ?? "";
             let application: any = null;
             try { application = await apiGet(`/applications/${appId}`); } catch { /* a private app may reject metadata */ }
+            if (String(UserStore.getCurrentUser()?.id ?? "") !== accountId || activeSlotsAccountId !== accountId) return;
             if (!slotKey) slotKey = inferWidgetSlot(application, slotKeyOf());
             const entry = entries.find(item => item.appId === appId);
             await recoverAttachedWidgetIdentity(slotKey, appId, entry?.configId ?? "");
+            if (String(UserStore.getCurrentUser()?.id ?? "") !== accountId || activeSlotsAccountId !== accountId) return;
             const remoteStyle = remoteWidgetStyleFromApplication(application);
             const current = getSlot(slotKey);
             // A deliberate choice on this install wins. An older slot without a
@@ -1774,6 +1838,7 @@ async function refreshAttachedWidgetStyles(force = false): Promise<void> {
                 .filter(value => value.length >= 3);
             nextHints.set(appId, Array.from(new Set(labels)));
         }
+        if (String(UserStore.getCurrentUser()?.id ?? "") !== accountId || activeSlotsAccountId !== accountId) return;
         attachedWidgetStyles.clear();
         attachedWidgetSlots.clear();
         attachedWidgetHints.clear();
@@ -1862,7 +1927,13 @@ const WIDGET_APPLICATION_ID_ATTRIBUTES = [
 // deliberately broad below.
 function domApplicationId(element: Element, known: Set<string>): string | null {
     const nodes: Element[] = [element];
-    try { nodes.push(...Array.from(element.querySelectorAll("*")).slice(0, 320)); } catch { /* ignore malformed/tearing DOM */ }
+    try {
+        // Only inspect explicit id-bearing descendants here. The previous
+        // fallback enumerated every descendant of every broad card candidate,
+        // which made opening a large profile surface needlessly expensive.
+        const selector = WIDGET_APPLICATION_ID_ATTRIBUTES.map(attribute => `[${attribute}]`).join(",");
+        nodes.push(...Array.from(element.querySelectorAll(selector)).slice(0, 96));
+    } catch { /* ignore malformed/tearing DOM */ }
     for (const node of nodes) {
         for (const attribute of WIDGET_APPLICATION_ID_ATTRIBUTES) {
             const value = node.getAttribute(attribute);
@@ -1879,17 +1950,20 @@ function domApplicationId(element: Element, known: Set<string>): string | null {
         const id = node.getAttribute("id");
         if (id && known.has(id)) return id;
     }
-    // A few Board wrappers expose the id only in an aria/data payload. Keep
-    // this bounded so a large profile surface cannot turn a scan into a full
-    // document walk.
+    // A few Board wrappers expose the id only in a short aria/data payload.
+    // Avoid serializing a large profile surface during routine scans.
     try {
-        const html = element.outerHTML.slice(0, 80_000);
-        for (const appId of known) if (html.includes(appId)) return appId;
+        const html = element.outerHTML;
+        if (html.length > 24_000) return null;
+        const matches = Array.from(known).filter(appId => html.includes(appId));
+        // A profile/Board wrapper can contain several widget applications. Do
+        // not let the first matching snowflake style the entire wrapper.
+        if (matches.length === 1) return matches[0];
     } catch { /* ignore transient detached nodes */ }
     return null;
 }
 
-function reactApplicationId(element: Element, known: Set<string>, maxBudget = 1800, maxDepth = 18): string | null {
+function reactApplicationId(element: Element, known: Set<string>, maxBudget = 520, maxDepth = 12): string | null {
     const roots = Object.keys(element).filter(key => key.startsWith("__reactFiber") || key.startsWith("__reactProps"));
     const seen = new WeakSet<object>();
     const queue: Array<{ value: any; depth: number; hint: string; }> = roots.map(key => ({ value: (element as any)[key], depth: 0, hint: key }));
@@ -1925,8 +1999,6 @@ function reactApplicationId(element: Element, known: Set<string>, maxBudget = 18
 // keep the selector broad, then use the known attached application id as the
 // safety filter so ordinary activity cards are never skinned by accident.
 const WIDGET_CARD_SELECTOR = [
-    '[class*="card__"]',
-    '[class*="card_"]',
     '[class*="widget"]',
     '[class*="Widget"]',
     '[class*="application"]',
@@ -1938,15 +2010,33 @@ const WIDGET_CARD_SELECTOR = [
     '[class*="profile"] [role="button"]',
     '[class*="board"] [role="listitem"]',
     '[class*="Board"] [role="listitem"]',
-    '[data-list-item-id*="application" i]',
-    '[role="article"]',
-    '[role="listitem"]',
-    'article',
-    'li[role="listitem"]'
+    '[data-list-item-id*="application" i]'
+].join(",");
+const WIDGET_CARD_FALLBACK_SELECTOR = 'article, li[role="listitem"], [role="article"], [role="listitem"], [class*="card__"], [class*="card_"]';
+const WIDGET_SURFACE_SELECTOR = [
+    '[class*="profile"]',
+    '[class*="Profile"]',
+    '[class*="popout"]',
+    '[class*="Popout"]',
+    '[class*="board"]',
+    '[class*="Board"]',
+    '[role="dialog"]'
 ].join(",");
 const WIDGET_MUTATION_SELECTOR = [
     ...WIDGET_APPLICATION_ID_ATTRIBUTES.map(attribute => `[${attribute}]`),
-    WIDGET_CARD_SELECTOR
+    '[class*="widget"]',
+    '[class*="Widget"]',
+    '[class*="cardsList"] [role="button"]',
+    '[class*="board"] [role="listitem"]',
+    '[class*="Board"] [role="listitem"]',
+    '[class*="profile"] article',
+    '[class*="Profile"] article',
+    '[class*="board"] article',
+    '[class*="Board"] article',
+    '[class*="profile"] [role="article"]',
+    '[class*="Profile"] [role="article"]',
+    '[class*="board"] [role="article"]',
+    '[class*="Board"] [role="article"]'
 ].join(",");
 
 const WIDGET_CARD_MAX_ANCESTOR_DEPTH = 20;
@@ -1959,15 +2049,20 @@ function widgetCardRoot(element: HTMLElement, appId = "", hints?: Map<string, st
     const appHints = appId ? (hints?.get(appId) ?? []) : [];
     const candidates: Array<{ node: HTMLElement; score: number; }> = [];
     let current: HTMLElement | null = element;
-    for (let depth = 0; current && depth < WIDGET_CARD_MAX_ANCESTOR_DEPTH; depth++, current = current.parentElement) {
+    for (let depth = 0; current && depth < Math.min(WIDGET_CARD_MAX_ANCESTOR_DEPTH, 12); depth++, current = current.parentElement) {
         try {
             const rect = current.getBoundingClientRect();
             if (rect.width < 120 || rect.height < 40) continue;
             const className = typeof current.className === "string" ? current.className : "";
             const role = current.getAttribute("role") ?? "";
-            const text = String(current.textContent ?? "").replace(/\s+/g, " ").trim();
             const selectorMatch = current.matches(WIDGET_CARD_SELECTOR);
-            const labelMatch = appHints.some(label => {
+            // Reading textContent is relatively expensive on the profile
+            // wrapper. Only do it for card-like ancestors, and cap the amount
+            // of text used for label matching.
+            const text = selectorMatch && appHints.length
+                ? String(current.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 1200)
+                : "";
+            const labelMatch = !!text && appHints.some(label => {
                 const clean = label.trim();
                 if (clean.length < 3) return false;
                 return new RegExp(`(?:^|\\s|[·•|:/-])${escapeWidgetHint(clean)}(?:$|\\s|[·•|:/-])`, "i").test(text);
@@ -1981,7 +2076,7 @@ function widgetCardRoot(element: HTMLElement, appId = "", hints?: Map<string, st
             if (/card|widget|application/i.test(`${className} ${role}`)) score += 24;
             if (/^(article|listitem)$/.test(role)) score += 16;
             if (/profile|board|modal|popout/i.test(`${className} ${role}`) && !labelMatch) score -= 35;
-            if (text.length > 2200) score -= 35;
+            if (text.length >= 1200) score -= 20;
             if (rect.width > 900 || rect.height > 700) score -= 45;
             candidates.push({ node: current, score });
         } catch { /* ignore a tearing/partially-mounted node */ }
@@ -1998,7 +2093,7 @@ function hintedWidgetApplicationId(element: HTMLElement, hints: Map<string, stri
     // smallest connected ancestor identifies exactly one attached app.
     let current: HTMLElement | null = element;
     let fallback: string | null = null;
-    for (let depth = 0; current && depth < WIDGET_CARD_MAX_ANCESTOR_DEPTH; depth++, current = current.parentElement) {
+    for (let depth = 0; current && depth < Math.min(WIDGET_CARD_MAX_ANCESTOR_DEPTH, 12); depth++, current = current.parentElement) {
         let text = "";
         let html = "";
         try {
@@ -2006,7 +2101,9 @@ function hintedWidgetApplicationId(element: HTMLElement, hints: Map<string, stri
             if (rect.width < 120 || rect.height < 40) continue;
             text = String(current.textContent ?? "").replace(/\s+/g, " ").trim();
             if (text.length > 2400) continue;
-            html = current.outerHTML.slice(0, 80_000).toLowerCase();
+            const serialized = current.outerHTML;
+            if (serialized.length > 24_000) continue;
+            html = serialized.toLowerCase();
         } catch { continue; }
         const matches: string[] = [];
         for (const [appId, labels] of hints) {
@@ -2050,7 +2147,7 @@ function widgetApplicationMatch(element: HTMLElement, known: Set<string>, hints:
     const directDomId = domApplicationId(element, known);
     if (directDomId) return remember(directDomId, element);
     let current: HTMLElement | null = element;
-    for (let depth = 0; current && depth < WIDGET_CARD_MAX_ANCESTOR_DEPTH; depth++, current = current.parentElement) {
+    for (let depth = 0; current && depth < Math.min(WIDGET_CARD_MAX_ANCESTOR_DEPTH, 12); depth++, current = current.parentElement) {
         const appId = reactApplicationId(current, known) ?? domApplicationId(current, known);
         if (appId) return remember(appId, current);
     }
@@ -2095,85 +2192,129 @@ function applyWidgetSkin(root: HTMLElement, preset: WidgetStylePreset, appId: st
 }
 
 function scanWidgetSkinCards(): number {
-    if (!document.body) return 0;
-    const active = knownWidgetStyles();
+    if (!document.body || widgetSkinEditorOpen()) return 0;
     const seen = new Set<HTMLElement>();
     let applied = 0;
-    if (active.size) {
-        const known = new Set(active.keys());
-        const hints = knownWidgetHints();
-        // Put explicit application-id hosts first, then use the broad fallback
-        // only for Discord's full Board cards whose id is hidden in React. A
-        // bounded list protects the main renderer from turning a skin refresh
-        // into a page-wide React tree walk.
-        const candidateSet = new Set<HTMLElement>();
-        const explicitSelector = WIDGET_APPLICATION_ID_ATTRIBUTES.map(attribute => `[${attribute}]`).join(",");
-        for (const candidate of Array.from(document.querySelectorAll<HTMLElement>(explicitSelector)).slice(0, 180)) candidateSet.add(candidate);
-        for (const candidate of Array.from(document.querySelectorAll<HTMLElement>(WIDGET_CARD_SELECTOR)).slice(0, 540)) candidateSet.add(candidate);
-        const inspect = (candidates: Iterable<HTMLElement>, limit: number) => {
-            for (const candidate of Array.from(candidates).slice(0, limit)) {
-                const match = widgetApplicationMatch(candidate, known, hints);
-                const preset = match ? active.get(match.appId) : undefined;
-                if (!match || !preset || seen.has(match.root)) continue;
-                const root = match.root;
-                const rect = root.getBoundingClientRect();
-                if (rect.width < 20 || rect.height < 12) continue;
-                seen.add(root);
-                applyWidgetSkin(root, preset, match.appId);
-                applied++;
+    let complete = true;
+    const startedAt = Date.now();
+    const withinBudget = () => Date.now() - startedAt < 24;
+    const query = (selector: string, limit: number): HTMLElement[] => {
+        if (!withinBudget()) { complete = false; return []; }
+        try { return Array.from(document.querySelectorAll<HTMLElement>(selector)).slice(0, limit); }
+        catch { return []; }
+    };
+    const queryWithinSurfaces = (selector: string, limit: number): HTMLElement[] => {
+        if (!withinBudget()) { complete = false; return []; }
+        const surfaces = query(WIDGET_SURFACE_SELECTOR, 24);
+        const out: HTMLElement[] = [];
+        for (const surface of surfaces) {
+            if (out.length >= limit || !withinBudget()) { complete = false; break; }
+            try {
+                if (surface.matches(selector)) out.push(surface);
+                out.push(...Array.from(surface.querySelectorAll<HTMLElement>(selector)).slice(0, limit - out.length));
+            } catch { /* ignore a tearing/partially-mounted profile surface */ }
+        }
+        return out.slice(0, limit);
+    };
+
+    try {
+        const active = knownWidgetStyles();
+        if (active.size) {
+            const known = new Set(active.keys());
+            const hints = knownWidgetHints();
+            // Put explicit application-id hosts first, then use a small,
+            // bounded fallback for full Board cards whose id is hidden in
+            // React. This function runs while Discord is rendering, so it must
+            // yield instead of walking the entire app tree.
+            const candidateSet = new Set<HTMLElement>();
+            const explicitSelector = WIDGET_APPLICATION_ID_ATTRIBUTES.map(attribute => `[${attribute}]`).join(",");
+            for (const candidate of query(explicitSelector, 120)) candidateSet.add(candidate);
+            for (const candidate of query(WIDGET_CARD_SELECTOR, 260)) candidateSet.add(candidate);
+            const inspect = (candidates: Iterable<HTMLElement>, limit: number) => {
+                let inspected = 0;
+                for (const candidate of candidates) {
+                    if (inspected++ >= limit || !withinBudget()) { complete = false; break; }
+                    const match = widgetApplicationMatch(candidate, known, hints);
+                    const preset = match ? active.get(match.appId) : undefined;
+                    if (!match || !preset || seen.has(match.root)) continue;
+                    const root = match.root;
+                    const rect = root.getBoundingClientRect();
+                    if (rect.width < 20 || rect.height < 12) continue;
+                    seen.add(root);
+                    applyWidgetSkin(root, preset, match.appId);
+                    applied++;
+                }
+            };
+            inspect(candidateSet, 320);
+            if (complete && seen.size < active.size) {
+                // Some Board builds expose the application through a hero
+                // image or CSS background instead of a card class.
+                inspect(queryWithinSurfaces('img, [style*="background-image"]', 160), 160);
             }
-        };
-        inspect(candidateSet, 640);
-        if (seen.size < active.size) {
-            // Some Board builds expose the application only through a
-            // descendant image and React props on a wrapper with no stable
-            // class. Only pay for these media anchors when the normal bounded
-            // card pass did not find every attached widget.
-            const mediaCandidates = Array.from(document.querySelectorAll<HTMLElement>('img, [style*="background-image"]')).slice(0, 360);
-            inspect(mediaCandidates, mediaCandidates.length);
+            if (complete && seen.size < active.size) {
+                // Keep the final text fallback to semantic card nodes. The
+                // former div-wide query was the main source of renderer stalls
+                // when the editor or a profile modal mounted.
+                const labels = Array.from(hints.values()).flat().filter(label => label.length >= 3);
+                const textCandidates = queryWithinSurfaces(WIDGET_CARD_FALLBACK_SELECTOR, 160)
+                    .filter(candidate => {
+                        const text = String(candidate.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 900);
+                        return text.length >= 3 && labels.some(label =>
+                            new RegExp(`(?:^|\\s|[·•|:/-])${escapeWidgetHint(label)}(?:$|\\s|[·•|:/-])`, "i").test(text));
+                    });
+                inspect(textCandidates, textCandidates.length);
+            }
         }
-        if (seen.size < active.size) {
-            // A few Board variants render the hero as a canvas or a CSS layer,
-            // so there is no img/background-image anchor to discover. Use the
-            // short game labels as a bounded final pass rather than walking
-            // every React node on every scan.
-            const labels = Array.from(hints.values()).flat().filter(label => label.length >= 3);
-            const textCandidates = Array.from(document.querySelectorAll<HTMLElement>('div, section, article, li'))
-                .filter(candidate => {
-                    const text = String(candidate.textContent ?? "").replace(/\s+/g, " ").trim();
-                    return text.length >= 3 && text.length <= 900 && labels.some(label =>
-                        new RegExp(`(?:^|\\s|[·•|:/-])${escapeWidgetHint(label)}(?:$|\\s|[·•|:/-])`, "i").test(text));
-                })
-                .slice(0, 240);
-            inspect(textCandidates, textCandidates.length);
-        }
+    } catch (error) {
+        // A Discord subtree can disappear between querySelectorAll and the
+        // React/DOM fallback. Never let a renderer-only skin miss bring down
+        // the settings surface or the whole client.
+        complete = false;
+        console.warn("[DMWidget] widget skin scan skipped a transient DOM error:", error);
     }
-    for (const root of Array.from(widgetSkinRoots.keys())) {
-        if (!seen.has(root) || !root.isConnected) restoreWidgetSkin(root);
+
+    // If the time budget was exhausted, leave existing skins in place and let
+    // the normal scheduler finish the pass after Discord settles. Restoring
+    // only on a complete pass prevents a partial scan from flashing cards back
+    // to plain Discord styling.
+    if (complete) {
+        for (const root of Array.from(widgetSkinRoots.keys())) {
+            if (!seen.has(root) || !root.isConnected) restoreWidgetSkin(root);
+        }
+    } else if (widgetSkinStyleElement && !document.hidden) {
+        scheduleWidgetSkinScan();
     }
     return applied;
 }
 
 function scheduleWidgetSkinScan(): void {
-    if (document.hidden || widgetSkinTimer !== null || widgetSkinFrame !== null) return;
+    if (document.hidden || widgetSkinEditorOpen() || widgetSkinTimer !== null || widgetSkinFrame !== null) return;
     const delay = Math.max(120, widgetSkinLastScanAt + 500 - Date.now());
     widgetSkinTimer = window.setTimeout(() => {
         widgetSkinTimer = null;
-        if (document.hidden) return;
+        if (document.hidden || widgetSkinEditorOpen()) return;
         widgetSkinFrame = window.requestAnimationFrame(() => {
             widgetSkinFrame = null;
-            if (!document.hidden) {
+            if (!document.hidden && !widgetSkinEditorOpen()) {
                 widgetSkinLastScanAt = Date.now();
-                scanWidgetSkinCards();
+                try { scanWidgetSkinCards(); } catch (error) { console.warn("[DMWidget] widget skin scan failed:", error); }
             }
         });
     }, delay);
 }
 
 function widgetSkinMutationRelevant(records: MutationRecord[]): boolean {
+    if (widgetSkinEditorOpen()) return false;
+    // A settings/profile mount can produce a large mutation batch. It is
+    // enough to request one deferred scan; walking every added subtree here
+    // would put the observer itself on the renderer's hot path before the
+    // editor effect has had a chance to raise the mount guard.
+    if (records.length > 24) return true;
+    let inspectedNodes = 0;
     for (const record of records) {
         if (record.type !== "childList") continue;
         for (const node of Array.from(record.addedNodes).slice(0, 16)) {
+            if (++inspectedNodes > 24) return true;
             if (!(node instanceof Element)) continue;
             try {
                 if (node.matches(WIDGET_MUTATION_SELECTOR) || node.querySelector(WIDGET_MUTATION_SELECTOR)) return true;
@@ -2590,6 +2731,20 @@ function WidgetEditor() {
     const created = SNOWFLAKE.test(id.appId);
     const isGameWidget = slotKey === "valorant" || slotKey === "fortnite";
     React.useEffect(() => {
+        // The editor can contain dozens of card-like settings nodes. Suspend
+        // Board discovery for its lifetime so opening/reopening this panel
+        // cannot make the renderer compete with the settings mount.
+        widgetSkinEditorMounts++;
+        widgetApplicationCacheEpoch++;
+        if (widgetSkinTimer !== null) { clearTimeout(widgetSkinTimer); widgetSkinTimer = null; }
+        if (widgetSkinFrame !== null) { window.cancelAnimationFrame(widgetSkinFrame); widgetSkinFrame = null; }
+        return () => {
+            widgetSkinEditorMounts = Math.max(0, widgetSkinEditorMounts - 1);
+            widgetApplicationCacheEpoch++;
+            if (!widgetSkinEditorOpen()) scheduleWidgetSkinScan();
+        };
+    }, []);
+    React.useEffect(() => {
         let active = true;
         setRecoveryNote("");
         void (async () => {
@@ -2654,7 +2809,16 @@ function WidgetEditor() {
 
     const run = async (fn: () => Promise<void>) => {
         setBusy(true);
-        try { await fn(); } finally { setBusy(false); force(x => x + 1); }
+        try {
+            await fn();
+        } catch (error) {
+            console.warn("[DMWidget] editor action failed safely:", error);
+            lastResult = "⚠ DMWidget could not complete that action. Your existing widget was left unchanged where possible; try again after the client finishes loading.";
+            toast("DMWidget action failed safely. Your existing widget was left unchanged where possible.", Toasts.Type.FAILURE, 8000);
+        } finally {
+            setBusy(false);
+            force(x => x + 1);
+        }
     };
 
     return (
@@ -2931,21 +3095,26 @@ export default definePlugin({
         void ensureSlots().then(async () => {
             scheduleWidgetSkinScan();
             await refreshAttachedWidgetStyles(true);
-        });
+        }).catch(error => console.warn("[DMWidget] startup recovery failed:", error));
         widgetStyleRefreshTimer = window.setInterval(() => { void refreshAttachedWidgetStyles(); }, ATTACHED_WIDGET_REFRESH_INTERVAL_MS);
-        setTimeout(() => { refreshAllGames(); }, 20_000);
-        fnRefreshTimer = setInterval(() => { refreshAllGames(); }, 30 * 60_000);
+        setTimeout(scheduleStatsRefresh, 20_000);
+        fnRefreshTimer = setInterval(scheduleStatsRefresh, 30 * 60_000);
         // Let DMHub (or any surface) trigger a manual stats refresh — mirrors the
         // __dmReopenWelcome hook DMWelcome exposes for the hub's "Open Tour" row.
         (globalThis as any).__dmWidgetRefresh = async () => {
-            await ensureSlots();
-            if (deployedGameSlots().length === 0) { toast("No game widget deployed yet — Create one first (Fortnite / Valorant).", Toasts.Type.MESSAGE, 6000); return; }
-            toast("Refreshing your widget stats…", Toasts.Type.MESSAGE, 3000);
-            const result = await refreshAllGames();
-            if (result.failed > 0) {
-                toast(`${result.updated} widget${result.updated === 1 ? "" : "s"} updated; ${result.failed} could not be refreshed. Check the DMWidget status for the error.`, Toasts.Type.FAILURE, 8000);
-            } else {
-                toast(`${result.updated} widget${result.updated === 1 ? "" : "s"} refreshed and published. An already-open profile may take a moment to redraw.`, Toasts.Type.SUCCESS, 6000);
+            try {
+                await ensureSlots();
+                if (deployedGameSlots().length === 0) { toast("No game widget deployed yet — Create one first (Fortnite / Valorant).", Toasts.Type.MESSAGE, 6000); return; }
+                toast("Refreshing your widget stats…", Toasts.Type.MESSAGE, 3000);
+                const result = await refreshAllGames();
+                if (result.failed > 0) {
+                    toast(`${result.updated} widget${result.updated === 1 ? "" : "s"} updated; ${result.failed} could not be refreshed. Check the DMWidget status for the error.`, Toasts.Type.FAILURE, 8000);
+                } else {
+                    toast(`${result.updated} widget${result.updated === 1 ? "" : "s"} refreshed and published. An already-open profile may take a moment to redraw.`, Toasts.Type.SUCCESS, 6000);
+                }
+            } catch (error) {
+                console.warn("[DMWidget] manual stats refresh failed:", error);
+                toast("Widget refresh failed safely. Your existing published widget was left unchanged; try again after checking DMWidget status.", Toasts.Type.FAILURE, 8000);
             }
         };
         (globalThis as any).__dmWidgetReskin = () => scheduleWidgetSkinScan();

@@ -108,6 +108,28 @@
   only their named component. They cannot carry claim codes or silently clear
   unrelated profile fields.
 
+## DMWidget renderer audit delta (2026-09-28)
+
+- **Editor-mount isolation:** the profile-board skin observer suspends while
+  the DMWidget Create/Edit surface is mounted, cancels queued timer/frame work
+  on entry, and re-checks the guard in both callbacks. A mount counter handles
+  overlapping React instances instead of assuming one editor at a time.
+- **Bounded discovery:** React/DOM inspection is budgeted, generic card
+  selectors are scoped to profile/Board surfaces, large mutation batches only
+  request one deferred scan, and ambiguous wrappers containing multiple known
+  application IDs are rejected. Partial scans preserve already-applied skins.
+- **Async/account isolation:** attachment maps and match caches clear on
+  account change; profile reconciliation checks the account before and after
+  each remote read and before committing maps; rapid skin choices serialize
+  cross-install description writes and discard stale selections.
+- **Rejected-promise containment:** scheduled/manual stats refreshes and
+  editor/gallery actions catch failures and surface a bounded safe message
+  rather than leaking an unhandled rejection into Discord's renderer.
+- **Remaining proof boundary:** no local crash dump or running Discordmaxxer
+  process was available during this audit. The candidate is source/build
+  verified, but the editor open -> close -> reopen sequence still needs a
+  running-client test before a release is authorized.
+
 ## Fix-class legend
 
 - **HOT** — fixable by a runtime toggle, no restart. True auto-failover possible.
