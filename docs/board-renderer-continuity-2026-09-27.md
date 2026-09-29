@@ -86,3 +86,19 @@ Load the local candidate into the dev client and reproduce the exact Create/Edit
   Electron launch did not expose its debug port. No runtime stability claim is
   made until the published candidate is opened and the editor sequence is
   exercised on a real client.
+
+## 2026-09-28 v0.7.80 published
+
+- Commit `7aa0551` was pushed fast-forward to `main` and tagged/published as
+  `v0.7.80`; the existing `v0.7.79` tag remains the separate roster release.
+- GitHub Actions test run `36504480076` passed. Release run `36504482353`
+  passed in 5m8s, including the strict overlay build, artifact verification,
+  Windows Electron Builder packaging, and the Maxxtopia release notification.
+- The public release contains `Discordmaxxer-Setup-0.7.80.exe`, both Windows
+  ZIPs, the blockmap, and `latest.yml`. A cache-busted HTTP read returned
+  `version: 0.7.80` and the matching installer filename.
+- The source/build/packaging/update-manifest gates are verified. The signed-in
+  runtime editor sequence on Diggy's main PC remains the final user-side gate:
+  update to v0.7.80, fully restart Discordmaxxer, open Create/Edit, close it,
+  reopen it twice, then choose a skin and confirm the client stays stable and
+  the visible Board card restyles.
