@@ -5,12 +5,14 @@
 > `CLAUDE.md` ("Operational facts" section). Those three are enough to build,
 > ship, and maintain without prior context.
 
-## 2026-09-28 shared-roster read-budget repair — v0.7.79 release gate cleared
+## 2026-09-28 shared-roster read-budget repair — v0.7.79 published
+
+Public stable release `v0.7.79` is live: [GitHub Release](https://github.com/MaxxTopia/discordmaxxer/releases/tag/v0.7.79). Release commit `0ab6d4b042adfbcaae61a2ee6d182419b068e2b0` and tag `v0.7.79` are pushed to `origin`. The GitHub Actions [test run](https://github.com/MaxxTopia/discordmaxxer/actions/runs/36502545710) and [release run](https://github.com/MaxxTopia/discordmaxxer/actions/runs/36502548711) both completed successfully. The release is not a draft or prerelease. Published assets include x64 and ARM64 ZIPs, the NSIS setup EXE, its blockmap, and `latest.yml`. The public `latest.yml` endpoint returned HTTP 200 and advertises version `0.7.79` with `Discordmaxxer-Setup-0.7.79.exe`.
 
 The `optmaxxing-vip` Worker now checks a fixed 30-second Cache API key before
 reading the shared `VIP_CLAIMS` KV namespace. The key deliberately ignores the
 old client's `dmx_refresh` query parameter, so existing released clients can
-reuse a warm roster response. The client candidate also removed its unique
+reuse a warm roster response. The client release also removed its unique
 refresh URL and custom cache-control headers, which avoids unnecessary cache
 misses and CORS preflights. Roster payload shape, sanitization, local 30-second
 freshness, retry/backoff, last-known-good, and optimistic profile behavior are
@@ -32,16 +34,16 @@ and 730 on the new UTC day before the controlled probe. One post-reset
 Client verification in isolated checkout
 `C:\Users\Diggy\projects\discordmaxxer-roster-read-budget`: `pnpm test`,
 strict pinned-Vencord overlay (81 applied, 0 warnings), artifact verification,
-`pnpm build`, and `pnpm package:dir` passed. The candidate is still local and
-not tagged, pushed, or publicly released. The automated release gate is clear
-and the owner has authorized publishing. Signed-in Discord behavior, cross-PC
-roster freshness, and the installed client update path remain runtime checks;
-the controlled probe proves the Worker response path, not the Discord UI.
+`pnpm build`, and `pnpm package:dir` passed. The published source contains only
+the roster cache change, release notes, version bump, and this continuity
+update; unrelated profile-flair WIP was not touched. Signed-in Discord
+behavior, cross-PC roster freshness, and the installed client update path
+remain runtime checks; the controlled probe proves the Worker response path,
+not the Discord UI.
 
-Best next action: publish the already-tested v0.7.79 candidate, verify the
-GitHub Actions release assets and updater manifest, then complete the normal
-signed-in Discord profile check. Do not use repeated live roster probes while
-quota is exhausted.
+Best next action: update the installed client and complete the normal signed-in
+Discord profile check, then compare roster freshness on the second PC. Do not
+use repeated live roster probes while quota is exhausted.
 
 ## 2026-09-24 profile flair consistency and automatic name styling — v0.7.70 published
 
