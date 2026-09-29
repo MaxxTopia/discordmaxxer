@@ -5,6 +5,21 @@
 > `CLAUDE.md` ("Operational facts" section). Those three are enough to build,
 > ship, and maintain without prior context.
 
+## 2026-09-29 v0.7.81 editor crash fix — release candidate
+
+The DMHub Create/Edit Profile Widget crash was reproduced on v0.7.80 as a
+Vencord `openPluginModal` null-`Modal` failure during asynchronous React
+rendering. The follow-up grey state came from CrashHandler trying to recover
+after that renderer failure. DMHub and DMWelcome now route plugin settings
+through `SettingsRouter.openUserSettings("vencord_plugins")`, which avoids the
+fragile modal resolver while retaining the existing plugin settings surface.
+
+The rebuilt candidate passed `pnpm testTypes`, `pnpm overlay:vencord`,
+`pnpm build:dev`, and `pnpm verifyPlugins`. A running-client CDP smoke test
+opened the DMWidget settings, closed it, and reopened it without a crash,
+recovery overlay, or relevant `Modal`/`DMWidget` exception. The public stable
+release remains v0.7.80 until the documented v0.7.81 tag workflow completes.
+
 ## 2026-09-28 shared-roster read-budget repair — v0.7.79 published
 
 Public stable release `v0.7.79` is live: [GitHub Release](https://github.com/MaxxTopia/discordmaxxer/releases/tag/v0.7.79). Release commit `0ab6d4b042adfbcaae61a2ee6d182419b068e2b0` and tag `v0.7.79` are pushed to `origin`. The GitHub Actions [test run](https://github.com/MaxxTopia/discordmaxxer/actions/runs/36502545710) and [release run](https://github.com/MaxxTopia/discordmaxxer/actions/runs/36502548711) both completed successfully. The release is not a draft or prerelease. Published assets include x64 and ARM64 ZIPs, the NSIS setup EXE, its blockmap, and `latest.yml`. The public `latest.yml` endpoint returned HTTP 200 and advertises version `0.7.79` with `Discordmaxxer-Setup-0.7.79.exe`.

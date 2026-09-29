@@ -18,7 +18,6 @@
 
 import { managedStyleRootNode } from "@api/Styles";
 import { definePluginSettings } from "@api/Settings";
-import { openPluginModal } from "@components/settings/tabs";
 import { createAndAppendStyle } from "@utils/css";
 import definePlugin, { OptionType } from "@utils/types";
 import { Toasts, UserStore } from "@webpack/common";
@@ -97,17 +96,10 @@ function setPluginEnabled(name: string, value: boolean): boolean {
 }
 
 function openProfileFlairSettings(): boolean {
-    const plugin = vencord()?.Plugins?.plugins?.DMProfileFlair;
-    if (plugin) {
-        try {
-            openPluginModal(plugin);
-            return true;
-        } catch (e) {
-            console.warn("[DMWelcome] could not open DMProfileFlair modal:", e);
-        }
-    }
     try {
-        vencord()?.Webpack?.Common?.SettingsRouter?.openUserSettings?.("vencord_plugins");
+        const router = vencord()?.Webpack?.Common?.SettingsRouter;
+        if (typeof router?.openUserSettings !== "function") return false;
+        router.openUserSettings("vencord_plugins");
         return true;
     } catch (e) {
         console.warn("[DMWelcome] could not open plugin settings:", e);
@@ -117,15 +109,6 @@ function openProfileFlairSettings(): boolean {
 
 function openDisplayNameStyleSettings(): boolean {
     const v = vencord();
-    const plugin = v?.Plugins?.plugins?.DMDisplayNameStyle;
-    if (plugin) {
-        try {
-            openPluginModal(plugin);
-            return true;
-        } catch (e) {
-            console.warn("[DMWelcome] could not open DMDisplayNameStyle modal:", e);
-        }
-    }
     try {
         const router = v?.Webpack?.Common?.SettingsRouter;
         if (typeof router?.openUserSettings !== "function") return false;

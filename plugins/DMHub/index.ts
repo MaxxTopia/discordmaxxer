@@ -13,7 +13,6 @@
  */
 
 import { managedStyleRootNode } from "@api/Styles";
-import { openPluginModal } from "@components/settings/tabs";
 import { createAndAppendStyle } from "@utils/css";
 import definePlugin from "@utils/types";
 
@@ -331,59 +330,37 @@ function setSetting(plugin: string, key: string, value: boolean, noRestart?: boo
     }
 }
 
-function openDMWidgetSettings() {
-    const plugin = vencord()?.Plugins?.plugins?.DMWidget;
-    if (plugin) {
-        try {
-            openPluginModal(plugin);
-            return;
-        } catch (e) {
-            console.warn("[DiscordmaxxerHub] could not open DMWidget modal:", e);
-        }
-    }
-
-    // Keep a graceful fallback if the plugin is disabled/unloaded or Discord's
-    // settings internals move. This still lands on the Vencord plugin settings
-    // page instead of leaving the user with a dead button.
+function openDMPluginSettings(pluginName: string): boolean {
+    // Do not call Vencord's openPluginModal here. Discord's current webpack
+    // surface can leave that helper with a null Modal component; the failure is
+    // asynchronous (during React render), so a try/catch around the call cannot
+    // protect the renderer and CrashHandler can get stuck behind a grey screen.
+    // The settings router is the stable public seam and keeps the whole action
+    // outside the fragile modal resolver.
     try {
-        vencord()?.Webpack?.Common?.SettingsRouter?.openUserSettings?.("vencord_plugins");
+        const router = vencord()?.Webpack?.Common?.SettingsRouter;
+        if (typeof router?.openUserSettings !== "function") {
+            console.warn(`[DiscordmaxxerHub] plugin settings route is unavailable for ${pluginName}`);
+            return false;
+        }
+        router.openUserSettings("vencord_plugins");
+        return true;
     } catch (e) {
-        console.warn("[DiscordmaxxerHub] could not open plugin settings:", e);
+        console.warn(`[DiscordmaxxerHub] could not open ${pluginName} settings:`, e);
+        return false;
     }
 }
 
 function openDMProfileFlairSettings() {
-    const plugin = vencord()?.Plugins?.plugins?.DMProfileFlair;
-    if (plugin) {
-        try {
-            openPluginModal(plugin);
-            return;
-        } catch (e) {
-            console.warn("[DiscordmaxxerHub] could not open DMProfileFlair modal:", e);
-        }
-    }
-    try {
-        vencord()?.Webpack?.Common?.SettingsRouter?.openUserSettings?.("vencord_plugins");
-    } catch (e) {
-        console.warn("[DiscordmaxxerHub] could not open Profile Flair settings:", e);
-    }
+    openDMPluginSettings("DMProfileFlair");
 }
 
 function openDMDisplayNameStyleSettings() {
-    const plugin = vencord()?.Plugins?.plugins?.DMDisplayNameStyle;
-    if (plugin) {
-        try {
-            openPluginModal(plugin);
-            return;
-        } catch (e) {
-            console.warn("[DiscordmaxxerHub] could not open DMDisplayNameStyle modal:", e);
-        }
-    }
-    try {
-        vencord()?.Webpack?.Common?.SettingsRouter?.openUserSettings?.("vencord_plugins");
-    } catch (e) {
-        console.warn("[DiscordmaxxerHub] could not open Display Name Style settings:", e);
-    }
+    openDMPluginSettings("DMDisplayNameStyle");
+}
+
+function openDMWidgetSettings() {
+    openDMPluginSettings("DMWidget");
 }
 
 function renderPanelHTML(): string {
