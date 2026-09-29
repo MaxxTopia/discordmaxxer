@@ -27,6 +27,9 @@ completed successfully, and the release is not a draft or prerelease. Published
 assets include x64 and ARM64 ZIPs, the NSIS setup EXE, its blockmap, and
 `latest.yml`. The public updater endpoint returned HTTP 200 and advertises
 version `0.7.81` with `Discordmaxxer-Setup-0.7.81.exe` and a SHA-512 value.
+The workflow initially created an empty GitHub Release body; it was amended
+from `docs/releases/v0.7.81.md`, and the published body now contains the
+attempt-#4 notes.
 
 The remaining gate is Diggy's installed-client test: update or install v0.7.81,
 fully restart Discordmaxxer, open DMHub's Create/Edit Profile Widget, close it,
