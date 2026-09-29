@@ -5,7 +5,7 @@
 > `CLAUDE.md` ("Operational facts" section). Those three are enough to build,
 > ship, and maintain without prior context.
 
-## 2026-09-29 v0.7.81 editor crash fix — release candidate
+## 2026-09-29 v0.7.81 editor crash fix — published
 
 The DMHub Create/Edit Profile Widget crash was reproduced on v0.7.80 as a
 Vencord `openPluginModal` null-`Modal` failure during asynchronous React
@@ -14,11 +14,25 @@ after that renderer failure. DMHub and DMWelcome now route plugin settings
 through `SettingsRouter.openUserSettings("vencord_plugins")`, which avoids the
 fragile modal resolver while retaining the existing plugin settings surface.
 
-The rebuilt candidate passed `pnpm testTypes`, `pnpm overlay:vencord`,
-`pnpm build:dev`, and `pnpm verifyPlugins`. A running-client CDP smoke test
-opened the DMWidget settings, closed it, and reopened it without a crash,
-recovery overlay, or relevant `Modal`/`DMWidget` exception. The public stable
-release remains v0.7.80 until the documented v0.7.81 tag workflow completes.
+The rebuilt candidate passed `pnpm test`, strict `pnpm overlay:vencord`,
+`pnpm build`, `pnpm verifyPlugins`, artifact verification, and both Windows
+installer targets. A running-client CDP smoke test opened the DMWidget
+settings, closed it, and reopened it without a crash, recovery overlay, or
+relevant `Modal`/`DMWidget` exception.
+
+Public stable release `v0.7.81` is live: [GitHub Release](https://github.com/MaxxTopia/discordmaxxer/releases/tag/v0.7.81). Release commit
+`1489772c8b62ca5bd4502a3c75df8d35ffb98ef8` and tag `v0.7.81` are pushed to
+`origin`. The GitHub Actions [release run](https://github.com/MaxxTopia/discordmaxxer/actions/runs/36635294133)
+completed successfully, and the release is not a draft or prerelease. Published
+assets include x64 and ARM64 ZIPs, the NSIS setup EXE, its blockmap, and
+`latest.yml`. The public updater endpoint returned HTTP 200 and advertises
+version `0.7.81` with `Discordmaxxer-Setup-0.7.81.exe` and a SHA-512 value.
+
+The remaining gate is Diggy's installed-client test: update or install v0.7.81,
+fully restart Discordmaxxer, open DMHub's Create/Edit Profile Widget, close it,
+and open it again. Signed-in Discord profile/widget behavior still requires the
+normal second-PC visual check; the release verification proves the crash fix and
+published updater path, not every account-runtime surface.
 
 ## 2026-09-28 shared-roster read-budget repair — v0.7.79 published
 
