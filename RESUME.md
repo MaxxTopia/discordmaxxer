@@ -5,20 +5,60 @@
 > `CLAUDE.md` ("Operational facts" section). Those three are enough to build,
 > ship, and maintain without prior context.
 
+## 2026-09-29 v0.7.82 DMWidget editor and existing-widget skin repair — release candidate
+
+The published v0.7.81 mitigation stopped the renderer crash, but it also
+removed the direct plugin-editor call and only opened the generic Plugins
+settings page. That made DMHub look repaired while the actual Create/Edit
+Profile Widget screen still did not open. The running USB test client was also
+loading `E:\discordmaxxer-overlay-rebuild-20260925`, not the C: release
+worktree, so early retests were against the stale fallback bundle.
+
+The v0.7.82 candidate restores the real `openPluginModal(plugin)` path for DMWidget,
+DMProfileFlair, and DMDisplayNameStyle, and patches Vencord's current
+PluginModal to use the stable legacy modal primitives that remain available in
+the supported Discord runtime. The active USB bundle was preserved at
+`E:\discordmaxxer-active-dist-before-editor-repair-20260929` before installing
+the candidate.
+
+Verification: `pnpm test`, `pnpm build:dev`, `pnpm overlay:vencord` (0
+warnings), `node overlay-scripts/verify-build.mjs`, `git diff --check`, and
+the overlay script syntax check passed. A live CDP test in the USB Electron
+client clicked DMHub → Create/Edit Profile Widget and found the recovered
+Valorant editor (`existing widget recovered`) with no crash overlay and no
+generic-settings fallback. The candidate is ready for the documented release
+gate. v0.7.81 remains the public baseline until the v0.7.82 commit and tag are
+pushed.
+
+Additional live verification: selecting Frosted Glass changed the picker,
+preview data-style, colors, frame, ornament, and motion immediately. Applying
+it to the recovered Valorant widget completed without a crash, synced the
+Discordmaxxer-only marker, and the visible profile popout widget carried
+`data-dm-widget-skin="frostedGlass"` with computed glass gradients, border,
+glow, and active `dm-widget-client-glint` / ice-drift animations. DMHub then
+closed and reopened successfully with the skin still selected. This proves the
+local Discordmaxxer renderer path; it does not prove vanilla Discord rendering
+or a second physical PC.
+
+Best next action: run the documented strict release gates and packaging, then
+publish v0.7.82 under the user's conditional authorization. Diggy's
+installed-client update and the second-PC signed-in widget check remain
+separate runtime tests.
+
 ## 2026-09-29 v0.7.81 editor crash fix — published
 
 The DMHub Create/Edit Profile Widget crash was reproduced on v0.7.80 as a
 Vencord `openPluginModal` null-`Modal` failure during asynchronous React
 rendering. The follow-up grey state came from CrashHandler trying to recover
 after that renderer failure. DMHub and DMWelcome now route plugin settings
-through `SettingsRouter.openUserSettings("vencord_plugins")`, which avoids the
-fragile modal resolver while retaining the existing plugin settings surface.
+through `SettingsRouter.openUserSettings("vencord_plugins")`, which avoided the
+fragile modal resolver but did not open the actual editor. This was an
+incomplete mitigation, not a complete DMWidget fix; the follow-up candidate
+above restores the editor path with a compatible modal implementation.
 
-The rebuilt candidate passed `pnpm test`, strict `pnpm overlay:vencord`,
-`pnpm build`, `pnpm verifyPlugins`, artifact verification, and both Windows
-installer targets. A running-client CDP smoke test opened the DMWidget
-settings, closed it, and reopened it without a crash, recovery overlay, or
-relevant `Modal`/`DMWidget` exception.
+The published candidate passed the release gates recorded at the time. Its
+running-client smoke test proved that the generic settings surface did not
+crash, but it did not prove that the DMWidget editor itself opened.
 
 Public stable release `v0.7.81` is live: [GitHub Release](https://github.com/MaxxTopia/discordmaxxer/releases/tag/v0.7.81). Release commit
 `1489772c8b62ca5bd4502a3c75df8d35ffb98ef8` and tag `v0.7.81` are pushed to
@@ -31,11 +71,10 @@ The workflow initially created an empty GitHub Release body; it was amended
 from `docs/releases/v0.7.81.md`, and the published body now contains the
 attempt-#4 notes.
 
-The remaining gate is Diggy's installed-client test: update or install v0.7.81,
-fully restart Discordmaxxer, open DMHub's Create/Edit Profile Widget, close it,
-and open it again. Signed-in Discord profile/widget behavior still requires the
-normal second-PC visual check; the release verification proves the crash fix and
-published updater path, not every account-runtime surface.
+The remaining gate for the published baseline is superseded by the unpublished
+editor candidate above. Signed-in Discord profile/widget behavior still requires
+the normal second-PC visual check; release verification proves the updater path,
+not every account-runtime surface.
 
 ## 2026-09-28 shared-roster read-budget repair — v0.7.79 published
 

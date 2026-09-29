@@ -13,6 +13,7 @@
  */
 
 import { managedStyleRootNode } from "@api/Styles";
+import { openPluginModal } from "@components/settings/tabs";
 import { createAndAppendStyle } from "@utils/css";
 import definePlugin from "@utils/types";
 
@@ -331,12 +332,21 @@ function setSetting(plugin: string, key: string, value: boolean, noRestart?: boo
 }
 
 function openDMPluginSettings(pluginName: string): boolean {
-    // Do not call Vencord's openPluginModal here. Discord's current webpack
-    // surface can leave that helper with a null Modal component; the failure is
-    // asynchronous (during React render), so a try/catch around the call cannot
-    // protect the renderer and CrashHandler can get stuck behind a grey screen.
-    // The settings router is the stable public seam and keeps the whole action
-    // outside the fragile modal resolver.
+    // Open the plugin's actual editor. The Vencord PluginModal implementation
+    // is patched in the rebrand pipeline to use the stable legacy modal
+    // components; routing only to the plugin list loses the user's context and
+    // makes the DMHub button look like it did nothing.
+    const plugin = vencord()?.Plugins?.plugins?.[pluginName];
+    if (plugin) {
+        try {
+            openPluginModal(plugin);
+            return true;
+        } catch (e) {
+            console.warn(`[DiscordmaxxerHub] could not open ${pluginName} editor:`, e);
+        }
+    }
+
+    // Keep a graceful fallback for a partially loaded plugin registry.
     try {
         const router = vencord()?.Webpack?.Common?.SettingsRouter;
         if (typeof router?.openUserSettings !== "function") {

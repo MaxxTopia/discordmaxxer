@@ -18,6 +18,7 @@
 
 import { managedStyleRootNode } from "@api/Styles";
 import { definePluginSettings } from "@api/Settings";
+import { openPluginModal } from "@components/settings/tabs";
 import { createAndAppendStyle } from "@utils/css";
 import definePlugin, { OptionType } from "@utils/types";
 import { Toasts, UserStore } from "@webpack/common";
@@ -96,6 +97,15 @@ function setPluginEnabled(name: string, value: boolean): boolean {
 }
 
 function openProfileFlairSettings(): boolean {
+    const plugin = vencord()?.Plugins?.plugins?.DMProfileFlair;
+    if (plugin) {
+        try {
+            openPluginModal(plugin);
+            return true;
+        } catch (e) {
+            console.warn("[DMWelcome] could not open DMProfileFlair editor:", e);
+        }
+    }
     try {
         const router = vencord()?.Webpack?.Common?.SettingsRouter;
         if (typeof router?.openUserSettings !== "function") return false;
@@ -109,6 +119,15 @@ function openProfileFlairSettings(): boolean {
 
 function openDisplayNameStyleSettings(): boolean {
     const v = vencord();
+    const plugin = v?.Plugins?.plugins?.DMDisplayNameStyle;
+    if (plugin) {
+        try {
+            openPluginModal(plugin);
+            return true;
+        } catch (e) {
+            console.warn("[DMWelcome] could not open DMDisplayNameStyle editor:", e);
+        }
+    }
     try {
         const router = v?.Webpack?.Common?.SettingsRouter;
         if (typeof router?.openUserSettings !== "function") return false;
