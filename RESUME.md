@@ -5,26 +5,30 @@
 > `CLAUDE.md` ("Operational facts" section). Those three are enough to build,
 > ship, and maintain without prior context.
 
-## 2026-09-30 v0.7.85 release candidate — gates passed, publication pending
+## 2026-09-30 v0.7.85 widget-skin and Fortnite refresh — published
 
 The latest field report is that another PC updated successfully but
 `Apply skin to existing widget` did not change the visible Board card. The
-v0.7.85 candidate addresses two release weaknesses: Discord builds that use
+v0.7.85 addresses two release weaknesses: Discord builds that use
 semantic `article`/`listitem` Board cards instead of the known class families,
 and remote-style writes that were treated as successful without reading the
 marker back. It also accepts additional profile-widget response shapes and
 clears stale wrapper markers only when the target is no longer a real card.
 
 `pnpm test`, `pnpm overlay:vencord`, `pnpm build`, `pnpm verifyPlugins`,
-`node overlay-scripts/verify-build.mjs`, the shipped-script ASCII check, and
-`git diff --check` passed. The rebuilt renderer contains DMWidget. The repair
-is committed locally as `42108f2`; the v0.7.85 package/release metadata is
-staged for the authorized publication. A USB staging copy with the repaired
-source, generated renderer, and a complete Electron runtime is at
+`node overlay-scripts/verify-build.mjs`, the shipped-script ASCII check,
+`pnpm package:dir`, `pnpm package:win`, and `git diff --check` passed. The
+rebuilt renderer contains DMWidget. Release commit `bf562f4` is pushed to
+`origin/main`, tag `v0.7.85` is published, and the GitHub release body contains
+the release notes. The successful GitHub Actions release run is
+`36719386540`. A USB staging copy with the repaired source, generated renderer,
+and a complete Electron runtime is at
 `E:\discordmaxxer-existing-widget-skin-fix-20260930-src`; the older USB
-checkout remains untouched. The desktop automation surface did not expose a
-visible Electron window for a signed-in test, so the real profile interaction
-is still unverified.
+checkout remains untouched. The public release contains x64/arm64 ZIPs, the
+NSIS installer, blockmap, and `latest.yml`; the public updater manifest
+advertises version `0.7.85` and the matching installer hash/size. The desktop
+automation surface did not expose a visible Electron window for a signed-in
+test, so the real profile interaction is still unverified.
 
 The release also documents the Fortnite behavior already present in this
 candidate: its first stat is `Current Rank`, and deployed Fortnite/Valorant
@@ -34,10 +38,11 @@ deliberately does not republish card content, so an existing published card
 needs an explicit content update/refresh to replace an old `Highest Rank`
 label.
 
-After the tag workflow publishes the Windows artifacts, the remaining proof
-is the signed-in second-PC test: select a different skin, click Apply, close
-the editor, and confirm the Board, compact popout, and Playing card change
-while the banner, avatar, and gradient remain untouched.
+Remaining proof is the signed-in second-PC test: update to v0.7.85, select a
+different skin, click Apply, close the editor, and confirm the Board, compact
+popout, and Playing card change while the banner, avatar, and gradient remain
+untouched. This release evidence proves source/build/tag/CI/asset publication,
+not that account-specific Discord UI interaction.
 
 ## 2026-09-30 v0.7.84 DMWidget widget-skin surfaces — published
 
