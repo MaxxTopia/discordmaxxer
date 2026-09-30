@@ -3,8 +3,8 @@
  * Copyright (c) 2026 Diggy
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * Fetches the project-wide tier roster on app startup and caches it for 30
- * seconds. The roster is a JSON file at a stable URL — see docs/v0.2-tier-
+ * Fetches the project-wide tier roster on app startup and caches it for five
+ * minutes. The roster is a JSON file at a stable URL — see docs/v0.2-tier-
  * roster.md for the design and the migration path to the hub-site domain.
  *
  * NOT a Vencord plugin — just a shared utility imported by vip.ts. Lives
@@ -27,13 +27,13 @@ import { Tier } from "./vip";
 // Live worker /roster endpoint — same Cloudflare Worker that handles VIP
 // claims (see optimizationmaxxing/vip-worker/worker.js). Each /claim writes
 // to KV and invalidates the worker's in-memory roster cache, so a freshly
-// claimed user appears in the roster within the bounded 30-second freshness
-// window. The Worker owns the shared edge cache; the client keeps its local
-// last-known-good snapshot and uses a normal cacheable GET so refreshes do not
-// create a unique URL or an unnecessary CORS preflight.
+// claimed user appears in the roster within the bounded two-minute Worker edge
+// freshness window. The client keeps its local last-known-good snapshot for
+// five minutes and uses a normal cacheable GET so refreshes do not create a
+// unique URL or an unnecessary CORS preflight.
 const ROSTER_URL = "https://optmaxxing-vip.maxxtopia.workers.dev/roster";
 
-const CACHE_TTL_MS = 30 * 1000; // 30 seconds; matches the worker cache
+const CACHE_TTL_MS = 5 * 60 * 1000; // Five minutes for normal refreshes
 const FETCH_RETRY_DELAY_MS = 30 * 1000;
 const FETCH_TIMEOUT_MS = 8000;
 
@@ -246,7 +246,7 @@ async function doFetch(): Promise<void> {
         try {
             res = await fetch(ROSTER_URL, {
                 // Revalidate the browser entry, while allowing the Worker to
-                // serve its shared 30-second edge response without KV reads.
+                // serve its shared two-minute edge response without KV reads.
                 cache: "no-cache",
                 signal: ctrl.signal
             });
@@ -419,7 +419,7 @@ export function clearOptimisticProfileFlair(userId: string): void {
  *  flair? Lets DMProfileFlair's page-wide <img>/background scan early-out
  *  entirely when nobody (besides possibly self) has avatar flair — the common
  *  case in most servers. The O(n) roster walk runs only when the underlying
- *  cache is replaced (~once/30 sec); every other call is O(1). */
+ *  cache is replaced (~once/five minutes); every other call is O(1). */
 export function rosterHasAnyAvatarFlair(): boolean {
     ensureFresh();
     if (!cache) return false;
