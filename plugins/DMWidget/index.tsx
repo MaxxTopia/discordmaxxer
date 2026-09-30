@@ -288,7 +288,7 @@ function fortniteStatLines(): string[] {
     // Prioritized; take the first 6 that exist. 👑 = Unreal badge, 💵 = green $
     // (Discord styles all stat text one color, so an emoji is the only "color").
     const all = [
-        `Highest Rank | ${rank}`, // rank badge is drawn as the stat icon (fields.icon)
+        `Current Rank | ${rank}`, // rank badge is drawn as the stat icon (fields.icon)
         `Earnings | 💵 ${earn}`,
         placement ? `Best (Ch) | ${placement}` : null,
         `Wins | ${fmtNum(o.wins)}`,
@@ -623,7 +623,7 @@ function buildSurfaces(tpl: string, imageKey: string | null, opts?: { titleIconK
         if (slot.peakIconKey && stats.stat_3) stats.stat_3.fields.icon = assetImg(slot.peakIconKey);
     }
     if (tpl === "fortnite") {
-        // Highest Rank (stat_1) wears the Fortnite rank badge.
+        // Current Rank (stat_1) wears the Fortnite rank badge.
         const slot = getSlot(tpl);
         if (slot.rankIconKey && stats.stat_1) stats.stat_1.fields.icon = assetImg(slot.rankIconKey);
     }
@@ -800,6 +800,7 @@ async function republishSelectedWidgetStyleUnsafe(slotKey: string): Promise<void
     const id = getSlot(slotKey);
     const preset = WIDGET_STYLE_PRESETS.find(item => item.id === id.widgetStyle) ?? selectedWidgetPreset();
     updateAttachedWidgetStylesForSlot(slotKey, preset);
+    const editorWasOpen = widgetSkinEditorOpen();
     const renderedBeforePublish = scanWidgetSkinCards();
     scheduleWidgetSkinScan();
     if (!SNOWFLAKE.test(id.appId)) {
@@ -821,7 +822,9 @@ async function republishSelectedWidgetStyleUnsafe(slotKey: string): Promise<void
     scheduleWidgetSkinScan();
     const renderedNote = rendered > 0
         ? ` ${rendered} visible widget${rendered === 1 ? "" : "s"} restyled now.`
-        : " The skin was saved, but no visible Board card was detected yet; reopen the profile Board to render it.";
+        : editorWasOpen
+            ? " The editor is still open, so Board rendering is queued; close it and the visible Board card will be restyled without changing the published card."
+            : " The skin was saved, but no visible Board card was detected yet; reopen the profile Board to render it.";
     toast(synced
         ? `${SLOT_LABEL[slotKey] ?? slotKey} skin synced for your other Discordmaxxer installs.${renderedNote} Your published card was left unchanged.`
         : `${SLOT_LABEL[slotKey] ?? slotKey} skin saved on this PC.${renderedNote} Cross-install sync was unavailable, so your published card was left unchanged.`, rendered > 0 ? Toasts.Type.SUCCESS : Toasts.Type.MESSAGE, 8500);
@@ -863,7 +866,7 @@ async function refreshGameSlot(tpl: string, announce = false): Promise<boolean> 
             }
             fnStats = res.overall;
             // Upload the current rank badge before republishing so buildSurfaces can
-            // hang it on the Highest Rank stat cell.
+            // hang it on the Current Rank stat cell.
             await syncFortniteRankIcon(tpl);
         } else {
             const riot = String(s.valRiotId ?? "").trim(); const key = String(s.valApiKey ?? "").trim();
@@ -1470,6 +1473,7 @@ type WidgetSkinSnapshot = {
 
 const WIDGET_SKIN_ATTRS = [
     "data-dm-widget-skin",
+    "data-dm-widget-card-root",
     "data-dm-widget-frame",
     "data-dm-widget-ornament",
     "data-dm-widget-motion",
@@ -1499,6 +1503,7 @@ let widgetSkinRun = 0;
 // scan it while it mounts: its cards/buttons can match Discord's generic
 // widget selectors and a renderer scan during that mount is pure risk.
 let widgetSkinEditorMounts = 0;
+let widgetSkinRescanAfterEditor = false;
 const widgetSkinEditorOpen = (): boolean => widgetSkinEditorMounts > 0;
 // The local slot can outlive an app replacement or an account switch. Keep a
 // second runtime map for the application IDs that Discord says are actually
@@ -1859,7 +1864,10 @@ async function refreshAttachedWidgetStyles(force = false): Promise<void> {
     } finally {
         if (attachedWidgetRefreshPromise === task) attachedWidgetRefreshPromise = null;
     }
-    scheduleWidgetSkinScan();
+    // Style recovery can finish while the renderer's startup timer is already
+    // queued. Replace that stale pass so the recovered app hints are applied
+    // immediately instead of waiting for the periodic reconciliation sweep.
+    scheduleWidgetSkinScan(true);
 }
 
 function updateAttachedWidgetStylesForSlot(slotKey: string, preset: WidgetStylePreset): void {
@@ -1963,7 +1971,7 @@ function domApplicationId(element: Element, known: Set<string>): string | null {
     return null;
 }
 
-function reactApplicationId(element: Element, known: Set<string>, maxBudget = 520, maxDepth = 12): string | null {
+function reactApplicationId(element: Element, known: Set<string>, maxBudget = 1000, maxDepth = 16): string | null {
     const roots = Object.keys(element).filter(key => key.startsWith("__reactFiber") || key.startsWith("__reactProps"));
     const seen = new WeakSet<object>();
     const queue: Array<{ value: any; depth: number; hint: string; }> = roots.map(key => ({ value: (element as any)[key], depth: 0, hint: key }));
@@ -1999,20 +2007,20 @@ function reactApplicationId(element: Element, known: Set<string>, maxBudget = 52
 // keep the selector broad, then use the known attached application id as the
 // safety filter so ordinary activity cards are never skinned by accident.
 const WIDGET_CARD_SELECTOR = [
+    // Only target the actual application-card family. Profile/header/body
+    // wrappers can contain an application id too, but they must never become
+    // skin roots because that would cover the avatar, banner, and gradient.
+    '[class*="card__"]',
+    '[class*="card_"]',
+    '[class~="card"]',
     '[class*="widget"]',
     '[class*="Widget"]',
     '[class*="application"]',
     '[class*="Application"]',
-    '[class*="cardsList"] [role="button"]',
     '[class*="cardsList"] > li > div',
-    '[class*="profile"] [role="listitem"]',
-    '[class*="profile"] article',
-    '[class*="profile"] [role="button"]',
-    '[class*="board"] [role="listitem"]',
-    '[class*="Board"] [role="listitem"]',
     '[data-list-item-id*="application" i]'
 ].join(",");
-const WIDGET_CARD_FALLBACK_SELECTOR = 'article, li[role="listitem"], [role="article"], [role="listitem"], [class*="card__"], [class*="card_"]';
+const WIDGET_CARD_FALLBACK_SELECTOR = '[class*="card__"], [class*="card_"], [class~="card"], [class*="widget"], [class*="Widget"], [class*="application"], [class*="Application"]';
 const WIDGET_SURFACE_SELECTOR = [
     '[class*="profile"]',
     '[class*="Profile"]',
@@ -2024,65 +2032,181 @@ const WIDGET_SURFACE_SELECTOR = [
 ].join(",");
 const WIDGET_MUTATION_SELECTOR = [
     ...WIDGET_APPLICATION_ID_ATTRIBUTES.map(attribute => `[${attribute}]`),
-    '[class*="widget"]',
-    '[class*="Widget"]',
-    '[class*="cardsList"] [role="button"]',
-    '[class*="board"] [role="listitem"]',
-    '[class*="Board"] [role="listitem"]',
-    '[class*="profile"] article',
-    '[class*="Profile"] article',
-    '[class*="board"] article',
-    '[class*="Board"] article',
-    '[class*="profile"] [role="article"]',
-    '[class*="Profile"] [role="article"]',
-    '[class*="board"] [role="article"]',
-    '[class*="Board"] [role="article"]'
+    WIDGET_CARD_SELECTOR
 ].join(",");
 
 const WIDGET_CARD_MAX_ANCESTOR_DEPTH = 20;
+// The Discordmaxxer Rich Presence card is not one of the user's attached
+// Social SDK applications, so it cannot be resolved through the app-id map.
+// It is still part of the same compact profile composition and should carry
+// the active widget treatment without affecting unrelated activity cards.
+const DISCORDMAXXER_PLAYING_APP_ID = "discordmaxxer-playing";
 
 function escapeWidgetHint(value: string): string {
     return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function widgetCardRoot(element: HTMLElement, appId = "", hints?: Map<string, string[]>): HTMLElement {
+function widgetSurfaceLike(element: HTMLElement): boolean {
+    const className = typeof element.className === "string" ? element.className : "";
+    const role = element.getAttribute("role") ?? "";
+    return role === "dialog" || /profile|popout|header|body|modal|dialog|outer|inner|avatar|banner/i.test(`${className} ${role}`);
+}
+
+function widgetCardLike(element: HTMLElement): boolean {
+    const className = typeof element.className === "string" ? element.className : "";
+    if (widgetSurfaceLike(element)) return false;
+    // Hashed Discord class names use forms such as card__9d597,
+    // widgetContainer__0ea1a, and application__abc. The Board currently uses
+    // the camel-cased middle form; the old boundary-only expression missed it
+    // and left the full Board plain while the compact popout still worked.
+    // Keep the token boundary so profileWidget/profileApplication wrappers do
+    // not become skin roots merely because they contain the word.
+    return /(?:^|[\s_-])(?:card|widget|application)(?:(?:__|_)[A-Za-z0-9]+|[A-Z][A-Za-z0-9]*|$)/i.test(className);
+}
+
+function widgetCardContainerLike(element: HTMLElement): boolean {
+    const className = typeof element.className === "string" ? element.className : "";
+    const tagName = element.tagName.toUpperCase();
+    const role = element.getAttribute("role") ?? "";
+    // Discord's Board wraps its visible cards in a cardsList/UL. That wrapper
+    // is not a card root: styling it makes the whole list inherit one skin and
+    // leaves the actual cards visually plain. Keep this guard centralized so
+    // discovery, ancestor scoring, and stale-marker cleanup agree.
+    return /cardsList/i.test(className) || tagName === "UL" || tagName === "OL" || role === "list";
+}
+
+function widgetSkinCardCandidate(element: HTMLElement, appHints: string[] = [], knownAppId = ""): boolean {
+    if (!widgetCardLike(element)) return false;
+    if (widgetCardContainerLike(element)) return false;
+    const rect = element.getBoundingClientRect();
+    if (rect.width < 120 || rect.height < 40 || rect.width > 760 || rect.height > 560) return false;
+    // A recovered, attached application id is stronger than a text-label
+    // guess. Board titles can be concatenated with decorative glyphs (for
+    // example `ValツDiggy`), so insisting on a text boundary here rejects the
+    // correct card even though the DOM has already identified its app.
+    if (!appHints.length || knownAppId) return true;
+    const text = String(element.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 1800);
+    return widgetTextMatchesHints(text, appHints);
+}
+
+function widgetTextMatchesHints(text: string, appHints: string[]): boolean {
+    const normalized = String(text ?? "").replace(/\s+/g, " ").trim().slice(0, 1800);
+    if (!normalized) return false;
+    return appHints.some(label => {
+        const clean = label.trim();
+        if (clean.length < 3) return false;
+        if (new RegExp(`(?:^|\\s|[·•|:/-])${escapeWidgetHint(clean)}(?:$|\\s|[·•|:/-])`, "i").test(normalized)) return true;
+        // Discord sometimes concatenates adjacent text nodes when a card is
+        // read through textContent (for example `ValRank: Diamond 3`). Keep
+        // the boundary requirement on the left, but accept an uppercase
+        // transition on the right so the known app label still identifies
+        // the correct card without matching an arbitrary substring.
+        const lowerText = normalized.toLocaleLowerCase();
+        const lowerLabel = clean.toLocaleLowerCase();
+        let offset = lowerText.indexOf(lowerLabel);
+        while (offset >= 0) {
+            const before = normalized[offset - 1];
+            const after = normalized[offset + clean.length];
+            const leftBoundary = offset === 0 || /[\s·•|:/-]/.test(before);
+            // Discord's Board decorates the display name with non-ASCII
+            // glyphs (for example `ValツDiggy`). Treat a non-ASCII character
+            // as a boundary too, while keeping ASCII letters/digits strict so
+            // labels such as `Valorant` cannot match the shorter `Val` hint.
+            const rightBoundary = !after
+                || /[\s·•|:/-]/.test(after)
+                || /[A-Z]/.test(after)
+                || !/[A-Za-z0-9]/.test(after);
+            if (leftBoundary && rightBoundary) return true;
+            offset = lowerText.indexOf(lowerLabel, offset + 1);
+        }
+        return false;
+    });
+}
+
+function nestedWidgetCardRoot(surface: HTMLElement, appHints: string[]): HTMLElement | null {
+    try {
+        // An app wrapper without a recovered label is ambiguous when several
+        // Board cards are present. Skip rather than skinning the first card.
+        if (!appHints.length) return null;
+        const candidates = Array.from(surface.querySelectorAll<HTMLElement>(WIDGET_CARD_SELECTOR)).slice(0, 180);
+        let best: { node: HTMLElement; score: number; } | null = null;
+        for (const candidate of candidates) {
+            if (!widgetSkinCardCandidate(candidate, appHints)) continue;
+            const rect = candidate.getBoundingClientRect();
+            const className = typeof candidate.className === "string" ? candidate.className : "";
+            const role = candidate.getAttribute("role") ?? "";
+            const tagName = candidate.tagName.toUpperCase();
+            const isListContainer = widgetCardContainerLike(candidate);
+            let score = 100;
+            if (/card/i.test(className)) score += 32;
+            if (/widget|application/i.test(className)) score += 20;
+            if (/^(article|listitem)$/.test(role)) score += 8;
+            // A matching cardsList can contain the same label as its child,
+            // but it is not the surface users see. Prefer the actual card so
+            // the skin cannot bleed across the whole Board list.
+            if (isListContainer) score -= 64;
+            if (/^DIV$/i.test(tagName) && /(?:^|[_-])card(?:__|_)/i.test(className)) score += 20;
+            if (rect.width > 520 || rect.height > 420) score -= 12;
+            if (!best || score > best.score) best = { node: candidate, score };
+        }
+        return best?.node ?? null;
+    } catch {
+        return null;
+    }
+}
+
+function widgetCardRoot(element: HTMLElement, appId = "", hints?: Map<string, string[]>): HTMLElement | null {
     const appHints = appId ? (hints?.get(appId) ?? []) : [];
+    if (widgetSkinCardCandidate(element, appHints, appId)) return element;
+    const isCardContainer = widgetCardContainerLike(element);
+    if (!widgetCardLike(element) || isCardContainer) {
+        // React sometimes exposes the application id on the profile header or
+        // body instead of the card host. It can also expose it on the
+        // cardsList that contains several card wrappers. Resolve back down to
+        // the actual labeled Board card before styling; otherwise the entire
+        // profile surface or list gets the skin and the visible widget remains
+        // plain.
+        const nested = nestedWidgetCardRoot(element, appHints);
+        if (nested) return nested;
+    }
     const candidates: Array<{ node: HTMLElement; score: number; }> = [];
     let current: HTMLElement | null = element;
-    for (let depth = 0; current && depth < Math.min(WIDGET_CARD_MAX_ANCESTOR_DEPTH, 12); depth++, current = current.parentElement) {
+    for (let depth = 0; current && depth < WIDGET_CARD_MAX_ANCESTOR_DEPTH; depth++, current = current.parentElement) {
         try {
             const rect = current.getBoundingClientRect();
             if (rect.width < 120 || rect.height < 40) continue;
             const className = typeof current.className === "string" ? current.className : "";
             const role = current.getAttribute("role") ?? "";
-            const selectorMatch = current.matches(WIDGET_CARD_SELECTOR);
+            const tagName = current.tagName.toUpperCase();
+            const isListContainer = widgetCardContainerLike(current);
+            const selectorMatch = widgetSkinCardCandidate(current, appHints, appId);
             // Reading textContent is relatively expensive on the profile
             // wrapper. Only do it for card-like ancestors, and cap the amount
             // of text used for label matching.
             const text = selectorMatch && appHints.length
                 ? String(current.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 1200)
                 : "";
-            const labelMatch = !!text && appHints.some(label => {
-                const clean = label.trim();
-                if (clean.length < 3) return false;
-                return new RegExp(`(?:^|\\s|[·•|:/-])${escapeWidgetHint(clean)}(?:$|\\s|[·•|:/-])`, "i").test(text);
-            });
+            const labelMatch = !!text && widgetTextMatchesHints(text, appHints);
             // Discord's Board has several nested wrappers that all look like
             // cards. Score the wrapper that owns the widget label and has a
             // card-like role/class, instead of taking the first broad match.
             let score = Math.max(0, 22 - depth);
             if (selectorMatch) score += 28;
             if (labelMatch) score += 100;
-            if (/card|widget|application/i.test(`${className} ${role}`)) score += 24;
-            if (/^(article|listitem)$/.test(role)) score += 16;
-            if (/profile|board|modal|popout/i.test(`${className} ${role}`) && !labelMatch) score -= 35;
+            if (/card/i.test(className)) score += 32;
+            if (/widget|application/i.test(className)) score += 20;
+            if (/^(article|listitem)$/.test(role)) score += 8;
+            if (isListContainer) score -= 64;
+            if (/^DIV$/i.test(tagName) && /(?:^|[_-])card(?:__|_)/i.test(className)) score += 20;
+            if (!selectorMatch) continue;
+            if (widgetSurfaceLike(current)) continue;
             if (text.length >= 1200) score -= 20;
-            if (rect.width > 900 || rect.height > 700) score -= 45;
+            if (rect.width > 520 || rect.height > 420) score -= 12;
             candidates.push({ node: current, score });
         } catch { /* ignore a tearing/partially-mounted node */ }
     }
     candidates.sort((left, right) => right.score - left.score);
-    return candidates[0]?.node ?? element;
+    return candidates[0]?.node ?? null;
 }
 
 function hintedWidgetApplicationId(element: HTMLElement, hints: Map<string, string[]>): string | null {
@@ -2093,7 +2217,7 @@ function hintedWidgetApplicationId(element: HTMLElement, hints: Map<string, stri
     // smallest connected ancestor identifies exactly one attached app.
     let current: HTMLElement | null = element;
     let fallback: string | null = null;
-    for (let depth = 0; current && depth < Math.min(WIDGET_CARD_MAX_ANCESTOR_DEPTH, 12); depth++, current = current.parentElement) {
+    for (let depth = 0; current && depth < WIDGET_CARD_MAX_ANCESTOR_DEPTH; depth++, current = current.parentElement) {
         let text = "";
         let html = "";
         try {
@@ -2107,11 +2231,9 @@ function hintedWidgetApplicationId(element: HTMLElement, hints: Map<string, stri
         } catch { continue; }
         const matches: string[] = [];
         for (const [appId, labels] of hints) {
-            const found = labels.some(label => {
+            const found = widgetTextMatchesHints(text, labels) || labels.some(label => {
                 const clean = label.trim().toLowerCase();
-                if (clean.length < 3) return false;
-                const boundary = new RegExp(`(?:^|\\s|[·•|:/-])${escapeWidgetHint(clean)}(?:$|\\s|[·•|:/-])`, "i");
-                return boundary.test(text) || (clean.length >= 8 && html.includes(clean));
+                return clean.length >= 8 && html.includes(clean);
             });
             if (found) matches.push(appId);
         }
@@ -2132,7 +2254,8 @@ function widgetApplicationMatch(element: HTMLElement, known: Set<string>, hints:
     if (cached && cached.epoch === widgetApplicationCacheEpoch && now - cached.checkedAt < cacheTtl)
         return cached.match && known.has(cached.match.appId) && cached.match.root.isConnected ? cached.match : null;
     const remember = (appId: string | null, related?: HTMLElement): WidgetCardMatch | null => {
-        const match = appId ? { appId, root: widgetCardRoot(related ?? element, appId, hints) } : null;
+        const root = appId ? widgetCardRoot(related ?? element, appId, hints) : null;
+        const match = appId && root ? { appId, root } : null;
         const value = { match, checkedAt: now, epoch: widgetApplicationCacheEpoch };
         widgetApplicationCache.set(element, value);
         if (related && related !== element) widgetApplicationCache.set(related, value);
@@ -2143,16 +2266,28 @@ function widgetApplicationMatch(element: HTMLElement, known: Set<string>, hints:
     // application wrapper, where Discord may not expose the id on the first
     // React host node at all.
     const directReactId = reactApplicationId(element, known);
-    if (directReactId) return remember(directReactId, element);
+    if (directReactId) {
+        const match = remember(directReactId, element);
+        if (match) return match;
+    }
     const directDomId = domApplicationId(element, known);
-    if (directDomId) return remember(directDomId, element);
+    if (directDomId) {
+        const match = remember(directDomId, element);
+        if (match) return match;
+    }
     let current: HTMLElement | null = element;
-    for (let depth = 0; current && depth < Math.min(WIDGET_CARD_MAX_ANCESTOR_DEPTH, 12); depth++, current = current.parentElement) {
+    for (let depth = 0; current && depth < WIDGET_CARD_MAX_ANCESTOR_DEPTH; depth++, current = current.parentElement) {
         const appId = reactApplicationId(current, known) ?? domApplicationId(current, known);
-        if (appId) return remember(appId, current);
+        if (appId) {
+            const match = remember(appId, current);
+            if (match) return match;
+        }
     }
     const hintedId = hintedWidgetApplicationId(element, hints);
-    if (hintedId) return remember(hintedId, widgetCardRoot(element, hintedId, hints));
+    if (hintedId) {
+        const match = remember(hintedId, element);
+        if (match) return match;
+    }
     return remember(null);
 }
 
@@ -2170,6 +2305,26 @@ function restoreWidgetSkin(root: HTMLElement): void {
     widgetSkinRoots.delete(root);
 }
 
+function clearUnmarkedWidgetSkinTargets(): void {
+    // v0.7.82 could leave a skin marker on a profile wrapper when Discord
+    // exposed the application id above the actual card. Clear that legacy
+    // marker on startup/reconciliation so the profile surface cannot remain
+    // styled after the renderer is repaired or hot-reloaded.
+    try {
+        const stale = document.querySelectorAll<HTMLElement>('[data-dm-widget-skin]');
+        for (const root of Array.from(stale).slice(0, 80)) {
+            // A previous pass could have incorrectly marked the Board's
+            // cardsList as a card root. It is still stale even though it has
+            // the root marker, because only the visible child card should be
+            // styled.
+            if (root.dataset.dmWidgetCardRoot === "true" && !widgetCardContainerLike(root)) continue;
+            restoreWidgetSkin(root);
+            for (const attr of WIDGET_SKIN_ATTRS) root.removeAttribute(attr);
+            for (const name of WIDGET_SKIN_VARS) root.style.removeProperty(name);
+        }
+    } catch { /* ignore a profile subtree that is being replaced */ }
+}
+
 function applyWidgetSkin(root: HTMLElement, preset: WidgetStylePreset, appId: string): void {
     if (!widgetSkinRoots.has(root)) {
         const attrs: Record<string, string | null> = {};
@@ -2179,6 +2334,7 @@ function applyWidgetSkin(root: HTMLElement, preset: WidgetStylePreset, appId: st
         widgetSkinRoots.set(root, { attrs, vars });
     }
     root.dataset.dmWidgetSkin = preset.id;
+    root.dataset.dmWidgetCardRoot = "true";
     root.dataset.dmWidgetFrame = preset.frame;
     root.dataset.dmWidgetOrnament = preset.ornament;
     root.dataset.dmWidgetMotion = preset.motion;
@@ -2191,13 +2347,62 @@ function applyWidgetSkin(root: HTMLElement, preset: WidgetStylePreset, appId: st
     root.style.setProperty("--dmw-skin-surface", preset.surface);
 }
 
-function scanWidgetSkinCards(): number {
-    if (!document.body || widgetSkinEditorOpen()) return 0;
+function isDiscordmaxxerPlayingCard(element: HTMLElement): boolean {
+    if (!widgetCardLike(element)) return false;
+    const className = typeof element.className === "string" ? element.className : "";
+    if (!/(?:^|[\s_-])card(?:(?:__|_)[A-Za-z0-9]+|[A-Z][A-Za-z0-9]*|$)/i.test(className)) return false;
+    const rect = element.getBoundingClientRect();
+    if (rect.width < 180 || rect.height < 70 || rect.width > 520 || rect.height > 260) return false;
+    const text = String(element.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 900);
+    // The branded Rich Presence has remained stable across the Discord
+    // layouts we support: a Playing label, the Discordmaxxer activity, and
+    // the maxxtopia link. Requiring all three keeps ordinary game cards out.
+    return /(?:^|\s)playing(?:\s|app|$)/i.test(text)
+        && /discordmaxxer|discmaxxer/i.test(text)
+        && /maxxtopia\.com/i.test(text);
+}
+
+function playingCardPreset(active: Map<string, WidgetStylePreset>, seen: Set<HTMLElement>): WidgetStylePreset | null {
+    if (!active.size) return null;
+    // If a per-slot style was just rendered in this pass, match the Playing
+    // card to the first visible widget rather than silently using a stale
+    // global gallery value. This preserves the original “same skin” look even
+    // when Val and Fortnite have different slot selections.
+    for (const root of Array.from(seen)) {
+        const appId = root.dataset.dmWidgetAppId ?? "";
+        const preset = appId ? active.get(appId) : undefined;
+        if (preset) return preset;
+    }
+    for (const root of Array.from(widgetSkinRoots.keys()).reverse()) {
+        if (!root.isConnected || root.dataset.dmWidgetAppId === DISCORDMAXXER_PLAYING_APP_ID) continue;
+        const rect = root.getBoundingClientRect();
+        const appId = root.dataset.dmWidgetAppId ?? "";
+        if (rect.width >= 20 && rect.height >= 12 && appId) {
+            const preset = active.get(appId);
+            if (preset) return preset;
+        }
+    }
+    return Array.from(active.values())[0] ?? null;
+}
+
+function scanWidgetSkinCards(budgetMs = 120): number {
+    if (!document.body) {
+        return 0;
+    }
+    if (widgetSkinEditorOpen()) {
+        widgetSkinRescanAfterEditor = true;
+        return 0;
+    }
+    clearUnmarkedWidgetSkinTargets();
     const seen = new Set<HTMLElement>();
     let applied = 0;
     let complete = true;
     const startedAt = Date.now();
-    const withinBudget = () => Date.now() - startedAt < 24;
+    // The v0.7.80 24 ms cap was too short for Discord's full Board: it often
+    // spent the whole pass enumerating generic profile nodes before reaching
+    // the actual cards. Keep a bounded pass for safety, but give the targeted
+    // Board scan enough time to finish and apply a real skin.
+    const withinBudget = () => Date.now() - startedAt < budgetMs;
     const query = (selector: string, limit: number): HTMLElement[] => {
         if (!withinBudget()) { complete = false; return []; }
         try { return Array.from(document.querySelectorAll<HTMLElement>(selector)).slice(0, limit); }
@@ -2222,14 +2427,30 @@ function scanWidgetSkinCards(): number {
         if (active.size) {
             const known = new Set(active.keys());
             const hints = knownWidgetHints();
-            // Put explicit application-id hosts first, then use a small,
-            // bounded fallback for full Board cards whose id is hidden in
-            // React. This function runs while Discord is rendering, so it must
-            // yield instead of walking the entire app tree.
+            const hintLabels = Array.from(hints.values()).flat().filter(label => label.length >= 3);
+            // Put explicit application-id hosts first, then prioritize card
+            // nodes whose visible text names one of the user's attached apps.
+            // This reaches the full Board before unrelated Discord cards while
+            // retaining bounded limits for the main renderer.
             const candidateSet = new Set<HTMLElement>();
+            const orderedCandidates: HTMLElement[] = [];
+            const addCandidates = (candidates: Iterable<HTMLElement>) => {
+                for (const candidate of candidates) {
+                    if (candidateSet.has(candidate)) continue;
+                    candidateSet.add(candidate);
+                    orderedCandidates.push(candidate);
+                }
+            };
             const explicitSelector = WIDGET_APPLICATION_ID_ATTRIBUTES.map(attribute => `[${attribute}]`).join(",");
-            for (const candidate of query(explicitSelector, 120)) candidateSet.add(candidate);
-            for (const candidate of query(WIDGET_CARD_SELECTOR, 260)) candidateSet.add(candidate);
+            addCandidates(query(explicitSelector, 240));
+            const surfaceCards = queryWithinSurfaces(WIDGET_CARD_SELECTOR, 520);
+            const hintedSurfaceCards = surfaceCards.filter(candidate => {
+                try { return widgetTextMatchesHints(String(candidate.textContent ?? ""), hintLabels); }
+                catch { return false; }
+            });
+            addCandidates(hintedSurfaceCards);
+            addCandidates(surfaceCards);
+            addCandidates(query(WIDGET_CARD_SELECTOR, 520));
             const inspect = (candidates: Iterable<HTMLElement>, limit: number) => {
                 let inspected = 0;
                 for (const candidate of candidates) {
@@ -2245,22 +2466,32 @@ function scanWidgetSkinCards(): number {
                     applied++;
                 }
             };
-            inspect(candidateSet, 320);
-            if (complete && seen.size < active.size) {
-                // Some Board builds expose the application through a hero
-                // image or CSS background instead of a card class.
-                inspect(queryWithinSurfaces('img, [style*="background-image"]', 160), 160);
+            inspect(orderedCandidates, 620);
+            // The compact profile also contains Discordmaxxer's Rich Presence
+            // “Playing” card. It has no attached Social SDK app id, so handle
+            // that one branded card explicitly after the guarded app scan.
+            const playingCandidates = surfaceCards
+                .filter(candidate => isDiscordmaxxerPlayingCard(candidate))
+                .sort((left, right) => {
+                    const a = left.getBoundingClientRect();
+                    const b = right.getBoundingClientRect();
+                    return (a.width * a.height) - (b.width * b.height);
+                });
+            const playingCard = playingCandidates[0];
+            const playingPreset = playingCard ? playingCardPreset(active, seen) : null;
+            if (playingCard && playingPreset && !seen.has(playingCard)) {
+                seen.add(playingCard);
+                applyWidgetSkin(playingCard, playingPreset, DISCORDMAXXER_PLAYING_APP_ID);
+                applied++;
             }
             if (complete && seen.size < active.size) {
                 // Keep the final text fallback to semantic card nodes. The
                 // former div-wide query was the main source of renderer stalls
                 // when the editor or a profile modal mounted.
-                const labels = Array.from(hints.values()).flat().filter(label => label.length >= 3);
                 const textCandidates = queryWithinSurfaces(WIDGET_CARD_FALLBACK_SELECTOR, 160)
                     .filter(candidate => {
                         const text = String(candidate.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 900);
-                        return text.length >= 3 && labels.some(label =>
-                            new RegExp(`(?:^|\\s|[·•|:/-])${escapeWidgetHint(label)}(?:$|\\s|[·•|:/-])`, "i").test(text));
+                        return text.length >= 3 && widgetTextMatchesHints(text, hintLabels);
                     });
                 inspect(textCandidates, textCandidates.length);
             }
@@ -2287,9 +2518,32 @@ function scanWidgetSkinCards(): number {
     return applied;
 }
 
-function scheduleWidgetSkinScan(): void {
-    if (document.hidden || widgetSkinEditorOpen() || widgetSkinTimer !== null || widgetSkinFrame !== null) return;
-    const delay = Math.max(120, widgetSkinLastScanAt + 500 - Date.now());
+function scheduleWidgetSkinScan(immediate = false): void {
+    if (document.hidden || widgetSkinEditorOpen()) return;
+    // A normal scan may already be waiting from renderer startup when style
+    // hydration or a profile mount completes. Let the explicit/immediate path
+    // replace that stale schedule; otherwise it returns early and the queued
+    // pass can run with an empty style map, leaving the new cards plain.
+    if (immediate && widgetSkinTimer !== null) {
+        clearTimeout(widgetSkinTimer);
+        widgetSkinTimer = null;
+    }
+    if (immediate && widgetSkinFrame !== null) {
+        window.cancelAnimationFrame(widgetSkinFrame);
+        widgetSkinFrame = null;
+    }
+    if (widgetSkinTimer !== null || widgetSkinFrame !== null) return;
+    // Profile popouts mount in several React commits. An explicit card-related
+    // mutation should get a quick coalesced pass, while ordinary background
+    // reconciliation keeps the old 500 ms throttle for input responsiveness.
+    // A profile mount can expose several React host trees before the visible
+    // card settles. Give only that coalesced mount pass enough room to finish
+    // the bounded resolver; keep idle reconciliation on the short budget so
+    // normal Discord interaction remains responsive.
+    const scanBudgetMs = immediate ? 700 : 120;
+    const delay = immediate
+        ? Math.max(16, widgetSkinLastScanAt + 120 - Date.now())
+        : Math.max(120, widgetSkinLastScanAt + 500 - Date.now());
     widgetSkinTimer = window.setTimeout(() => {
         widgetSkinTimer = null;
         if (document.hidden || widgetSkinEditorOpen()) return;
@@ -2297,7 +2551,7 @@ function scheduleWidgetSkinScan(): void {
             widgetSkinFrame = null;
             if (!document.hidden && !widgetSkinEditorOpen()) {
                 widgetSkinLastScanAt = Date.now();
-                try { scanWidgetSkinCards(); } catch (error) { console.warn("[DMWidget] widget skin scan failed:", error); }
+                try { scanWidgetSkinCards(scanBudgetMs); } catch (error) { console.warn("[DMWidget] widget skin scan failed:", error); }
             }
         });
     }, delay);
@@ -2313,14 +2567,42 @@ function widgetSkinMutationRelevant(records: MutationRecord[]): boolean {
     let inspectedNodes = 0;
     for (const record of records) {
         if (record.type !== "childList") continue;
+        if (record.addedNodes.length && record.target instanceof Element && record.target.closest(WIDGET_SURFACE_SELECTOR)) return true;
         for (const node of Array.from(record.addedNodes).slice(0, 16)) {
             if (++inspectedNodes > 24) return true;
             if (!(node instanceof Element)) continue;
             try {
-                if (node.matches(WIDGET_MUTATION_SELECTOR) || node.querySelector(WIDGET_MUTATION_SELECTOR)) return true;
+                if (node.matches(WIDGET_MUTATION_SELECTOR)
+                    || node.querySelector(WIDGET_MUTATION_SELECTOR)
+                    || node.matches(WIDGET_SURFACE_SELECTOR)
+                    || node.querySelector(WIDGET_SURFACE_SELECTOR)) return true;
             } catch { /* ignore a tearing/partially-mounted Discord subtree */ }
         }
     }
+    return false;
+}
+
+function widgetSkinSurfaceNeedsScan(): boolean {
+    if (document.hidden || widgetSkinEditorOpen()) return false;
+    try {
+        const active = knownWidgetStyles();
+        if (!active.size) return false;
+        const hintLabels = Array.from(knownWidgetHints().values()).flat().filter(label => label.length >= 3);
+        const surfaces = Array.from(document.querySelectorAll<HTMLElement>(WIDGET_SURFACE_SELECTOR)).slice(0, 24);
+        for (const surface of surfaces) {
+            const surfaceRect = surface.getBoundingClientRect();
+            if (surfaceRect.width < 80 || surfaceRect.height < 80 || surfaceRect.bottom <= 0 || surfaceRect.right <= 0) continue;
+            const candidates = Array.from(surface.querySelectorAll<HTMLElement>(WIDGET_CARD_SELECTOR)).slice(0, 240);
+            for (const candidate of candidates) {
+                if (candidate.dataset.dmWidgetCardRoot === "true" || !widgetCardLike(candidate) || widgetCardContainerLike(candidate)) continue;
+                const rect = candidate.getBoundingClientRect();
+                if (rect.width < 120 || rect.height < 40 || rect.bottom <= 0 || rect.right <= 0) continue;
+                if (isDiscordmaxxerPlayingCard(candidate)) return true;
+                const text = String(candidate.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 1200);
+                if (widgetTextMatchesHints(text, hintLabels)) return true;
+            }
+        }
+    } catch { /* ignore a profile subtree that is being replaced */ }
     return false;
 }
 
@@ -2330,7 +2612,12 @@ function startWidgetSkinRenderer(): void {
     const run = widgetSkinRun;
     widgetSkinStyleElement = document.createElement("style");
     widgetSkinStyleElement.id = "dm-widget-client-skins";
-    widgetSkinStyleElement.textContent = WIDGET_CLIENT_SKIN_CSS;
+    // Keep the visual skin rules scoped to roots selected by the card
+    // resolver. This is a second guard against a future Discord DOM change
+    // ever causing a profile/banner wrapper to receive the skin marker.
+    widgetSkinStyleElement.textContent = WIDGET_CLIENT_SKIN_CSS
+        .replace(/\[data-dm-widget-skin/g, '[data-dm-widget-card-root="true"][data-dm-widget-skin')
+        .replace(/\[data-dm-widget-motion-paused/g, '[data-dm-widget-card-root="true"][data-dm-widget-motion-paused');
     (document.head || document.documentElement).appendChild(widgetSkinStyleElement);
     document.addEventListener("visibilitychange", onWidgetSkinVisibilityChange);
     const onTournamentModeChanged = () => scheduleWidgetSkinScan();
@@ -2339,11 +2626,22 @@ function startWidgetSkinRenderer(): void {
     const attach = () => {
         if (run !== widgetSkinRun || !document.body || widgetSkinObserver) return;
         widgetSkinObserver = new MutationObserver(records => {
-            if (widgetSkinMutationRelevant(records)) scheduleWidgetSkinScan();
+            if (widgetSkinMutationRelevant(records)) scheduleWidgetSkinScan(true);
         });
         widgetSkinObserver.observe(document.body, { childList: true, subtree: true });
         scheduleWidgetSkinScan();
-        widgetSkinRescanTimer = window.setInterval(() => scheduleWidgetSkinScan(), 5000);
+        // Discord sometimes reuses an already-mounted profile tree and only
+        // flips its visibility/class state; that path can produce no useful
+        // childList signal for the observer. A cheap surface-only check closes
+        // that gap without scanning React fibers or touching ordinary cards.
+        widgetSkinRescanTimer = window.setInterval(() => {
+            if (widgetSkinSurfaceNeedsScan()) {
+                widgetSkinLastScanAt = 0;
+                try { scanWidgetSkinCards(700); } catch (error) { console.warn("[DMWidget] fallback widget skin scan failed:", error); }
+            } else {
+                scheduleWidgetSkinScan();
+            }
+        }, 1000);
     };
     if (document.body) attach(); else window.setTimeout(attach, 0);
 }
@@ -2355,6 +2653,7 @@ function stopWidgetSkinRenderer(): void {
     removeTournamentModeListener = null;
     widgetSkinObserver?.disconnect();
     widgetSkinObserver = null;
+    widgetSkinRescanAfterEditor = false;
     if (widgetSkinTimer !== null) { clearTimeout(widgetSkinTimer); widgetSkinTimer = null; }
     if (widgetSkinFrame !== null) { window.cancelAnimationFrame(widgetSkinFrame); widgetSkinFrame = null; }
     if (widgetSkinRescanTimer !== null) { clearInterval(widgetSkinRescanTimer); widgetSkinRescanTimer = null; }
@@ -2741,7 +3040,13 @@ function WidgetEditor() {
         return () => {
             widgetSkinEditorMounts = Math.max(0, widgetSkinEditorMounts - 1);
             widgetApplicationCacheEpoch++;
-            if (!widgetSkinEditorOpen()) scheduleWidgetSkinScan();
+            if (!widgetSkinEditorOpen()) {
+                if (widgetSkinRescanAfterEditor) {
+                    widgetSkinRescanAfterEditor = false;
+                    widgetSkinLastScanAt = 0;
+                }
+                scheduleWidgetSkinScan();
+            }
         };
     }, []);
     React.useEffect(() => {
@@ -3093,8 +3398,18 @@ export default definePlugin({
     start() {
         startWidgetSkinRenderer();
         void ensureSlots().then(async () => {
-            scheduleWidgetSkinScan();
             await refreshAttachedWidgetStyles(true);
+            // Style hydration can finish after the first renderer pass. Reset
+            // the cache timestamp and request a fresh scan so a just-mounted
+            // Board receives the recovered per-app styles without requiring a
+            // manual reskin click.
+            widgetApplicationCacheEpoch++;
+            widgetSkinLastScanAt = 0;
+            // Cover a profile that was already mounted before the observer
+            // attached, then keep the coalesced observer pass for later React
+            // commits that add the cards themselves.
+            try { scanWidgetSkinCards(220); } catch (error) { console.warn("[DMWidget] startup widget skin scan failed:", error); }
+            scheduleWidgetSkinScan(true);
         }).catch(error => console.warn("[DMWidget] startup recovery failed:", error));
         widgetStyleRefreshTimer = window.setInterval(() => { void refreshAttachedWidgetStyles(); }, ATTACHED_WIDGET_REFRESH_INTERVAL_MS);
         setTimeout(scheduleStatsRefresh, 20_000);
@@ -3117,7 +3432,19 @@ export default definePlugin({
                 toast("Widget refresh failed safely. Your existing published widget was left unchanged; try again after checking DMWidget status.", Toasts.Type.FAILURE, 8000);
             }
         };
-        (globalThis as any).__dmWidgetReskin = () => scheduleWidgetSkinScan();
+        (globalThis as any).__dmWidgetReskin = async () => {
+            await ensureSlots();
+            await refreshAttachedWidgetStyles(true);
+            widgetApplicationCacheEpoch++;
+            widgetSkinLastScanAt = 0;
+            // A manual reskin is an explicit user/dev action. Run one
+            // complete, slightly longer pass immediately so a just-mounted
+            // profile does not have to wait for the scheduler or lose to the
+            // short background budget while Discord is still settling.
+            const applied = scanWidgetSkinCards(220);
+            scheduleWidgetSkinScan();
+            return applied;
+        };
     },
     stop() {
         stopWidgetSkinRenderer();

@@ -5,7 +5,159 @@
 > `CLAUDE.md` ("Operational facts" section). Those three are enough to build,
 > ship, and maintain without prior context.
 
+## 2026-09-30 v0.7.84 DMWidget widget-skin surfaces — release candidate
+
+The unpublished DMWidget candidate now keeps widget skins scoped to the actual
+card roots across all three Discord surfaces: the full Board, the compact
+profile popout, and the Discordmaxxer Rich Presence `Playing` card. Full Board
+cards resolve Discord's camel-case `widgetContainer__...` class and decorated
+display names such as `ValツDiggy`; list wrappers are excluded so the profile
+banner, avatar, and gradient remain untouched. The branded Playing card is
+identified separately and inherits the active widget treatment.
+
+The final timing fix makes attached-widget style recovery replace a stale
+startup timer with an immediate bounded scan. This prevents the Playing-card
+fallback from appearing skinned while the real Val card waits for a later
+periodic sweep. Temporary local debug globals/counters and the DOM inspection
+script were removed before the final build.
+
+`pnpm test`, `pnpm build`, `pnpm verifyPlugins`, `pnpm overlay:vencord`,
+`node overlay-scripts/verify-build.mjs`, and `git diff --check` passed. The
+candidate renderer was staged into the running C: dev client's local
+`vencord-dist` and reloaded. Clean runtime proof showed compact Val + Playing
+both using Frosted Glass, and the full Board using Val Frosted Glass plus
+Fortnite Ember Protocol. Screenshots:
+`artifacts/widget-skin-clean-compact-dev-proof.png` and
+`artifacts/widget-skin-clean-board-dev-proof.png`.
+
+The end-to-end existing-widget flow was then exercised locally: DMHub opened
+DMWidget, the recovered Valorant widget changed from Frosted Glass to Event
+Horizon, and `Apply skin to existing widget` was used without re-entering Riot
+ID or API credentials. Closing the editor restyled the existing Board card;
+Valorant and the Discordmaxxer Playing card both resolved to the Event Horizon
+starfield treatment, while Fortnite retained its independent Ember Protocol
+style. A clean dev-client relaunch preserved the selection and the compact
+profile popout showed the same two Event Horizon surfaces. The profile banner,
+avatar, and gradient remained untouched. Evidence:
+`artifacts/widget-skin-sequence-board-after-reload.png` and
+`artifacts/widget-skin-sequence-compact-event-horizon.png`.
+
+The raw CDP page reload initially left the app mount empty, so the dev client
+was restarted before the persistence check; no source or release change was
+made for that renderer-reload observation.
+
+The candidate targets v0.7.84. Diggy has visually approved the open dev client
+and explicitly authorized publication. The canonical dirty worktree remains
+untouched. Build, strict-overlay, artifact-integrity, commit, tag, CI release,
+and updater-manifest verification are the remaining release records for this
+entry; none should be described as live until each is confirmed below.
+
+## 2026-09-30 v0.7.83 KV read-budget hardening — published
+
+The Discordmaxxer roster client now keeps the normal shared VIP roster locally
+for five minutes instead of 30 seconds. The Worker serves the roster from a
+fixed two-minute edge cache, and authenticated admin list/offer display reads
+use a 60-second edge cache. Claims, validation, profile writes, auth, last-
+known-good snapshots, and profile flair rendering remain unchanged.
+
+Focused Worker proof passed 11/11 tests plus syntax and Wrangler dry-run. The
+Discordmaxxer gates passed `pnpm test`, `pnpm build`, strict
+`DM_STRICT_REBRAND=1 pnpm overlay:vencord`, `node overlay-scripts/verify-build.mjs`,
+and `pnpm package:dir`. Worker version
+`70b0d791-25e2-42bc-a08f-65786f698564` is live; `/healthz` returned 200 after
+deployment. `/roster` still returned the expected `KV_GET_QUOTA` 503 because
+the account-wide daily allowance was already exhausted; deployment cannot
+reset it. The public [v0.7.83 release](https://github.com/MaxxTopia/discordmaxxer/releases/tag/v0.7.83)
+is published with the Windows installer, x64/ARM64 ZIPs, blockmap, and
+`latest.yml` advertising version 0.7.83.
+
+This release was committed without staging the unrelated DMWidget candidate,
+existing RESUME work, or `overlay-scripts/tmp-inspect-widget-dom.mjs`. Next
+gate: after the next KV reset, open the canonical `/admin` and compare bounded
+first-hour KV reads; the active Discord client still needs the normal updater or
+installer/reload gate.
+
 ## 2026-09-29 v0.7.82 DMWidget editor and existing-widget skin repair — published
+
+## 2026-09-29 candidate — restore widget-only skin scope
+
+Diggy reported a visible regression: the selected widget skin was covering the
+profile banner, avatar, and full gradient instead of only the Board widget
+card. The cause was the app-id scanner accepting broad profile/list wrappers
+as widget roots, followed by CSS rules that styled any marked root. A stale
+image/background fallback could also promote a hero or avatar surface.
+
+The candidate in `plugins/DMWidget/index.tsx` now requires a real card-like
+root (`card__`, `widget__`, or `application__` classes), rejects profile/header/
+avatar/banner/modal surfaces, bounds the card dimensions, and requires app
+text hints when resolving down from an application wrapper. It removes the
+image/background fallback, clears legacy unmarked skin attributes during a
+reload, marks only accepted roots, and scopes every runtime skin rule behind
+`data-dm-widget-card-root="true"`. An ambiguous wrapper now stays unskinned
+instead of risking a profile-wide leak.
+
+The corrected visual proof is
+`overlay-scripts/screenshots/widget-skin-card-only-preview.png`: the profile
+gradient/banner/avatar remain plain while the Val and Fortnite Board cards
+retain their individual skins. `pnpm test`, `pnpm build`,
+`pnpm verifyPlugins`, `pnpm overlay:vencord`,
+`node overlay-scripts/verify-build.mjs`, and `git diff --check` pass.
+
+This is still an uncommitted candidate in the isolated release worktree; it is
+not pushed, tagged, or published. For local runtime testing, its five renderer
+artifacts were staged into the open dev client's E: overlay and the renderer
+was reloaded. The prior renderer is preserved at
+`E:\\discordmaxxer-overlay-rebuild-20260925-vencord-dist-backup-20260930-card-scope`.
+CDP confirmed Vencord and DMWidget are registered and enabled after reload; no
+Board was open during that check, so zero card markers there is expected. This
+is local-dev proof only. The live release remains v0.7.82 and the dirty
+canonical worktree is untouched. Next gate: inspect the full Board plus an
+ordinary profile in the open client before any publish authorization.
+
+## 2026-09-29 post-v0.7.82 candidate — visible Board skin regression and Fortnite label
+
+Diggy reported that the success toast appeared but the Valorant and Fortnite
+cards on the full Diggyai profile Board stayed plain. The earlier v0.7.82
+runtime check only proved the compact local popout path and was too narrow for
+this report. A read-only DOM inspection of the running v0.7.82 client found
+the skin attributes on `header__5be3e`, `body_ce8328`, `ul.cardsList__9d597`,
+and an empty wrapper, while the visible Val card
+`div.overlay_c0bea0.container__82fb2.card__9d597` had no skin attributes.
+
+The regression came from the v0.7.80 scan hardening: generic `card__`/`card_`
+targets were moved out of the primary pass and the scan budget was reduced to
+24 ms. The old root fallback then accepted a profile/list wrapper as the
+render target. The unpublished candidate in
+`plugins/DMWidget/index.tsx` restores the broad card targets in a bounded
+72-ms pass, prioritizes cards whose text matches the attached application,
+resolves profile/body/cardsList/list-item wrappers down to the actual visible
+Board card, and only reports a visible restyle when that card was found. It
+also keeps the editor-open scan pause and queued rescan behavior.
+
+The follow-up DOM check exposed two details the first candidate still missed:
+Discord concatenates the visible label and stat text as `ValRank`, and the
+outer `cardsList` can match the same text as its child. The resolver now
+accepts that safe uppercase label transition and penalizes list containers so
+the actual `card__9d597` surface wins. A read-only candidate-algorithm check
+against the running DOM selected the visible Val card (`262x79`) rather than
+the `cardsList` wrapper.
+
+The Fortnite published stat label is now `Current Rank`; the internal
+`fnUnrealRank` field remains unchanged for compatibility with existing data.
+
+Candidate verification passed: `pnpm test`, `pnpm build`, strict
+`DM_STRICT_REBRAND=1 pnpm overlay:vencord`, `node
+overlay-scripts/verify-build.mjs`, compiled-label checks, and `git diff --check`.
+The candidate overlay is staged in `vencord-dist/` in the isolated release
+worktree. It is not committed, pushed, tagged, published, or installed into
+the running client; v0.7.82 remains the live release. The dirty canonical
+worktree was left untouched. Before publishing, load this candidate in a
+real client and verify the full Board on both account states; source/build
+proof alone does not prove second-PC rendering.
+
+Best next move: with explicit release authorization, bump the patch version,
+run the documented packaging/CI release gates, publish the notes, and then do
+the full-Board visual check on the other PC.
 
 The published v0.7.81 mitigation stopped the renderer crash, but it also
 removed the direct plugin-editor call and only opened the generic Plugins
