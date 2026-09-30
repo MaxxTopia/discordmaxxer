@@ -5,7 +5,7 @@
 > `CLAUDE.md` ("Operational facts" section). Those three are enough to build,
 > ship, and maintain without prior context.
 
-## 2026-09-30 v0.7.84 DMWidget widget-skin surfaces — release candidate
+## 2026-09-30 v0.7.84 DMWidget widget-skin surfaces — published
 
 The unpublished DMWidget candidate now keeps widget skins scoped to the actual
 card roots across all three Discord surfaces: the full Board, the compact
@@ -46,11 +46,23 @@ The raw CDP page reload initially left the app mount empty, so the dev client
 was restarted before the persistence check; no source or release change was
 made for that renderer-reload observation.
 
-The candidate targets v0.7.84. Diggy has visually approved the open dev client
-and explicitly authorized publication. The canonical dirty worktree remains
-untouched. Build, strict-overlay, artifact-integrity, commit, tag, CI release,
-and updater-manifest verification are the remaining release records for this
-entry; none should be described as live until each is confirmed below.
+The candidate targets v0.7.84. Diggy visually approved the open dev client and
+explicitly authorized publication. Commit `a1fe8df4a31db1a262c71b3b9663fd62e6bfeb1f`
+is pushed to `origin/main`, and tag `v0.7.84` is published. The strict overlay,
+plugin registry, artifact-integrity checks, `pnpm test`, `pnpm build`, and
+`git diff --check` passed. GitHub Actions run
+`36706701386` completed successfully through Electron Builder and release
+notification; the local E: package smoke was bounded and stopped because this
+machine's slow disk/USB I/O did not finish copying the unpacked app, so CI is
+the authoritative packaged-client result.
+
+The public [v0.7.84 release](https://github.com/MaxxTopia/discordmaxxer/releases/tag/v0.7.84)
+is published with the Windows installer, x64/ARM64 ZIPs, blockmap, release
+notes, and `latest.yml` advertising version 0.7.84. The remaining field gate
+is Diggy's normal-client update/reload and existing-widget test on the other
+PC/account; source and release proof do not prove that account-specific saved
+widget markers are present. Widget skins remain Discordmaxxer-rendered and do
+not change what vanilla Discord users see.
 
 ## 2026-09-30 v0.7.83 KV read-budget hardening — published
 
