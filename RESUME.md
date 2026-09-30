@@ -5,28 +5,39 @@
 > `CLAUDE.md` ("Operational facts" section). Those three are enough to build,
 > ship, and maintain without prior context.
 
-## 2026-09-30 existing-widget skin application repair — local candidate, not published
+## 2026-09-30 v0.7.85 release candidate — gates passed, publication pending
 
 The latest field report is that another PC updated successfully but
 `Apply skin to existing widget` did not change the visible Board card. The
-current candidate addresses two release weaknesses: Discord builds that use
+v0.7.85 candidate addresses two release weaknesses: Discord builds that use
 semantic `article`/`listitem` Board cards instead of the known class families,
 and remote-style writes that were treated as successful without reading the
 marker back. It also accepts additional profile-widget response shapes and
 clears stale wrapper markers only when the target is no longer a real card.
 
-`pnpm test`, `pnpm overlay:vencord`, `pnpm verifyPlugins`,
-`node overlay-scripts/verify-build.mjs`, and `git diff --check` passed. The
-rebuilt renderer contains DMWidget. A real local Electron launch could not be
-completed because C: has 0 bytes free and Electron failed while writing its
-runtime; no cleanup or deletion was performed. The source change is still
-uncommitted and no release or live update has been published.
+`pnpm test`, `pnpm overlay:vencord`, `pnpm build`, `pnpm verifyPlugins`,
+`node overlay-scripts/verify-build.mjs`, the shipped-script ASCII check, and
+`git diff --check` passed. The rebuilt renderer contains DMWidget. The repair
+is committed locally as `42108f2`; the v0.7.85 package/release metadata is
+staged for the authorized publication. A USB staging copy with the repaired
+source, generated renderer, and a complete Electron runtime is at
+`E:\discordmaxxer-existing-widget-skin-fix-20260930-src`; the older USB
+checkout remains untouched. The desktop automation surface did not expose a
+visible Electron window for a signed-in test, so the real profile interaction
+is still unverified.
 
-Remaining proof: run the rebuilt client on a signed-in profile with an
-existing widget, select a different skin, click Apply, close the editor, and
-confirm the Board, compact popout, and Playing card change while the banner,
-avatar, and gradient remain untouched. Then publish only after that test or
-Diggy's explicit release approval.
+The release also documents the Fortnite behavior already present in this
+candidate: its first stat is `Current Rank`, and deployed Fortnite/Valorant
+slots refresh 20 seconds after startup and every 30 minutes while the client
+is open when the required credentials are configured. Skin-only application
+deliberately does not republish card content, so an existing published card
+needs an explicit content update/refresh to replace an old `Highest Rank`
+label.
+
+After the tag workflow publishes the Windows artifacts, the remaining proof
+is the signed-in second-PC test: select a different skin, click Apply, close
+the editor, and confirm the Board, compact popout, and Playing card change
+while the banner, avatar, and gradient remain untouched.
 
 ## 2026-09-30 v0.7.84 DMWidget widget-skin surfaces — published
 
