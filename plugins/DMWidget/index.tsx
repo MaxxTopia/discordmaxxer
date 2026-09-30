@@ -762,11 +762,11 @@ async function syncRemoteWidgetStyle(slotKey: string, request: number): Promise<
     if (!SNOWFLAKE.test(id.appId)) return false;
     try {
         const application = await apiGet(`/applications/${id.appId}`);
-        if (!application || !Object.prototype.hasOwnProperty.call(application, "description")) return false;
+        const currentDescription = applicationDescription(application);
+        if (currentDescription === null) return false;
         if (request !== widgetStylePublishSerial) return false;
         const latest = getSlot(slotKey);
         if (latest.appId !== id.appId || latest.widgetStyle !== id.widgetStyle) return false;
-        const currentDescription = typeof application.description === "string" ? application.description : "";
         const preset = WIDGET_STYLE_PRESETS.find(item => item.id === id.widgetStyle) ?? selectedWidgetPreset();
         const description = remoteWidgetDescriptionFor(currentDescription, preset);
         if (!description) return false;
@@ -774,7 +774,12 @@ async function syncRemoteWidgetStyle(slotKey: string, request: number): Promise<
             if (request !== widgetStylePublishSerial) return false;
             await apiPatch(`/applications/${id.appId}`, { description });
         }
-        return true;
+        // Confirm the marker through the same read path used by another install.
+        // A successful PATCH alone is not enough: Discord can accept a request
+        // while returning a stale/partial application object to the client.
+        const confirmedApplication = await apiGet(`/applications/${id.appId}`);
+        const confirmed = remoteWidgetStyleFromApplication(confirmedApplication);
+        return confirmed?.style === preset.id;
     } catch (error) {
         console.warn("[DMWidget] cross-install widget skin sync failed:", error);
         return false;
@@ -1288,8 +1293,19 @@ const WIDGET_STYLE_PRESETS: WidgetStylePreset[] = [
 const REMOTE_WIDGET_STYLE_RE = /\[DMWSTYLE1:([A-Za-z0-9+/=_-]+)\]/;
 const REMOTE_WIDGET_STYLE_ALL_RE = /\[DMWSTYLE1:[A-Za-z0-9+/=_-]+\]/g;
 
+function applicationDescription(application: any): string | null {
+    const candidates = [
+        application?.description,
+        application?.data?.description,
+        application?.application?.description,
+        application?.application?.data?.description,
+    ];
+    const description = candidates.find(value => typeof value === "string");
+    return typeof description === "string" ? description : null;
+}
+
 function remoteWidgetStyleFromApplication(application: any): { style: string; topLayout: "hero" | "contained"; bottomLayout: "stats" | "progress"; } | null {
-    const match = String(application?.description ?? "").match(REMOTE_WIDGET_STYLE_RE);
+    const match = String(applicationDescription(application) ?? "").match(REMOTE_WIDGET_STYLE_RE);
     if (!match) return null;
     try {
         const raw = JSON.parse(b64decode(match[1]));
@@ -1534,10 +1550,15 @@ function presetForSlot(slotKey: string): WidgetStylePreset {
 
 function profileWidgetEntries(profile: any): any[] | null {
     const candidates = [
+        profile?.profile_widgets,
         profile?.widgets,
+        profile?.user_profile?.profile_widgets,
         profile?.user_profile?.widgets,
+        profile?.user?.profile?.profile_widgets,
         profile?.user?.profile?.widgets,
+        profile?.profile?.profile_widgets,
         profile?.profile?.widgets,
+        profile?.data?.profile_widgets,
         profile?.data?.widgets
     ];
     // Prefer a populated list when Discord exposes both a stale/empty
@@ -1552,14 +1573,18 @@ function profileWidgetApplicationId(widget: any): string {
     const candidates = [
         widget?.data?.application_id,
         widget?.data?.applicationId,
+        widget?.data?.app_id,
+        widget?.data?.appId,
         widget?.application_id,
         widget?.applicationId,
         widget?.data?.application?.id,
         widget?.data?.application?.application_id,
         widget?.data?.application?.applicationId,
+        widget?.data?.application?.data?.id,
         widget?.application?.id,
         widget?.application?.application_id,
-        widget?.application?.applicationId
+        widget?.application?.applicationId,
+        widget?.application?.data?.id
     ];
     return candidates.map(value => String(value ?? "")).find(value => SNOWFLAKE.test(value)) ?? "";
 }
@@ -1568,10 +1593,14 @@ function profileWidgetConfigId(widget: any): string {
     const candidates = [
         widget?.data?.config_id,
         widget?.data?.configId,
+        widget?.data?.configuration_id,
+        widget?.data?.configurationId,
         widget?.config_id,
         widget?.configId,
         widget?.data?.application?.config_id,
-        widget?.data?.application?.configId
+        widget?.data?.application?.configId,
+        widget?.data?.application?.configuration_id,
+        widget?.data?.application?.configurationId
     ];
     return candidates.map(value => String(value ?? "")).find(value => SNOWFLAKE.test(value)) ?? "";
 }
@@ -2018,9 +2047,15 @@ const WIDGET_CARD_SELECTOR = [
     '[class*="application"]',
     '[class*="Application"]',
     '[class*="cardsList"] > li > div',
-    '[data-list-item-id*="application" i]'
+    '[data-list-item-id*="application" i]',
+    // Some Board builds use semantic cards with no stable class token.
+    // These are still filtered by widgetApplicationMatch/text hints below.
+    'article',
+    '[role="article"]',
+    'li[role="listitem"]',
+    '[role="listitem"]'
 ].join(",");
-const WIDGET_CARD_FALLBACK_SELECTOR = '[class*="card__"], [class*="card_"], [class~="card"], [class*="widget"], [class*="Widget"], [class*="application"], [class*="Application"]';
+const WIDGET_CARD_FALLBACK_SELECTOR = `${WIDGET_CARD_SELECTOR}`;
 const WIDGET_SURFACE_SELECTOR = [
     '[class*="profile"]',
     '[class*="Profile"]',
@@ -2032,7 +2067,18 @@ const WIDGET_SURFACE_SELECTOR = [
 ].join(",");
 const WIDGET_MUTATION_SELECTOR = [
     ...WIDGET_APPLICATION_ID_ATTRIBUTES.map(attribute => `[${attribute}]`),
-    WIDGET_CARD_SELECTOR
+    // Keep semantic article/listitem discovery out of the global mutation
+    // selector. Profile-surface mutations are already caught by the closest
+    // surface check below; matching every chat article would add hot-path
+    // observer work without improving widget discovery.
+    '[class*="card__"]',
+    '[class*="card_"]',
+    '[class~="card"]',
+    '[class*="widget"]',
+    '[class*="Widget"]',
+    '[class*="application"]',
+    '[class*="Application"]',
+    '[data-list-item-id*="application" i]'
 ].join(",");
 
 const WIDGET_CARD_MAX_ANCESTOR_DEPTH = 20;
@@ -2049,11 +2095,22 @@ function escapeWidgetHint(value: string): string {
 function widgetSurfaceLike(element: HTMLElement): boolean {
     const className = typeof element.className === "string" ? element.className : "";
     const role = element.getAttribute("role") ?? "";
+    const tagName = element.tagName.toUpperCase();
+    const semanticCard = tagName === "ARTICLE" || role === "article" || role === "listitem";
+    const explicitCard = /(?:^|[\s_-])card(?:(?:__|_)[A-Za-z0-9]+|[A-Z][A-Za-z0-9]*|$)/i.test(className)
+        || /Card(?:(?:__|_)[A-Za-z0-9]+|[A-Z][A-Za-z0-9]*|$)/.test(className);
+    // A semantic/article card or an explicit *Card class is allowed to live
+    // inside a profile surface. A generic profileWidget/profileApplication
+    // wrapper is still rejected so the skin cannot cover the banner/avatar.
+    if (semanticCard || explicitCard) return false;
     return role === "dialog" || /profile|popout|header|body|modal|dialog|outer|inner|avatar|banner/i.test(`${className} ${role}`);
 }
 
 function widgetCardLike(element: HTMLElement): boolean {
     const className = typeof element.className === "string" ? element.className : "";
+    const role = element.getAttribute("role") ?? "";
+    const tagName = element.tagName.toUpperCase();
+    if (tagName === "ARTICLE" || role === "article" || role === "listitem") return !widgetSurfaceLike(element);
     if (widgetSurfaceLike(element)) return false;
     // Hashed Discord class names use forms such as card__9d597,
     // widgetContainer__0ea1a, and application__abc. The Board currently uses
@@ -2061,7 +2118,8 @@ function widgetCardLike(element: HTMLElement): boolean {
     // and left the full Board plain while the compact popout still worked.
     // Keep the token boundary so profileWidget/profileApplication wrappers do
     // not become skin roots merely because they contain the word.
-    return /(?:^|[\s_-])(?:card|widget|application)(?:(?:__|_)[A-Za-z0-9]+|[A-Z][A-Za-z0-9]*|$)/i.test(className);
+    return /(?:^|[\s_-])(?:card|widget|application)(?:(?:__|_)[A-Za-z0-9]+|[A-Z][A-Za-z0-9]*|$)/i.test(className)
+        || /(?:Card|Widget|Application)(?:(?:__|_)[A-Za-z0-9]+|[A-Z][A-Za-z0-9]*|$)/.test(className);
 }
 
 function widgetCardContainerLike(element: HTMLElement): boolean {
@@ -2317,7 +2375,7 @@ function clearUnmarkedWidgetSkinTargets(): void {
             // cardsList as a card root. It is still stale even though it has
             // the root marker, because only the visible child card should be
             // styled.
-            if (root.dataset.dmWidgetCardRoot === "true" && !widgetCardContainerLike(root)) continue;
+            if (root.dataset.dmWidgetCardRoot === "true" && widgetCardLike(root) && !widgetCardContainerLike(root)) continue;
             restoreWidgetSkin(root);
             for (const attr of WIDGET_SKIN_ATTRS) root.removeAttribute(attr);
             for (const name of WIDGET_SKIN_VARS) root.style.removeProperty(name);
@@ -2350,7 +2408,9 @@ function applyWidgetSkin(root: HTMLElement, preset: WidgetStylePreset, appId: st
 function isDiscordmaxxerPlayingCard(element: HTMLElement): boolean {
     if (!widgetCardLike(element)) return false;
     const className = typeof element.className === "string" ? element.className : "";
-    if (!/(?:^|[\s_-])card(?:(?:__|_)[A-Za-z0-9]+|[A-Z][A-Za-z0-9]*|$)/i.test(className)) return false;
+    const role = element.getAttribute("role") ?? "";
+    const semanticCard = element.tagName.toUpperCase() === "ARTICLE" || role === "article" || role === "listitem";
+    if (!semanticCard && !/(?:^|[\s_-])card(?:(?:__|_)[A-Za-z0-9]+|[A-Z][A-Za-z0-9]*|$)/i.test(className)) return false;
     const rect = element.getBoundingClientRect();
     if (rect.width < 180 || rect.height < 70 || rect.width > 520 || rect.height > 260) return false;
     const text = String(element.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 900);

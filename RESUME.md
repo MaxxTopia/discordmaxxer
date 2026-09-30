@@ -5,6 +5,29 @@
 > `CLAUDE.md` ("Operational facts" section). Those three are enough to build,
 > ship, and maintain without prior context.
 
+## 2026-09-30 existing-widget skin application repair — local candidate, not published
+
+The latest field report is that another PC updated successfully but
+`Apply skin to existing widget` did not change the visible Board card. The
+current candidate addresses two release weaknesses: Discord builds that use
+semantic `article`/`listitem` Board cards instead of the known class families,
+and remote-style writes that were treated as successful without reading the
+marker back. It also accepts additional profile-widget response shapes and
+clears stale wrapper markers only when the target is no longer a real card.
+
+`pnpm test`, `pnpm overlay:vencord`, `pnpm verifyPlugins`,
+`node overlay-scripts/verify-build.mjs`, and `git diff --check` passed. The
+rebuilt renderer contains DMWidget. A real local Electron launch could not be
+completed because C: has 0 bytes free and Electron failed while writing its
+runtime; no cleanup or deletion was performed. The source change is still
+uncommitted and no release or live update has been published.
+
+Remaining proof: run the rebuilt client on a signed-in profile with an
+existing widget, select a different skin, click Apply, close the editor, and
+confirm the Board, compact popout, and Playing card change while the banner,
+avatar, and gradient remain untouched. Then publish only after that test or
+Diggy's explicit release approval.
+
 ## 2026-09-30 v0.7.84 DMWidget widget-skin surfaces — published
 
 The unpublished DMWidget candidate now keeps widget skins scoped to the actual
