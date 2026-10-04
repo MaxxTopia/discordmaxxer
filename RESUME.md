@@ -5,7 +5,7 @@
 > `CLAUDE.md` ("Operational facts" section). Those three are enough to build,
 > ship, and maintain without prior context.
 
-## 2026-10-03 v0.7.86 release candidate — existing widget skin + profile flair
+## 2026-10-03 v0.7.86 published — existing widget skin + profile flair
 
 Diggy reported that applying a skin to an existing Diggy T widget still did not
 visibly change the Board card, and the profile-flair banner was missing. The
@@ -19,16 +19,24 @@ payload. DMProfileFlair rechecks recycled banner nodes, retries failed banners
 with bounded backoff, recognizes animated Discord avatar hashes served as
 WebP, and keeps static media visible in Tournament Mode.
 
-The release version is 0.7.86 and notes are drafted in
-`docs/releases/v0.7.86.md`. Automated release checks, commit, push, tag, CI,
-and public assets are still pending. The initial candidate checks passed on C:,
-but release validation must pass again on E: before publishing. No signed-in
-Diggy T runtime or second-PC confirmation is available; source/build/CI proof
-must not be presented as account-specific rendering proof. Preserve the C:
-candidate and its untracked `artifacts/` folder. After publication, Diggy's
-best next test is to update the affected client, apply a skin to its existing
-widget, reopen the Board, and check the profile-flair banner with Tournament
-Mode off.
+The public stable release is live: [v0.7.86](https://github.com/MaxxTopia/discordmaxxer/releases/tag/v0.7.86),
+from commit `9cbc5c5e063f084b4259310e715a46ee2f2e32db`, with annotated tag
+`v0.7.86`. GitHub Actions run
+[37167445304](https://github.com/MaxxTopia/discordmaxxer/actions/runs/37167445304)
+passed the strict Vencord overlay build, app build, integrity checks, Electron
+packaging, and Maxxtopia release notification. The release is not a draft or
+prerelease. Published artifacts include x64 and ARM64 ZIPs, the setup EXE,
+blockmap, and `latest.yml`; the public manifest was fetched and confirms
+version `0.7.86`, the matching setup EXE, SHA-512, and file size. The live
+release description was populated from `docs/releases/v0.7.86.md` after the
+initial CI publish left it empty.
+
+No signed-in Diggy T runtime or second-PC confirmation is available. Source,
+build, CI, and publication proof do not prove account-specific rendering.
+Diggy's remaining test is to update/reload the affected Diggy T client, apply a
+skin to its existing widget, reopen the Board and confirm the card's appearance,
+then confirm the profile-flair banner with Tournament Mode off. Preserve the
+C: candidate and its untracked `artifacts/` folder.
 
 ## 2026-09-30 v0.7.85 widget-skin and Fortnite refresh — published
 
