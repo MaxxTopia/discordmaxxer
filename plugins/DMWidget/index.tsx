@@ -79,11 +79,12 @@ interface WidgetIdentity {
     peakIconName: string;
     widgetStyle?: string;
     widgetStyleSource?: "local" | "remote" | "default";
+    widgetStyleUpdatedAt?: number;
     topLayout?: "hero" | "contained";
     bottomLayout?: "stats" | "progress";
 }
 const EMPTY_IDENTITY: WidgetIdentity = { appId: "", configId: "", heroAssetKey: "", heroImageUrl: "", appIconUrl: "", rankIconKey: "", rankIconName: "", peakIconKey: "", peakIconName: "" };
-const parseId = (raw: any): WidgetIdentity => ({ appId: String(raw?.appId ?? ""), configId: String(raw?.configId ?? ""), heroAssetKey: String(raw?.heroAssetKey ?? ""), heroImageUrl: String(raw?.heroImageUrl ?? ""), appIconUrl: String(raw?.appIconUrl ?? ""), rankIconKey: String(raw?.rankIconKey ?? ""), rankIconName: String(raw?.rankIconName ?? ""), peakIconKey: String(raw?.peakIconKey ?? ""), peakIconName: String(raw?.peakIconName ?? ""), widgetStyle: typeof raw?.widgetStyle === "string" ? raw.widgetStyle : undefined, widgetStyleSource: raw?.widgetStyleSource === "local" || raw?.widgetStyleSource === "remote" || raw?.widgetStyleSource === "default" ? raw.widgetStyleSource : undefined, topLayout: raw?.topLayout === "hero" || raw?.topLayout === "contained" ? raw.topLayout : undefined, bottomLayout: raw?.bottomLayout === "stats" || raw?.bottomLayout === "progress" ? raw.bottomLayout : undefined });
+const parseId = (raw: any): WidgetIdentity => ({ appId: String(raw?.appId ?? ""), configId: String(raw?.configId ?? ""), heroAssetKey: String(raw?.heroAssetKey ?? ""), heroImageUrl: String(raw?.heroImageUrl ?? ""), appIconUrl: String(raw?.appIconUrl ?? ""), rankIconKey: String(raw?.rankIconKey ?? ""), rankIconName: String(raw?.rankIconName ?? ""), peakIconKey: String(raw?.peakIconKey ?? ""), peakIconName: String(raw?.peakIconName ?? ""), widgetStyle: typeof raw?.widgetStyle === "string" ? raw.widgetStyle : undefined, widgetStyleSource: raw?.widgetStyleSource === "local" || raw?.widgetStyleSource === "remote" || raw?.widgetStyleSource === "default" ? raw.widgetStyleSource : undefined, widgetStyleUpdatedAt: Number.isSafeInteger(raw?.widgetStyleUpdatedAt) && raw.widgetStyleUpdatedAt >= 0 ? raw.widgetStyleUpdatedAt : undefined, topLayout: raw?.topLayout === "hero" || raw?.topLayout === "contained" ? raw.topLayout : undefined, bottomLayout: raw?.bottomLayout === "stats" || raw?.bottomLayout === "progress" ? raw.bottomLayout : undefined });
 
 // Discord keeps the published widget config remotely, while DMWidget's
 // editor draft (including game IDs and keys) is local. Keep a small, safe
@@ -166,6 +167,8 @@ async function ensureSlots(): Promise<void> {
         attachedWidgetStyles.clear();
         attachedWidgetSlots.clear();
         attachedWidgetHints.clear();
+        attachedWidgetProfileAccountId = "";
+        attachedWidgetProfileVerifiedAt = 0;
         attachedWidgetRefreshAt = 0;
         // Let the new account start its own reconciliation immediately. The
         // old task remains harmless because it checks the account before every
@@ -691,9 +694,10 @@ async function publishSurfaces(appId: string, configId: string, slotKey: string,
 }
 
 async function attachToProfile(appId: string, userId: string) {
-    let widgets: any[] = [];
-    try { const prof = await apiGet(`/users/${userId}/profile`); widgets = profileWidgetEntries(prof) ?? []; } catch { widgets = []; }
-    if (!widgets.some(w => w?.data?.application_id === appId)) widgets = [{ data: { type: "application", application_id: appId } }, ...widgets];
+    const profile = await apiGet(`/users/${userId}/profile`);
+    const widgets = profileWidgetEntries(profile);
+    if (!widgets) throw new Error("Discord returned an unrecognized profile widget list; no board changes were made. Retry after the profile finishes loading.");
+    if (!widgets.some(widget => profileWidgetApplicationId(widget) === appId)) widgets.unshift({ data: { type: "application", application_id: appId } });
     await apiPut("/users/@me/widgets", { widgets });
 }
 
@@ -750,68 +754,101 @@ async function republishConfig(slotKey: string): Promise<string | null> {
     } catch (e) { return classifyDiscordError(e); }
 }
 
-let widgetStylePublishSerial = 0;
+const widgetStylePublishSerial = new Map<string, number>();
 let widgetStyleSyncQueue: Promise<void> = Promise.resolve();
 
-async function syncRemoteWidgetStyle(slotKey: string, request: number): Promise<boolean> {
+function nextWidgetStylePublishRequest(slotKey: string): number {
+    const request = (widgetStylePublishSerial.get(slotKey) ?? 0) + 1;
+    widgetStylePublishSerial.set(slotKey, request);
+    return request;
+}
+
+function isCurrentWidgetStylePublishRequest(slotKey: string, accountId: string, request: number): boolean {
+    return widgetStylePublishSerial.get(slotKey) === request
+        && !!accountId
+        && String(UserStore.getCurrentUser()?.id ?? "") === accountId
+        && activeSlotsAccountId === accountId;
+}
+
+async function syncRemoteWidgetStyle(appId: string, slotKey: string, accountId: string, preset: WidgetStylePreset, updatedAt: number, request: number): Promise<boolean> {
     // Style selection is user-visible and can be changed several times while
     // Discord is reading the application. Discard stale requests before they
     // can overwrite the newest selection.
-    if (request !== widgetStylePublishSerial) return false;
-    const id = getSlot(slotKey);
-    if (!SNOWFLAKE.test(id.appId)) return false;
+    if (!isCurrentWidgetStylePublishRequest(slotKey, accountId, request)) return false;
+    if (!SNOWFLAKE.test(appId)) return false;
     try {
-        const application = await apiGet(`/applications/${id.appId}`);
+        const application = await apiGet(`/applications/${appId}`);
         const currentDescription = applicationDescription(application);
         if (currentDescription === null) return false;
-        if (request !== widgetStylePublishSerial) return false;
+        if (!isCurrentWidgetStylePublishRequest(slotKey, accountId, request)) return false;
         const latest = getSlot(slotKey);
-        if (latest.appId !== id.appId || latest.widgetStyle !== id.widgetStyle) return false;
-        const preset = WIDGET_STYLE_PRESETS.find(item => item.id === id.widgetStyle) ?? selectedWidgetPreset();
-        const description = remoteWidgetDescriptionFor(currentDescription, preset);
+        if (latest.widgetStyle !== preset.id || latest.widgetStyleUpdatedAt !== updatedAt) return false;
+        const description = remoteWidgetDescriptionFor(currentDescription, preset, updatedAt);
         if (!description) return false;
         if (description !== currentDescription) {
-            if (request !== widgetStylePublishSerial) return false;
-            await apiPatch(`/applications/${id.appId}`, { description });
+            if (!isCurrentWidgetStylePublishRequest(slotKey, accountId, request)) return false;
+            await apiPatch(`/applications/${appId}`, { description });
         }
         // Confirm the marker through the same read path used by another install.
         // A successful PATCH alone is not enough: Discord can accept a request
         // while returning a stale/partial application object to the client.
-        const confirmedApplication = await apiGet(`/applications/${id.appId}`);
+        const confirmedApplication = await apiGet(`/applications/${appId}`);
+        if (!isCurrentWidgetStylePublishRequest(slotKey, accountId, request)) return false;
         const confirmed = remoteWidgetStyleFromApplication(confirmedApplication);
-        return confirmed?.style === preset.id;
+        return confirmed?.style === preset.id && confirmed.updatedAt === updatedAt;
     } catch (error) {
         console.warn("[DMWidget] cross-install widget skin sync failed:", error);
         return false;
     }
 }
 
-function queueRemoteWidgetStyleSync(slotKey: string, request: number): Promise<boolean> {
+interface WidgetStyleSyncResult {
+    confirmed: number;
+    total: number;
+}
+
+function queueRemoteWidgetStyleSync(appIds: string[], slotKey: string, accountId: string, preset: WidgetStylePreset, updatedAt: number, request: number): Promise<WidgetStyleSyncResult> {
     const result = widgetStyleSyncQueue.then(
-        () => syncRemoteWidgetStyle(slotKey, request),
-        () => syncRemoteWidgetStyle(slotKey, request)
+        async () => {
+            let confirmed = 0;
+            for (const appId of appIds) {
+                if (!isCurrentWidgetStylePublishRequest(slotKey, accountId, request)) break;
+                if (await syncRemoteWidgetStyle(appId, slotKey, accountId, preset, updatedAt, request)) confirmed++;
+            }
+            return { confirmed, total: appIds.length };
+        },
+        async () => {
+            let confirmed = 0;
+            for (const appId of appIds) {
+                if (!isCurrentWidgetStylePublishRequest(slotKey, accountId, request)) break;
+                if (await syncRemoteWidgetStyle(appId, slotKey, accountId, preset, updatedAt, request)) confirmed++;
+            }
+            return { confirmed, total: appIds.length };
+        }
     );
     widgetStyleSyncQueue = result.then(() => undefined, () => undefined);
     return result;
 }
 
 async function republishSelectedWidgetStyleUnsafe(slotKey: string): Promise<void> {
-    const request = ++widgetStylePublishSerial;
+    const request = nextWidgetStylePublishRequest(slotKey);
     await ensureSlots();
     // The local slot can be empty after a reinstall, an account switch, or a
     // DataStore migration even though the widget is still attached to this
     // account's profile. Recover it before deciding that the skin is preview-only.
     await refreshAttachedWidgetStyles(true);
+    const accountId = String(UserStore.getCurrentUser()?.id ?? "");
+    if (!isCurrentWidgetStylePublishRequest(slotKey, accountId, request)) return;
     const id = getSlot(slotKey);
     const preset = WIDGET_STYLE_PRESETS.find(item => item.id === id.widgetStyle) ?? selectedWidgetPreset();
+    const updatedAt = Number(id.widgetStyleUpdatedAt ?? 0);
+    const attachedAppIds = attachedWidgetAppIdsForSlot(slotKey);
     updateAttachedWidgetStylesForSlot(slotKey, preset);
     const editorWasOpen = widgetSkinEditorOpen();
-    const renderedBeforePublish = scanWidgetSkinCards();
+    scanWidgetSkinCards();
     scheduleWidgetSkinScan();
-    if (!SNOWFLAKE.test(id.appId)) {
-        toast(renderedBeforePublish > 0
-            ? `${SLOT_LABEL[slotKey] ?? slotKey} skin applied to ${renderedBeforePublish} visible Discordmaxxer widget${renderedBeforePublish === 1 ? "" : "s"}. Create/Update will publish its supported layout and image.`
-            : `${SLOT_LABEL[slotKey] ?? slotKey} skin saved in Discordmaxxer. No visible Board widget was found yet; open the profile Board and it will apply when the card mounts.`, Toasts.Type.MESSAGE, 6500);
+    if (!attachedAppIds.length) {
+        toast(`${SLOT_LABEL[slotKey] ?? slotKey} skin is saved locally, but Discord did not confirm an attached widget for this game on the current profile. Open the profile Board and retry; the published card was not changed.`, Toasts.Type.MESSAGE, 8000);
         return;
     }
     // A skin is a Discordmaxxer renderer feature, not a Discord widget-v2
@@ -821,18 +858,26 @@ async function republishSelectedWidgetStyleUnsafe(slotKey: string): Promise<void
     // recovered above, so the renderer can apply the skin immediately. The
     // deliberate Update action remains the place where supported card fields
     // are sent to Discord after the user reviews the recovered form.
-    const synced = await queueRemoteWidgetStyleSync(slotKey, request);
-    if (request !== widgetStylePublishSerial) return;
-    const rendered = scanWidgetSkinCards();
+    const sync = await queueRemoteWidgetStyleSync(attachedAppIds, slotKey, accountId, preset, updatedAt, request);
+    if (!isCurrentWidgetStylePublishRequest(slotKey, accountId, request)) return;
+    scanWidgetSkinCards();
     scheduleWidgetSkinScan();
-    const renderedNote = rendered > 0
-        ? ` ${rendered} visible widget${rendered === 1 ? "" : "s"} restyled now.`
-        : editorWasOpen
-            ? " The editor is still open, so Board rendering is queued; close it and the visible Board card will be restyled without changing the published card."
-            : " The skin was saved, but no visible Board card was detected yet; reopen the profile Board to render it.";
-    toast(synced
-        ? `${SLOT_LABEL[slotKey] ?? slotKey} skin synced for your other Discordmaxxer installs.${renderedNote} Your published card was left unchanged.`
-        : `${SLOT_LABEL[slotKey] ?? slotKey} skin saved on this PC.${renderedNote} Cross-install sync was unavailable, so your published card was left unchanged.`, rendered > 0 ? Toasts.Type.SUCCESS : Toasts.Type.MESSAGE, 8500);
+    const visibleAppIds = attachedAppIds.filter(appId => hasVisibleWidgetSkin(appId, preset.id));
+    const remoteNote = sync.confirmed === sync.total
+        ? ` Style preference was verified on all ${sync.total} attached widget${sync.total === 1 ? "" : "s"} for your other Discordmaxxer installs.`
+        : sync.confirmed
+            ? ` Style preference was verified on ${sync.confirmed} of ${sync.total} attached widgets; the rest could not be confirmed.`
+            : " Cross-install style preference could not be verified.";
+    if (editorWasOpen) {
+        toast(`${SLOT_LABEL[slotKey] ?? slotKey} skin selection was saved.${remoteNote} The editor is open, so no visible Board card is claimed as updated; close it and reopen the profile Board to see the renderer apply it. The published widget content was left unchanged.`, Toasts.Type.MESSAGE, 9000);
+    } else if (visibleAppIds.length) {
+        const visibleNote = visibleAppIds.length === attachedAppIds.length
+            ? ` The exact selected skin is visible on all ${visibleAppIds.length} matching Board card${visibleAppIds.length === 1 ? "" : "s"}.`
+            : ` The exact selected skin is visible on ${visibleAppIds.length} of ${attachedAppIds.length} matching Board cards.`;
+        toast(`${SLOT_LABEL[slotKey] ?? slotKey} skin rendered on the matching widget.${remoteNote}${visibleNote} Published widget content was left unchanged.`, Toasts.Type.SUCCESS, 9000);
+    } else {
+        toast(`${SLOT_LABEL[slotKey] ?? slotKey} skin selection was saved.${remoteNote} No visible card with this exact app ID and skin was detected; reopen the profile Board to check the local renderer. Published widget content was left unchanged.`, Toasts.Type.MESSAGE, 9000);
+    }
 }
 
 async function republishSelectedWidgetStyle(slotKey: string): Promise<void> {
@@ -1083,9 +1128,10 @@ async function removeFromProfile(): Promise<void> {
     const id = getSlot(slotKey);
     if (!id.appId) { toast("No widget to remove.", Toasts.Type.MESSAGE); return; }
     try {
-        let widgets: any[] = [];
-        try { const prof = await apiGet(`/users/${me.id}/profile`); widgets = profileWidgetEntries(prof) ?? []; } catch { widgets = []; }
-        await apiPut("/users/@me/widgets", { widgets: widgets.filter(w => w?.data?.application_id !== id.appId) });
+        const profile = await apiGet(`/users/${me.id}/profile`);
+        const widgets = profileWidgetEntries(profile);
+        if (!widgets) throw new Error("Discord returned an unrecognized profile widget list; nothing was removed. Retry after the profile finishes loading.");
+        await apiPut("/users/@me/widgets", { widgets: widgets.filter(widget => profileWidgetApplicationId(widget) !== id.appId) });
         setSlot(slotKey, { ...EMPTY_IDENTITY }); // forget this slot so status resets
         toast("Widget removed from your profile board. (Your app stays in the Developer Portal — delete it there if you want.)", Toasts.Type.MESSAGE, 7000);
     } catch (e: any) {
@@ -1103,11 +1149,12 @@ async function moveToTop(): Promise<void> {
     const id = getSlot(slotKey);
     if (!me?.id || !SNOWFLAKE.test(id.appId)) { toast("Create this widget first.", Toasts.Type.FAILURE); return; }
     try {
-        let widgets: any[] = [];
-        try { const prof = await apiGet(`/users/${me.id}/profile`); widgets = profileWidgetEntries(prof) ?? []; } catch { widgets = []; }
-        const mine = widgets.filter(w => w?.data?.application_id === id.appId);
+        const profile = await apiGet(`/users/${me.id}/profile`);
+        const widgets = profileWidgetEntries(profile);
+        if (!widgets) throw new Error("Discord returned an unrecognized profile widget list; no board changes were made. Retry after the profile finishes loading.");
+        const mine = widgets.filter(widget => profileWidgetApplicationId(widget) === id.appId);
         if (!mine.length) { toast("This card isn't on your board yet — hit Create first.", Toasts.Type.FAILURE); return; }
-        const rest = widgets.filter(w => w?.data?.application_id !== id.appId);
+        const rest = widgets.filter(widget => profileWidgetApplicationId(widget) !== id.appId);
         await apiPut("/users/@me/widgets", { widgets: [...mine, ...rest] });
         toast("Moved to the top of your profile board.", Toasts.Type.SUCCESS, 5000);
     } catch (e: any) {
@@ -1304,7 +1351,7 @@ function applicationDescription(application: any): string | null {
     return typeof description === "string" ? description : null;
 }
 
-function remoteWidgetStyleFromApplication(application: any): { style: string; topLayout: "hero" | "contained"; bottomLayout: "stats" | "progress"; } | null {
+function remoteWidgetStyleFromApplication(application: any): { style: string; topLayout: "hero" | "contained"; bottomLayout: "stats" | "progress"; updatedAt: number; } | null {
     const match = String(applicationDescription(application) ?? "").match(REMOTE_WIDGET_STYLE_RE);
     if (!match) return null;
     try {
@@ -1315,16 +1362,17 @@ function remoteWidgetStyleFromApplication(application: any): { style: string; to
         return {
             style: raw.style,
             topLayout: raw.topLayout === "hero" || raw.topLayout === "contained" ? raw.topLayout : preset.topLayout,
-            bottomLayout: raw.bottomLayout === "stats" || raw.bottomLayout === "progress" ? raw.bottomLayout : preset.bottomLayout
+            bottomLayout: raw.bottomLayout === "stats" || raw.bottomLayout === "progress" ? raw.bottomLayout : preset.bottomLayout,
+            updatedAt: Number.isSafeInteger(raw.updatedAt) && raw.updatedAt >= 0 ? raw.updatedAt : 0
         };
     } catch {
         return null;
     }
 }
 
-function remoteWidgetDescriptionFor(description: unknown, preset: WidgetStylePreset): string | null {
+function remoteWidgetDescriptionFor(description: unknown, preset: WidgetStylePreset, updatedAt: number): string | null {
     const base = String(description ?? "").replace(REMOTE_WIDGET_STYLE_ALL_RE, "").replace(/\s+$/, "");
-    const marker = `[DMWSTYLE1:${b64encode(JSON.stringify({ v: 1, style: preset.id, topLayout: preset.topLayout, bottomLayout: preset.bottomLayout }))}]`;
+    const marker = `[DMWSTYLE1:${b64encode(JSON.stringify({ v: 1, style: preset.id, topLayout: preset.topLayout, bottomLayout: preset.bottomLayout, updatedAt }))}]`;
     const next = base ? `${base}\n\n${marker}` : marker;
     // Discord caps application descriptions. Never replace a user's existing
     // description with a truncated value just to sync a cosmetic preference.
@@ -1528,10 +1576,27 @@ const widgetSkinEditorOpen = (): boolean => widgetSkinEditorMounts > 0;
 const attachedWidgetStyles = new Map<string, WidgetStylePreset>();
 const attachedWidgetSlots = new Map<string, string>();
 const attachedWidgetHints = new Map<string, string[]>();
+let attachedWidgetProfileAccountId = "";
+let attachedWidgetProfileVerifiedAt = 0;
 let attachedWidgetRefreshAt = 0;
 let attachedWidgetRefreshPromise: Promise<void> | null = null;
 let widgetStyleRefreshTimer: number | null = null;
 const ATTACHED_WIDGET_REFRESH_INTERVAL_MS = 30_000;
+
+function attachedWidgetProfileIsFresh(): boolean {
+    const accountId = String(UserStore.getCurrentUser()?.id ?? "");
+    return !!accountId
+        && accountId === activeSlotsAccountId
+        && accountId === attachedWidgetProfileAccountId
+        && Date.now() - attachedWidgetProfileVerifiedAt <= ATTACHED_WIDGET_REFRESH_INTERVAL_MS * 2;
+}
+
+function attachedWidgetAppIdsForSlot(slotKey: string): string[] {
+    if (!attachedWidgetProfileIsFresh()) return [];
+    return Array.from(attachedWidgetSlots)
+        .filter(([appId, attachedSlot]) => attachedSlot === slotKey && SNOWFLAKE.test(appId))
+        .map(([appId]) => appId);
+}
 
 function selectedWidgetPreset(): WidgetStylePreset {
     return WIDGET_STYLE_PRESETS.find(item => item.id === String((settings.store as any).widgetStyle ?? ""))
@@ -1549,24 +1614,63 @@ function presetForSlot(slotKey: string): WidgetStylePreset {
 }
 
 function profileWidgetEntries(profile: any): any[] | null {
-    const candidates = [
-        profile?.profile_widgets,
-        profile?.widgets,
-        profile?.user_profile?.profile_widgets,
-        profile?.user_profile?.widgets,
-        profile?.user?.profile?.profile_widgets,
-        profile?.user?.profile?.widgets,
-        profile?.profile?.profile_widgets,
-        profile?.profile?.widgets,
-        profile?.data?.profile_widgets,
-        profile?.data?.widgets
+    if (!profile || typeof profile !== "object") return null;
+    const candidates: Array<{ entries: any[]; appCount: number; explicit: boolean; complete: boolean; }> = [];
+    const visited = new WeakSet<object>();
+    const queuedArrays = new WeakMap<object, number>();
+    const pending: Array<{ value: any; depth: number; widgetContext: boolean; }> = [
+        { value: profile, depth: 0, widgetContext: false }
     ];
-    // Prefer a populated list when Discord exposes both a stale/empty
-    // top-level field and the current nested profile field. Falling back to
-    // an empty array is still useful for a genuine no-widgets response.
-    return candidates.find((value) => Array.isArray(value) && value.length > 0)
-      ?? candidates.find(Array.isArray)
-      ?? null;
+    let visitedNodes = 0;
+
+    // Discord has returned the same Board list at several different depths
+    // across client/API versions. Search only bounded response data, preferring
+    // arrays under a widget-named key and arrays with actual application IDs.
+    // A guessed empty list is dangerous because callers PUT the whole Board.
+    while (pending.length && visitedNodes < 512) {
+        const { value, depth, widgetContext } = pending.pop()!;
+        if (!value || typeof value !== "object" || depth > 6) continue;
+        if (Array.isArray(value)) {
+            const existingIndex = queuedArrays.get(value);
+            if (widgetContext || existingIndex === undefined) {
+                const appCount = value.reduce((count, widget) => count + (profileWidgetApplicationId(widget) ? 1 : 0), 0);
+                if (widgetContext || appCount > 0) {
+                    if (existingIndex === undefined) {
+                        queuedArrays.set(value, candidates.length);
+                        candidates.push({ entries: value, appCount, explicit: widgetContext, complete: appCount === value.length });
+                    } else if (widgetContext && !candidates[existingIndex].explicit) {
+                        candidates[existingIndex].explicit = true;
+                    }
+                }
+            }
+            for (let index = Math.min(value.length, 128) - 1; index >= 0; index--) {
+                const entry = value[index];
+                if (entry && typeof entry === "object") pending.push({ value: entry, depth: depth + 1, widgetContext });
+            }
+            continue;
+        }
+        if (visited.has(value)) continue;
+        visited.add(value);
+        visitedNodes++;
+        for (const [key, child] of Object.entries(value)) {
+            if (!child || typeof child !== "object") continue;
+            pending.push({ value: child, depth: depth + 1, widgetContext: widgetContext || /widget/i.test(key) });
+        }
+    }
+
+    if (!candidates.length) return null;
+    const populated = candidates.filter(candidate => candidate.appCount > 0);
+    const complete = populated.filter(candidate => candidate.complete);
+    if (complete.length) {
+        // A stale empty wrapper should not beat the live nested list.
+        complete.sort((a, b) => Number(b.explicit) - Number(a.explicit) || b.appCount - a.appCount || b.entries.length - a.entries.length);
+        return complete[0].entries;
+    }
+    // A partial/unknown non-empty array is not proof of the complete Board.
+    // Preserve last-good state rather than styling a subset or writing a
+    // truncated list back through Add/Remove/Reorder.
+    if (candidates.some(candidate => candidate.entries.length > 0)) return null;
+    return [];
 }
 
 function profileWidgetApplicationId(widget: any): string {
@@ -1586,7 +1690,40 @@ function profileWidgetApplicationId(widget: any): string {
         widget?.application?.applicationId,
         widget?.application?.data?.id
     ];
-    return candidates.map(value => String(value ?? "")).find(value => SNOWFLAKE.test(value)) ?? "";
+    const direct = candidates.map(value => String(value ?? "")).find(value => SNOWFLAKE.test(value));
+    if (direct) return direct;
+
+    // Some profile responses wrap the app object more deeply. Accept `id`
+    // only inside an explicit application/app object; generic widget, config,
+    // or user IDs must never be mistaken for the application ID.
+    // The same object could be reached through both a generic wrapper and an
+    // explicit app/application wrapper. Track those contexts separately so a
+    // generic visit cannot hide a later, valid app-id path.
+    const visitedGeneric = new WeakSet<object>();
+    const visitedApplication = new WeakSet<object>();
+    const pending: Array<{ value: any; depth: number; insideApplication: boolean; }> = [
+        { value: widget, depth: 0, insideApplication: false }
+    ];
+    let visitedNodes = 0;
+    while (pending.length && visitedNodes < 128) {
+        const { value, depth, insideApplication } = pending.pop()!;
+        if (!value || typeof value !== "object" || depth > 5) continue;
+        const visited = insideApplication ? visitedApplication : visitedGeneric;
+        if (visited.has(value)) continue;
+        visited.add(value);
+        visitedNodes++;
+        const pairs = Array.isArray(value) ? value.map((entry, index) => [String(index), entry] as const) : Object.entries(value);
+        for (const [key, child] of pairs) {
+            const normalizedKey = key.toLowerCase().replace(/[^a-z]/g, "");
+            if ((normalizedKey === "applicationid" || normalizedKey === "appid") && SNOWFLAKE.test(String(child ?? ""))) return String(child);
+            if (insideApplication && normalizedKey === "id" && SNOWFLAKE.test(String(child ?? ""))) return String(child);
+            if (child && typeof child === "object") {
+                const childInsideApplication = insideApplication || normalizedKey === "application" || normalizedKey === "app";
+                pending.push({ value: child, depth: depth + 1, insideApplication: childInsideApplication });
+            }
+        }
+    }
+    return "";
 }
 
 function profileWidgetConfigId(widget: any): string {
@@ -1748,17 +1885,12 @@ function applyPublishedWidgetSnapshot(slotKey: string, snapshot: PublishedWidget
     publishedWidgetHydrated.add(slotKey);
 }
 
-function inferWidgetSlot(application: any, fallback: string): string {
+function inferWidgetSlot(application: any): string {
     const name = String(application?.name ?? application?.description ?? "").toLowerCase();
     if (/valorant|^val(?:\s|$)|riot/.test(name)) return "valorant";
     if (/fortnite|^fort(?:\s|$)|epic/.test(name)) return "fortnite";
-    // Unknown app names are custom cards. Falling back to the currently open
-    // template used to put a recovered custom card into the Fortnite/Valorant
-    // slot and made the editor look blank when the picker changed.
-    // If Discord rejects application metadata, however, the current game
-    // template is the only useful clue and lets an existing Val/Fort card
-    // hydrate instead of forcing a duplicate create flow.
-    if (!name && (fallback === "valorant" || fallback === "fortnite")) return fallback;
+    // Unknown or unavailable metadata is not enough evidence to assign a
+    // published app to whichever game template happens to be selected now.
     return "none";
 }
 
@@ -1809,8 +1941,20 @@ async function recoverAttachedWidgetIdentity(
 async function refreshAttachedWidgetStyles(force = false): Promise<void> {
     const now = Date.now();
     if (!force && now - attachedWidgetRefreshAt < ATTACHED_WIDGET_REFRESH_INTERVAL_MS) return;
-    if (attachedWidgetRefreshPromise) return attachedWidgetRefreshPromise;
-    attachedWidgetRefreshAt = now;
+    if (attachedWidgetRefreshPromise) {
+        const pending = attachedWidgetRefreshPromise;
+        await pending;
+        if (!force) return;
+        // A forced Apply must not mistake an older in-flight response for the
+        // fresh profile read it explicitly requested. If another forced read
+        // started while this one was waiting, join that newer request instead.
+        if (attachedWidgetRefreshPromise && attachedWidgetRefreshPromise !== pending) {
+            await attachedWidgetRefreshPromise;
+            return;
+        }
+    }
+    if (!force && Date.now() - attachedWidgetRefreshAt < ATTACHED_WIDGET_REFRESH_INTERVAL_MS) return;
+    attachedWidgetRefreshAt = Date.now();
     const task = (async () => {
         await ensureSlots();
         const me = UserStore.getCurrentUser();
@@ -1818,6 +1962,8 @@ async function refreshAttachedWidgetStyles(force = false): Promise<void> {
             attachedWidgetStyles.clear();
             attachedWidgetSlots.clear();
             attachedWidgetHints.clear();
+            attachedWidgetProfileAccountId = "";
+            attachedWidgetProfileVerifiedAt = 0;
             widgetApplicationCacheEpoch++;
             return;
         }
@@ -1827,6 +1973,18 @@ async function refreshAttachedWidgetStyles(force = false): Promise<void> {
         const widgets = profileWidgetEntries(profile);
         if (!widgets) {
             console.warn("[DMWidget] profile widget list missing; keeping the last attached skin map");
+            return;
+        }
+        if (widgets.length === 0) {
+            // Only a positively recognized, genuinely empty widget list can
+            // clear state. An unknown response shape above preserves the last
+            // confirmed map so Apply does not report a phantom missing card.
+            attachedWidgetStyles.clear();
+            attachedWidgetSlots.clear();
+            attachedWidgetHints.clear();
+            widgetApplicationCacheEpoch++;
+            attachedWidgetProfileAccountId = accountId;
+            attachedWidgetProfileVerifiedAt = Date.now();
             return;
         }
         const entries = widgets
@@ -1842,24 +2000,48 @@ async function refreshAttachedWidgetStyles(force = false): Promise<void> {
         const nextHints = new Map<string, string[]>();
         for (const appId of ids) {
             if (String(UserStore.getCurrentUser()?.id ?? "") !== accountId || activeSlotsAccountId !== accountId) return;
+            const hasStoredSlot = stored.has(appId);
             let slotKey = stored.get(appId) ?? "";
             let application: any = null;
             try { application = await apiGet(`/applications/${appId}`); } catch { /* a private app may reject metadata */ }
             if (String(UserStore.getCurrentUser()?.id ?? "") !== accountId || activeSlotsAccountId !== accountId) return;
-            if (!slotKey) slotKey = inferWidgetSlot(application, slotKeyOf());
+            if (!slotKey) slotKey = inferWidgetSlot(application);
+            const remoteStyle = remoteWidgetStyleFromApplication(application);
+            if (slotKey === "none" && !hasStoredSlot) {
+                // A custom/unknown app with no local slot is not a Val/Fort
+                // widget merely because that gallery happens to be selected.
+                // A valid remote marker still supports a custom card's skin.
+                if (remoteStyle) {
+                    nextStyles.set(appId, WIDGET_STYLE_PRESETS.find(item => item.id === remoteStyle.style) ?? WIDGET_STYLE_PRESETS[0]);
+                    nextSlots.set(appId, "none");
+                    const appName = String(application?.name ?? "").trim();
+                    nextHints.set(appId, appName ? [appName] : []);
+                }
+                continue;
+            }
             const entry = entries.find(item => item.appId === appId);
             await recoverAttachedWidgetIdentity(slotKey, appId, entry?.configId ?? "");
             if (String(UserStore.getCurrentUser()?.id ?? "") !== accountId || activeSlotsAccountId !== accountId) return;
-            const remoteStyle = remoteWidgetStyleFromApplication(application);
             const current = getSlot(slotKey);
-            // A deliberate choice on this install wins. An older slot without a
-            // source marker is eligible for recovery from the owning app.
-            if (remoteStyle && current.widgetStyleSource !== "local") {
-                const next = { ...current, widgetStyle: remoteStyle.style, widgetStyleSource: "remote" as const, topLayout: remoteStyle.topLayout, bottomLayout: remoteStyle.bottomLayout };
-                if (JSON.stringify(next) !== JSON.stringify(current)) setSlot(slotKey, next);
+            const sameLocalApp = current.appId === appId;
+            const localUpdatedAt = Number(current.widgetStyleUpdatedAt ?? 0);
+            const remoteWins = !!remoteStyle && (!sameLocalApp
+                || (remoteStyle.updatedAt > 0 && remoteStyle.updatedAt >= localUpdatedAt)
+                || (remoteStyle.updatedAt === 0 && sameLocalApp && current.widgetStyleSource !== "local"));
+            if (remoteStyle && remoteWins) {
+                // Keep the per-app map authoritative when this profile's card
+                // is not the app currently cached in the local game slot. The
+                // slot itself is only safe to hydrate when it refers to the
+                // same attached application.
+                if (sameLocalApp && (remoteStyle.updatedAt >= localUpdatedAt || current.widgetStyleSource !== "local")) {
+                    const next = { ...current, widgetStyle: remoteStyle.style, widgetStyleSource: "remote" as const, widgetStyleUpdatedAt: remoteStyle.updatedAt, topLayout: remoteStyle.topLayout, bottomLayout: remoteStyle.bottomLayout };
+                    if (JSON.stringify(next) !== JSON.stringify(current)) setSlot(slotKey, next);
+                }
+                nextStyles.set(appId, WIDGET_STYLE_PRESETS.find(item => item.id === remoteStyle.style) ?? presetForSlot(slotKey));
+            } else {
+                nextStyles.set(appId, presetForSlot(slotKey));
             }
             nextSlots.set(appId, slotKey);
-            nextStyles.set(appId, presetForSlot(slotKey));
             const identity = getSlot(slotKey);
             const labels = [
                 String(application?.name ?? ""),
@@ -1884,6 +2066,8 @@ async function refreshAttachedWidgetStyles(force = false): Promise<void> {
         for (const [appId, preset] of nextStyles) attachedWidgetStyles.set(appId, preset);
         for (const [appId, slotKey] of nextSlots) attachedWidgetSlots.set(appId, slotKey);
         for (const [appId, labels] of nextHints) attachedWidgetHints.set(appId, labels);
+        attachedWidgetProfileAccountId = accountId;
+        attachedWidgetProfileVerifiedAt = Date.now();
     })();
     attachedWidgetRefreshPromise = task;
     try {
@@ -1903,13 +2087,19 @@ function updateAttachedWidgetStylesForSlot(slotKey: string, preset: WidgetStyleP
     for (const [appId, attachedSlot] of attachedWidgetSlots) {
         if (attachedSlot === slotKey) attachedWidgetStyles.set(appId, preset);
     }
-    const currentId = getSlot(slotKey).appId;
-    if (SNOWFLAKE.test(currentId)) attachedWidgetStyles.set(currentId, preset);
+    // Before the account's profile list is available, a same-PC saved ID can
+    // still render locally. It is deliberately not treated as a confirmed
+    // attached app for cross-install writes (see attachedWidgetAppIdsForSlot).
+    if (!attachedWidgetProfileIsFresh()) {
+        const currentId = getSlot(slotKey).appId;
+        if (SNOWFLAKE.test(currentId)) attachedWidgetStyles.set(currentId, preset);
+    }
 }
 
 function knownWidgetStyles(): Map<string, WidgetStylePreset> {
     const out = new Map<string, WidgetStylePreset>();
     for (const [appId, preset] of attachedWidgetStyles) out.set(appId, preset);
+    if (attachedWidgetProfileIsFresh()) return out;
     for (const [slotKey, identity] of Object.entries(slots.get())) {
         if (!SNOWFLAKE.test(identity.appId)) continue;
         const preset = WIDGET_STYLE_PRESETS.find(item => item.id === identity.widgetStyle) ?? WIDGET_STYLE_PRESETS[0];
@@ -1936,6 +2126,7 @@ function knownWidgetHints(): Map<string, string[]> {
         if (current.length) out.set(appId, current);
     };
     for (const [appId, labels] of attachedWidgetHints) add(appId, labels);
+    if (attachedWidgetProfileIsFresh()) return out;
     for (const [slotKey, identity] of Object.entries(slots.get())) {
         if (!SNOWFLAKE.test(identity.appId)) continue;
         add(identity.appId, [
@@ -2274,7 +2465,6 @@ function hintedWidgetApplicationId(element: HTMLElement, hints: Map<string, stri
     // Walk from the discovery node outward instead, returning as soon as the
     // smallest connected ancestor identifies exactly one attached app.
     let current: HTMLElement | null = element;
-    let fallback: string | null = null;
     for (let depth = 0; current && depth < WIDGET_CARD_MAX_ANCESTOR_DEPTH; depth++, current = current.parentElement) {
         let text = "";
         let html = "";
@@ -2296,10 +2486,8 @@ function hintedWidgetApplicationId(element: HTMLElement, hints: Map<string, stri
             if (found) matches.push(appId);
         }
         if (matches.length === 1) return matches[0];
-        if (matches.length > 1 && !fallback && /card|widget|application|article|listitem/i.test(`${current.className} ${current.getAttribute("role") ?? ""}`))
-            fallback = matches[0];
     }
-    return fallback;
+    return null;
 }
 
 function widgetApplicationMatch(element: HTMLElement, known: Set<string>, hints: Map<string, string[]>): WidgetCardMatch | null {
@@ -2443,6 +2631,41 @@ function playingCardPreset(active: Map<string, WidgetStylePreset>, seen: Set<HTM
         }
     }
     return Array.from(active.values())[0] ?? null;
+}
+
+function hasVisibleWidgetSkin(appId: string, styleId: string): boolean {
+    try {
+        for (const root of Array.from(document.querySelectorAll<HTMLElement>('[data-dm-widget-card-root="true"][data-dm-widget-skin]'))) {
+            if (!root.isConnected || root.dataset.dmWidgetAppId !== appId || root.dataset.dmWidgetSkin !== styleId) continue;
+            const rect = root.getBoundingClientRect();
+            if (rect.width < 20 || rect.height < 12 || rect.bottom <= 0 || rect.right <= 0 || rect.top >= window.innerHeight || rect.left >= window.innerWidth) continue;
+            let visible = true;
+            for (let ancestor: HTMLElement | null = root; ancestor; ancestor = ancestor.parentElement) {
+                const computed = window.getComputedStyle(ancestor);
+                if (computed.display === "none" || computed.visibility === "hidden" || computed.visibility === "collapse" || Number(computed.opacity) <= 0) {
+                    visible = false;
+                    break;
+                }
+                // A card can have an on-screen rect while one of its scroll
+                // containers clips it entirely. Check clipping ancestors so
+                // the success toast cannot count an off-panel card as visible.
+                const clipX = /^(?:hidden|clip|scroll|auto)$/.test(computed.overflowX);
+                const clipY = /^(?:hidden|clip|scroll|auto)$/.test(computed.overflowY);
+                if (ancestor !== root && (clipX || clipY)) {
+                    const clip = ancestor.getBoundingClientRect();
+                    if ((clipX && (rect.right <= clip.left || rect.left >= clip.right))
+                        || (clipY && (rect.bottom <= clip.top || rect.top >= clip.bottom))) {
+                        visible = false;
+                        break;
+                    }
+                }
+                if (ancestor === document.body) break;
+            }
+            if (!visible) continue;
+            return true;
+        }
+    } catch { /* the Board may be tearing down as Discord changes profiles */ }
+    return false;
 }
 
 function scanWidgetSkinCards(budgetMs = 120): number {
@@ -2723,6 +2946,8 @@ function stopWidgetSkinRenderer(): void {
     attachedWidgetStyles.clear();
     attachedWidgetSlots.clear();
     attachedWidgetHints.clear();
+    attachedWidgetProfileAccountId = "";
+    attachedWidgetProfileVerifiedAt = 0;
     attachedWidgetRefreshAt = 0;
     widgetSkinStyleElement?.remove();
     widgetSkinStyleElement = null;
@@ -2851,12 +3076,13 @@ function WidgetStylePicker() {
     const choose = (preset: WidgetStylePreset) => {
         const store = settings.store as any;
         const current = getSlot(template);
+        const updatedAt = Math.max(Date.now(), Number(current.widgetStyleUpdatedAt ?? 0) + 1);
         // Keep the preset's complete design contract in the durable slot. Game
         // cards still publish Discord's supported stats schema, but the local
         // Discordmaxxer card keeps the selected preset's progress/stats intent
         // so switching templates never silently strips an attribute.
         const nextBottomLayout = preset.bottomLayout;
-        setSlot(template, { ...current, widgetStyle: preset.id, widgetStyleSource: "local", topLayout: preset.topLayout, bottomLayout: nextBottomLayout });
+        setSlot(template, { ...current, widgetStyle: preset.id, widgetStyleSource: "local", widgetStyleUpdatedAt: updatedAt, topLayout: preset.topLayout, bottomLayout: nextBottomLayout });
         store.widgetStyle = preset.id;
         store.topLayout = preset.topLayout;
         store.bottomLayout = nextBottomLayout;
@@ -3105,7 +3331,7 @@ function WidgetEditor() {
                     widgetSkinRescanAfterEditor = false;
                     widgetSkinLastScanAt = 0;
                 }
-                scheduleWidgetSkinScan();
+                scheduleWidgetSkinScan(true);
             }
         };
     }, []);

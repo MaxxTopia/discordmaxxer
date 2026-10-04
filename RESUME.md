@@ -5,6 +5,31 @@
 > `CLAUDE.md` ("Operational facts" section). Those three are enough to build,
 > ship, and maintain without prior context.
 
+## 2026-10-03 v0.7.86 release candidate — existing widget skin + profile flair
+
+Diggy reported that applying a skin to an existing Diggy T widget still did not
+visibly change the Board card, and the profile-flair banner was missing. The
+candidate carries the targeted DMWidget and DMProfileFlair fixes from the
+preserved C: checkout into an isolated E: release worktree. DMWidget now waits
+for stale in-flight profile reads, requires a positively recognized attached
+widget list, reconciles app IDs to the signed-in account, verifies the exact
+visible card/style before claiming success, and preserves last-confirmed state
+on partial/unknown responses. It does not republish the native Discord widget
+payload. DMProfileFlair rechecks recycled banner nodes, retries failed banners
+with bounded backoff, recognizes animated Discord avatar hashes served as
+WebP, and keeps static media visible in Tournament Mode.
+
+The release version is 0.7.86 and notes are drafted in
+`docs/releases/v0.7.86.md`. Automated release checks, commit, push, tag, CI,
+and public assets are still pending. The initial candidate checks passed on C:,
+but release validation must pass again on E: before publishing. No signed-in
+Diggy T runtime or second-PC confirmation is available; source/build/CI proof
+must not be presented as account-specific rendering proof. Preserve the C:
+candidate and its untracked `artifacts/` folder. After publication, Diggy's
+best next test is to update the affected client, apply a skin to its existing
+widget, reopen the Board, and check the profile-flair banner with Tournament
+Mode off.
+
 ## 2026-09-30 v0.7.85 widget-skin and Fortnite refresh — published
 
 The latest field report is that another PC updated successfully but
