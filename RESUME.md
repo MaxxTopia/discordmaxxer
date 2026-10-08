@@ -19,6 +19,9 @@ history in `dd749c0`. `dd749c0` is pushed to `origin/main` and is tagged
 `v0.7.87`. GitHub Actions Release run `37726475500` completed successfully:
 https://github.com/MaxxTopia/discordmaxxer/actions/runs/37726475500
 
+The current `origin/main` head is `cc1aa87`, a docs-only continuity update
+after the immutable release tag.
+
 Published release: https://github.com/MaxxTopia/discordmaxxer/releases/tag/v0.7.87
 
 Published assets are `Discordmaxxer-0.7.87-win.zip` (150,081,243 bytes),
