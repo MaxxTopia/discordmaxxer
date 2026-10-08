@@ -1950,8 +1950,12 @@ type VisibleWidgetStyleRecord = {
     checkedAt: number;
     hints: string[];
 };
+type VisibleWidgetStyleMissRecord = {
+    checkedAt: number;
+    hints: string[];
+};
 const visibleWidgetStyles = new Map<string, VisibleWidgetStyleRecord>();
-const visibleWidgetStyleMisses = new Map<string, number>();
+const visibleWidgetStyleMisses = new Map<string, VisibleWidgetStyleMissRecord>();
 const visibleWidgetStyleRequests = new Map<string, Promise<void>>();
 const VISIBLE_WIDGET_STYLE_CACHE_MS = 30_000;
 const VISIBLE_WIDGET_STYLE_MISS_RETRY_MS = 15_000;
@@ -2624,12 +2628,22 @@ const WIDGET_APPLICATION_ID_ATTRIBUTES = [
 function visibleProfileWidgetStyles(local: Map<string, WidgetStylePreset>): Map<string, WidgetStylePreset> {
     const out = new Map(local);
     const now = Date.now();
+    const fallbackPreset = selectedWidgetPreset();
+    for (const appId of visibleWidgetStyleMisses.keys()) {
+        if (!SNOWFLAKE.test(appId)) continue;
+        // A missing or unreadable owner marker is an availability error, not
+        // permission to render the foreign widget plain. Borrow the viewer's
+        // selected skin until the owner marker becomes readable again. This
+        // deliberately overrides a stale local entry for the same id; a
+        // confirmed remote record below remains authoritative.
+        out.set(appId, fallbackPreset);
+    }
     for (const [appId, record] of visibleWidgetStyles) {
         if (!SNOWFLAKE.test(appId) || now - record.checkedAt > VISIBLE_WIDGET_STYLE_CACHE_MS) continue;
         // The marker is written by the owner of this application. When the
         // viewer happens to own the same app, the remote marker is still the
-        // authoritative cross-client value; the local map remains a fallback
-        // only until the marker has been read.
+        // authoritative cross-client value; the viewer fallback is used only
+        // until the marker has been read.
         out.set(appId, record.preset);
     }
     return out;
@@ -2639,6 +2653,15 @@ function visibleProfileWidgetHints(local: Map<string, string[]>): Map<string, st
     const out = new Map<string, string[]>();
     for (const [appId, labels] of local) out.set(appId, Array.from(new Set(labels)));
     const now = Date.now();
+    for (const [appId, miss] of visibleWidgetStyleMisses) {
+        if (!SNOWFLAKE.test(appId) || !miss.hints.length) continue;
+        const current = out.get(appId) ?? [];
+        for (const label of miss.hints) {
+            const clean = String(label ?? "").trim();
+            if (clean.length >= 3 && !current.includes(clean)) current.push(clean);
+        }
+        if (current.length) out.set(appId, current);
+    }
     for (const [appId, record] of visibleWidgetStyles) {
         if (!SNOWFLAKE.test(appId) || now - record.checkedAt > VISIBLE_WIDGET_STYLE_CACHE_MS) continue;
         const current = out.get(appId) ?? [];
@@ -2662,13 +2685,29 @@ function rememberVisibleWidgetStyle(appId: string, record: VisibleWidgetStyleRec
     }
 }
 
+function rememberVisibleWidgetStyleMiss(appId: string, hints: string[] = []): void {
+    visibleWidgetStyles.delete(appId);
+    const previous = visibleWidgetStyleMisses.get(appId);
+    const cleanHints = Array.from(new Set(hints.map(label => String(label ?? "").trim()).filter(label => label.length >= 3)));
+    visibleWidgetStyleMisses.delete(appId);
+    visibleWidgetStyleMisses.set(appId, {
+        checkedAt: Date.now(),
+        hints: cleanHints.length ? cleanHints : (previous?.hints ?? [])
+    });
+    while (visibleWidgetStyleMisses.size > VISIBLE_WIDGET_STYLE_MAX) {
+        const oldest = visibleWidgetStyleMisses.keys().next().value;
+        if (typeof oldest !== "string") break;
+        visibleWidgetStyleMisses.delete(oldest);
+    }
+}
+
 function queueVisibleWidgetStyleHydration(appIds: Iterable<string>): void {
     const now = Date.now();
     const pending = Array.from(new Set(Array.from(appIds).filter(appId => SNOWFLAKE.test(appId)))).slice(0, VISIBLE_WIDGET_STYLE_BATCH_MAX);
     for (const appId of pending) {
         const cached = visibleWidgetStyles.get(appId);
         if (cached && now - cached.checkedAt <= VISIBLE_WIDGET_STYLE_CACHE_MS) continue;
-        const missAt = visibleWidgetStyleMisses.get(appId) ?? 0;
+        const missAt = visibleWidgetStyleMisses.get(appId)?.checkedAt ?? 0;
         if (missAt && now - missAt <= VISIBLE_WIDGET_STYLE_MISS_RETRY_MS) continue;
         if (visibleWidgetStyleRequests.has(appId)) continue;
 
@@ -2684,20 +2723,24 @@ function queueVisibleWidgetStyleHydration(appIds: Iterable<string>): void {
                     hints: appName ? [appName] : []
                 });
             } else {
-                // A missing marker is a deliberate no-style result. Remove a
-                // stale cached marker so a profile cannot keep an old skin or
-                // fall back to the viewer's first local widget.
-                visibleWidgetStyles.delete(appId);
-                visibleWidgetStyleMisses.set(appId, Date.now());
+                // A missing marker is an availability error. Remove stale
+                // metadata, keep the profile visibly skinned via the viewer
+                // fallback, and retry so a repaired owner marker takes over.
+                const appName = String(application?.name ?? application?.application?.name ?? "").trim();
+                rememberVisibleWidgetStyleMiss(appId, appName ? [appName] : []);
             }
             widgetApplicationCacheEpoch++;
             scheduleWidgetSkinProfileFastScan();
             scheduleWidgetSkinScan(true);
         }).catch(() => {
-            // Keep a previously confirmed marker through a transient API
-            // failure; an unavailable metadata request must not flash a good
-            // profile card back to plain Discord. A new app will retry soon.
-            if (!visibleWidgetStyles.has(appId)) visibleWidgetStyleMisses.set(appId, Date.now());
+            // An unreadable marker is an availability error. Use the viewer
+            // fallback immediately—even if an older marker exists—so a
+            // profile never flashes back to plain Discord. A fresh owner
+            // marker takes over on the next successful retry.
+            rememberVisibleWidgetStyleMiss(appId);
+            widgetApplicationCacheEpoch++;
+            scheduleWidgetSkinProfileFastScan();
+            scheduleWidgetSkinScan(true);
         }).finally(() => {
             visibleWidgetStyleRequests.delete(appId);
         });
@@ -3495,7 +3538,7 @@ function scanVisibleProfileWidgetCards(): number {
     const discovered = new Set<string>();
     for (const candidate of [...explicitCandidates, ...hintedCardCandidates].slice(0, WIDGET_SKIN_PROFILE_MATCH_MAX)) {
         const appId = visibleWidgetApplicationId(candidate);
-        if (appId && !localActive.has(appId) && !initialActive.has(appId)) discovered.add(appId);
+        if (appId && !localActive.has(appId)) discovered.add(appId);
     }
     queueVisibleWidgetStyleHydration(discovered);
     const active = visibleProfileWidgetStyles(localActive);

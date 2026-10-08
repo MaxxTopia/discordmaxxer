@@ -1,5 +1,72 @@
 # Discordmaxxer — RESUME
 
+## 2026-10-08 v0.7.90 release candidate — cross-account fallback and banner default hardening
+
+The next patch release is prepared as `v0.7.90`. It carries the local
+cross-account widget-marker recovery and the explicit-false-only
+`showOthersBanner` guard. A missing or unreadable owner marker now borrows the
+viewer-selected skin while retrying instead of leaving the viewed profile
+plain; a confirmed owner marker remains authoritative. The banner option stays
+on while settings hydrate but still honors an explicit opt-out.
+
+Release notes are recorded in `docs/releases/v0.7.90.md`. The public baseline
+remains `v0.7.89` until the documented build, verification, tag, and release
+workflow completes. The C: dev checkout and E: packaged candidate remain
+untouched, and the existing untracked `artifacts/` diagnostics remain
+preserved.
+
+Pre-publish verification for this candidate passed: `pnpm test`, strict
+`DM_STRICT_REBRAND=1 pnpm overlay:vencord` with zero warnings,
+`node overlay-scripts/verify-build.mjs`, `pnpm build`, `pnpm package:dir`,
+`pnpm package:win`, and `git diff --check`. The Windows packaging pass produced
+the x64/ARM64 ZIPs, unified setup executable, and blockmap locally; generated
+build outputs remain ignored and are not release source files.
+
+## 2026-10-08 local follow-up — marker-error fallback and banner verification
+
+The uncommitted local follow-up changes the cross-account widget resolver so a
+missing, malformed, or unreadable `[DMWSTYLE1:...]` marker is treated as an
+availability error. The viewed card now borrows the viewer's selected skin
+while the marker is retried; a valid owner marker still overrides the fallback.
+App-name hints are retained when Discord omits the DOM app-id attribute, so
+fallback matching does not leave a foreign card plain.
+
+Verification in the canonical release checkout passed: `pnpm test`,
+`pnpm verifyPlugins`, strict `DM_STRICT_REBRAND=1 pnpm overlay:vencord`,
+`node overlay-scripts/verify-build.mjs`, `pnpm build`, `pnpm package:dir`, and
+`git diff --check`. This is local and uncommitted; it is not pushed or
+published. The C: dev checkout and E: packaged candidate remain untouched;
+existing untracked `artifacts/` remains preserved.
+
+Banner status is separate. The client source already contains roster-change
+repaint, profile identity/banner-wrapper detection, and the `dm-media://`
+video path. A read-only live roster check found one banner URL returning 200
+and one profile-media URL returning 404. Because the account-to-id mapping and
+second-client rendering are not proven here, DiggyAI's recipient view remains
+a user-owned verification gate; do not claim the banner is fully fixed until
+the correct account is mapped and viewed on the other client. If DiggyAI is the
+404 entry, the owner must republish that shared banner; no live data was
+changed.
+
+Next action: test the marker-miss fallback on DiggyT -> DiggyAI and verify
+`showOthersBanner` is enabled on the recipient client. Publishing requires a
+new explicit release decision.
+
+## 2026-10-08 follow-up — banner viewer default-on hardening
+
+`DMProfileFlair.showOthersBanner` was already declared with `default: true`.
+The guard is now explicit-false-only, so an absent or not-yet-hydrated value
+also resolves to ON while a deliberate false opt-out is preserved. The option
+description now makes the default visible to users. `pnpm test`,
+`pnpm verifyPlugins`, strict `DM_STRICT_REBRAND=1 pnpm overlay:vencord`,
+`node overlay-scripts/verify-build.mjs`, `pnpm build`, `pnpm package:dir`, and
+`git diff --check` passed.
+
+DiggyT confirmed `showOthersBanner` was already enabled, so this setting was
+not the cause of the missing DiggyAI banner on that client. The banner issue
+remains separate: the client path is repaired, but recipient rendering and the
+live account/media mapping still need proof; no live profile data was changed.
+
 ## 2026-10-08 v0.7.89 published — cross-account widget skin isolation
 
 Patch release `v0.7.89` is public at

@@ -345,8 +345,8 @@ export function getEffectiveFlairForUser(
     kind: "banner" | "avatar" | "theme"
 ): ProfileFlair | null {
     const s = settings.store;
-    if (!s.showOthersFlair) return null;
-    if (kind === "banner" && !s.showOthersBanner) return null;
+    if (s.showOthersFlair === false) return null;
+    if (kind === "banner" && s.showOthersBanner === false) return null;
     if (kind === "avatar" && !s.showOthersAvatar) return null;
     if (kind === "theme" && !s.showOthersThemeColors) return null;
     if (isFlairHiddenForUser(userId)) return null;
@@ -2742,7 +2742,7 @@ const settings = definePluginSettings({
     },
     showOthersBanner: {
         type: OptionType.BOOLEAN,
-        description: "Render other users' custom banners.",
+        description: "Render other users' custom banners. Default ON; set to off only if you want stock Discord banners.",
         default: true
     },
     showOthersAvatar: {
@@ -3265,14 +3265,14 @@ function getUserIdFromContainer(container: Element): string | null {
  *  toggles, hide list, and TournamentMode gates. */
 function resolveFlairForUserId(userId: string | null, kind: "banner" | "avatar" | "theme"): ProfileFlair | null {
     const s = settings.store;
-    if (!s.showOthersFlair) {
+    if (s.showOthersFlair === false) {
         // Master viewer-toggle is off — still allow your own published roster
         // look, so the setting means "hide other users" rather than "show a
         // different local version of my profile."
         const me = UserStore.getCurrentUser?.();
         if (!me?.id || userId !== me.id) return null;
     }
-    if (kind === "banner" && !s.showOthersBanner) {
+    if (kind === "banner" && s.showOthersBanner === false) {
         const me = UserStore.getCurrentUser?.();
         if (!me?.id || userId !== me.id) return null;
     }
