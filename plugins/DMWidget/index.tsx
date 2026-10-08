@@ -271,7 +271,16 @@ async function removeLocalWidgetImage(slotKey: string): Promise<void> {
     await DataStore.del(localWidgetImageKey(slotKey));
 }
 
+type LastResultKind = "success" | "failure" | "message";
 let lastResult = "";
+let lastResultKind: LastResultKind = "message";
+
+function setLastResult(message: string, kind: LastResultKind): void {
+    const prefix = kind === "success" ? "✅" : kind === "failure" ? "⚠" : "ℹ";
+    const text = String(message).replace(/^(?:✅|⚠|ℹ)\s*/, "");
+    lastResult = `${prefix} ${text}`;
+    lastResultKind = kind;
+}
 
 // ---- game templates (auto-stat cards) --------------------------------------
 // Latest fetched Fortnite overall stats (null until first refresh). Kept in a
@@ -367,8 +376,10 @@ function valorantStatLines(): string[] {
 
 // ---- helpers ---------------------------------------------------------------
 function toast(msg: string, type: any = Toasts.Type.SUCCESS, durationMs = 5000) {
-    if (type === Toasts.Type.SUCCESS) lastResult = "✅ " + msg;
-    else if (type === Toasts.Type.FAILURE) lastResult = "⚠ " + msg;
+    const kind: LastResultKind = type === Toasts.Type.SUCCESS
+        ? "success"
+        : type === Toasts.Type.FAILURE ? "failure" : "message";
+    setLastResult(msg, kind);
     Toasts.show({ message: msg, type, id: Toasts.genId(), options: { duration: durationMs, position: Toasts.Position.TOP } });
 }
 
@@ -755,7 +766,7 @@ async function republishConfig(slotKey: string): Promise<string | null> {
         }
         // The rendered header line is the app NAME (not display_name), so keep it
         // current on every refresh — e.g. Valorant's "Act 3 Ep 3: <live rank>".
-        try { await apiPatch(`/applications/${id.appId}`, { name: sanitizeAppName(slotHeader(slotKey)) }); } catch (e) { lastResult = "⚠ header rename failed: " + classifyDiscordError(e); console.warn("[DMWidget] header name:", e); }
+        try { await apiPatch(`/applications/${id.appId}`, { name: sanitizeAppName(slotHeader(slotKey)) }); } catch (e) { setLastResult("header rename failed: " + classifyDiscordError(e), "failure"); console.warn("[DMWidget] header name:", e); }
         await publishSurfaces(id.appId, id.configId, slotKey, assetKey || null);
         if (id.vanillaSkinAssetKey) {
             // A normal content/stats refresh restores the real hero. Keep the
@@ -853,9 +864,28 @@ async function republishSelectedWidgetStyleUnsafe(slotKey: string): Promise<void
     const accountId = String(UserStore.getCurrentUser()?.id ?? "");
     if (!isCurrentWidgetStylePublishRequest(slotKey, accountId, request)) return;
     const id = getSlot(slotKey);
-    const preset = WIDGET_STYLE_PRESETS.find(item => item.id === id.widgetStyle) ?? selectedWidgetPreset();
-    const updatedAt = Number(id.widgetStyleUpdatedAt ?? 0);
+    const basePreset = WIDGET_STYLE_PRESETS.find(item => item.id === id.widgetStyle) ?? selectedWidgetPreset();
     const attachedAppIds = attachedWidgetAppIdsForSlot(slotKey);
+    let preset = presetWithLayouts(basePreset, id.topLayout, id.bottomLayout);
+    if (attachedAppIds.length) {
+        // Applying a skin is cosmetic. Read the currently published config so
+        // a preset's default geometry (for example, "contained") cannot
+        // replace an existing widget's hero presentation in the local slot.
+        // This is deliberately read-only: heroImageUrl and remote surfaces are
+        // never written on this path.
+        const published = await hydratePublishedWidgetContent(slotKey);
+        if (!isCurrentWidgetStylePublishRequest(slotKey, accountId, request)) return;
+        if (published) {
+            const latest = getSlot(slotKey);
+            const repaired = { ...latest, topLayout: published.topLayout, bottomLayout: published.bottomLayout };
+            if (JSON.stringify(repaired) !== JSON.stringify(latest)) setSlot(slotKey, repaired);
+            preset = presetWithLayouts(basePreset, published.topLayout, published.bottomLayout);
+        } else {
+            const latest = getSlot(slotKey);
+            preset = presetWithLayouts(basePreset, latest.topLayout, latest.bottomLayout);
+        }
+    }
+    const updatedAt = Number(getSlot(slotKey).widgetStyleUpdatedAt ?? 0);
     updateAttachedWidgetStylesForSlot(slotKey, preset);
     const editorWasOpen = widgetSkinEditorOpen();
     scanWidgetSkinCards();
@@ -1067,7 +1097,7 @@ async function deployWidget(): Promise<void> {
         toast(slotKey === "fortnite" || slotKey === "valorant" ? "Uploading image + fetching live stats…" : "Uploading image + publishing layout…", Toasts.Type.MESSAGE, 3000);
         // The app NAME is what renders as the small header above the title
         // (not the config display_name), so set it to "Fn · Ch6 S3" / "Val".
-        try { await apiPatch(`/applications/${id.appId}`, { name: sanitizeAppName(slotHeader(slotKey)) }); } catch (e) { lastResult = "⚠ header rename failed: " + classifyDiscordError(e); console.warn("[DMWidget] app name:", e); }
+        try { await apiPatch(`/applications/${id.appId}`, { name: sanitizeAppName(slotHeader(slotKey)) }); } catch (e) { setLastResult("header rename failed: " + classifyDiscordError(e), "failure"); console.warn("[DMWidget] app name:", e); }
         // Per-slot media: remember the URLs on THIS slot so switching slots keeps
         // each widget's own hero/icon (FN and Valorant no longer share one image).
         const iconUrl = String((settings.store as any).appIconUrl ?? "").trim() || id.appIconUrl || "";
@@ -1946,14 +1976,27 @@ function selectedSurfacePreset(active: Map<string, WidgetStylePreset>): WidgetSt
     return first.done ? null : first.value;
 }
 
+function presetWithLayouts(
+    preset: WidgetStylePreset,
+    topLayout?: WidgetStylePreset["topLayout"],
+    bottomLayout?: WidgetStylePreset["bottomLayout"]
+): WidgetStylePreset {
+    return {
+        ...preset,
+        topLayout: topLayout === "hero" || topLayout === "contained" ? topLayout : preset.topLayout,
+        bottomLayout: bottomLayout === "stats" || bottomLayout === "progress" ? bottomLayout : preset.bottomLayout
+    };
+}
+
 function presetForSlot(slotKey: string): WidgetStylePreset {
     const slot = getSlot(slotKey);
-    return WIDGET_STYLE_PRESETS.find(item => item.id === slot.widgetStyle)
+    const preset = WIDGET_STYLE_PRESETS.find(item => item.id === slot.widgetStyle)
         // If an update left the per-slot DataStore entry behind, the global
         // gallery selection is still a useful recovery style. This keeps a
         // published card visibly skinned instead of silently falling back to
         // plain Discord until the user opens the editor again.
         ?? selectedWidgetPreset();
+    return presetWithLayouts(preset, slot.topLayout, slot.bottomLayout);
 }
 
 function profileWidgetEntries(profile: any): any[] | null {
@@ -2412,7 +2455,8 @@ async function refreshAttachedWidgetStyles(force = false): Promise<void> {
                 // widget merely because that gallery happens to be selected.
                 // A valid remote marker still supports a custom card's skin.
                 if (remoteStyle) {
-                    nextStyles.set(appId, WIDGET_STYLE_PRESETS.find(item => item.id === remoteStyle.style) ?? WIDGET_STYLE_PRESETS[0]);
+                    const remotePreset = WIDGET_STYLE_PRESETS.find(item => item.id === remoteStyle.style) ?? WIDGET_STYLE_PRESETS[0];
+                    nextStyles.set(appId, presetWithLayouts(remotePreset, remoteStyle.topLayout, remoteStyle.bottomLayout));
                     nextSlots.set(appId, "none");
                     const appName = String(application?.name ?? "").trim();
                     nextHints.set(appId, appName ? [appName] : []);
@@ -2437,7 +2481,8 @@ async function refreshAttachedWidgetStyles(force = false): Promise<void> {
                     const next = { ...current, widgetStyle: remoteStyle.style, widgetStyleSource: "remote" as const, widgetStyleUpdatedAt: remoteStyle.updatedAt, topLayout: remoteStyle.topLayout, bottomLayout: remoteStyle.bottomLayout };
                     if (JSON.stringify(next) !== JSON.stringify(current)) setSlot(slotKey, next);
                 }
-                nextStyles.set(appId, WIDGET_STYLE_PRESETS.find(item => item.id === remoteStyle.style) ?? presetForSlot(slotKey));
+                const remotePreset = WIDGET_STYLE_PRESETS.find(item => item.id === remoteStyle.style) ?? presetForSlot(slotKey);
+                nextStyles.set(appId, presetWithLayouts(remotePreset, remoteStyle.topLayout, remoteStyle.bottomLayout));
             } else {
                 nextStyles.set(appId, presetForSlot(slotKey));
             }
@@ -2502,7 +2547,7 @@ function knownWidgetStyles(): Map<string, WidgetStylePreset> {
     if (attachedWidgetProfileIsFresh()) return out;
     for (const [slotKey, identity] of Object.entries(slots.get())) {
         if (!SNOWFLAKE.test(identity.appId)) continue;
-        const preset = WIDGET_STYLE_PRESETS.find(item => item.id === identity.widgetStyle) ?? WIDGET_STYLE_PRESETS[0];
+        const preset = presetForSlot(slotKey);
         // The reconciled profile map knows which app is actually attached and
         // can carry the gallery fallback after an update. Do not overwrite it
         // with an older slot default.
@@ -4126,23 +4171,24 @@ function WidgetStylePicker() {
         const store = settings.store as any;
         const current = getSlot(template);
         const updatedAt = Math.max(Date.now(), Number(current.widgetStyleUpdatedAt ?? 0) + 1);
-        // Keep the preset's complete design contract in the durable slot. Game
-        // cards still publish Discord's supported stats schema, but the local
-        // Discordmaxxer card keeps the selected preset's progress/stats intent
-        // so switching templates never silently strips an attribute.
-        const nextBottomLayout = preset.bottomLayout;
-        setSlot(template, { ...current, widgetStyle: preset.id, widgetStyleSource: "local", widgetStyleUpdatedAt: updatedAt, topLayout: preset.topLayout, bottomLayout: nextBottomLayout });
+        // A skin choice must not rewrite the content geometry of an existing
+        // widget. Preserve the saved/published layout for this slot; a new
+        // widget may still start with the preset's default layout.
+        const cachedPublished = publishedWidgetSnapshots.get(template);
+        const nextTopLayout = current.topLayout ?? cachedPublished?.topLayout ?? preset.topLayout;
+        const nextBottomLayout = current.bottomLayout ?? cachedPublished?.bottomLayout ?? preset.bottomLayout;
+        const selectedPreset = presetWithLayouts(preset, nextTopLayout, nextBottomLayout);
+        setSlot(template, { ...current, widgetStyle: preset.id, widgetStyleSource: "local", widgetStyleUpdatedAt: updatedAt, topLayout: nextTopLayout, bottomLayout: nextBottomLayout });
         store.widgetStyle = preset.id;
-        store.topLayout = preset.topLayout;
+        store.topLayout = nextTopLayout;
         store.bottomLayout = nextBottomLayout;
         force(value => value + 1);
-        updateAttachedWidgetStylesForSlot(template, preset);
+        updateAttachedWidgetStylesForSlot(template, selectedPreset);
         // Gallery selection should be visible immediately when a Board card is
         // already open; the scheduled pass remains for Discord's async remount.
         scanWidgetSkinCards();
         scheduleWidgetSkinScan();
-        void refreshAttachedWidgetStyles(true);
-        void republishSelectedWidgetStyle(template);
+        void republishSelectedWidgetStyle(template).finally(() => force(value => value + 1));
     };
 
     const requestSurfaceSkinRescan = () => {
@@ -4528,13 +4574,14 @@ function WidgetEditor() {
             await fn();
         } catch (error) {
             console.warn("[DMWidget] editor action failed safely:", error);
-            lastResult = "⚠ DMWidget could not complete that action. Your existing widget was left unchanged where possible; try again after the client finishes loading.";
+            setLastResult("DMWidget could not complete that action. Your existing widget was left unchanged where possible; try again after the client finishes loading.", "failure");
             toast("DMWidget action failed safely. Your existing widget was left unchanged where possible.", Toasts.Type.FAILURE, 8000);
         } finally {
             setBusy(false);
             force(x => x + 1);
         }
     };
+    const resultAccent = lastResultKind === "failure" ? "#f23f43" : lastResultKind === "success" ? "#23a55a" : "#00b0f4";
 
     return (
         <div style={{ padding: "12px 0", display: "flex", flexDirection: "column", gap: 10 }}>
@@ -4575,7 +4622,7 @@ function WidgetEditor() {
             )}
 
             {lastResult && (
-                <div style={{ fontSize: 13, lineHeight: 1.4, color: lastResult.startsWith("⚠") ? "var(--text-danger, #f23f43)" : "var(--text-positive, #23a55a)", wordBreak: "break-word" }}>
+                <div role="status" aria-live="polite" style={{ border: `1px solid ${resultAccent}`, borderLeft: `4px solid ${resultAccent}`, borderRadius: 8, padding: "9px 11px", background: "var(--background-secondary-alt, #2b2d31)", color: "var(--text-normal, #f2f3f5)", fontSize: 13, fontWeight: 600, lineHeight: 1.45, wordBreak: "break-word", boxShadow: `0 0 0 1px ${resultAccent}22` }}>
                     {lastResult}
                 </div>
             )}
@@ -4657,7 +4704,7 @@ function WidgetEditor() {
                         const code = await exportConfig();
                         const ok = await copyText(code);
                         toast(ok ? "Widget code copied — local image files stay on this PC and are not included." : "Clipboard blocked — the code is shown below. Local image files are not included.", ok ? Toasts.Type.SUCCESS : Toasts.Type.MESSAGE, 8000);
-                        lastResult = (ok ? "✅ Copied widget code:\n" : "⚠ Copy this widget code:\n") + code;
+                        setLastResult((ok ? "Copied widget code:\n" : "Copy this widget code:\n") + code, ok ? "success" : "message");
                     })}>Copy this widget</Button>
                     <Button disabled={busy} color={Button.Colors.PRIMARY} onClick={() => run(async () => {
                         await ensureSlots();

@@ -1,5 +1,126 @@
 # Discordmaxxer — RESUME
 
+## 2026-10-08 v0.7.88 release candidate — verified before publish
+
+The candidate version is `0.7.88`. It carries the DMWidget repair that keeps
+skin-only application cosmetic: existing widget geometry and hero content are
+preserved, and the picker now keeps a readable high-contrast result message
+when Discord's transient toast is hidden. It also carries the Windows updater
+handoff fix (`quitAndInstall(true, true)`) so the downloaded installer is
+silently applied and the updated client relaunches instead of leaving the
+custom updater on an Installing spinner.
+
+Release verification passed in this checkout: `pnpm test`, `pnpm build`,
+strict `DM_STRICT_REBRAND=1 pnpm overlay:vencord` (0 warnings),
+`node overlay-scripts/verify-build.mjs`, `pnpm package:dir`,
+`pnpm package:win`, and `git diff --check`. The packaged `0.7.88` client was
+reopened on the existing signed-in smoke profile; the read-only
+`DM_DEBUG_URL=http://localhost:9223 node overlay-scripts/validate-all.mjs
+--skip badge` run passed inventory, visual, hotkey, and mass-delete phases.
+The badge phase was intentionally skipped because it writes account settings.
+
+The Windows artifacts were produced locally as the x64/ARM64 ZIPs, the NSIS
+installer, blockmap, and updater metadata. They are not public until the tag
+push completes. The intended source files are `package.json`,
+`plugins/DMWidget/index.tsx`, `src/main/updater.ts`, and this continuity note;
+diagnostic files under `artifacts/` remain untracked and are excluded.
+The C: dev checkout and E: packaged candidate remain untouched.
+
+Next action: publish the reviewed `v0.7.88` commit through the documented
+`main` plus `v0.7.88` tag push, then verify the GitHub Release assets and
+served `latest.yml` manifest.
+
+## 2026-10-08 Fortnite hero/layout restoration — packaged signed-in proof
+
+The Fort widget had a stale published presentation from the earlier skin
+apply regression: `widget_top_contained` referenced the generic `hero` asset,
+which is the `maxxtopia.com` banner. The widget already contained the correct
+Fortnite duo artwork as `hero1783298270698`, so the signed-in packaged client
+was repaired in place without uploading or deleting assets. The published
+Fort config now uses `widget_top_hero`, and its preview/profile hero references
+the same existing Fortnite asset. The remote style marker was aligned to
+`deepSpace` with the hero/stats presentation.
+
+After refreshing Discord's cached profile data, the single packaged client
+rendered the full Fortnite character hero instead of the boxed banner. The
+account's own stats remained unchanged (284 wins, 3.33 K/D, 695h, 11.6K);
+the comparison screenshot showed another account's values and was not copied.
+Visual evidence is `artifacts/fortnite-hero-restored-after-refresh.png`.
+
+This is an account/widget-state repair verified in the signed-in packaged
+demo, not a new published application release. The source skin-only
+preservation repair remains uncommitted, v0.7.87 remains the public release,
+and the C: dev checkout plus E: packaged candidate were not touched. The
+existing source repair prevents skin-only application from rewriting the hero
+again; a future release should still consider an explicit recovery action if
+legacy widgets need this one-time migration.
+
+## 2026-10-08 widget-skin apply/hero-preservation repair — packaged verification
+
+The current repair addresses two pre-release regressions reported after
+`Apply skin to existing widget`: the completion message could be hidden or
+unreadable when Discord's transient toast layer did not render, and selecting
+a skin could inherit that preset's layout contract and make an existing
+Fortnite hero look like a different card. The live release remains `v0.7.87`;
+this repair is not published yet.
+
+`plugins/DMWidget/index.tsx` now keeps a persistent, high-contrast result panel
+inside the picker, with success/message/failure accents, while retaining the
+normal Discord toast. Skin-only application preserves the existing slot's
+published `topLayout` and `bottomLayout`, re-reads the current published
+snapshot when an attached widget exists, and never writes the hero image or
+widget surfaces. The gallery path uses the same preserved layout metadata.
+Explicit widget content updates remain separate and unchanged.
+
+Verification passed in the release checkout: `pnpm test`, `pnpm build`, strict
+`DM_STRICT_REBRAND=1 pnpm overlay:vencord`,
+`node overlay-scripts/verify-build.mjs`, `pnpm package:dir`, and
+`git diff --check`. The packaged binary at
+`dist/win-unpacked/discordmaxxer.exe` launched on CDP `9233`, and
+`overlay-scripts/validate-all.mjs --skip badge` passed inventory, visual,
+hotkey, and mass-delete phases against that packaged process.
+
+The source changes are still uncommitted and `artifacts/` remains untracked
+diagnostic evidence. The C: dev checkout and E: packaged candidate were not
+touched. Next gate: Diggy's approval to prepare and publish a new patch
+release, followed by a signed-in account smoke test of the readable result
+message and unchanged Fortnite hero.
+
+The single repaired packaged demonstration initially showed plain Board cards
+because this disposable profile had `DMHub` enabled but `DMWidget` disabled;
+the picker could open, but the widget renderer and its client stylesheet were
+not running. Enabling only `DMWidget` in that instance started the renderer:
+both Val and Fortnite acquired `data-dm-widget-card-root` markers and the
+Fortnite card rendered the `deepSpace` skin while retaining its existing
+contained layout and hero content. The proof screenshot is
+`artifacts/repair-demo-dmwidget-enabled-fortnite.png`. The C: dev checkout and
+E: packaged candidate remain untouched, and the packaged demo still has only
+one Discordmaxxer main instance (its Chromium helper processes are expected).
+
+## 2026-10-08 v0.7.87 updater handoff repair — local recovery
+
+Diggy's live v0.7.87 updater downloaded the correct installer, but the
+custom updater stayed on its spinner after Install was clicked. The pending
+installer matched the published SHA-512
+`dnxzSKu9uIhJw2G+XDFWPZn69Xq9qq2VUdCs6cGub5csH8IsRDrjMTLBhPRu1zv14VQnWNMHilSV3PJ4Bxy5Dg==`
+and was running as `Discordmaxxer-Setup-0.7.87.exe --updated --force-run`.
+The missing `/S` flag left the Windows NSIS setup interactive behind the
+custom Installing dialog; this was an updater handoff bug, not a bad
+download or a missing release asset.
+
+The exact verified installer was completed locally with `--updated /S
+--force-run`. The setup process exited, the installed executable reports
+version `0.7.87`, and the Discordmaxxer process relaunched. No C: dev
+checkout or E: packaged candidate was touched, and no user data was removed.
+
+The source fix is currently uncommitted in `src/main/updater.ts`: the
+`update-downloaded` handler now calls
+`autoUpdater.quitAndInstall(true, true)` so Windows performs a silent
+replacement and force-relaunch. `pnpm test`, `pnpm build`, `pnpm package:dir`,
+and `git diff --check` pass. This source fix is not live yet; publishing a
+new patch release and then doing the signed-in client smoke test remain the
+next gates. Preserve untracked diagnostic evidence under `artifacts/`.
+
 ## 2026-10-08 v0.7.87 published — packaged widget/profile repair
 
 The v0.7.86 client is already published. This release carries the

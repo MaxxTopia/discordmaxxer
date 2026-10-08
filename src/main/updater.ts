@@ -28,7 +28,11 @@ autoUpdater.on("update-available", update => {
     openUpdater(update);
 });
 
-autoUpdater.on("update-downloaded", () => setTimeout(() => autoUpdater.quitAndInstall(), 100));
+// The default quitAndInstall() launch is interactive on Windows. That leaves
+// the NSIS setup window waiting behind the custom updater while its spinner
+// says "Installing". Use the silent handoff and force the updated client to
+// relaunch after replacement.
+autoUpdater.on("update-downloaded", () => setTimeout(() => autoUpdater.quitAndInstall(true, true), 100));
 autoUpdater.on("download-progress", p =>
     updaterWindow?.webContents.send(UpdaterIpcEvents.DOWNLOAD_PROGRESS, p.percent)
 );
