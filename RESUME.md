@@ -1,5 +1,33 @@
 # Discordmaxxer — RESUME
 
+## 2026-10-08 v0.7.89 published — cross-account widget skin isolation
+
+Patch release `v0.7.89` is public at
+`https://github.com/MaxxTopia/discordmaxxer/releases/tag/v0.7.89`.
+Commit `432d38e` is on `main`, tag `v0.7.89` is pushed, and workflow
+`37815250257` completed successfully. The release contains the Windows x64
+and ARM64 zips, `Discordmaxxer-Setup-0.7.89.exe` plus its blockmap, and a
+verified `latest.yml` with version `0.7.89` and the matching installer size
+and SHA-512.
+
+The release fixes the cross-account bleed where DiggyT's local widget style
+could become the fallback for DiggyAI's visible Board/Playing cards. A viewed
+profile now resolves its style from that profile's published `[DMWSTYLE1:...]`
+marker; a profile without a readable marker remains unskinned. The signed-in
+account's own DM/header/bottom-left surface still uses only its local choice.
+The source, package, strict overlay, packaged smoke, and read-only validator
+gates passed. The smoke validator used `diggytai_31401`; it did not log into
+the second account, so recipient-side proof remains a user-owned gate.
+
+Next test: update both Discordmaxxer clients to `v0.7.89`. On DiggyT, open
+DiggyAI's profile and verify DiggyAI's Board/Playing card keeps DiggyAI's
+chosen skin. Change DiggyT's own widget style, reopen DiggyAI's profile, and
+verify DiggyAI's card does not change. If DiggyAI's marker is unavailable, a
+plain card is intentional rather than DiggyT's skin appearing. Also verify
+the own profile and the DM A -> DM B -> DM A surface behavior. The C: dev
+checkout and E: packaged candidate remain untouched; existing untracked
+`artifacts/` diagnostics remain preserved.
+
 ## 2026-10-08 v0.7.89 release candidate — profile first-paint repair
 
 The profile-skin latency repair is prepared as patch release `v0.7.89`. It
