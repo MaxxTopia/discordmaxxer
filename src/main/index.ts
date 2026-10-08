@@ -48,6 +48,13 @@ export let enableHardwareAcceleration = true;
 function init() {
     setAsDefaultProtocolClient("discord");
 
+    // Discord's CDN can negotiate QUIC in packaged Electron builds even when
+    // the renderer cannot complete the resulting asset requests. That leaves
+    // the app mount empty while the startup splash waits for navigation. Keep
+    // the transport on the HTTP/2/TCP path until the packaged runtime proves
+    // QUIC-safe again.
+    app.commandLine.appendSwitch("disable-quic");
+
     const { disableSmoothScroll, hardwareAcceleration, hardwareVideoAcceleration } = Settings.store;
 
     const enabledFeatures = new Set(app.commandLine.getSwitchValue("enable-features").split(","));

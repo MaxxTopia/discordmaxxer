@@ -11,6 +11,50 @@ import { VesktopNative } from "./VesktopNative";
 
 contextBridge.exposeInMainWorld("VesktopNative", VesktopNative);
 
+// Electron's packaged renderer can occasionally start without Chromium's
+// built-in HTML display defaults. In that state normal <script>/<style> text
+// is painted into the page and #app-mount is pushed below the viewport. Keep
+// this small fallback at document-start so the Discord/Vencord styles can
+// still override the defaults they intentionally set.
+const DISPLAY_DEFAULTS_STYLE_ID = "dm-renderer-display-defaults";
+const DISPLAY_DEFAULTS_CSS = `
+html { display: block; }
+body { display: block; }
+head, base, link, meta, noscript, script, style, template, title { display: none; }
+article, aside, blockquote, body, div, dl, dt, dd, fieldset, figcaption, figure,
+footer, form, h1, h2, h3, h4, h5, h6, header, hr, main, nav, ol, p, pre, section,
+table, ul { display: block; }
+li { display: list-item; }
+caption { display: table-caption; }
+colgroup { display: table-column-group; }
+col { display: table-column; }
+tbody { display: table-row-group; }
+thead { display: table-header-group; }
+tfoot { display: table-footer-group; }
+tr { display: table-row; }
+td, th { display: table-cell; }
+button, input, select, textarea { display: inline-block; }
+img, svg, canvas, video, audio, iframe, object, embed { display: inline-block; }
+a, abbr, acronym, b, bdi, bdo, br, cite, code, del, dfn, em, i, kbd,
+mark, q, s, samp, small, span, strong, sub, sup, time, u, var { display: inline; }
+#app-mount { position: absolute; inset: 0; display: flex; }
+`;
+
+function installDisplayDefaults(): void {
+    const root = document.documentElement;
+    if (!root || document.getElementById(DISPLAY_DEFAULTS_STYLE_ID)) return;
+
+    const style = document.createElement("style");
+    style.id = DISPLAY_DEFAULTS_STYLE_ID;
+    style.textContent = DISPLAY_DEFAULTS_CSS;
+    root.appendChild(style);
+}
+
+installDisplayDefaults();
+if (!document.documentElement) {
+    window.addEventListener("DOMContentLoaded", installDisplayDefaults, { once: true });
+}
+
 // TODO: remove this legacy workaround once some time has passed
 const isSandboxed = typeof __dirname === "undefined";
 if (isSandboxed) {

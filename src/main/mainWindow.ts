@@ -470,21 +470,48 @@ function createMainWindow() {
 const runVencordMain = once(() => require(join(VENCORD_FILES_DIR, "vencordDesktopMain.js")));
 
 export function loadUrl(uri: string | undefined) {
+    if (retryTimer !== null) {
+        clearTimeout(retryTimer);
+        retryTimer = null;
+    }
     const branch = Settings.store.discordBranch;
     const subdomain = branch === "canary" || branch === "ptb" ? `${branch}.` : "";
+    const targetUrl = `https://${subdomain}discord.com/${uri ? new URL(uri).pathname.slice(1) || "app" : "app"}`;
 
     // we do not rely on 'did-finish-load' because it fires even if loadURL fails which triggers early detruction of the splash
     mainWin
-        .loadURL(`https://${subdomain}discord.com/${uri ? new URL(uri).pathname.slice(1) || "app" : "app"}`)
-        .then(() => AppEvents.emit("appLoaded"))
-        .catch(error => retryUrl(error.url, error.code));
+        .loadURL(targetUrl)
+        .then(() => {
+            if (retryTimer !== null) {
+                clearTimeout(retryTimer);
+                retryTimer = null;
+            }
+            AppEvents.emit("appLoaded");
+        })
+        .catch(error => {
+            const failure = error as { url?: string; code?: string };
+            retryUrl(failure.url || targetUrl, failure.code || "ERR_UNKNOWN", error);
+        });
 }
 
 const retryDelay = 1000;
-function retryUrl(url: string, description: string) {
+let retryTimer: ReturnType<typeof setTimeout> | null = null;
+function retryUrl(url: string, description: string, error: any) {
     console.log(`retrying in ${retryDelay}ms`);
-    updateSplashMessage(`Failed to load Discord: ${description}`);
-    setTimeout(() => loadUrl(url), retryDelay);
+    // Electron reports ERR_ABORTED when a navigation is superseded by a
+    // legitimate redirect (for example /app -> /login) or by another loadURL
+    // call. Showing that as a fatal splash error makes a healthy sign-in path
+    // look like an infinite loading failure.
+    if (description !== "ERR_ABORTED") {
+        updateSplashMessage(`Failed to load Discord: ${description}`);
+        console.warn("[mainWindow] Discord navigation failed:", error);
+    }
+    if (retryTimer !== null) return;
+    retryTimer = setTimeout(() => {
+        retryTimer = null;
+        if (!mainWin || mainWin.isDestroyed()) return;
+        loadUrl(url);
+    }, retryDelay);
 }
 
 export async function createWindows() {
@@ -500,8 +527,6 @@ export async function createWindows() {
 
     await ensureVencordFiles();
     runVencordMain();
-
-    mainWin = createMainWindow();
 
     AppEvents.on("appLoaded", () => {
         splash?.destroy();
@@ -525,11 +550,27 @@ export async function createWindows() {
         });
     });
 
+    // Register before createMainWindow() starts loadURL(). A cached or very
+    // fast packaged load can otherwise emit appLoaded before the splash
+    // handler exists, leaving the splash window permanently on top of a fully
+    // loaded Discord renderer.
+    mainWin = createMainWindow();
+
     mainWin.webContents.on("did-navigate", (_, url: string, responseCode: number) => {
         updateSplashMessage(""); // clear the splash message
 
-        // check url to ensure app doesn't loop
-        if (responseCode >= 300 && new URL(url).pathname !== `/app`) {
+        // Discord intentionally redirects /app to /login, /register, or other
+        // first-party routes. Treating every non-/app response as broken
+        // starts a second loadURL, aborts the first navigation, and leaves the
+        // splash stuck on "ERR_ABORTED". Only recover if navigation escaped
+        // Discord's own origin.
+        let isDiscordOrigin = false;
+        try {
+            isDiscordOrigin = /^(([^.]+)\.)*discord\.com$/i.test(new URL(url).hostname);
+        } catch {
+            isDiscordOrigin = false;
+        }
+        if (responseCode >= 300 && !isDiscordOrigin) {
             loadUrl(undefined);
             console.warn(`'did-navigate': Caught bad page response: ${responseCode}, redirecting to main app`);
         }

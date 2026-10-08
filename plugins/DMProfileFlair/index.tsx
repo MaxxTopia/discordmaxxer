@@ -357,11 +357,12 @@ export function getEffectiveFlairForUser(
     const flair = getProfileFlairForRender(userId, kind) ?? null;
     if (!flair) return null;
 
-    if ((kind === "banner" || kind === "avatar") && isTournamentModeActive()) {
+    const mediaUrl = kind === "banner" ? flair.bannerUrl : kind === "avatar" ? flair.avatarAnimatedUrl : undefined;
+    if (mediaUrl && shouldSuppressAnimatedFlair() && isAnimatedUrl(mediaUrl)) {
         // TournamentMode is the only performance pause. Windows/Discord
         // reduced-motion preferences intentionally do not rewrite the media
         // URL, so custom animated flair remains animated outside TournamentMode.
-        // Theme colors remain visible in both modes.
+        // Static banner/avatar files and theme colors remain visible in both modes.
         return null;
     }
     return flair;
@@ -479,13 +480,12 @@ async function postFlairUpdate(profile: Partial<ProfileFlair>, replace: boolean)
         await refreshRoster();
         scheduleScan();
         toast("✅ Profile flair saved and applied here — other Discordmaxxer users will sync shortly");
-        // TournamentMode silently suppresses banner + animated avatar (it's
-        // the whole point of TM — free up CPU/GPU). The save itself works
-        // fine, but the visual won't appear until TM is toggled off, which
-        // looks indistinguishable from a broken save. Call it out explicitly.
-        if (isTournamentModeActive() && (profile.bannerUrl || profile.avatarAnimatedUrl)) {
+        // TournamentMode pauses motion, not the whole flair media layer.
+        const hasPausedAnimation = isTournamentModeActive()
+            && [profile.bannerUrl, profile.avatarAnimatedUrl].some(url => !!url && isAnimatedUrl(url));
+        if (hasPausedAnimation) {
             toast(
-                "⚠ TournamentMode is on — your banner + animated avatar won't render until you toggle TM off. Theme colors still paint.",
+                "TournamentMode is on — animated banner/avatar media is paused; still images and theme colors remain visible.",
                 Toasts.Type.MESSAGE, 8000
             );
         }
@@ -1246,7 +1246,10 @@ async function restoreLocalMediaForRenderer(): Promise<void> {
     for (const kind of ["banner", "avatar"] as const) {
         const restored = await restoreLocalMedia(kind);
         if (!restored) continue;
-        setLocalRenderMedia(kind, { url: restored.dataUri, isVideo: restored.isVideo });
+        // A remembered file is still an explicit local preview after a
+        // restart. Mark it as such so a stale published URL cannot win over
+        // the file the user deliberately chose on this PC.
+        setLocalRenderMedia(kind, { url: restored.dataUri, isVideo: restored.isVideo }, true);
         URL.revokeObjectURL(restored.previewUrl);
     }
     repaintProfileFlairNow();
@@ -1374,6 +1377,15 @@ function FlairEditor() {
     const bannerFileInput = React.useRef<HTMLInputElement>(null);
     const avatarFileInput = React.useRef<HTMLInputElement>(null);
     const backupFileInput = React.useRef<HTMLInputElement>(null);
+    const removeEditorLocalMedia = (kind: LocalMediaKind) => {
+        const current = localMediaRef.current;
+        const media = current[kind];
+        if (media) URL.revokeObjectURL(media.previewUrl);
+        const next = { ...current };
+        delete next[kind];
+        localMediaRef.current = next;
+        setLocalMedia(next);
+    };
     // Track TM state live so the warning notice flips on/off without a panel
     // reopen. Cheap interval — every 2s is plenty, TM toggles are user-driven.
     const [tmActive, setTmActive] = React.useState(isTournamentModeActive());
@@ -1420,7 +1432,9 @@ function FlairEditor() {
                 const next = { ...localMediaRef.current, [kind]: restored };
                 localMediaRef.current = next;
                 setLocalMedia(next);
-                setLocalRenderMedia(kind, { url: restored.dataUri, isVideo: restored.isVideo });
+                // The persisted file is a local preview, even when the
+                // editor is opened after a restart.
+                setLocalRenderMedia(kind, { url: restored.dataUri, isVideo: restored.isVideo }, true);
                 repaintProfileFlairNow();
             }
         })();
@@ -1563,6 +1577,12 @@ function FlairEditor() {
                 );
                 return;
             }
+            // This action explicitly chooses the shared roster look, so drop
+            // any remembered local files that would otherwise override it on
+            // this or the next plugin start.
+            await Promise.all([forgetLocalMedia("banner"), forgetLocalMedia("avatar")]);
+            removeEditorLocalMedia("banner");
+            removeEditorLocalMedia("avatar");
             sessionLocalMediaPreview.clear();
             sessionThemePreview = undefined;
             let restored = 0;
@@ -1627,7 +1647,10 @@ function FlairEditor() {
             if (!url) return;
             const ok = await postFlairUpdate({ bannerUrl: url }, false);
             if (ok) {
-                sessionLocalMediaPreview.delete("banner");
+                // The shared URL is canonical after a successful publish. Do
+                // not let the old local file override it on the next start.
+                await forgetLocalMedia("banner");
+                removeEditorLocalMedia("banner");
                 s.myBannerUrl = url;
                 recordRecentPicks(url, "", "", "");
                 repaintProfileFlairNow();
@@ -1655,7 +1678,8 @@ function FlairEditor() {
             if (!url) return;
             const ok = await postFlairUpdate({ avatarAnimatedUrl: url }, false);
             if (ok) {
-                sessionLocalMediaPreview.delete("avatar");
+                await forgetLocalMedia("avatar");
+                removeEditorLocalMedia("avatar");
                 s.myAvatarAnimatedUrl = url;
                 recordRecentPicks("", url, "", "");
                 repaintProfileFlairNow();
@@ -2291,10 +2315,9 @@ function FlairEditor() {
 
             {tmActive && (
                 <div style={tmWarnStyle}>
-                    🟡 <b>TournamentMode is currently active.</b> Your banner and animated avatar
-                    will be <b>suppressed</b> in profile popouts until you toggle TM off (TM exists
-                    to free up CPU/GPU, so animated content is paused by design). Theme colors
-                    still render normally.
+                    🟡 <b>TournamentMode is currently active.</b> Animated banners and avatars are
+                    paused to reduce motion/rendering while gaming. Static banner/avatar images and
+                    theme colors remain visible; animation resumes when TournamentMode is off.
                 </div>
             )}
             <div style={noteStyle}>
@@ -2634,7 +2657,7 @@ const settings = definePluginSettings({
             "Good: https://i.imgur.com/abc123.png. Bad: https://imgur.com/gallery/abc123. " +
             "For a downloaded GIF/image/video, use Choose banner file then Publish as shared banner to upload it to the shared roster, " +
             "or use the one-time Discord buttons. Recommended: 600×240; images ≤5MB and videos ≤15MB. " +
-            "This is a local draft until Save; profile rendering follows the shared roster on every PC. TournamentMode pauses custom banner rendering.",
+            "This is a local draft until Save; profile rendering follows the shared roster on every PC. TournamentMode pauses animated banners; static images remain visible.",
         default: "",
         onChange: () => {
             sessionLocalMediaPreview.add("banner");
@@ -2647,7 +2670,7 @@ const settings = definePluginSettings({
             "[Channel F · MAXXER+] Paste a DIRECT HTTPS media URL, not a webpage. " +
             "The roster stores the URL (maximum 250 characters), so a downloaded file must be hosted first for cross-PC sharing. " +
             "Use Choose avatar file in the editor for a local preview, shared GIF/image publish, or one-time real-Discord broadcast. " +
-            "Recommended size: 160×160 square. Animated avatar rendering is suppressed while TournamentMode is active. " +
+            "Recommended size: 160×160 square. Animated avatar rendering is paused while TournamentMode is active; static images remain visible. " +
             "This is a local draft until Save; profile rendering follows the shared roster on every PC. Member-list/chat/voice replacement also requires you to have a custom Discord avatar rather than Discord's default wordmark.",
         default: "",
         onChange: () => {
@@ -2766,7 +2789,8 @@ let lastRosterRefreshAt = 0;
 const ROSTER_FOCUS_REFRESH_INTERVAL_MS = 30_000;
 let scanTimer: number | null = null;
 let scanFrame: number | null = null;
-const SCAN_DEBOUNCE_MS = 120;
+let scanIdle: number | null = null;
+const SCAN_DEBOUNCE_MS = 280;
 function refreshRosterForVisibleSurface(): void {
     if (document.hidden) return;
     lastAvatarSweepAt = 0;
@@ -2818,7 +2842,10 @@ function proxyVideoUrl(url: string): string {
 function isAnimatedUrl(url: string): boolean {
     return /^data:image\/(?:gif|apng)/i.test(url) ||
         isVideoUrl(url) ||
-        /(?:[?&]dmx-media=video(?:&|#|$)|\.(mp4|webm|mov|gif|apng)(\?|#|$))/i.test(url);
+        /(?:[?&]dmx-media=video(?:&|#|$)|\.(mp4|webm|mov|gif|apng)(\?|#|$))/i.test(url) ||
+        // Discord signals animated avatars with an `a_` hash even when the
+        // negotiated CDN format is WebP and the URL no longer ends in .gif.
+        /\/avatars\/\d{17,20}\/a_[^/?#]+\.(?:gif|webp|png)(?:[?#]|$)/i.test(url);
 }
 
 function buildCss(): string {
@@ -2835,7 +2862,8 @@ function buildCss(): string {
             visibility: hidden !important;
         }
         /* Video banner overlay — covers the banner area, click-through, low
-           paint cost (one composited surface). */
+           paint cost (one composited surface). Keep it below the profile
+           avatar, which intentionally overlaps the bottom of the banner. */
         .dm-flair-banner-video {
             position: absolute;
             inset: 0;
@@ -2844,7 +2872,18 @@ function buildCss(): string {
             object-fit: cover;
             object-position: center;
             pointer-events: none;
-            z-index: 1;
+            z-index: 0;
+        }
+
+        /* Discord's profile avatar overlaps the banner. The animated video
+           is positioned, so give the flair-owned avatar its own higher layer
+           or the video can cover the top half of it. */
+        [class*="user-profile"] img[data-dm-flair-avatar-applied],
+        [role="dialog"] img[data-dm-flair-avatar-applied],
+        [class*="user-profile"] [data-dm-flair-bg-avatar-applied],
+        [role="dialog"] [data-dm-flair-bg-avatar-applied] {
+            position: relative !important;
+            z-index: 2 !important;
         }
 
     `;
@@ -2880,8 +2919,10 @@ function shouldInspectVisibleElement(element: Element, includeAriaHidden = false
  *  decorative banner SVGs. */
 function findAllProfileBanners(): HTMLElement[] {
     const out: HTMLElement[] = [];
-    document.querySelectorAll('[class*="banner__"], [class*="profileBanner"], [class*="userProfileBanner"]').forEach(c => {
+    document.querySelectorAll(PROFILE_BANNER_SELECTOR).forEach(c => {
         const el = c as HTMLElement;
+        const wrapper = el.parentElement?.closest<HTMLElement>('[class*="banner_"]');
+        if (!isProfileBannerWrapper(el) && wrapper && isProfileBannerWrapper(wrapper)) return;
         const r = el.getBoundingClientRect();
         // Real profile banners are ≥200px wide and ≥50px tall. Smaller hits
         // are typically status icons or decorative graphics.
@@ -2918,6 +2959,8 @@ function findAvatarImgsForUser(userId: string): HTMLImageElement[] {
 // settings modal, while these semantic roots are Discord user profiles.
 const PROFILE_FAST_SCAN_ROOT_SELECTOR = [
     '[class*="user-profile-popout"]',
+    '[class*="user-profile-sidebar"]',
+    '[class*="userProfileSidebar"]',
     '[class*="userProfileModal"]',
     '[class*="user-profile-modal"]',
     '[class*="userPopout"]',
@@ -2925,7 +2968,20 @@ const PROFILE_FAST_SCAN_ROOT_SELECTOR = [
     '[class*="profileModal"]',
     '[class*="profile-modal"]'
 ].join(", ");
-const PROFILE_BANNER_SELECTOR = '[class*="banner__"], [class*="profileBanner"], [class*="userProfileBanner"]';
+// Newer full-profile views wrap the visible fill (`banner__<hash>`) in a
+// layout element named `banner_<hash>`. The fill can temporarily collapse to
+// zero layout while Discord recycles the profile, even though the wrapper is
+// already visible. Prefer that wrapper so animated media is not skipped and
+// avoid painting both layers when both class forms are present.
+const PROFILE_BANNER_SELECTOR = '[class*="banner_"], [class*="profileBanner"], [class*="userProfileBanner"]';
+
+function isProfileBannerWrapper(element: Element): boolean {
+    return Array.from(element.classList).some(token => /^banner_[a-z0-9]+$/i.test(token));
+}
+const PROFILE_VIEW_AVATAR_SELECTOR = [
+    ...PROFILE_FAST_SCAN_ROOT_SELECTOR.split(", ").map(selector => `${selector} img[class*="avatar__"]`),
+    '[role="dialog"] img[class*="avatar__"]'
+].join(", ");
 
 function profileFastRootFor(element: Element): HTMLElement | null {
     const semanticRoot = element.closest<HTMLElement>(PROFILE_FAST_SCAN_ROOT_SELECTOR);
@@ -2940,7 +2996,7 @@ function profileFastRootFor(element: Element): HTMLElement | null {
 /** Profile-view-only avatars (popout 80px, full profile 120px). */
 function findProfileViewAvatars(root: ParentNode = document): HTMLImageElement[] {
     const out: HTMLImageElement[] = [];
-    root.querySelectorAll('img[class*="avatar__"]').forEach(c => {
+    root.querySelectorAll(PROFILE_VIEW_AVATAR_SELECTOR).forEach(c => {
         const el = c as HTMLImageElement;
         const r = el.getBoundingClientRect();
         if (r.width >= 60 && r.height >= 60 && profileFastRootFor(el) && shouldInspectVisibleElement(el, true)) out.push(el);
@@ -2975,6 +3031,8 @@ function containsMessageArea(el: HTMLElement): boolean {
 // class instead of the older popout class.
 const PROFILE_SURFACE_ROOT_SELECTOR = [
     '[class*="user-profile-popout"]',
+    '[class*="user-profile-sidebar"]',
+    '[class*="userProfileSidebar"]',
     '[class*="userProfileModal"]',
     '[class*="user-profile-modal"]',
     '[class*="userPopout"]',
@@ -2986,29 +3044,42 @@ const PROFILE_SURFACE_ROOT_SELECTOR = [
 
 function profileRootsFromMutations(records: MutationRecord[]): HTMLElement[] {
     const roots = new Set<HTMLElement>();
-    const consider = (element: Element) => {
+    const considerAddedSurface = (element: Element) => {
         const root = profileFastRootFor(element);
         if (root) roots.add(root);
+        const className = typeof (element as HTMLElement).className === "string" ? (element as HTMLElement).className : "";
+        const role = element.getAttribute("role") ?? "";
+        const likelyProfileSurface = element.matches(PROFILE_FAST_SCAN_ROOT_SELECTOR)
+            || element.matches('[role="dialog"]')
+            || /profile|popout|dialog|user[-_ ]?(?:panel|profile)/i.test(`${className} ${role}`);
+        if (!likelyProfileSurface) return;
         element.querySelectorAll(PROFILE_FAST_SCAN_ROOT_SELECTOR).forEach(candidate => roots.add(candidate as HTMLElement));
         const dialog = element.matches('[role="dialog"]')
             ? element as HTMLElement
             : element.closest<HTMLElement>('[role="dialog"]');
         if (dialog?.querySelector(PROFILE_BANNER_SELECTOR)) roots.add(dialog);
-        element.querySelectorAll<HTMLElement>('[role="dialog"]').forEach(candidate => {
-            if (candidate.querySelector(PROFILE_BANNER_SELECTOR)) roots.add(candidate);
-        });
+        if (likelyProfileSurface) {
+            element.querySelectorAll<HTMLElement>('[role="dialog"]').forEach(candidate => {
+                if (candidate.querySelector(PROFILE_BANNER_SELECTOR)) roots.add(candidate);
+            });
+        }
     };
 
-    for (const record of records) {
-        for (const node of record.addedNodes) {
-            if (node instanceof Element) consider(node);
-            else if (node.parentElement) consider(node.parentElement);
+    for (const record of records.slice(0, 64)) {
+        for (const node of Array.from(record.addedNodes).slice(0, 8)) {
+            if (node instanceof Element) considerAddedSurface(node);
+            else if (node.parentElement) considerAddedSurface(node.parentElement);
         }
-        if (record.target instanceof Element) consider(record.target);
+        if (record.target instanceof Element) {
+            const root = profileFastRootFor(record.target);
+            if (root) roots.add(root);
+            const dialog = record.target.closest<HTMLElement>('[role="dialog"]');
+            if (dialog?.querySelector(PROFILE_BANNER_SELECTOR)) roots.add(dialog);
+        }
     }
 
     return [...roots].filter(root =>
-        !containsMessageArea(root) && (root.querySelector(PROFILE_BANNER_SELECTOR) || root.querySelector('img[class*="avatar__"]'))
+        !containsMessageArea(root) && (root.querySelector(PROFILE_BANNER_SELECTOR) || root.querySelector(PROFILE_VIEW_AVATAR_SELECTOR))
     );
 }
 
@@ -3129,6 +3200,11 @@ function findUserIdFromContainerUncached(container: Element): string | null {
             const found = validSnowflake(el.getAttribute(attr));
             if (found) return found;
         }
+        // DMProfileFlair writes the owning id onto avatars it has replaced.
+        // Discord can remove the original CDN URL while recycling a popout,
+        // so consult this marker before falling through to React internals.
+        const flairAvatarId = validSnowflake(el.getAttribute("data-dm-flair-avatar-user-id"));
+        if (flairAvatarId) return flairAvatarId;
         const href = el.getAttribute("href") ?? "";
         const hrefMatch = href.match(/\/(?:users?|profile)\/(\d{17,20})(?:\/|$)/i);
         if (hrefMatch) return hrefMatch[1];
@@ -3156,14 +3232,14 @@ function findUserIdFromContainerUncached(container: Element): string | null {
     return null;
 }
 
-const profileIdentityCache = new WeakMap<Element, { signature: string; userId: string | null }>();
+const profileIdentityCache = new WeakMap<Element, { signature: string; userId: string | null; checkedAt: number }>();
 
 function profileIdentitySignature(container: Element): string {
     const attrs = ["data-user-id", "data-userid", "data-profile-user-id", "data-profile-userid", "id"]
         .map(key => container.getAttribute(key) ?? "")
         .join("|");
     const avatar = container.querySelector("img") as HTMLImageElement | null;
-    return `${attrs}|${avatar?.currentSrc || avatar?.src || ""}|${container.childElementCount}`;
+    return `${attrs}|${avatar?.currentSrc || avatar?.src || ""}|${avatar?.getAttribute("data-dm-flair-avatar-user-id") || ""}|${container.childElementCount}`;
 }
 
 /** Identity lookup is one of the more expensive parts of a scan because the
@@ -3172,9 +3248,12 @@ function profileIdentitySignature(container: Element): string {
 function getUserIdFromContainer(container: Element): string | null {
     const signature = profileIdentitySignature(container);
     const cached = profileIdentityCache.get(container);
-    if (cached?.signature === signature) return cached.userId;
+    // Discord recycles profile popout nodes. Their shallow signature can stay
+    // identical while React swaps the underlying user, so periodically refresh
+    // the bounded React lookup rather than trusting a node forever.
+    if (cached?.signature === signature && Date.now() - cached.checkedAt < 1500) return cached.userId;
     const userId = findUserIdFromContainerUncached(container);
-    profileIdentityCache.set(container, { signature, userId });
+    profileIdentityCache.set(container, { signature, userId, checkedAt: Date.now() });
     return userId;
 }
 
@@ -3210,7 +3289,8 @@ function resolveFlairForUserId(userId: string | null, kind: "banner" | "avatar" 
     const flair = userId ? getProfileFlairForRender(userId, kind) ?? null : null;
     if (!flair) return null;
 
-    if ((kind === "banner" || kind === "avatar") && isTournamentModeActive()) return null;
+    const mediaUrl = kind === "banner" ? flair.bannerUrl : kind === "avatar" ? flair.avatarAnimatedUrl : undefined;
+    if (mediaUrl && shouldSuppressAnimatedFlair() && isAnimatedUrl(mediaUrl)) return null;
     return flair;
 }
 
@@ -3266,26 +3346,80 @@ function clearBanner(banner: HTMLElement, preserveFailedUrl = false) {
     banner.querySelectorAll(".dm-flair-banner-video").forEach(video => video.remove());
     restoreInlineStyles(banner, "dmFlairBannerOriginalCaptured", BANNER_STYLE_PROPS);
     delete banner.dataset.dmFlairBannerUrl;
-    if (!preserveFailedUrl) delete banner.dataset.dmFlairFailedUrl;
+    if (!preserveFailedUrl) {
+        delete banner.dataset.dmFlairFailedUrl;
+        delete banner.dataset.dmFlairFailureCount;
+        delete banner.dataset.dmFlairRetryAt;
+    }
     banner.removeAttribute("data-dm-flair-banner-applied");
 }
 
-function applyBanner(banner: HTMLElement, url: string) {
+function applyBanner(banner: HTMLElement, url: string, fallbackUrl?: string) {
     const isVideo = isVideoUrl(url);
-    if (banner.dataset.dmFlairFailedUrl === url) return;
+    const previousFailures = banner.dataset.dmFlairFailedUrl === url
+        ? Number.parseInt(banner.dataset.dmFlairFailureCount ?? "0", 10) || 0
+        : 0;
+    const retryAt = banner.dataset.dmFlairFailedUrl === url
+        ? Number(banner.dataset.dmFlairRetryAt ?? 0)
+        : 0;
+    // A failed URL is cooled down, not blacklisted forever. Old releases only
+    // stored the URL, so a missing retry timestamp intentionally retries now.
+    if (banner.dataset.dmFlairFailedUrl === url && retryAt > Date.now()) return;
     const currentUrl = banner.dataset.dmFlairBannerUrl;
     if (currentUrl === url && banner.hasAttribute("data-dm-flair-banner-applied")) {
         const video = banner.querySelector(".dm-flair-banner-video") as HTMLVideoElement | null;
-        if (!isVideo || video?.dataset.dmFlairVideoSource === proxyVideoUrl(url)) return;
+        if (isVideo && video?.dataset.dmFlairVideoSource === proxyVideoUrl(url)) return;
+        if (!isVideo && banner.style.getPropertyValue("background-image").includes(url)) return;
+        // Discord can recycle the same banner element and overwrite its inline
+        // style while leaving our data marker behind. Only treat a static
+        // banner as applied while the actual background still contains its
+        // URL; otherwise fall through, restore, and repaint it below.
     }
 
     // A URL change must restore the old inline state before capturing it again;
     // otherwise a video -> image -> video sequence would permanently retain our
     // temporary `position: relative` declaration.
+    // If the published URL just failed, recordFailure() may have installed the
+    // current user's local fallback while the DOM observer is already queuing
+    // another scan. Preserve that fallback during the load window; otherwise
+    // the observer immediately replaces the working video with the dead
+    // published URL and the banner can never finish loading.
+    if (fallbackUrl && currentUrl === fallbackUrl && banner.hasAttribute("data-dm-flair-banner-applied")) {
+        const fallbackVideo = banner.querySelector(".dm-flair-banner-video") as HTMLVideoElement | null;
+        if (isVideoUrl(fallbackUrl) && fallbackVideo?.dataset.dmFlairVideoSource === proxyVideoUrl(fallbackUrl)) return;
+        if (!isVideoUrl(fallbackUrl) && banner.style.getPropertyValue("background-image").includes(fallbackUrl)) return;
+    }
     clearBanner(banner);
     rememberInlineStyles(banner, "dmFlairBannerOriginalCaptured", BANNER_STYLE_PROPS);
     banner.dataset.dmFlairBannerUrl = url;
     banner.setAttribute("data-dm-flair-banner-applied", "1");
+
+    const recordFailure = (kind: "image" | "video") => {
+        if (banner.dataset.dmFlairBannerUrl !== url) return;
+        const failures = previousFailures + 1;
+        const retryDelayMs = Math.min(5 * 60_000, 15_000 * (2 ** Math.min(failures - 1, 4)));
+        clearBanner(banner, true);
+        // A published profile-media object can be deleted or expire while
+        // this install still has a previously saved local URL. For the
+        // current user's own profile, keep that working local draft visible
+        // instead of showing a blank banner for the cooldown period. Never
+        // use this fallback for another user's profile.
+        if (fallbackUrl && fallbackUrl !== url && LOCAL_DRAFT_URL_RE.test(fallbackUrl)) {
+            noteProfileFlairFailure(`banner ${kind} media failed; using the saved local fallback (${url.slice(0, 80)})`);
+            applyBanner(banner, fallbackUrl);
+            return;
+        }
+        banner.dataset.dmFlairFailedUrl = url;
+        banner.dataset.dmFlairFailureCount = String(failures);
+        banner.dataset.dmFlairRetryAt = String(Date.now() + retryDelayMs);
+        noteProfileFlairFailure(`banner ${kind} media failed; retry ${failures} scheduled in ${Math.round(retryDelayMs / 1000)}s (${url.slice(0, 80)})`);
+    };
+    const recordSuccess = () => {
+        if (banner.dataset.dmFlairBannerUrl !== url) return;
+        delete banner.dataset.dmFlairFailedUrl;
+        delete banner.dataset.dmFlairFailureCount;
+        delete banner.dataset.dmFlairRetryAt;
+    };
 
     if (isVideo) {
         // Route through dm-media:// proxy so arbitrary HTTPS MP4 URLs work
@@ -3301,11 +3435,9 @@ function applyBanner(banner: HTMLElement, url: string) {
         v.loop = true;
         v.muted = true;
         v.playsInline = true;
-        v.onerror = () => {
-            clearBanner(banner, true);
-            banner.dataset.dmFlairFailedUrl = url;
-            noteProfileFlairFailure(`banner media failed and was restored (${url.slice(0, 80)})`);
-        };
+        v.preload = "auto";
+        v.onloadeddata = recordSuccess;
+        v.onerror = () => recordFailure("video");
         banner.appendChild(v);
         v.play().catch(() => {});
     } else {
@@ -3316,12 +3448,9 @@ function applyBanner(banner: HTMLElement, url: string) {
         banner.style.setProperty("background-position", "center", "important");
         banner.style.setProperty("background-repeat", "no-repeat", "important");
         const probe = new Image();
-        probe.onload = () => { probe.onload = null; probe.onerror = null; };
+        probe.onload = () => { recordSuccess(); probe.onload = null; probe.onerror = null; };
         probe.onerror = () => {
-            if (banner.dataset.dmFlairBannerUrl !== url) return;
-            clearBanner(banner, true);
-            banner.dataset.dmFlairFailedUrl = url;
-            noteProfileFlairFailure(`banner image failed and was restored (${url.slice(0, 80)})`);
+            recordFailure("image");
         };
         probe.src = url;
     }
@@ -3553,10 +3682,10 @@ function userIdForAppliedAvatar(element: Element): string | null {
 /** Reconcile already-painted avatars on every scan. Discord recycles image
  *  nodes and roster entries can expire or lose a field; without this pass a
  *  stale flair stayed visible until the plugin was restarted. */
-function cleanupAppliedAvatars(mediaSuppressed: boolean) {
+function cleanupAppliedAvatars() {
     document.querySelectorAll<HTMLImageElement>("[data-dm-flair-avatar-applied]").forEach(avatar => {
         const userId = userIdForAppliedAvatar(avatar);
-        const expected = !mediaSuppressed && userId
+        const expected = userId
             ? resolveFlairForUserId(userId, "avatar")?.avatarAnimatedUrl
             : undefined;
         if (!expected || expected !== avatar.dataset.dmFlairAppliedUrl) restoreAvatar(avatar);
@@ -3564,7 +3693,7 @@ function cleanupAppliedAvatars(mediaSuppressed: boolean) {
 
     document.querySelectorAll<HTMLElement>("[data-dm-flair-bg-avatar-applied]").forEach(element => {
         const userId = userIdForAppliedAvatar(element);
-        const expected = !mediaSuppressed && userId
+        const expected = userId
             ? resolveFlairForUserId(userId, "avatar")?.avatarAnimatedUrl
             : undefined;
         if (!expected || expected !== element.dataset.dmFlairAppliedBgUrl) restoreBackgroundAvatar(element);
@@ -3598,7 +3727,9 @@ function scanProfileSurfaceFast(root: HTMLElement): void {
         const bannerFlair = resolveFlairForUserId(userId, "banner");
         const suppressBanner = mediaSuppressed && !!bannerFlair?.bannerUrl && isAnimatedUrl(bannerFlair.bannerUrl);
         if (bannerFlair?.bannerUrl && !suppressBanner) {
-            applyBanner(banner, bannerFlair.bannerUrl);
+            const me = UserStore.getCurrentUser?.();
+            const fallbackUrl = me?.id === userId ? getLocalMediaValue("banner") : undefined;
+            applyBanner(banner, bannerFlair.bannerUrl, fallbackUrl);
         } else clearBanner(banner);
 
         const themeFlair = resolveFlairForUserId(userId, "theme");
@@ -3609,7 +3740,7 @@ function scanProfileSurfaceFast(root: HTMLElement): void {
 
     if (!ownerId) return;
     const avatarFlair = resolveFlairForUserId(ownerId, "avatar");
-    if (!avatarFlair?.avatarAnimatedUrl || shouldSuppressAnimatedFlair()) return;
+    if (!avatarFlair?.avatarAnimatedUrl) return;
     for (const avatar of findProfileViewAvatars(root)) {
         const src = avatar.currentSrc || avatar.src || "";
         const srcUserId = src.match(/\/avatars\/(\d{17,20})\//)?.[1];
@@ -3635,7 +3766,7 @@ function scanForPopouts(_root: ParentNode = document) {
         return value;
     };
 
-    cleanupAppliedAvatars(mediaSuppressed);
+    cleanupAppliedAvatars();
 
     // ── Banner + theme (per-popout: identify whose popout, look up their flair) ──
     const banners = findAllProfileBanners();
@@ -3663,7 +3794,10 @@ function scanForPopouts(_root: ParentNode = document) {
 
         const bannerFlair = resolveForScan(userId, "banner");
         const suppressForMedia = mediaSuppressed && !!bannerFlair?.bannerUrl && isAnimatedUrl(bannerFlair.bannerUrl);
-        if (bannerFlair?.bannerUrl && !suppressForMedia) applyBanner(banner, bannerFlair.bannerUrl);
+        if (bannerFlair?.bannerUrl && !suppressForMedia) {
+            const fallbackUrl = me?.id === userId ? getLocalMediaValue("banner") : undefined;
+            applyBanner(banner, bannerFlair.bannerUrl, fallbackUrl);
+        }
         else clearBanner(banner);
 
         const themeFlair = resolveForScan(userId, "theme");
@@ -3702,7 +3836,7 @@ function scanForPopouts(_root: ParentNode = document) {
 
     const shouldSweepAvatars = Date.now() - lastAvatarSweepAt >= AVATAR_SWEEP_INTERVAL_MS;
     let visibleAvatarCandidates = 0;
-    if (!mediaSuppressed && anyAvatarFlair && shouldSweepAvatars) {
+    if (anyAvatarFlair && shouldSweepAvatars) {
         lastAvatarSweepAt = Date.now();
         document.querySelectorAll("img").forEach(img => {
             const el = img as HTMLImageElement;
@@ -3715,6 +3849,8 @@ function scanForPopouts(_root: ParentNode = document) {
             const avatarFlair = resolveForScan(userId, "avatar");
             if (avatarFlair?.avatarAnimatedUrl) {
                 applyAvatar(el, avatarFlair.avatarAnimatedUrl, userId);
+            } else if (el.hasAttribute("data-dm-flair-avatar-applied")) {
+                restoreAvatar(el);
             }
         });
         // Background-image avatar tiles — some call surfaces (notably the
@@ -3732,8 +3868,8 @@ function scanForPopouts(_root: ParentNode = document) {
             visibleAvatarCandidates++;
             const userId = m[1];
             const avatarFlair = resolveForScan(userId, "avatar");
-            if (!avatarFlair?.avatarAnimatedUrl) return;
-            applyBackgroundAvatar(el, avatarFlair.avatarAnimatedUrl, userId);
+            if (avatarFlair?.avatarAnimatedUrl) applyBackgroundAvatar(el, avatarFlair.avatarAnimatedUrl, userId);
+            else if (el.hasAttribute("data-dm-flair-bg-avatar-applied")) restoreBackgroundAvatar(el);
         });
         // Warn once if the current user has a default avatar.
         if (me && !me.avatar && selfHasAvatarFlair && !defaultAvatarWarned) {
@@ -3749,14 +3885,12 @@ function scanForPopouts(_root: ParentNode = document) {
     // Keep profile-view fallback avatars outside the throttled page-wide sweep.
     // A newly opened popout should not wait up to 750ms, and default Discord
     // avatars have no CDN user id in their src to catch in the sweep above.
-    if (!mediaSuppressed) {
-        for (const avatar of findProfileViewAvatars()) {
-            if (avatar.dataset.dmFlairAvatarApplied) continue;
-            const root = profileFastRootFor(avatar);
-            const userId = root ? getUserIdFromContainer(root) : null;
-            const flair = userId ? resolveForScan(userId, "avatar") : null;
-            if (flair?.avatarAnimatedUrl && userId) applyAvatar(avatar, flair.avatarAnimatedUrl, userId);
-        }
+    for (const avatar of findProfileViewAvatars()) {
+        if (avatar.dataset.dmFlairAvatarApplied) continue;
+        const root = profileFastRootFor(avatar);
+        const userId = root ? getUserIdFromContainer(root) : null;
+        const flair = userId ? resolveForScan(userId, "avatar") : null;
+        if (flair?.avatarAnimatedUrl && userId) applyAvatar(avatar, flair.avatarAnimatedUrl, userId);
     }
     profileRenderHealth.visibleBanners = banners.length;
     profileRenderHealth.visibleAvatars = visibleAvatarCandidates;
@@ -3765,21 +3899,35 @@ function scanForPopouts(_root: ParentNode = document) {
     profileRenderHealth.appliedAvatars = document.querySelectorAll("[data-dm-flair-avatar-applied], [data-dm-flair-bg-avatar-applied]").length;
 }
 
-// Coalesce mutation bursts into one trailing scan every 120ms, then hand the
-// actual paint to the next animation frame. Discord emits hundreds of
-// childList mutations per second while chat scrolls or a call is live; a
+function cancelScanIdle(): void {
+    if (scanIdle === null) return;
+    if (typeof window.cancelIdleCallback === "function") window.cancelIdleCallback(scanIdle);
+    else window.clearTimeout(scanIdle);
+    scanIdle = null;
+}
+
+// Coalesce mutation bursts into one trailing idle scan. Discord emits hundreds
+// of childList mutations per second while chat scrolls or a call is live; a
 // per-frame full-document sweep is still expensive even when mutations are
-// batched. The bounded debounce keeps profile changes fast while putting a
-// hard ceiling on this plugin's steady-state scan rate.
+// batched. The bounded debounce keeps profile changes responsive while moving
+// the broad reconciliation off the click/route commit's critical frame.
 function scheduleScan() {
-    if (document.hidden || scanTimer !== null || scanFrame !== null) return;
+    if (document.hidden || scanTimer !== null || scanFrame !== null || scanIdle !== null) return;
     scanTimer = window.setTimeout(() => {
         scanTimer = null;
         if (document.hidden) return;
-        scanFrame = window.requestAnimationFrame(() => {
-            scanFrame = null;
+        const runScan = () => {
+            scanIdle = null;
             if (!document.hidden) scanForPopouts(document);
-        });
+        };
+        if (typeof window.requestIdleCallback === "function") {
+            scanIdle = window.requestIdleCallback(runScan, { timeout: 1400 });
+        } else {
+            scanFrame = window.requestAnimationFrame(() => {
+                scanFrame = null;
+                runScan();
+            });
+        }
     }, SCAN_DEBOUNCE_MS);
 }
 
@@ -3792,17 +3940,18 @@ function startObserver() {
         // Discord may paint the stock avatar before the regular debounced page
         // scan runs. Only inspect newly affected profile roots synchronously;
         // the expensive page-wide pass remains coalesced below.
-        for (const root of profileRootsFromMutations(records)) scanProfileSurfaceFast(root);
-        scheduleScan();
+        const roots = profileRootsFromMutations(records);
+        for (const root of roots) scanProfileSurfaceFast(root);
+        if (roots.length > 0) scheduleScan();
     });
     observer.observe(document.body, { childList: true, subtree: true });
     scanForPopouts(document);
     // Low-frequency safety net for changes the childList observer can't see
-    // (e.g. an <img src> swapped in place). 2s is plenty for animated-avatar
-    // surfaces and halves the steady-state polling cost vs the old 1s.
+    // (e.g. an <img src> swapped in place). Five seconds is enough for the
+    // fallback while keeping ordinary message navigation out of a hot loop.
     rescanTimer = window.setInterval(() => {
         if (!document.hidden) scanForPopouts(document);
-    }, 2000);
+    }, 5000);
 }
 
 function stopObserver() {
@@ -3814,6 +3963,7 @@ function stopObserver() {
     window.removeEventListener("focus", onRosterFocus);
     if (scanTimer !== null) { clearTimeout(scanTimer); scanTimer = null; }
     if (scanFrame !== null) { window.cancelAnimationFrame(scanFrame); scanFrame = null; }
+    cancelScanIdle();
     if (rescanTimer !== null) { clearInterval(rescanTimer); rescanTimer = null; }
     document.querySelectorAll<HTMLElement>("[data-dm-flair-banner-applied], .dm-flair-banner-video").forEach(el => {
         if (el.matches("[data-dm-flair-banner-applied]")) clearBanner(el);

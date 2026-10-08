@@ -165,6 +165,12 @@ function fetchOnce(
                 anyCb(null, pinned.address, pinned.family);
             }
         };
+        const requestHeaders: Record<string, string> = {
+            // Some media hosts close Node requests that do not identify themselves.
+            "user-agent": "Discordmaxxer/0.7"
+        };
+        if (rangeHeader) requestHeaders.range = rangeHeader;
+
         const req = httpsRequest(
             {
                 protocol: "https:",
@@ -174,7 +180,7 @@ function fetchOnce(
                 path: (parsed.pathname || "/") + parsed.search,
                 method: "GET",
                 lookup: pinnedLookup,
-                headers: rangeHeader ? { range: rangeHeader } : {}
+                headers: requestHeaders
             },
             res => {
                 const status = res.statusCode ?? 0;

@@ -1,5 +1,228 @@
 # Discordmaxxer — RESUME
 
+## 2026-10-07 v0.7.87 release candidate — packaged widget/profile repair
+
+The v0.7.86 client is already published. This candidate carries the
+post-release fixes Diggy visually approved in the installed packaged client:
+normal renderer display defaults after the grey/raw-page failure, resilient
+profile banner/avatar layering and persistence, the scoped widget-skin surfaces,
+and the Playing-card root paint fix that keeps the animated skin present both
+idle and while hovered.
+
+The release version is `0.7.87`. The repository build and Electron Builder
+configuration were restored from the known-good release configuration after a
+dirty working copy had reduced `package.json` to runtime-only fields; the
+version was then advanced to `0.7.87`. The local evidence remains separate
+from publication evidence until the tag workflow completes.
+
+Current candidate checks passed: `pnpm test`, `pnpm build`, strict
+`DM_STRICT_REBRAND=1 pnpm overlay:vencord`, `node overlay-scripts/verify-build.mjs`,
+and `git diff --check`. Packaging and the GitHub tag workflow remain the next
+release gates. Local diagnostic screenshots under `artifacts/` are evidence
+only and are not release files.
+
+## 2026-10-07 packaged v0.7.86 Playing-root paint repair — installed proof
+
+The remaining Playing-card symptom was a flat/red card or a skin that appeared
+only while hovering. The cause was the host-normalization cleanup rule: the
+Playing root itself has Discord's `overlay` class, so the descendant selector
+matched the real card and cleared its background, `background-image`, and both
+animated pseudo-layers. This was a selector collision, not a timer or banner
+animation problem.
+
+The narrow fix is in
+`plugins/DMWidget/index.tsx`. Each overlay/host cleanup selector now excludes
+the marked Playing root with
+`:not([data-dm-widget-card-root="true"][data-dm-widget-playing-card="true"])`.
+Surrounding Discord overlay descendants are still normalized, while the Board
+and Playing roots keep the existing skin, animation, and timing unchanged.
+
+Verification passed:
+
+* `pnpm exec tsc --noEmit`
+* `node overlay-scripts/build-vencord.mjs`
+* `node overlay-scripts/verify-build.mjs`
+* `git diff --check`
+* The rebuilt renderer JS/CSS was copied only into the already-installed
+  packaged client after timestamped backups were created.
+* Fresh installed-client runtime proof showed normal Discord UI, the raw-
+  renderer guard, and the profile popout with both Board and Playing cards.
+* Five idle samples plus five hover samples returned `valid: true` and
+  `parity: true`: the Playing root kept the ember background, both pseudo
+  layers, positive opacity, and the same `emberProtocol` skin in both states.
+* The animated profile banner remained loaded and advancing (`readyState: 4`,
+  `paused: false`).
+
+Visual evidence is saved at
+`C:\Users\Diggy\projects\discordmaxxer-release-0-7-81-editor-crash\artifacts\playing-root-fixed-20261007.png`.
+
+This is local installed-client proof only. Nothing was published; the C: dev
+checkout and E: packaged candidate were not touched. Diggy visually confirmed
+that the running installed client now looks correct during the final test pass.
+
+## 2026-10-07 packaged v0.7.86 raw-renderer recovery — installed proof
+
+The screenshot showing `window.GLOBAL_ENV` and the `dm-widget` keyframes as
+visible page text was reproduced in the installed client. Discord itself was
+loaded, but Chromium's built-in HTML display defaults were absent in the
+renderer: `body`, detached `div`, `script`, and `style` elements computed as
+`display: inline`, which pushed `#app-mount` below the viewport. This was a
+renderer startup/display-layer failure, not a login, Discord-data, or widget
+selector failure.
+
+The preload now installs a small document-start fallback display map in
+`src/preload/index.ts`. It hides document metadata/script/style nodes, restores
+normal HTML element display defaults, and keeps `#app-mount` as the full-window
+flex root. It is intentionally lower-level than the DMWidget skin rules so the
+existing profile/banner/Playing behavior remains unchanged.
+
+The source preload type-check passed and the native bundle was rebuilt. The
+existing installed `app.asar` was repacked from its current contents with only
+the rebuilt preload replaced, then installed locally at
+`C:\Users\Diggy\AppData\Local\Discordmaxxer`. Independent rollback archive:
+`C:\Users\Diggy\AppData\Local\Discordmaxxer\resources\app.asar.before-display-defaults-20261007-200944.asar`.
+The previously generated temporary extraction directory was removed after
+packing. The explicitly authorized 1.56 GB Windows X-Lite ISO was removed from
+`C:\Users\Diggy\Downloads\[Windows X-Lite] Micro 11 24H2 v3\`; the containing
+folder was kept.
+
+Fresh installed-client proof after relaunch on CDP 9230:
+
+* `#dm-renderer-display-defaults` exists; `html`/`body` compute to `block`,
+  `script`/`style` compute to `none`, and `#app-mount` is `[0, 0, 1351, 781]`.
+* The normal Friends UI paints at the top of the viewport and body text no
+  longer contains `window.GLOBAL_ENV` or `@keyframes dm-widget`.
+* The opened profile retains two advancing animated banner videos
+  (`readyState: 4`, `paused: false`, duration about 9.017 seconds).
+* Across five 700 ms samples, the Board and Playing cards retained
+  `data-dm-widget-card-root="true"`, the Playing marker, `emberProtocol`, and
+  the expected skin border without hover or flashing.
+
+This is local installed-client proof only. Nothing was published, and the C:
+development checkout plus E: packaged candidate were left untouched. Diggy's
+remaining gate is a visual check of the restarted client during ordinary
+navigation; the old archive and the prior renderer backups remain available
+for rollback.
+
+## 2026-10-07 packaged v0.7.86 profile-flair and Playing-card repair — installed proof
+
+The latest packaged-client repair covers all four issues reported in the
+current test pass: the own-profile animated banner was missing, the banner
+could cover the avatar, the Discordmaxxer Playing card could be skinless or
+flash on hover, and ordinary Friends/Shop/Quests chrome could inherit a
+widget skin. The C: development checkout and E: packaged candidate were left
+untouched, and nothing was published.
+
+The missing banner was traced to the saved shared profile-media URL returning
+HTTP 404 from the worker. The active installed test settings now retain the
+recovered direct MP4 fallback at
+`https://i.imgur.com/0Lepc52.mp4`; the profile-flair source keeps that local
+fallback when the published URL fails and prevents the observer from
+immediately replacing the working fallback with the dead URL. The banner
+video is positioned behind the marked profile avatar, so the avatar remains
+above the animated media instead of being covered.
+
+The Playing-card repair is narrow and performance-safe. A profile-owned
+candidate query reaches the compact account popout/profile modal without
+reopening the old document-wide sweep, and the visibility check now treats
+Discord's fixed paint layer as the real boundary instead of rejecting the
+visible card because its hidden click-trap ancestor has a stale off-screen
+rectangle. Existing markers, CSS variables, and animation timing are reused;
+Friends, Shop, Quests, inactive messages, people rows, Active Now, and generic
+profile surfaces remain excluded.
+
+Verification passed with:
+
+* `$env:DM_STRICT_REBRAND='1'; pnpm exec tsc --noEmit`
+* `node overlay-scripts/build-vencord.mjs`
+* `node overlay-scripts/verify-build.mjs`
+* `git diff --check`
+
+The rebuilt renderer/CSS was copied only to the installed test client at
+`C:\Users\Diggy\AppData\Local\Discordmaxxer` after retaining the backup
+`vencordDesktopRenderer.js.before-fixed-layer-visibility-20261007` (and its
+matching CSS backup). Installed runtime proof after restart: the banner video
+has `readyState: 4`, is not paused, and advances through its loop; the avatar
+has `z-index: 2` and `position: relative`; the Playing card is marked with
+`data-dm-widget-card-root="true"`, uses `emberProtocol`, and remains present
+without hover across four 500 ms samples; Friends/Shop/Quests have no widget
+surface/card markers. This is local installed-client proof, not a published
+release claim. Diggy's remaining gate is a visual confirmation in the open
+test client.
+
+## 2026-10-07 packaged profile banner recovery — installed runtime proof
+
+The packaged-client follow-up also repaired the missing animated profile banner
+seen in the full-profile screenshot. The source-side fix keeps the packaged
+v0.7.86 manifest and Electron runtime intact, adds the missing browser
+`User-Agent` to the main-process media proxy, and recognizes Discord's
+`banner_f7e69e` wrapper as the profile-banner surface. The existing sidebar
+selector work was preserved; the C: development checkout and E: packaged
+candidate were not changed.
+
+Direct TypeScript checking passed, the strict Vencord overlay build completed
+with zero rebrand warnings, `node overlay-scripts/verify-build.mjs` passed, and
+`git diff --check` passed. The dirty working-tree `package.json` was preserved;
+its reduced contents do not expose the normal `pnpm test` script, so the direct
+checks are the applicable source evidence for this session. The explicitly
+authorized old `C:\Users\Diggy\Documents\Windows.iso` was removed to recover
+build space; no other user-data cleanup was performed.
+
+Only the rebuilt renderer was copied into the installed client at
+`C:\Users\Diggy\AppData\Local\Discordmaxxer`, with the installed renderer
+backup retained. The exact installed executable was relaunched with CDP on
+port 9230; the signed-in profile data was not replaced. Live proof now shows
+two applied banner markers—one in the right profile sidebar and one in the
+full-profile modal. Both render `dm-media://proxy/...pg8s68.mp4` with
+`readyState: 4`, `paused: false`, and an advancing position (for example,
+6.67 to 7.67 seconds during a one-second probe). This is installed-client
+runtime proof, not a published-release claim; no push or deployment was made.
+
+Remaining gate: Diggy should visually reopen the same profile and confirm the
+animated banner and Playing card look correct after normal navigation. Preserve
+the dirty source changes and the renderer backup.
+
+## 2026-10-07 packaged widget-skin flash and Friends-scope repair — local installed proof
+
+The packaged-client follow-up tightened `plugins/DMWidget/index.tsx` in two
+places. The surface scan now removes stale widget and surface markers from
+blocked Discord chrome, including Friends, Shop, Quests, inactive DM rows,
+people rows, and Active Now. The low-frequency probe also ignores descendants
+already owned by a marked card root, preventing the Playing card from
+retriggering reconciliation on every interval. Reconciliation now avoids
+rewriting identical attributes, CSS variables, and animation-delay values;
+the Playing card keeps its shared monotonic animation timeline instead of
+resetting or flashing.
+
+`pnpm test`, `pnpm build`, `pnpm overlay:vencord`,
+`node overlay-scripts/verify-build.mjs`, and `git diff --check` passed. Only
+the staged `vencordDesktopRenderer.js` was copied into the installed client at
+`C:\Users\Diggy\AppData\Local\Discordmaxxer`; the previous installed
+renderer is preserved as
+`vencordDesktopRenderer.js.before-flashing-fix-20261007`. The C: development
+checkout and E: packaged candidate were not changed.
+
+Installed runtime proof: the renderer hash matches the staged overlay;
+the Playing card is visible with no hover requirement, and an 8.5-second
+attribute/style mutation probe recorded zero writes to widget roots. The
+Friends row had no widget-skin or surface marker. The account panel and the
+currently open DM surface remain the deliberate supported chrome targets.
+This is local installed-client proof, not a published-release claim. Source
+changes remain uncommitted and unpublished; Diggy's remaining gate is a
+normal visual pass through Friends and the Playing card after interacting
+with several profiles.
+
+## 2026-10-07 installed client grey-screen — mixed package repaired
+
+Diggy reported multiple Discordmaxxer windows, a grey shell, and an installed client that could not finish loading after the widget-skin test. The cause was a mixed installed package: the installed app had the updated renderer/app.asar but an older executable and missing release Chromium DLLs. The running installed client was stopped, then the complete contents of the release `dist/win-unpacked` directory were copied into the installed directory without deleting user data or unrelated files. The installed executable, DLLs, app.asar, audio module, and renderer now match the release package.
+
+Runtime evidence after repair: the normal installed client launched without `--disable-gpu`; one main process, one renderer, five helper processes, and one visible Discord window remained stable for the observation period. The extra grey `Discordmaxxer Updater` window was closed separately. The source package and renderer backup remain in place. The C: development checkout and the E: packaged candidate were not changed.
+
+The working copy of this continuity file was truncated during a full-disk patch failure while recording this checkpoint. It was restored from repository HEAD before adding this entry; older uncommitted continuity additions are not treated as source or runtime evidence. A disposable diagnostic cache folder created for recovery was removed after the repair to free approximately 0.30 GB on C:. The intended pre-release executable backup could not be created because the disk was full; the release package remains the recovery source.
+
+Release state at checkpoint: source changes are still uncommitted and unpublished; the next authorized action is the documented build, verification, version/release check, and live publish sequence. Preserve the dirty source changes and leave the C: dev build and E: candidate alone.
+
+
 > Live status / cold-open pointer. If you're picking this up after a long gap
 > (or you're an AI, not Claude): read this, then `TROUBLESHOOTING.md`, then
 > `CLAUDE.md` ("Operational facts" section). Those three are enough to build,
