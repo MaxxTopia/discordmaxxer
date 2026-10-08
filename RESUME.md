@@ -1,5 +1,27 @@
 # Discordmaxxer — RESUME
 
+## 2026-10-08 v0.7.90 published — cross-account fallback and banner default hardening
+
+Patch release `v0.7.90` is public at
+`https://github.com/MaxxTopia/discordmaxxer/releases/tag/v0.7.90`.
+Commit `4aae771` is on `main`, tag `v0.7.90` is pushed, and workflow
+`37830068708` completed successfully. The public release is non-draft and
+non-prerelease and contains the Windows x64 and ARM64 ZIPs,
+`Discordmaxxer-Setup-0.7.90.exe`, its blockmap, and a verified `latest.yml`
+reporting version `0.7.90`, the matching installer path, size, and SHA-512.
+
+The published changes harden cross-account widget-style recovery: a missing,
+malformed, or unreadable owner marker borrows the viewer-selected skin while
+retrying, a confirmed owner marker remains authoritative, and app-name hints
+remain available when Discord omits its DOM app-id. `showOthersBanner` stays
+enabled while settings hydrate and still honors an explicit opt-out.
+
+The local source, strict overlay, build, package, and CI release gates passed.
+This proves publication and artifact integrity; DiggyT's second-PC recipient
+view of DiggyAI's banner and owner-selected widgets remains a user-owned
+runtime test. The C: dev checkout and E: packaged candidate remain untouched,
+and the existing untracked `artifacts/` diagnostics remain preserved.
+
 ## 2026-10-08 v0.7.90 release candidate — cross-account fallback and banner default hardening
 
 The next patch release is prepared as `v0.7.90`. It carries the local
@@ -9,11 +31,10 @@ viewer-selected skin while retrying instead of leaving the viewed profile
 plain; a confirmed owner marker remains authoritative. The banner option stays
 on while settings hydrate but still honors an explicit opt-out.
 
-Release notes are recorded in `docs/releases/v0.7.90.md`. The public baseline
-remains `v0.7.89` until the documented build, verification, tag, and release
-workflow completes. The C: dev checkout and E: packaged candidate remain
-untouched, and the existing untracked `artifacts/` diagnostics remain
-preserved.
+Release notes are recorded in `docs/releases/v0.7.90.md`. This section records
+the pre-publication candidate state; the publication proof is recorded above.
+The C: dev checkout and E: packaged candidate remain untouched, and the
+existing untracked `artifacts/` diagnostics remain preserved.
 
 Pre-publish verification for this candidate passed: `pnpm test`, strict
 `DM_STRICT_REBRAND=1 pnpm overlay:vencord` with zero warnings,
