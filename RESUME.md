@@ -1,11 +1,11 @@
 # Discordmaxxer — RESUME
 
-## 2026-10-08 v0.7.88 release candidate — verified before publish
+## 2026-10-08 v0.7.88 published — widget skin, hero preservation, updater repair
 
-The candidate version is `0.7.88`. It carries the DMWidget repair that keeps
-skin-only application cosmetic: existing widget geometry and hero content are
-preserved, and the picker now keeps a readable high-contrast result message
-when Discord's transient toast is hidden. It also carries the Windows updater
+`v0.7.88` is public. It carries the DMWidget repair that keeps skin-only
+application cosmetic: existing widget geometry and hero content are preserved,
+and the picker now keeps a readable high-contrast result message when
+Discord's transient toast is hidden. It also carries the Windows updater
 handoff fix (`quitAndInstall(true, true)`) so the downloaded installer is
 silently applied and the updated client relaunches instead of leaving the
 custom updater on an Installing spinner.
@@ -19,16 +19,31 @@ reopened on the existing signed-in smoke profile; the read-only
 --skip badge` run passed inventory, visual, hotkey, and mass-delete phases.
 The badge phase was intentionally skipped because it writes account settings.
 
-The Windows artifacts were produced locally as the x64/ARM64 ZIPs, the NSIS
-installer, blockmap, and updater metadata. They are not public until the tag
-push completes. The intended source files are `package.json`,
-`plugins/DMWidget/index.tsx`, `src/main/updater.ts`, and this continuity note;
-diagnostic files under `artifacts/` remain untracked and are excluded.
-The C: dev checkout and E: packaged candidate remain untouched.
+The release commit is `e446f7a`, pushed to `origin/main`, and tagged
+`v0.7.88`. GitHub Actions Release run `37808043221` completed successfully:
+https://github.com/MaxxTopia/discordmaxxer/actions/runs/37808043221
 
-Next action: publish the reviewed `v0.7.88` commit through the documented
-`main` plus `v0.7.88` tag push, then verify the GitHub Release assets and
-served `latest.yml` manifest.
+Published release: https://github.com/MaxxTopia/discordmaxxer/releases/tag/v0.7.88
+
+Published assets are `Discordmaxxer-0.7.88-win.zip` (150,083,839 bytes,
+SHA-256 `abb29c331d66a4a3727e3a04257f477d5173ee502273e0c684ac633e6805ed3c`),
+`Discordmaxxer-0.7.88-arm64-win.zip` (146,998,653 bytes, SHA-256
+`f585ced469fc8d869b4a200ca3ffce0e91bb66afed1818b5f758529b33a5af27`),
+`Discordmaxxer-Setup-0.7.88.exe` (211,464,658 bytes, SHA-256
+`89e437547224b9fbdd74b49060867044cc94d2255e9c7b77322eed494b9fc590`), its
+blockmap, and `latest.yml`. The served updater manifest reports version
+`0.7.88`, installer size `211464658`, and SHA-512
+`PA7j4yfN+zosIKd8vpj01i0QGSD16TlTtOUEFchjURqe7ajw6VwP9lmokbwOMs6UM+6naNVJC8BLfBDk5PIS6A==`.
+
+The intended source files are `package.json`, `plugins/DMWidget/index.tsx`,
+`src/main/updater.ts`, and this continuity note; diagnostic files under
+`artifacts/` remain untracked and are excluded. The C: dev checkout and E:
+packaged candidate remain untouched.
+
+The remaining user gate is Diggy's install/update smoke test on the target
+account. The source, CI package, public release assets, and served updater
+manifest are verified; this note does not claim that a new client has already
+been installed on every machine.
 
 ## 2026-10-08 Fortnite hero/layout restoration — packaged signed-in proof
 
