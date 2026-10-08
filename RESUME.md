@@ -1,8 +1,8 @@
 # Discordmaxxer — RESUME
 
-## 2026-10-07 v0.7.87 release candidate — packaged widget/profile repair
+## 2026-10-08 v0.7.87 published — packaged widget/profile repair
 
-The v0.7.86 client is already published. This candidate carries the
+The v0.7.86 client is already published. This release carries the
 post-release fixes Diggy visually approved in the installed packaged client:
 normal renderer display defaults after the grey/raw-page failure, resilient
 profile banner/avatar layering and persistence, the scoped widget-skin surfaces,
@@ -12,14 +12,41 @@ idle and while hovered.
 The release version is `0.7.87`. The repository build and Electron Builder
 configuration were restored from the known-good release configuration after a
 dirty working copy had reduced `package.json` to runtime-only fields; the
-version was then advanced to `0.7.87`. The local evidence remains separate
-from publication evidence until the tag workflow completes.
+version was then advanced to `0.7.87`.
 
-Current candidate checks passed: `pnpm test`, `pnpm build`, strict
+The release commit is `6b51f67`, merged with the already-published `v0.7.86`
+history in `dd749c0`. `dd749c0` is pushed to `origin/main` and is tagged
+`v0.7.87`. GitHub Actions Release run `37726475500` completed successfully:
+https://github.com/MaxxTopia/discordmaxxer/actions/runs/37726475500
+
+Published release: https://github.com/MaxxTopia/discordmaxxer/releases/tag/v0.7.87
+
+Published assets are `Discordmaxxer-0.7.87-win.zip` (150,081,243 bytes),
+`Discordmaxxer-0.7.87-arm64-win.zip` (146,996,073 bytes),
+`Discordmaxxer-Setup-0.7.87.exe` (211,459,913 bytes), its blockmap, and
+`latest.yml`. The served updater manifest reports version `0.7.87`, installer
+size `211459913`, and SHA-512
+`dnxzSKu9uIhJw2G+XDFWPZn69Xq9qq2VUdCs6cGub5csH8IsRDrjMTLBhPRu1zv14VQnWNMHilSV3PJ4Bxy5Dg==`.
+
+Local release checks passed: `pnpm test`, `pnpm build`, strict
 `DM_STRICT_REBRAND=1 pnpm overlay:vencord`, `node overlay-scripts/verify-build.mjs`,
-and `git diff --check`. Packaging and the GitHub tag workflow remain the next
-release gates. Local diagnostic screenshots under `artifacts/` are evidence
+`pnpm package:dir`, `pnpm package:win`, and `git diff --check`. The signed-in
+installed-client validator also passed inventory, visual, hotkey, and
+mass-delete safety checks at
+`overlay-scripts/reports/validate-1791432659261.json`. A clean first-launch
+profile for the unpacked binary stopped at Discord's first-launch page before
+Vencord readiness, so that run was not counted as fresh signed-in proof.
+
+The local installed-client visual proof remains the strongest account-specific
+gate: Diggy confirmed the normal Discord UI, profile banner, Board widget, and
+Playing skin looked correct. The C: dev checkout and E: packaged candidate
+were not touched. Local diagnostic screenshots under `artifacts/` are evidence
 only and are not release files.
+
+Remaining user gate: install/update a real client from the published release
+and recheck the normal-mode profile/Playing-card behavior on the target
+account. The public release and updater manifest are live; this final client
+update/field check is not being claimed from GitHub asset proof alone.
 
 ## 2026-10-07 packaged v0.7.86 Playing-root paint repair — installed proof
 
