@@ -1886,6 +1886,7 @@ const SURFACE_SKIN_ATTRS = [
 ];
 const SURFACE_SKIN_VARS = ["--dmw-surface-accent", "--dmw-surface-secondary", "--dmw-surface-surface"];
 const surfaceSkinRoots = new Map<HTMLElement, SurfaceSkinSnapshot>();
+let activeDiscordConversationRowCache: { path: string; row: HTMLElement | null; } | null = null;
 type WidgetCardMatch = { appId: string; root: HTMLElement; };
 const widgetApplicationCache = new WeakMap<HTMLElement, {
     match: WidgetCardMatch | null;
@@ -1895,6 +1896,9 @@ const widgetApplicationCache = new WeakMap<HTMLElement, {
 let widgetApplicationCacheEpoch = 0;
 let widgetSkinStyleElement: HTMLStyleElement | null = null;
 let widgetSkinObserver: MutationObserver | null = null;
+let widgetSkinProfileMountObserver: MutationObserver | null = null;
+let widgetSkinProfileMountReleaseTimer: number | null = null;
+let widgetSkinProfileFastScanTimer: number | null = null;
 let widgetSkinPlayingCardObserver: MutationObserver | null = null;
 let widgetSkinPlayingCardObserverHost: HTMLElement | null = null;
 let widgetSkinPlayingCardObserverReleaseTimer: number | null = null;
@@ -1916,6 +1920,11 @@ let widgetSkinRun = 0;
 let widgetSkinRendererSuspended = false;
 let widgetSkinLegacyCleanupDone = false;
 const WIDGET_SKIN_RECONCILE_INTERVAL_MS = 3000;
+const WIDGET_SKIN_PROFILE_MOUNT_WATCH_MS = 2500;
+const WIDGET_SKIN_PROFILE_SURFACE_MAX = 16;
+const WIDGET_SKIN_PROFILE_EXPLICIT_CANDIDATE_MAX = 32;
+const WIDGET_SKIN_PROFILE_CARD_CANDIDATE_MAX = 64;
+const WIDGET_SKIN_PROFILE_MATCH_MAX = 48;
 // The editor is a large settings surface, not a Discord profile Board. Do not
 // scan it while it mounts: its cards/buttons can match Discord's generic
 // widget selectors and a renderer scan during that mount is pure risk.
@@ -1929,6 +1938,25 @@ const widgetSkinEditorOpen = (): boolean => widgetSkinEditorMounts > 0;
 const attachedWidgetStyles = new Map<string, WidgetStylePreset>();
 const attachedWidgetSlots = new Map<string, string>();
 const attachedWidgetHints = new Map<string, string[]>();
+// The attached maps above are deliberately scoped to the signed-in owner:
+// they are used by the editor and by the publish/confirm path. A profile
+// opened by another account needs a second, read-only map keyed by the app id
+// visible in that profile. Otherwise the Playing-card fallback can mistake
+// the viewer's first widget for the profile owner's widget and paint the
+// viewer's selected skin onto somebody else's card.
+type VisibleWidgetStyleRecord = {
+    preset: WidgetStylePreset;
+    updatedAt: number;
+    checkedAt: number;
+    hints: string[];
+};
+const visibleWidgetStyles = new Map<string, VisibleWidgetStyleRecord>();
+const visibleWidgetStyleMisses = new Map<string, number>();
+const visibleWidgetStyleRequests = new Map<string, Promise<void>>();
+const VISIBLE_WIDGET_STYLE_CACHE_MS = 30_000;
+const VISIBLE_WIDGET_STYLE_MISS_RETRY_MS = 15_000;
+const VISIBLE_WIDGET_STYLE_MAX = 24;
+const VISIBLE_WIDGET_STYLE_BATCH_MAX = 8;
 let attachedWidgetProfileAccountId = "";
 let attachedWidgetProfileVerifiedAt = 0;
 let attachedWidgetRefreshAt = 0;
@@ -2593,12 +2621,110 @@ const WIDGET_APPLICATION_ID_ATTRIBUTES = [
     "application_id"
 ];
 
+function visibleProfileWidgetStyles(local: Map<string, WidgetStylePreset>): Map<string, WidgetStylePreset> {
+    const out = new Map(local);
+    const now = Date.now();
+    for (const [appId, record] of visibleWidgetStyles) {
+        if (!SNOWFLAKE.test(appId) || now - record.checkedAt > VISIBLE_WIDGET_STYLE_CACHE_MS) continue;
+        // The marker is written by the owner of this application. When the
+        // viewer happens to own the same app, the remote marker is still the
+        // authoritative cross-client value; the local map remains a fallback
+        // only until the marker has been read.
+        out.set(appId, record.preset);
+    }
+    return out;
+}
+
+function visibleProfileWidgetHints(local: Map<string, string[]>): Map<string, string[]> {
+    const out = new Map<string, string[]>();
+    for (const [appId, labels] of local) out.set(appId, Array.from(new Set(labels)));
+    const now = Date.now();
+    for (const [appId, record] of visibleWidgetStyles) {
+        if (!SNOWFLAKE.test(appId) || now - record.checkedAt > VISIBLE_WIDGET_STYLE_CACHE_MS) continue;
+        const current = out.get(appId) ?? [];
+        for (const label of record.hints) {
+            const clean = String(label ?? "").trim();
+            if (clean.length >= 3 && !current.includes(clean)) current.push(clean);
+        }
+        if (current.length) out.set(appId, current);
+    }
+    return out;
+}
+
+function rememberVisibleWidgetStyle(appId: string, record: VisibleWidgetStyleRecord): void {
+    visibleWidgetStyles.delete(appId);
+    visibleWidgetStyles.set(appId, record);
+    visibleWidgetStyleMisses.delete(appId);
+    while (visibleWidgetStyles.size > VISIBLE_WIDGET_STYLE_MAX) {
+        const oldest = visibleWidgetStyles.keys().next().value;
+        if (typeof oldest !== "string") break;
+        visibleWidgetStyles.delete(oldest);
+    }
+}
+
+function queueVisibleWidgetStyleHydration(appIds: Iterable<string>): void {
+    const now = Date.now();
+    const pending = Array.from(new Set(Array.from(appIds).filter(appId => SNOWFLAKE.test(appId)))).slice(0, VISIBLE_WIDGET_STYLE_BATCH_MAX);
+    for (const appId of pending) {
+        const cached = visibleWidgetStyles.get(appId);
+        if (cached && now - cached.checkedAt <= VISIBLE_WIDGET_STYLE_CACHE_MS) continue;
+        const missAt = visibleWidgetStyleMisses.get(appId) ?? 0;
+        if (missAt && now - missAt <= VISIBLE_WIDGET_STYLE_MISS_RETRY_MS) continue;
+        if (visibleWidgetStyleRequests.has(appId)) continue;
+
+        const task = apiGet(`/applications/${appId}`).then(application => {
+            const remoteStyle = remoteWidgetStyleFromApplication(application);
+            if (remoteStyle) {
+                const remotePreset = WIDGET_STYLE_PRESETS.find(item => item.id === remoteStyle.style) ?? WIDGET_STYLE_PRESETS[0];
+                const appName = String(application?.name ?? application?.application?.name ?? "").trim();
+                rememberVisibleWidgetStyle(appId, {
+                    preset: presetWithLayouts(remotePreset, remoteStyle.topLayout, remoteStyle.bottomLayout),
+                    updatedAt: remoteStyle.updatedAt,
+                    checkedAt: Date.now(),
+                    hints: appName ? [appName] : []
+                });
+            } else {
+                // A missing marker is a deliberate no-style result. Remove a
+                // stale cached marker so a profile cannot keep an old skin or
+                // fall back to the viewer's first local widget.
+                visibleWidgetStyles.delete(appId);
+                visibleWidgetStyleMisses.set(appId, Date.now());
+            }
+            widgetApplicationCacheEpoch++;
+            scheduleWidgetSkinProfileFastScan();
+            scheduleWidgetSkinScan(true);
+        }).catch(() => {
+            // Keep a previously confirmed marker through a transient API
+            // failure; an unavailable metadata request must not flash a good
+            // profile card back to plain Discord. A new app will retry soon.
+            if (!visibleWidgetStyles.has(appId)) visibleWidgetStyleMisses.set(appId, Date.now());
+        }).finally(() => {
+            visibleWidgetStyleRequests.delete(appId);
+        });
+        visibleWidgetStyleRequests.set(appId, task);
+    }
+}
+
+function applicationIdCandidate(value: unknown, known: Set<string>, allowUnknown: boolean): string | null {
+    const candidate = String(value ?? "").trim();
+    if (!SNOWFLAKE.test(candidate)) return null;
+    return allowUnknown || known.has(candidate) ? candidate : null;
+}
+
+function explicitWidgetApplicationId(element: Element, known: Set<string>, allowUnknown: boolean): string | null {
+    for (const attribute of WIDGET_APPLICATION_ID_ATTRIBUTES) {
+        const value = applicationIdCandidate(element.getAttribute(attribute), known, allowUnknown);
+        if (value) return value;
+    }
+    return null;
+}
+
 // The full profile Board sometimes keeps the application id in a plain DOM
 // attribute instead of the shallow React props attached to the compact card.
 // Inspect only the candidate subtree and only return ids that belong to a
 // widget attached to this account; this remains safe even when the selector is
 // deliberately broad below.
-function domApplicationId(element: Element, known: Set<string>): string | null {
+function domApplicationId(element: Element, known: Set<string>, allowUnknown = false): string | null {
     const nodes: Element[] = [element];
     try {
         // Only inspect explicit id-bearing descendants here. The previous
@@ -2608,10 +2734,8 @@ function domApplicationId(element: Element, known: Set<string>): string | null {
         nodes.push(...Array.from(element.querySelectorAll(selector)).slice(0, 96));
     } catch { /* ignore malformed/tearing DOM */ }
     for (const node of nodes) {
-        for (const attribute of WIDGET_APPLICATION_ID_ATTRIBUTES) {
-            const value = node.getAttribute(attribute);
-            if (value && known.has(value)) return value;
-        }
+        const explicit = explicitWidgetApplicationId(node, known, allowUnknown);
+        if (explicit) return explicit;
         // Board releases have also put the snowflake in an aria label or a
         // versioned data payload. Comparing every attribute value is cheaper
         // and more reliable than guessing each new attribute name.
@@ -2636,7 +2760,7 @@ function domApplicationId(element: Element, known: Set<string>): string | null {
     return null;
 }
 
-function reactApplicationId(element: Element, known: Set<string>, maxBudget = 1000, maxDepth = 16): string | null {
+function reactApplicationId(element: Element, known: Set<string>, maxBudget = 1000, maxDepth = 16, allowUnknown = false): string | null {
     const roots = Object.keys(element).filter(key => key.startsWith("__reactFiber") || key.startsWith("__reactProps"));
     const seen = new WeakSet<object>();
     const queue: Array<{ value: any; depth: number; hint: string; }> = roots.map(key => ({ value: (element as any)[key], depth: 0, hint: key }));
@@ -2657,11 +2781,43 @@ function reactApplicationId(element: Element, known: Set<string>, maxBudget = 10
             let child: any;
             try { child = value[key]; } catch { continue; }
             const lower = key.toLowerCase();
-            if ((lower === "applicationid" || lower === "application_id" || lower === "appid" || lower === "app_id") && typeof child === "string" && known.has(child)) return child;
-            if (lower === "application" && child && typeof child === "object" && typeof child.id === "string" && known.has(child.id)) return child.id;
-            if (lower === "activity" && child && typeof child === "object" && typeof child.application_id === "string" && known.has(child.application_id)) return child.application_id;
+            if ((lower === "applicationid" || lower === "application_id" || lower === "appid" || lower === "app_id")) {
+                const id = applicationIdCandidate(child, known, allowUnknown);
+                if (id) return id;
+            }
+            if (lower === "application" && child && typeof child === "object") {
+                const id = applicationIdCandidate(child.id, known, allowUnknown);
+                if (id) return id;
+            }
+            if (lower === "activity" && child && typeof child === "object") {
+                const id = applicationIdCandidate(child.application_id, known, allowUnknown);
+                if (id) return id;
+            }
             if (child && (typeof child === "object" || typeof child === "function")) queue.push({ value: child, depth: item.depth + 1, hint: key });
         }
+    }
+    return null;
+}
+
+function visibleWidgetApplicationId(element: HTMLElement): string | null {
+    const empty = new Set<string>();
+    const direct = explicitWidgetApplicationId(element, empty, true);
+    if (direct) return direct;
+    try {
+        const selector = WIDGET_APPLICATION_ID_ATTRIBUTES.map(attribute => `[${attribute}]`).join(",");
+        const ids = new Set<string>();
+        for (const node of Array.from(element.querySelectorAll(selector)).slice(0, 48)) {
+            const id = explicitWidgetApplicationId(node, empty, true);
+            if (id) ids.add(id);
+            if (ids.size > 1) return null;
+        }
+        if (ids.size === 1) return ids.values().next().value ?? null;
+    } catch { /* ignore a tearing/partially-mounted profile card */ }
+    const directReact = reactApplicationId(element, empty, 450, 8, true);
+    if (directReact) return directReact;
+    for (let current: HTMLElement | null = element.parentElement, depth = 0; current && depth < WIDGET_CARD_MAX_ANCESTOR_DEPTH; depth++, current = current.parentElement) {
+        const id = explicitWidgetApplicationId(current, empty, true) ?? reactApplicationId(current, empty, 240, 6, true);
+        if (id) return id;
     }
     return null;
 }
@@ -2758,12 +2914,65 @@ function isDiscordChannelRow(element: HTMLElement): boolean {
         && /(?:^|[\s_-])channel(?:__|_)/i.test(className);
 }
 
-function isOpenDiscordConversationRow(element: HTMLElement): boolean {
+function activeDiscordConversationPath(): string {
+    const path = discordSurfacePath(window.location.pathname);
+    return isOpenDiscordConversationPath(path) ? path : "";
+}
+
+function discordConversationRowMatchesPath(element: HTMLElement, path: string): boolean {
     if (!isDiscordChannelRow(element)) return false;
     const className = typeof element.className === "string" ? element.className : "";
-    if (!/(?:^|[\s_-])dm(?:__|_)/i.test(className) || !isOpenDiscordConversationPath()) return false;
+    if (!/(?:^|[\s_-])dm(?:__|_)/i.test(className) || !path) return false;
     const href = element.querySelector<HTMLAnchorElement>('a[href^="/channels/@me/"]')?.getAttribute("href") ?? "";
-    return !!href && discordSurfacePath(href) === discordSurfacePath(window.location.pathname);
+    return !!href && discordSurfacePath(href) === path;
+}
+
+function visibleDiscordConversationRow(element: HTMLElement): boolean {
+    try {
+        const rect = element.getBoundingClientRect();
+        if (rect.width < 40 || rect.height < 20 || rect.right <= 0 || rect.bottom <= 0 || rect.left >= window.innerWidth || rect.top >= window.innerHeight) return false;
+        const computed = window.getComputedStyle(element);
+        return computed.display !== "none" && computed.visibility !== "hidden" && Number(computed.opacity) > 0;
+    } catch {
+        return false;
+    }
+}
+
+function activeDiscordConversationRowScore(element: HTMLElement): number {
+    let score = visibleDiscordConversationRow(element) ? 20 : 0;
+    const anchor = element.querySelector<HTMLAnchorElement>('a[href^="/channels/@me/"]');
+    const ariaCurrent = `${element.getAttribute("aria-current") ?? ""} ${anchor?.getAttribute("aria-current") ?? ""}`.trim().toLowerCase();
+    const ariaSelected = `${element.getAttribute("aria-selected") ?? ""} ${anchor?.getAttribute("aria-selected") ?? ""}`.trim().toLowerCase();
+    const selectedDescendant = element.querySelector('[aria-current="page"], [aria-current="true"], [aria-selected="true"], [data-is-selected="true"]');
+    if (ariaCurrent === "page" || ariaCurrent === "true" || ariaSelected === "true" || selectedDescendant) score += 100;
+    const signal = `${typeof element.className === "string" ? element.className : ""} ${typeof anchor?.className === "string" ? anchor.className : ""}`;
+    if (/(?:^|[\s_-])(?:selected|current|active)(?:(?:__|_|-)[A-Za-z0-9]+|$)/i.test(signal)
+        || /(?:^|[\s_-])isSelected(?:__|_|-)?/i.test(signal)) score += 50;
+    return score;
+}
+
+function activeDiscordConversationRow(): HTMLElement | null {
+    const path = activeDiscordConversationPath();
+    if (!path) {
+        activeDiscordConversationRowCache = { path: "", row: null };
+        return null;
+    }
+    const cached = activeDiscordConversationRowCache;
+    if (cached?.path === path && cached.row?.isConnected && discordConversationRowMatchesPath(cached.row, path)) return cached.row;
+    const candidates: HTMLElement[] = [];
+    try {
+        for (const row of Array.from(document.querySelectorAll<HTMLElement>('li[class*="channel__"], li[class*="channel_"]'))) {
+            if (discordConversationRowMatchesPath(row, path)) candidates.push(row);
+        }
+    } catch { /* ignore a row tree that is being replaced */ }
+    candidates.sort((left, right) => activeDiscordConversationRowScore(right) - activeDiscordConversationRowScore(left));
+    const row = candidates[0] ?? null;
+    activeDiscordConversationRowCache = { path, row };
+    return row;
+}
+
+function isOpenDiscordConversationRow(element: HTMLElement): boolean {
+    return activeDiscordConversationRow() === element;
 }
 
 function isDiscordAccountPanel(element: HTMLElement): boolean {
@@ -3147,13 +3356,199 @@ function applySurfaceSkin(root: HTMLElement, preset: WidgetStylePreset): void {
         for (const name of SURFACE_SKIN_VARS) vars[name] = { value: root.style.getPropertyValue(name), priority: root.style.getPropertyPriority(name) };
         surfaceSkinRoots.set(root, { attrs, vars });
     }
+    const motionPaused = isWidgetPreviewMotionPaused() ? "true" : "false";
     root.dataset.dmWidgetSurfaceRoot = "true";
-    root.dataset.dmWidgetSurfaceSkin = preset.id;
-    root.dataset.dmWidgetSurfaceMotion = preset.motion;
-    root.dataset.dmWidgetSurfaceMotionPaused = isWidgetPreviewMotionPaused() ? "true" : "false";
-    root.style.setProperty("--dmw-surface-accent", preset.accent);
-    root.style.setProperty("--dmw-surface-secondary", preset.secondary);
-    root.style.setProperty("--dmw-surface-surface", preset.surface);
+    if (root.dataset.dmWidgetSurfaceSkin !== preset.id) root.dataset.dmWidgetSurfaceSkin = preset.id;
+    if (root.dataset.dmWidgetSurfaceMotion !== preset.motion) root.dataset.dmWidgetSurfaceMotion = preset.motion;
+    if (root.dataset.dmWidgetSurfaceMotionPaused !== motionPaused) root.dataset.dmWidgetSurfaceMotionPaused = motionPaused;
+    if (root.style.getPropertyValue("--dmw-surface-accent") !== preset.accent) root.style.setProperty("--dmw-surface-accent", preset.accent);
+    if (root.style.getPropertyValue("--dmw-surface-secondary") !== preset.secondary) root.style.setProperty("--dmw-surface-secondary", preset.secondary);
+    if (root.style.getPropertyValue("--dmw-surface-surface") !== preset.surface) root.style.setProperty("--dmw-surface-surface", preset.surface);
+}
+
+function scanWidgetSurfaceSkin(): number {
+    if (!document.body) return 0;
+    if (widgetSkinEditorOpen()) {
+        widgetSkinRescanAfterEditor = true;
+        return 0;
+    }
+    // A DM click can change the active route before Discord replaces the row
+    // subtree. Re-select the active row for every fast pass so an old row is
+    // restored as soon as the new route is visible.
+    activeDiscordConversationRowCache = null;
+    const active = knownWidgetStyles();
+    const surfacePreset = selectedSurfacePreset(active);
+    const surfaceSeen = new Set<HTMLElement>();
+    let applied = 0;
+    try {
+        if (surfacePreset) {
+            const candidates = Array.from(document.querySelectorAll<HTMLElement>(WIDGET_SURFACE_SKIN_SELECTOR)).slice(0, 140);
+            for (const candidate of candidates) {
+                if (surfaceSeen.size >= WIDGET_SURFACE_SKIN_MAX_ROOTS) break;
+                if (!discordSurfaceSkinTarget(candidate) || !visibleSurfaceSkinTarget(candidate)) continue;
+                if (hasHigherOrEqualSurfaceSkinAncestor(candidate)) continue;
+                surfaceSeen.add(candidate);
+                if (widgetSkinRoots.has(candidate)) restoreWidgetSkin(candidate);
+                // Clear a marker left by an older renderer before taking a
+                // fresh snapshot, otherwise restoration would preserve the
+                // stale cosmetic state instead of Discord's original state.
+                if (!surfaceSkinRoots.has(candidate) && candidate.dataset.dmWidgetSurfaceRoot === "true") restoreSurfaceSkin(candidate);
+                applySurfaceSkin(candidate, surfacePreset);
+                applied++;
+            }
+        }
+        for (const root of Array.from(surfaceSkinRoots.keys())) {
+            if (!surfaceSeen.has(root) || !root.isConnected || !surfacePreset || !discordSurfaceSkinTarget(root)) restoreSurfaceSkin(root);
+        }
+        // This also removes markers left by a previous hot reload when the
+        // in-memory snapshot map is empty. Only the narrow surface marker is
+        // touched here; widget-card roots are handled by the full pass.
+        for (const root of Array.from(document.querySelectorAll<HTMLElement>('[data-dm-widget-surface-root="true"]')).slice(0, 120)) {
+            if (!surfacePreset || !surfaceSeen.has(root) || !discordSurfaceSkinTarget(root) || !visibleSurfaceSkinTarget(root)) restoreSurfaceSkin(root);
+        }
+    } catch { /* ignore a profile subtree that is being replaced */ }
+    return applied;
+}
+
+function visibleWidgetSkinProfileSurface(element: HTMLElement): boolean {
+    try {
+        const rect = element.getBoundingClientRect();
+        if (rect.width < 80 || rect.height < 80 || rect.right <= 0 || rect.bottom <= 0 || rect.left >= window.innerWidth || rect.top >= window.innerHeight) return false;
+        const computed = window.getComputedStyle(element);
+        return computed.display !== "none" && computed.visibility !== "hidden" && Number(computed.opacity) > 0;
+    } catch {
+        return false;
+    }
+}
+
+function profileMountNodeLike(element: Element): boolean {
+    const className = typeof (element as HTMLElement).className === "string" ? (element as HTMLElement).className : "";
+    const role = element.getAttribute("role") ?? "";
+    const signal = `${className} ${role} ${element.getAttribute("aria-label") ?? ""}`;
+    return /profile|popout|dialog|accountPopout|userPopout|board/i.test(signal);
+}
+
+function profileMountMutationRelevant(records: MutationRecord[]): boolean {
+    for (const record of records.slice(0, 80)) {
+        if (record.type !== "childList") continue;
+        const target = record.target instanceof Element ? record.target : null;
+        if (target?.closest(WIDGET_SURFACE_SELECTOR)) return true;
+        for (const node of Array.from(record.addedNodes).slice(0, 12)) {
+            if (node instanceof Element && profileMountNodeLike(node)) return true;
+        }
+    }
+    return false;
+}
+
+// Profile cards can be committed after the avatar/banner shell and inside a
+// portal that was already mounted before the click. Keep this pass deliberately
+// narrower than scanWidgetSkinCards(): it only inspects visible profile-like
+// surfaces and only candidates that already carry an app id or a known widget
+// label. This lets the card receive its marker on the first relevant commit
+// without bringing the broad React-fiber scan back onto the click path.
+function scanVisibleProfileWidgetCards(): number {
+    if (!document.body || document.hidden || widgetSkinEditorOpen() || widgetSkinRendererSuspended) return 0;
+    const localActive = knownWidgetStyles();
+    const localHints = knownWidgetHints();
+    // The first pass can discover a profile card before its application
+    // metadata has been fetched. Start with the owner's local map for cards
+    // we own, then add only read-only markers fetched for foreign profiles.
+    const initialActive = visibleProfileWidgetStyles(localActive);
+    const initialHints = visibleProfileWidgetHints(localHints);
+    const initialHintLabels = Array.from(initialHints.values()).flat().filter(label => label.length >= 3);
+    const explicitSelector = WIDGET_APPLICATION_ID_ATTRIBUTES.map(attribute => `[${attribute}]`).join(",");
+    const candidates = new Set<HTMLElement>();
+    const explicitCandidates: HTMLElement[] = [];
+    const hintedCardCandidates: HTMLElement[] = [];
+    const playingCandidates: HTMLElement[] = [];
+    const addCandidate = (list: HTMLElement[], candidate: HTMLElement, limit: number) => {
+        if (list.length >= limit || candidates.has(candidate)) return;
+        candidates.add(candidate);
+        list.push(candidate);
+    };
+    try {
+        const surfaces: HTMLElement[] = [];
+        for (const candidate of Array.from(document.querySelectorAll<HTMLElement>(`${WIDGET_SURFACE_SELECTOR},${PLAYING_CARD_PROFILE_SURFACE_SELECTOR}`)).slice(0, 32)) {
+            if (!visibleWidgetSkinProfileSurface(candidate)) continue;
+            // Broad profile selectors often return every nested wrapper in a
+            // popout. Scan the outer visible surface once instead of repeating
+            // the same React/DOM walk for each wrapper.
+            if (surfaces.some(surface => surface.contains(candidate))) continue;
+            surfaces.push(candidate);
+            if (surfaces.length >= WIDGET_SKIN_PROFILE_SURFACE_MAX) break;
+        }
+        for (const surface of surfaces) {
+            if (surface.matches(explicitSelector)) addCandidate(explicitCandidates, surface, WIDGET_SKIN_PROFILE_EXPLICIT_CANDIDATE_MAX);
+            for (const node of Array.from(surface.querySelectorAll<HTMLElement>(explicitSelector)).slice(0, 32)) {
+                addCandidate(explicitCandidates, node, WIDGET_SKIN_PROFILE_EXPLICIT_CANDIDATE_MAX);
+            }
+            for (const candidate of Array.from(surface.querySelectorAll<HTMLElement>(WIDGET_CARD_SELECTOR)).slice(0, 64)) {
+                if (isDiscordmaxxerPlayingCard(candidate)) {
+                    addCandidate(playingCandidates, candidate, WIDGET_SKIN_PROFILE_CARD_CANDIDATE_MAX);
+                    continue;
+                }
+                if (!widgetSkinCardCandidate(candidate, initialHintLabels) && !widgetCardLike(candidate)) continue;
+                addCandidate(hintedCardCandidates, candidate, WIDGET_SKIN_PROFILE_CARD_CANDIDATE_MAX);
+            }
+        }
+    } catch { /* ignore a profile surface that is being replaced */ }
+    const discovered = new Set<string>();
+    for (const candidate of [...explicitCandidates, ...hintedCardCandidates].slice(0, WIDGET_SKIN_PROFILE_MATCH_MAX)) {
+        const appId = visibleWidgetApplicationId(candidate);
+        if (appId && !localActive.has(appId) && !initialActive.has(appId)) discovered.add(appId);
+    }
+    queueVisibleWidgetStyleHydration(discovered);
+    const active = visibleProfileWidgetStyles(localActive);
+    const known = new Set(active.keys());
+    const hints = visibleProfileWidgetHints(localHints);
+    const hintLabels = Array.from(hints.values()).flat().filter(label => label.length >= 3);
+    const ordered = [...explicitCandidates, ...hintedCardCandidates];
+    if (!active.size && !playingCandidates.length) return 0;
+    if (!ordered.length && !playingCandidates.length) return 0;
+    const seen = new Set<HTMLElement>();
+    let applied = 0;
+    for (const candidate of ordered.slice(0, WIDGET_SKIN_PROFILE_MATCH_MAX)) {
+        const match = widgetApplicationMatch(candidate, known, hints);
+        if (!match) continue;
+        const preset = active.get(match.appId);
+        const root = match.root;
+        if (!preset || seen.has(root) || !root.isConnected) continue;
+        if (discordSurfaceSkinBlocked(root)) {
+            clearWidgetSkinRoot(root);
+            continue;
+        }
+        try {
+            const rect = root.getBoundingClientRect();
+            if (rect.width < 20 || rect.height < 12 || rect.right <= 0 || rect.bottom <= 0) continue;
+        } catch { continue; }
+        if (discordSurfaceSkinTarget(root)) {
+            restoreWidgetSkin(root);
+            // Surface chrome belongs to the signed-in account. A viewed
+            // profile's remote marker must never change the open-DM/header
+            // preset or make DiggyT's local surface follow DiggyAI.
+            applySurfaceSkin(root, selectedSurfacePreset(localActive) ?? preset);
+        } else {
+            restoreSurfaceSkin(root);
+            applyWidgetSkin(root, preset, match.appId);
+        }
+        seen.add(root);
+        applied++;
+    }
+
+    const playingCard = selectPlayingCard(playingCandidates);
+    const playingScope = playingCard?.closest<HTMLElement>(WIDGET_SURFACE_SELECTOR) ?? null;
+    const playingPreset = playingCard ? playingCardPreset(active, seen, playingScope) : null;
+    if (playingCard && playingPreset && !seen.has(playingCard)) {
+        if (playingCard.dataset.dmWidgetSurfaceRoot === "true") restoreSurfaceSkin(playingCard);
+        applyWidgetSkin(playingCard, playingPreset, DISCORDMAXXER_PLAYING_APP_ID);
+        seen.add(playingCard);
+        applied++;
+    }
+    if (playingCard) {
+        syncWidgetSkinPlayingCardHosts(playingCard);
+        syncWidgetSkinPlayingCardObserver(playingCard);
+    }
+    return applied;
 }
 
 function clearUnmarkedWidgetSkinTargets(): void {
@@ -3378,13 +3773,21 @@ function selectPlayingCard(candidates: HTMLElement[]): HTMLElement | null {
     return widgetSkinPlayingCardRoot;
 }
 
-function playingCardPreset(active: Map<string, WidgetStylePreset>, seen: Set<HTMLElement>): WidgetStylePreset | null {
+function playingCardPreset(active: Map<string, WidgetStylePreset>, seen: Set<HTMLElement>, scope: HTMLElement | null = null): WidgetStylePreset | null {
     if (!active.size) return null;
+    // A Playing card has no Social SDK application id of its own. It may only
+    // inherit from a widget card in the same visible profile surface. The old
+    // first-entry fallback made the viewer's own style bleed into another
+    // account's profile when that sibling card had not mounted yet.
+    const scopedSeen = scope
+        ? new Set(Array.from(seen).filter(root => scope.contains(root)))
+        : seen;
+    if (!scopedSeen.size) return null;
     // If a per-slot style was just rendered in this pass, match the Playing
     // card to the first visible widget rather than silently using a stale
     // global gallery value. This preserves the original “same skin” look even
     // when Val and Fortnite have different slot selections.
-    for (const root of Array.from(seen)) {
+    for (const root of Array.from(scopedSeen)) {
         const appId = root.dataset.dmWidgetAppId ?? "";
         const preset = appId ? active.get(appId) : undefined;
         if (preset) return preset;
@@ -3393,13 +3796,17 @@ function playingCardPreset(active: Map<string, WidgetStylePreset>, seen: Set<HTM
     // while the surrounding profile tree is settling. A different visible
     // widget rendered above wins first, so an intentional style change still
     // propagates to the Playing card in the same scan.
-    const currentPlayingStyle = widgetSkinPlayingCardRoot?.dataset.dmWidgetSkin ?? "";
+    const currentPlayingStyle = widgetSkinPlayingCardRoot
+        && (!scope || scope.contains(widgetSkinPlayingCardRoot))
+        ? widgetSkinPlayingCardRoot.dataset.dmWidgetSkin ?? ""
+        : "";
     const currentPlayingPreset = currentPlayingStyle
         ? Array.from(active.values()).find(preset => preset.id === currentPlayingStyle)
         : undefined;
     if (currentPlayingPreset) return currentPlayingPreset;
     for (const root of Array.from(widgetSkinRoots.keys()).reverse()) {
         if (!root.isConnected || root.dataset.dmWidgetAppId === DISCORDMAXXER_PLAYING_APP_ID) continue;
+        if (scope && !scope.contains(root)) continue;
         const rect = root.getBoundingClientRect();
         const appId = root.dataset.dmWidgetAppId ?? "";
         if (rect.width >= 20 && rect.height >= 12 && appId) {
@@ -3407,7 +3814,7 @@ function playingCardPreset(active: Map<string, WidgetStylePreset>, seen: Set<HTM
             if (preset) return preset;
         }
     }
-    return Array.from(active.values())[0] ?? null;
+    return null;
 }
 
 function hasVisibleWidgetSkin(appId: string, styleId: string): boolean {
@@ -3453,6 +3860,7 @@ function scanWidgetSkinCards(budgetMs = 120): number {
         widgetSkinRescanAfterEditor = true;
         return 0;
     }
+    activeDiscordConversationRowCache = null;
     clearUnmarkedWidgetSkinTargets();
     const seen = new Set<HTMLElement>();
     const surfaceSeen = new Set<HTMLElement>();
@@ -3503,9 +3911,10 @@ function scanWidgetSkinCards(budgetMs = 120): number {
     };
 
     try {
-        const active = knownWidgetStyles();
-        const surfacePreset = selectedSurfacePreset(active);
-        if (active.size || surfacePreset) {
+        const localActive = knownWidgetStyles();
+        const active = visibleProfileWidgetStyles(localActive);
+        const surfacePreset = selectedSurfacePreset(localActive);
+        if (localActive.size || active.size || surfacePreset) {
             if (surfacePreset) {
                 // These are the deliberately supported Discord chrome targets:
                 // the open conversation name and the account panel. Keep the
@@ -3525,7 +3934,7 @@ function scanWidgetSkinCards(budgetMs = 120): number {
         }
         if (active.size) {
             const known = new Set(active.keys());
-            const hints = knownWidgetHints();
+            const hints = visibleProfileWidgetHints(knownWidgetHints());
             const hintLabels = Array.from(hints.values()).flat().filter(label => label.length >= 3);
             // Put explicit application-id hosts first, then prioritize card
             // nodes whose visible text names one of the user's attached apps.
@@ -3621,7 +4030,8 @@ function scanWidgetSkinCards(budgetMs = 120): number {
                 ...directPlayingCandidates
             ])).filter(candidate => isDiscordmaxxerPlayingCard(candidate));
             const playingCard = selectPlayingCard(playingCandidates);
-            const playingPreset = playingCard ? playingCardPreset(active, seen) : null;
+            const playingScope = playingCard?.closest<HTMLElement>(WIDGET_SURFACE_SELECTOR) ?? null;
+            const playingPreset = playingCard ? playingCardPreset(active, seen, playingScope) : null;
             if (playingCard && playingPreset && !seen.has(playingCard)) {
                 if (playingCard.dataset.dmWidgetSurfaceRoot === "true") restoreSurfaceSkin(playingCard);
                 seen.add(playingCard);
@@ -3722,11 +4132,12 @@ function scheduleWidgetSkinScan(immediate = false): void {
                 try { scanWidgetSkinCards(scanBudgetMs); } catch (error) { console.warn("[DMWidget] widget skin scan failed:", error); }
             }
         };
-        // Do not compete with Discord's route/profile commit for the next paint.
-        // requestIdleCallback is available in the Electron Chromium runtime; the
-        // timeout fallback keeps this safe on older embedded builds.
-        if (typeof window.requestIdleCallback === "function") {
-            widgetSkinIdle = window.requestIdleCallback(runScan, { timeout: immediate ? 900 : 1800 });
+        // Explicit profile/DM transitions have already yielded through a
+        // timeout, so waiting for another idle slot only adds visible latency
+        // while Discord is busy committing the profile. Keep idle scheduling
+        // for normal reconciliation, but run explicit passes on the next task.
+        if (!immediate && typeof window.requestIdleCallback === "function") {
+            widgetSkinIdle = window.requestIdleCallback(runScan, { timeout: 1800 });
         } else {
             widgetSkinIdle = window.setTimeout(runScan, 0);
         }
@@ -3887,6 +4298,7 @@ function updateWidgetSkinMotionPauseState(): void {
 function detachWidgetSkinBackgroundWork(): void {
     widgetSkinObserver?.disconnect();
     widgetSkinObserver = null;
+    disconnectWidgetSkinProfileMountObserver();
     disconnectWidgetSkinPlayingCardObserver();
     clearWidgetSkinProfileScanTimers();
     if (widgetSkinTimer !== null) { clearTimeout(widgetSkinTimer); widgetSkinTimer = null; }
@@ -3910,7 +4322,9 @@ function startWidgetSkinRenderer(): void {
     (document.head || document.documentElement).appendChild(widgetSkinStyleElement);
     document.addEventListener("visibilitychange", onWidgetSkinVisibilityChange);
     const onProfileTrigger = (event: Event) => {
-        if (widgetSkinProfileTriggerLike(event.target)) queueWidgetSkinProfileScan();
+        const conversationTrigger = widgetSkinConversationTriggerLike(event.target);
+        if (conversationTrigger) activeDiscordConversationRowCache = null;
+        if (conversationTrigger || widgetSkinProfileTriggerLike(event.target)) queueWidgetSkinProfileScan();
     };
     // Discord commonly reuses the profile portal instead of mounting a new
     // body child. These listeners provide an event-driven fast path for the
@@ -3976,6 +4390,7 @@ function stopWidgetSkinRenderer(): void {
     removeTournamentModeListener = null;
     widgetSkinObserver?.disconnect();
     widgetSkinObserver = null;
+    disconnectWidgetSkinProfileMountObserver();
     disconnectWidgetSkinPlayingCardObserver();
     widgetSkinPlayingCardRoot = null;
     clearWidgetSkinPlayingCardHosts();
@@ -3995,6 +4410,7 @@ function stopWidgetSkinRenderer(): void {
     attachedWidgetProfileAccountId = "";
     attachedWidgetProfileVerifiedAt = 0;
     attachedWidgetRefreshAt = 0;
+    activeDiscordConversationRowCache = null;
     widgetSkinStyleElement?.remove();
     widgetSkinStyleElement = null;
 }
@@ -4020,26 +4436,80 @@ function widgetSkinProfileTriggerLike(target: EventTarget | null): boolean {
     return false;
 }
 
+function widgetSkinConversationTriggerLike(target: EventTarget | null): boolean {
+    if (!(target instanceof Element)) return false;
+    const row = target.closest<HTMLElement>("li");
+    if (!row || !isDiscordChannelRow(row)) return false;
+    const className = typeof row.className === "string" ? row.className : "";
+    return /(?:^|[\s_-])dm(?:__|_)/i.test(className);
+}
+
+function disconnectWidgetSkinProfileMountObserver(): void {
+    widgetSkinProfileMountObserver?.disconnect();
+    widgetSkinProfileMountObserver = null;
+    if (widgetSkinProfileMountReleaseTimer !== null) {
+        window.clearTimeout(widgetSkinProfileMountReleaseTimer);
+        widgetSkinProfileMountReleaseTimer = null;
+    }
+}
+
+function scheduleWidgetSkinProfileFastScan(): void {
+    if (widgetSkinProfileFastScanTimer !== null) return;
+    widgetSkinProfileFastScanTimer = window.setTimeout(() => {
+        widgetSkinProfileFastScanTimer = null;
+        if (document.hidden || widgetSkinEditorOpen() || widgetSkinRendererSuspended) return;
+        try { scanVisibleProfileWidgetCards(); } catch (error) { console.warn("[DMWidget] profile widget fast scan failed:", error); }
+    }, 0);
+}
+
+function startWidgetSkinProfileMountObserver(): void {
+    if (!document.body || document.hidden || widgetSkinEditorOpen() || widgetSkinRendererSuspended) return;
+    if (!widgetSkinProfileMountObserver) {
+        widgetSkinProfileMountObserver = new MutationObserver(records => {
+            if (!profileMountMutationRelevant(records)) return;
+            // The card can arrive in a later React commit than the avatar and
+            // banner. Scan only the visible profile surface on that commit;
+            // the broad renderer remains on its normal bounded schedule.
+            scheduleWidgetSkinProfileFastScan();
+        });
+        widgetSkinProfileMountObserver.observe(document.body, { childList: true, subtree: true });
+    }
+    if (widgetSkinProfileMountReleaseTimer !== null) window.clearTimeout(widgetSkinProfileMountReleaseTimer);
+    widgetSkinProfileMountReleaseTimer = window.setTimeout(() => {
+        widgetSkinProfileMountReleaseTimer = null;
+        disconnectWidgetSkinProfileMountObserver();
+    }, WIDGET_SKIN_PROFILE_MOUNT_WATCH_MS);
+}
+
 function clearWidgetSkinProfileScanTimers(): void {
     for (const timer of widgetSkinProfileScanTimers) window.clearTimeout(timer);
     widgetSkinProfileScanTimers.clear();
+    if (widgetSkinProfileFastScanTimer !== null) {
+        window.clearTimeout(widgetSkinProfileFastScanTimer);
+        widgetSkinProfileFastScanTimer = null;
+    }
 }
 
 function queueWidgetSkinProfileScan(): void {
     if (document.hidden || widgetSkinEditorOpen() || widgetSkinRendererSuspended) return;
+    startWidgetSkinProfileMountObserver();
+    scheduleWidgetSkinProfileFastScan();
     const now = Date.now();
     // A single profile click can emit focus + click events. Collapse them so
     // the fast path remains a small burst rather than a new polling loop.
     if (now - widgetSkinProfileScanQueuedAt < 250) return;
     widgetSkinProfileScanQueuedAt = now;
-    for (const delay of [72, 320]) {
+    for (const delay of [32, 180]) {
         const timer = window.setTimeout(() => {
             widgetSkinProfileScanTimers.delete(timer);
             if (document.hidden || widgetSkinEditorOpen() || widgetSkinRendererSuspended) return;
-            // Profile popouts arrive over several React commits. Keep only two
-            // deferred passes and let the normal throttle coalesce them so a
-            // profile click cannot launch three full scans in one transition.
-            scheduleWidgetSkinScan(true);
+            activeDiscordConversationRowCache = null;
+            try { scanWidgetSurfaceSkin(); } catch (error) { console.warn("[DMWidget] surface skin fast pass failed:", error); }
+            try { scanVisibleProfileWidgetCards(); } catch (error) { console.warn("[DMWidget] profile widget fast scan failed:", error); }
+            // The targeted pass above owns first paint. Let the broad React
+            // resolver reconcile in the background instead of launching a
+            // second synchronous scan during the profile transition.
+            scheduleWidgetSkinScan();
         }, delay);
         widgetSkinProfileScanTimers.add(timer);
     }

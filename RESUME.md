@@ -1,5 +1,83 @@
 # Discordmaxxer — RESUME
 
+## 2026-10-08 v0.7.89 release candidate — profile first-paint repair
+
+The profile-skin latency repair is prepared as patch release `v0.7.89`. It
+keeps the active-DM-row cleanup and adds a bounded visible-profile fast pass,
+a short late-mount watcher for Board/Playing cards, and idle/background broad
+reconciliation. Repeated surface writes are skipped so opening a profile does
+not restart the skin animation or add avoidable normal-mode work.
+
+The candidate also fixes the cross-account style boundary: profile cards first
+identify the viewed account's application id, then read that account's
+published `[DMWSTYLE1:...]` marker. DiggyT's local widget map is no longer used
+as a fallback for DiggyAI (or any other viewed account); if the viewed app has
+no readable marker, its card remains unskinned. The open-DM/header and
+bottom-left account surface continue to use only the signed-in account's local
+selection.
+
+Release notes are recorded in `docs/releases/v0.7.89.md`. The source and
+packaging gates now pass in this checkout: `pnpm test`, strict
+`DM_STRICT_REBRAND=1 pnpm overlay:vencord` (0 warnings),
+`node overlay-scripts/verify-build.mjs`, `pnpm build`, `pnpm package:dir`,
+`pnpm package:win`, `git diff --check`, and the read-only packaged validator
+(`inventory`, `visual`, `hotkeys`, and `massdelete`; badge skipped). The
+packaged smoke client used the `diggytai_31401` account and was closed after
+validation. It did not prove the DiggyT -> DiggyAI recipient view; that remains
+the user-owned cross-account gate after publication. Public `v0.7.88` remains
+the live baseline until the `v0.7.89` tag workflow is verified. The C: dev
+checkout and E: packaged candidate remain untouched, and the existing
+untracked `artifacts/` diagnostics remain preserved.
+
+## 2026-10-08 follow-up profile first-paint and active-DM cleanup — local candidate
+
+The profile-skin follow-up now keeps the earlier active-DM-row repair and makes
+the profile widget path cheaper and earlier. The visible profile/card scan
+deduplicates nested profile surfaces, prioritizes explicit application ids and
+known widget labels, caps React-fiber lookups, and no longer launches a broad
+resolver immediately after the targeted pass. A short-lived profile mount
+observer still catches cards committed after the avatar/banner shell, while the
+normal full resolver is left to the idle/background schedule. This is intended
+to make the Board/Playing skin arrive with the profile instead of several
+seconds later, without bringing back the normal-mode lag or animation flashing.
+
+Verification passed in the canonical release checkout after this follow-up:
+`pnpm test`, `pnpm overlay:vencord`, `node overlay-scripts/verify-build.mjs`,
+`pnpm build`, and `git diff --check`. The source change is uncommitted and has
+not been pushed or published; public `v0.7.88` remains the live baseline. The
+C: dev checkout and E: packaged candidate were not touched, and the existing
+untracked `artifacts/` diagnostics remain preserved.
+
+Remaining user gate: on the rebuilt signed-in client, open the own profile and
+confirm the Board/Playing skin appears on the first profile paint alongside the
+avatar/banner; switch DM A -> DM B -> DM A and confirm only the current row and
+conversation header remain skinned. Check that the Playing skin does not flash
+or add noticeable normal-mode lag. If that passes, the next safe step is a
+packaged smoke build and a separately authorized patch release.
+
+## 2026-10-08 active DM row and profile-skin latency repair — local candidate
+
+This follow-up addresses the two post-v0.7.88 reports: an old conversation row
+could retain the surface skin after switching between DMs, and a profile's
+widget skin could appear several seconds after the avatar/banner. The DMWidget
+renderer now resolves one visible/current DM row when duplicate route matches
+exist, cleans the previous row from the DM click path, and uses a next-task
+profile pass instead of waiting for Chromium idle time. Repeated surface writes
+are also skipped so the fast path does not restart cosmetic work unnecessarily.
+
+Verification passed in the canonical release checkout: `pnpm test`,
+`pnpm overlay:vencord`, `node overlay-scripts/verify-build.mjs`, `pnpm build`,
+and `git diff --check`. The source change is still uncommitted and has not
+been pushed or published; public `v0.7.88` remains the live baseline. The C:
+dev checkout and E: packaged candidate were not touched, and the existing
+untracked `artifacts/` diagnostics remain preserved.
+
+Remaining user gate: on a signed-in client, click DM A, DM B, and back to A;
+only the current conversation row/header should remain surfaced. Open the own
+profile and confirm the Board/Playing skin appears promptly without animation
+flashing or extra lag. If that passes, the next safe step is a packaged smoke
+build and review before asking for a new patch release.
+
 ## 2026-10-08 v0.7.88 published — widget skin, hero preservation, updater repair
 
 `v0.7.88` is public. It carries the DMWidget repair that keeps skin-only
