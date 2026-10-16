@@ -66,6 +66,21 @@ const FORTNITE_HERO_PRESETS: Record<string, string> = {
     catwoman: DEFAULT_HEROES.fortnite
 };
 
+function isDiscordApplicationAssetUrl(value: string): boolean {
+    return /^https:\/\/cdn\.discordapp\.com\/app-assets\/\d{17,20}\/\d{17,20}\.(?:png|jpe?g|webp|gif)(?:[?#]|$)/i.test(value.trim());
+}
+
+function localHeroSourceForSlot(slotKey: string, identity: WidgetIdentity): string {
+    const current = String(identity.heroImageUrl ?? "").trim();
+    // The published Discord application asset is needed when rebuilding the
+    // card, but it is not Diggy's chosen editor source. Recovery used to copy
+    // that opaque CDN URL back into the Fortnite editor and replaced the
+    // Catwoman preset with a different hero. Keep the selected local source
+    // visible while the public snapshot retains the published asset metadata.
+    if (slotKey === "fortnite" && isDiscordApplicationAssetUrl(current)) return DEFAULT_HEROES.fortnite;
+    return current || DEFAULT_HEROES[slotKey] || "";
+}
+
 // ---- local (per-user) identity: the self-owned app + its widget config ------
 interface WidgetIdentity {
     appId: string;
@@ -101,6 +116,7 @@ interface PublishedWidgetSnapshot {
     progressLabel: string;
     progressPercent: number;
     heroAssetKey: string;
+    heroImageUrl: string;
     appIconUrl: string;
     updatedAt: string;
 }
@@ -2173,6 +2189,29 @@ function publishedConfigAsset(config: any, surface: string, component: string, f
     return value?.value_type === "application_asset" ? String(value.value ?? "").trim() : "";
 }
 
+function applicationAssetUrl(appId: string, asset: any): string {
+    const assetId = String(asset?.asset_id ?? asset?.id ?? "").trim();
+    if (!SNOWFLAKE.test(appId) || !SNOWFLAKE.test(assetId)) return "";
+    const contentType = String(asset?.metadata?.content_type ?? asset?.content_type ?? "").toLowerCase();
+    const extension = contentType.includes("gif") ? "gif"
+        : contentType.includes("webp") ? "webp"
+            : contentType.includes("jpeg") || contentType.includes("jpg") ? "jpg"
+                : "png";
+    return `https://cdn.discordapp.com/app-assets/${appId}/${assetId}.${extension}`;
+}
+
+async function publishedAssetUrl(appId: string, assetKey: string): Promise<string> {
+    if (!SNOWFLAKE.test(appId) || !assetKey) return "";
+    try {
+        const list = await apiGet(`/applications/${appId}/assets`);
+        const assets: any[] = Array.isArray(list) ? list : list?.assets ?? [];
+        const asset = assets.find(item => String(item?.key ?? item?.name ?? "").trim() === assetKey);
+        return applicationAssetUrl(appId, asset);
+    } catch {
+        return "";
+    }
+}
+
 function publishedWidgetSnapshot(application: any, config: any): PublishedWidgetSnapshot {
     const stats = Array.from({ length: 6 }, (_, index) => {
         const component = `stat_${index + 1}`;
@@ -2202,6 +2241,7 @@ function publishedWidgetSnapshot(application: any, config: any): PublishedWidget
         progressLabel: publishedConfigText(config, "widget_bottom", "objective", "name"),
         progressPercent: Math.max(0, Math.min(100, progressPercent)),
         heroAssetKey,
+        heroImageUrl: "",
         appIconUrl,
         updatedAt: String(config?.updated_at ?? "")
     };
@@ -2235,10 +2275,15 @@ async function hydratePublishedWidgetContent(slotKey: string): Promise<Published
             ?? configs[0];
         if (!config) return cached ?? null;
         const snapshot = publishedWidgetSnapshot(application, config);
+        snapshot.heroImageUrl = await publishedAssetUrl(id.appId, snapshot.heroAssetKey);
         const next: WidgetIdentity = {
             ...id,
             configId: snapshot.configId || id.configId,
             heroAssetKey: id.heroAssetKey || snapshot.heroAssetKey,
+            // Keep the public application asset in the snapshot, but keep the
+            // editor on the user's chosen local source. The Fortnite editor
+            // should not replace Catwoman with an opaque Discord CDN asset.
+            heroImageUrl: localHeroSourceForSlot(slotKey, id),
             appIconUrl: id.appIconUrl || snapshot.appIconUrl,
             topLayout: id.topLayout ?? snapshot.topLayout,
             bottomLayout: id.bottomLayout ?? snapshot.bottomLayout
@@ -2393,12 +2438,13 @@ async function recoverAttachedWidgetIdentity(
     }
 
     let heroAssetKey = current.heroAssetKey;
+    let heroImageUrl = localHeroSourceForSlot(slotKey, current);
     if (!heroAssetKey) {
         try {
             const list = await apiGet(`/applications/${appId}/assets`);
             const arr: any[] = Array.isArray(list) ? list : list?.assets ?? [];
-            heroAssetKey = arr.map(asset => String(asset?.key ?? asset?.name ?? ""))
-                .find(value => value.startsWith("hero")) ?? "";
+            const hero = arr.find(asset => String(asset?.key ?? asset?.name ?? "").startsWith("hero"));
+            heroAssetKey = String(hero?.key ?? hero?.name ?? "");
         } catch { /* republishConfig has its own best-effort asset recovery */ }
     }
 
@@ -2407,6 +2453,7 @@ async function recoverAttachedWidgetIdentity(
         appId,
         configId: configId || current.configId,
         heroAssetKey: heroAssetKey || current.heroAssetKey,
+        heroImageUrl: heroImageUrl || current.heroImageUrl,
         widgetStyle: current.widgetStyle ?? selectedWidgetPreset().id,
         widgetStyleSource: current.widgetStyleSource ?? "default"
     };
@@ -5052,7 +5099,8 @@ function WidgetEditor() {
             if (!active) return;
             const recovered = getSlot(slotKey);
             if (SNOWFLAKE.test(recovered.appId)) {
-                if (recovered.heroImageUrl && recovered.heroImageUrl !== store.heroImageUrl) store.heroImageUrl = recovered.heroImageUrl;
+                const localHeroSource = localHeroSourceForSlot(slotKey, recovered);
+                if (localHeroSource && localHeroSource !== store.heroImageUrl) store.heroImageUrl = localHeroSource;
                 if (recovered.appIconUrl && recovered.appIconUrl !== store.appIconUrl) store.appIconUrl = recovered.appIconUrl;
             }
             force(x => x + 1);

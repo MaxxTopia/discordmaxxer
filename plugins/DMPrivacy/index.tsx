@@ -83,10 +83,15 @@ function showConsentPrompt() {
         cancelText: "Skip",
         onConfirm: async () => {
             const r = await applyPrivacyPreset();
-            settings.store.applied = true;
-            settings.store.showOnNextLaunch = false;
+            // A failed PATCH must stay retryable. Previously a partial/network
+            // failure was marked complete, which made the prompt disappear
+            // even though the promised privacy changes had not landed.
+            settings.store.applied = r.ok;
+            settings.store.showOnNextLaunch = !r.ok;
             Toasts.show({
-                message: r.ok ? "✅ Privacy preset applied to your Discord settings." : `Failed to apply: ${r.err}`,
+                message: r.ok
+                    ? "✅ Privacy preset applied to your Discord settings."
+                    : `Failed to apply: ${r.err} — nothing was marked complete; try again from the next launch or plugin setting.`,
                 type: r.ok ? Toasts.Type.SUCCESS : Toasts.Type.FAILURE,
                 id: Toasts.genId(),
                 options: { duration: 4000, position: Toasts.Position.TOP }
@@ -108,7 +113,7 @@ function showConsentPrompt() {
 export default definePlugin({
     name: "DMPrivacy",
     description:
-        "First-launch consent prompt to disable Discord's data-collection toggles (analytics, game detection, contact sync, personalization). One-shot: PATCHes once on user click, never re-asserts. Fire it again from settings if you want to re-prompt.",
+        "First-launch consent prompt to disable Discord's data-collection toggles (analytics, game detection, contact sync, personalization). Applies only after your click, never re-asserts, and stays retryable if Discord rejects a request.",
     authors: [{ name: "Diggy", id: 0n }],
     settings,
 

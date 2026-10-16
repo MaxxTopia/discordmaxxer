@@ -108,7 +108,7 @@ function refresh() {
 export default definePlugin({
     name: "DMTrim",
     description:
-        "Hides Discord UI cruft that doesn't belong in a power-user client: Family Center (parental controls), Nitro upsells, HypeSquad, server-boost promo cards. Per-item toggles in settings. CSS-only, fully reversible.",
+        "Declutters Discord without changing messages or servers: hide Family Center, Nitro upsells, HypeSquad, and standalone boost promos independently. CSS-only, reversible, and the real Nitro/boost settings remain available.",
     authors: [{ name: "Diggy", id: 0n }],
     settings,
 

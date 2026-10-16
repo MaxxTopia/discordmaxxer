@@ -66,127 +66,78 @@ function applyTheme(id: ThemeId) {
     console.log(`[DiscordmaxxerTheme] applied theme=${theme.id} flair=${settings.store.enableFlair !== false}`);
 }
 
-function optionLabel(id: ThemeId): string {
-    const t = THEMES[id];
-    if (t.tierGate !== undefined) {
-        const tierStr = TIER_LABELS[t.tierGate];
-        return `🔒 ${t.label} (${tierStr}) — ${t.blurb}`;
-    }
-    return `${t.label} — ${t.blurb}`;
-}
-
-/**
- * A visual companion to the legacy select. Theme names are useful for
- * keyboard users, but a swatch + one-line preview makes the choice obvious
- * without requiring anyone to understand a palette registry.
- */
 function ThemePicker() {
-    const selected = settings.store.selected as ThemeId;
-    const cards = THEME_ORDER.map(id => {
-        const theme = THEMES[id];
-        const locked = theme.tierGate !== undefined && !hasTier(theme.tierGate);
-        const isSelected = selected === id && !locked;
+    const initial = settings.store.selected as ThemeId;
+    const [selected, setSelected] = React.useState<ThemeId>(THEMES[initial] ? initial : DEFAULT_THEME);
+    const theme = THEMES[selected] ?? THEMES[DEFAULT_THEME];
 
-        return React.createElement(
-            "button",
-            {
-                key: id,
-                type: "button",
-                disabled: locked,
-                "aria-pressed": isSelected,
-                "aria-label": `${theme.label}${locked ? " locked" : ""}: ${theme.blurb}`,
-                title: locked ? `${theme.label} requires ${TIER_LABELS[theme.tierGate!]}` : `Use ${theme.label}`,
-                onClick: () => {
-                    if (locked) return;
-                    settings.store.selected = id;
-                    applyTheme(id);
-                },
-                style: {
-                    display: "flex",
-                    flexDirection: "column",
-                    gap: 5,
-                    minHeight: 70,
-                    padding: "8px 9px",
-                    textAlign: "left",
-                    borderRadius: 8,
-                    border: `1px solid ${isSelected ? theme.swatch.primary : "rgba(255,255,255,0.14)"}`,
-                    boxShadow: isSelected ? `0 0 0 2px ${theme.swatch.primary}33` : "none",
-                    background: "rgba(0,0,0,0.22)",
-                    color: "#fbefff",
-                    cursor: locked ? "not-allowed" : "pointer",
-                    opacity: locked ? 0.58 : 1,
-                    transition: "border-color 120ms ease, box-shadow 120ms ease"
-                }
-            },
-            React.createElement("span", {
-                style: {
-                    display: "block",
-                    height: 22,
-                    borderRadius: 5,
-                    background: `linear-gradient(135deg, ${theme.swatch.primary}, ${theme.swatch.secondary})`,
-                    boxShadow: `inset 0 0 0 1px rgba(255,255,255,0.18)`
-                }
-            }),
-            React.createElement(
-                "span",
-                { style: { fontSize: 12, fontWeight: 700, lineHeight: 1.1 } },
-                `${locked ? "🔒 " : isSelected ? "✓ " : ""}${theme.label}`
-            ),
-            React.createElement(
-                "span",
-                { style: { fontSize: 10.5, color: "#cbd0e0", lineHeight: 1.25 } },
-                locked ? `${TIER_LABELS[theme.tierGate!]} required` : theme.blurb
-            )
-        );
-    });
+    function choose(value: ThemeId) {
+        setSelected(value);
+        settings.store.selected = value;
+        applyTheme(value);
+    }
 
-    return React.createElement(
-        "div",
-        {
-            style: {
-                marginTop: 10,
-                padding: "11px 12px",
-                borderRadius: 9,
-                background: "linear-gradient(135deg, rgba(226,91,255,0.08), rgba(76,81,247,0.08))",
-                border: "1px solid rgba(226,91,255,0.25)"
-            }
-        },
-        React.createElement(
-            "div",
-            { style: { fontSize: 13, fontWeight: 700, color: "#fbefff", marginBottom: 3 } },
-            "🎨 Pick a theme by look"
-        ),
-        React.createElement(
-            "div",
-            { style: { fontSize: 11.5, color: "#cbd0e0", opacity: 0.88, lineHeight: 1.45, marginBottom: 8 } },
-            "Click a swatch to apply it instantly. The full color palette and optional theme flair update together."
-        ),
-        React.createElement(
-            "div",
-            {
-                style: {
-                    display: "grid",
-                    gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
-                    gap: 7
-                }
-            },
-            cards
-        )
+    return (
+        <div style={{
+            border: "1px solid var(--background-modifier-accent)",
+            borderRadius: "8px",
+            padding: "12px",
+            background: "var(--background-secondary-alt)",
+            marginBottom: "12px"
+        }}>
+            <div style={{ fontSize: "14px", fontWeight: 700, marginBottom: "6px" }}>Choose your theme</div>
+            <div style={{ color: "var(--text-muted)", fontSize: "12px", lineHeight: 1.45, marginBottom: "10px" }}>
+                The native selector below is deliberately simple and reliable. Pick a palette, then use the swatches and description to confirm what it looks like.
+            </div>
+            <select
+                aria-label="Discordmaxxer theme"
+                value={selected}
+                onChange={event => choose(event.currentTarget.value as ThemeId)}
+                style={{
+                    width: "100%",
+                    boxSizing: "border-box",
+                    borderRadius: "5px",
+                    border: "1px solid var(--background-modifier-accent)",
+                    background: "var(--background-tertiary)",
+                    color: "var(--text-normal)",
+                    padding: "9px 10px",
+                    fontSize: "13px",
+                    cursor: "pointer"
+                }}
+            >
+                {THEME_ORDER.map(id => {
+                    const item = THEMES[id];
+                    const gate = item.tierGate === undefined ? "FREE" : TIER_LABELS[item.tierGate];
+                    return <option key={id} value={id}>{`${item.label} · ${gate}`}</option>;
+                })}
+            </select>
+            <div style={{ display: "flex", gap: "8px", alignItems: "center", marginTop: "10px" }}>
+                <span style={{ width: "18px", height: "18px", borderRadius: "4px", background: theme.swatch.primary, boxShadow: `0 0 0 1px ${theme.swatch.primary}` }} />
+                <span style={{ width: "18px", height: "18px", borderRadius: "4px", background: theme.swatch.secondary, boxShadow: `0 0 0 1px ${theme.swatch.secondary}` }} />
+                <span style={{ color: "var(--text-muted)", fontSize: "12px" }}>{theme.blurb}</span>
+            </div>
+            {theme.tierGate !== undefined && (
+                <div style={{ color: "#ffcc66", fontSize: "12px", marginTop: "8px" }}>
+                    {TIER_LABELS[theme.tierGate]} required. If your tier is lower, Discordmaxxer safely uses the default palette.
+                </div>
+            )}
+        </div>
     );
 }
 
 const settings = definePluginSettings({
-    picker: {
+    themePicker: {
         type: OptionType.COMPONENT,
         description: "",
         component: ThemePicker
     },
     selected: {
         type: OptionType.SELECT,
-        description: "Keyboard-friendly theme selector. The visual picker above is the easiest way to choose; both controls stay in sync.",
+        description: "Stored theme value used by Discordmaxxer. Use the picker above.",
         default: DEFAULT_THEME,
+        hidden: true,
         options: THEME_ORDER.map(id => ({
-            label: optionLabel(id),
+            label: THEMES[id].label,
             value: id,
             default: id === DEFAULT_THEME
         })),

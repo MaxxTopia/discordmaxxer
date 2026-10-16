@@ -24,7 +24,7 @@ const settings = definePluginSettings({
     grants: {
         type: OptionType.STRING,
         description:
-            "Internal — a JSON map of userId to tier number, written via the right-click context menu on any user. Editing this directly is supported but you must keep it valid JSON.",
+            "Admin/support only — a local JSON map of userId to tier number. It changes how tiers render in your client; it does not give another user a subscription or change their account.",
         default: "{}"
     }
 });
@@ -102,9 +102,7 @@ const userContextPatch: NavContextMenuPatchCallback = (children, props: any) => 
 export default definePlugin({
     name: "DMGrant",
     description:
-        "Right-click any user to grant them a Discordmaxxer tier (MAXXER / MAXXER+ / MAXXER++). " +
-        "v0.1 LOCAL ONLY — affects how their badge + tier-locked features render in YOUR client. " +
-        "The granted user does not gain MAXXER+ on their own install until remote roster sync ships in v0.2.",
+        "Admin/support utility: right-click a user to preview a Discordmaxxer tier locally. It is not a customer feature, does not grant payment access, and does not change the other user's install.",
     authors: [{ name: "Diggy", id: 0n }],
     settings,
 

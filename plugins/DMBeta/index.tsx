@@ -66,7 +66,7 @@ function BetaPanel() {
             await window.VesktopNative?.beta?.setAllowPrerelease(next);
             Toasts.show({
                 message: next
-                    ? "✅ Beta channel enabled — pre-release builds will auto-update."
+                    ? "✅ Beta channel enabled — the next published -beta.N build can auto-update."
                     : "Stable channel restored.",
                 id: Toasts.genId(),
                 type: Toasts.Type.SUCCESS,
@@ -155,7 +155,7 @@ const settings = definePluginSettings({
 export default definePlugin({
     name: "DMBeta",
     description:
-        "MAXXER++ perk — opt into the beta update channel. When enabled, electron-updater accepts GitHub pre-release tags so you get features ahead of the stable channel. Single toggle in plugin settings.",
+        "MAXXER++ perk — opt into separately published GitHub pre-release builds such as 0.7.91-beta.1. This does not turn your current stable build into a beta; it only changes which published updater releases you can receive.",
     authors: [{ name: "Diggy", id: 0n }],
     settings,
 

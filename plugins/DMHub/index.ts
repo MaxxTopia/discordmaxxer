@@ -332,29 +332,30 @@ function setSetting(plugin: string, key: string, value: boolean, noRestart?: boo
 }
 
 function openDMPluginSettings(pluginName: string): boolean {
-    // Open the plugin's actual editor. The Vencord PluginModal implementation
-    // is patched in the rebrand pipeline to use the stable legacy modal
-    // components; routing only to the plugin list loses the user's context and
-    // makes the DMHub button look like it did nothing.
-    const plugin = vencord()?.Plugins?.plugins?.[pluginName];
-    if (plugin) {
-        try {
-            openPluginModal(plugin);
-            return true;
-        } catch (e) {
-            console.warn(`[DiscordmaxxerHub] could not open ${pluginName} editor:`, e);
-        }
-    }
-
-    // Keep a graceful fallback for a partially loaded plugin registry.
+    // Open the same editor the plugin card's cog uses. The old route-only
+    // fallback landed on the generic Plugins list, which made this shortcut
+    // look broken and forced the user to search for DMProfileFlair manually.
     try {
-        const router = vencord()?.Webpack?.Common?.SettingsRouter;
-        if (typeof router?.openUserSettings !== "function") {
-            console.warn(`[DiscordmaxxerHub] plugin settings route is unavailable for ${pluginName}`);
-            return false;
+        const v = vencord();
+        const plugin = v?.Plugins?.plugins?.[pluginName];
+        if (plugin) {
+            try {
+                openPluginModal(plugin);
+                return true;
+            } catch (e) {
+                console.warn(`[DiscordmaxxerHub] could not open ${pluginName} editor:`, e);
+            }
         }
-        router.openUserSettings("vencord_plugins");
-        return true;
+
+        // Keep a graceful fallback for a partially loaded plugin registry.
+        const router = v?.Webpack?.Common?.SettingsRouter
+            ?? v?.Webpack?.findByProps?.("openUserSettings");
+        if (typeof router?.openUserSettings === "function") {
+            router.openUserSettings("vencord_plugins");
+            return true;
+        }
+        console.warn(`[DiscordmaxxerHub] plugin settings route is unavailable for ${pluginName}`);
+        return false;
     } catch (e) {
         console.warn(`[DiscordmaxxerHub] could not open ${pluginName} settings:`, e);
         return false;

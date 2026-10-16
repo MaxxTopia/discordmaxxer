@@ -6,7 +6,7 @@
  * Replaces Vencord's <SpecialCard> donation slot with a 4-tier ladder
  * styled after OG Hypixel 2016 ranks. The ladder shows all tiers, with
  * the user's current tier highlighted, owned tiers checkmarked, and a
- * CTA pointing at the MaxxTopia VIP page for the next tier up.
+ * CTA pointing at maxxtopia.com/discordmaxxer/vip for the next tier up.
  *
  * Color palette (verified against Minecraft chat colors §a/§b/§c/§6):
  *   FREE        gray   #9aa1ad  (placeholder; not a Hypixel color)
@@ -20,7 +20,7 @@
 
 import { React } from "@webpack/common";
 
-import { getMyTier, normalizeTier, Tier, TIER_LABELS } from "./vip";
+import { getMyTier, Tier, TIER_LABELS } from "./vip";
 
 interface TierVisual {
     tier: Tier;
@@ -35,14 +35,14 @@ const LADDER: TierVisual[] = [
         tier: Tier.FREE,
         bracketColor: "#9aa1ad",
         plusColor: null,
-        perks: ["All plugins · all themes", "Free profile gradients", "Tournament Mode · Hub panel", "1 saved video bg slot"],
+        perks: ["55 default-on plugins · 5 free themes", "Tournament Mode · Hub panel", "Video playback · display-name looks · custom presence · translate"],
         priceLabel: "Free forever"
     },
     {
         tier: Tier.MAXXER,
         bracketColor: "#55FF55",
         plusColor: null,
-        perks: ["Custom profile banner · typing prefix · avatar ring", "5 animated cursor skins", "5 saved video bg slots"],
+        perks: ["Typing prefix · avatar ring", "5 animated cursor skins", "5 saved video bg slots · custom banner flair"],
         priceLabel: "$4 / month"
     },
     {
@@ -50,9 +50,8 @@ const LADDER: TierVisual[] = [
         bracketColor: "#55FFFF",
         plusColor: null,
         perks: [
-            "Animated profile avatar · video background playback",
             "20 saved video bg slots · 3 exclusive themes",
-            "Member list name glow · profile popout tier stripe"
+            "Member list name glow · animated avatar flair · theme colors"
         ],
         priceLabel: "$9 / month"
     },
@@ -61,9 +60,9 @@ const LADDER: TierVisual[] = [
         bracketColor: "#FFAA00",
         plusColor: "#FF5555",
         perks: [
-            "Animated name tint",
-            "Custom presence text · voice channel name color",
-            "Beta builds · plugin votes · About credit"
+            "Animated badge · animated name shimmer",
+            "Voice channel name color · supporter credit",
+            "Beta builds · plugin votes · unlimited video bg slots"
         ],
         priceLabel: "$17 / month"
     }
@@ -118,7 +117,7 @@ function rankBracket(label: string, bracketColor: string, plusColor: string | nu
 }
 
 export function DiscordmaxxerVipCard() {
-    const currentTier = normalizeTier(getMyTier());
+    const currentTier = getMyTier();
     const currentVisual = LADDER.find(l => l.tier === currentTier) ?? LADDER[0];
     const nextVisual = LADDER.find(l => l.tier === currentTier + 1) ?? null;
 
@@ -179,9 +178,6 @@ export function DiscordmaxxerVipCard() {
                             {sub}
                         </div>
                     )}
-                    <div style={{ fontSize: "11px", color: "#8f98ad", lineHeight: 1.35 }}>
-                        Higher tiers include every benefit from the tiers below.
-                    </div>
                 </div>
             </div>
 

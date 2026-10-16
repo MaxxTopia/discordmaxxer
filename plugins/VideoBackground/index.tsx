@@ -1,5 +1,5 @@
 /*
- * Discordmaxxer — VideoBackground plugin (VIP+ feature)
+ * Discordmaxxer — VideoBackground plugin (free core feature)
  * Copyright (c) 2026 Diggy
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
@@ -7,15 +7,13 @@
  * behind Discord's UI, with adjustable opacity and blur. Discord chrome stays
  * fully usable on top.
  *
- * VIP+ feature — gated by Tier.MAXXER_PLUS. Plugin loads for all users so the
- * settings panel shows the upgrade message; actual video injection only fires
- * when the tier check passes.
+ * Video playback is available to every tier. Paid tiers increase the number
+ * of saved background slots; playback itself is not paywalled.
  *
- * Sources: http(s):// URL field, OR an "Upload local video" button. A picked
- * local file is remembered in Discordmaxxer's DataStore (up to 200 MB), so it
- * survives plugin toggles and app restarts on this PC. It is not cross-PC or
- * Windows-reinstall backup; use a direct HTTPS URL or keep the original file
- * separately for that.
+ * Sources: http(s):// URL field, OR an "Upload local video" button that uses
+ * URL.createObjectURL on a user-picked file (blob: URLs satisfy Discord's CSP).
+ * Local picks are remembered in IndexedDB up to 200 MB and stay separate from
+ * the tiered saved-URL slots.
  */
 
 import * as DataStore from "@api/DataStore";
@@ -26,17 +24,15 @@ import definePlugin, { OptionType } from "@utils/types";
 import { Button, React, Toasts } from "@webpack/common";
 
 import { makePersistentValue } from "../_dm-shared/persist";
-import { getMyTier, hasTier, Tier, TIER_LABELS, tierGateMessage } from "../_dm-shared/vip";
+import { getMyTier, Tier, TIER_LABELS } from "../_dm-shared/vip";
 
-const REQUIRED_TIER = Tier.MAXXER_PLUS;
 const VIDEO_ID = "dm-video-bg";
 
 // Saved video bg slots — persisted via DataStore (IndexedDB). Tier-gated max:
-//   FREE = 1 (funnel: gives a taste, friction to swap pushes upgrade)
-//   MAXXER = 5 · MAXXER+ = 20 · MAXXER++ = unlimited
-// Local file uploads (blob: URLs) are remembered separately in DataStore and
-// rebuilt on startup. They do not count toward URL slots because a blob URL is
-// machine-local and cannot be loaded by another install.
+//   FREE = 1 · MAXXER = 5 · MAXXER+ = 20 · MAXXER++ = unlimited
+// Local file uploads use a runtime blob URL, while the File itself can be
+// remembered in IndexedDB (up to MAX_PERSIST_BYTES). They do not count toward
+// the tiered saved-URL slots.
 // (Was localStorage, which modern Discord nukes → slots silently never saved.)
 const SLOTS_KEY = "dm-video-bg-slots";
 
@@ -105,7 +101,7 @@ function reconcileTournamentMode() {
     const tm = isTournamentModeActive();
     if (tm && !videoEl.paused) {
         videoEl.pause();
-    } else if (!tm && videoEl.paused && settings.store.enable && hasTier(REQUIRED_TIER)) {
+    } else if (!tm && videoEl.paused && settings.store.enable) {
         videoEl.play().catch(() => { /* autoplay policy — harmless, user can toggle */ });
     }
 }
@@ -352,11 +348,6 @@ function logCoverageDiagnostic() {
 }
 
 function refresh() {
-    if (!hasTier(REQUIRED_TIER)) {
-        console.log("[VideoBackground] refresh: tier check failed (need MAXXER+, got tier from claim cache or hardcoded list)");
-        tearDownVideo();
-        return;
-    }
     if (!settings.store.enable) {
         console.log("[VideoBackground] refresh: plugin disabled in settings");
         tearDownVideo();
@@ -479,14 +470,13 @@ async function restoreLocalFile() {
     }
 }
 
-function pickLocalFile(onPicked?: (file: File) => void) {
+function pickLocalFile() {
     const input = document.createElement("input");
     input.type = "file";
     input.accept = "video/*";
     input.onchange = () => {
         const file = input.files?.[0];
         if (!file) return;
-        onPicked?.(file);
         if (localBlobUrl) URL.revokeObjectURL(localBlobUrl);
         localBlobUrl = URL.createObjectURL(file);
 
@@ -515,7 +505,7 @@ function pickLocalFile(onPicked?: (file: File) => void) {
     input.click();
 }
 
-function clearLocalFile(onCleared?: () => void) {
+function clearLocalFile() {
     if (localBlobUrl) {
         URL.revokeObjectURL(localBlobUrl);
         localBlobUrl = null;
@@ -523,48 +513,16 @@ function clearLocalFile(onCleared?: () => void) {
     // Clearing means clearing: forget the remembered upload too, otherwise it
     // would silently come back on the next start.
     DataStore.del(LOCAL_FILE_KEY).catch(() => {});
-    onCleared?.();
     refresh();
 }
 
 function VideoControls() {
-    const [rememberedFile, setRememberedFile] = React.useState<{ name: string; size: number } | null>(null);
-
-    React.useEffect(() => {
-        let alive = true;
-        DataStore.get<File>(LOCAL_FILE_KEY).then(file => {
-            if (alive && file) setRememberedFile({ name: file.name || "local video", size: file.size });
-        }).catch(() => {});
-        return () => { alive = false; };
-    }, []);
-
     return (
-        <div style={{ marginTop: 8 }}>
-            <div style={{
-                padding: "8px 10px",
-                borderRadius: 7,
-                background: "rgba(72, 184, 255, 0.08)",
-                border: "1px solid rgba(72, 184, 255, 0.2)",
-                color: "#cbd0e0",
-                fontSize: 11.5,
-                lineHeight: 1.45
-            }}>
-                <b style={{ color: "#e9f7ff" }}>📌 Local-file behavior:</b> the selected video is remembered on this PC
-                through Discordmaxxer restarts (up to 200 MB). A Windows reinstall or another PC still needs the
-                original file again; direct HTTPS URLs are the portable option.
-                {rememberedFile && (
-                    <div style={{ marginTop: 4, color: "#9be7ff" }}>
-                        Remembered here: <b>{rememberedFile.name}</b> ({(rememberedFile.size / 1_048_576).toFixed(1)} MB)
-                    </div>
-                )}
-            </div>
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 8 }}>
-            <Button onClick={() => pickLocalFile(file => setRememberedFile(
-                file.size <= MAX_PERSIST_BYTES ? { name: file.name || "local video", size: file.size } : null
-            ))} size={Button.Sizes.SMALL}>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 8 }}>
+            <Button onClick={pickLocalFile} size={Button.Sizes.SMALL}>
                 📁 Upload local video
             </Button>
-            <Button onClick={() => clearLocalFile(() => setRememberedFile(null))} size={Button.Sizes.SMALL} color={Button.Colors.RED}>
+            <Button onClick={clearLocalFile} size={Button.Sizes.SMALL} color={Button.Colors.RED}>
                 ✕ Clear upload
             </Button>
             <Button
@@ -588,7 +546,6 @@ function VideoControls() {
             >
                 🎬 Test with sample
             </Button>
-            </div>
         </div>
     );
 }
@@ -625,13 +582,9 @@ function SavedSlotsPanel() {
     };
 
     const onSaveCurrent = () => {
-        if (localBlobUrl) {
-            toast("The current source is a local file. It is already remembered on this PC; saved slots store portable HTTPS URLs only.", Toasts.Type.MESSAGE, 6000);
-            return;
-        }
         const url = (settings.store.videoUrl ?? "").trim();
         if (!url || !/^https?:\/\//i.test(url)) {
-            toast("Set a direct https:// video URL above before saving a portable slot.", Toasts.Type.FAILURE);
+            toast("Set a https:// video URL above before saving (local file uploads can't be saved to slots).", Toasts.Type.FAILURE);
             return;
         }
         if (atCap) {
@@ -719,11 +672,9 @@ function SavedSlotsPanel() {
                 <div style={titleStyle}>💾 Saved video backgrounds</div>
                 <div style={counterStyle}>{slots.length} / {capLabel} · {tierName}</div>
             </div>
-            {!hasTier(REQUIRED_TIER) && (
-                <div style={{ fontSize: 11.5, color: "#cbd0e0", marginBottom: 8, opacity: 0.85 }}>
-                    Saving direct HTTPS URLs is available at every tier (FREE saves 1). A local upload is remembered separately on this PC; it is not a portable slot.
-                </div>
-            )}
+            <div style={{ fontSize: 11.5, color: "#cbd0e0", marginBottom: 8, opacity: 0.85 }}>
+                Video playback is free for every tier. Your tier controls how many background URLs you can save here: FREE 1 · MAXXER 5 · MAXXER+ 20 · MAXXER++ unlimited.
+            </div>
             <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
                 <input
                     type="text"
@@ -740,7 +691,7 @@ function SavedSlotsPanel() {
             </div>
             {slots.length === 0 ? (
                 <div style={{ fontSize: 11.5, color: "#8a91a3", marginTop: 10, fontStyle: "italic" }}>
-                    No saved slots yet. Paste a direct HTTPS video URL, optionally name it, then hit Save. Local uploads use the separate remembered-file path above.
+                    No saved slots yet. Paste a URL in the field above, optionally name it, then hit Save.
                 </div>
             ) : (
                 <div style={{ marginTop: 8 }}>
@@ -774,19 +725,9 @@ function SavedSlotsPanel() {
 const settings = definePluginSettings({
     enable: {
         type: OptionType.BOOLEAN,
-        description: "🌟 Enable video background (requires MAXXER+ tier)",
+        description: "🌟 Enable a video background (free for every tier)",
         default: false,
         onChange: () => {
-            if (settings.store.enable && !hasTier(REQUIRED_TIER)) {
-                Toasts.show({
-                    message: `🔒 ${tierGateMessage(REQUIRED_TIER)}`,
-                    type: Toasts.Type.FAILURE,
-                    id: Toasts.genId(),
-                    options: { duration: 5000, position: Toasts.Position.TOP }
-                });
-                settings.store.enable = false;
-                return;
-            }
             refresh();
         }
     },
@@ -796,8 +737,8 @@ const settings = definePluginSettings({
             "Video URL — must be a DIRECT video file (the link itself ends in .mp4 or .webm). " +
             "YouTube, TikTok and other page links will NOT work: they serve a web page, not a video file. " +
             "TIP: upload your clip to catbox.moe (or any host that hands back a direct .mp4 link) and paste that link here — " +
-            "a URL is the portable option that keeps working across PCs and Windows reinstalls. " +
-            "Or use 'Upload local video' below to play a file off your disk; Discordmaxxer remembers files up to 200 MB on this PC through app restarts, but it cannot restore them after a Windows reinstall unless you keep the original file.",
+            "a URL keeps working after a restart. " +
+            "Or use 'Upload local video' below to play a file off your disk (uploads up to 200MB are remembered between restarts and do not use a saved URL slot).",
         default: "",
         onChange: refresh
     },
@@ -876,8 +817,8 @@ const settings = definePluginSettings({
 export default definePlugin({
     name: "VideoBackground",
     description:
-        "🌟 MAXXER+ — Plays a video as Discord's background with adjustable opacity and blur. Use any http(s):// MP4 URL. " +
-        "Discord stays fully usable on top. Tier-gated; non-MAXXER+ users see the settings but can't activate.",
+        "🌟 Free for every tier — play a video as Discord's background with adjustable opacity and blur. Use any http(s):// MP4 URL. " +
+        "Discord stays fully usable on top; paid tiers add more saved background slots.",
     authors: [{ name: "Diggy", id: 0n }],
     settings,
 

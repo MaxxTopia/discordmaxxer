@@ -65,7 +65,13 @@ const URL_RE = /^https:\/\/[^\s"']{1,242}$/;
 // non-HTTPS schemes or CSS-breaking quotes into the renderer.
 const LOCAL_DRAFT_URL_RE = /^https:\/\/[^\s"']{1,2048}$/;
 const COLOR_RE = /^#[0-9a-fA-F]{6}$/;
+const PROFILE_FLAIR_PREVIEW_EVENT = "discordmaxxer:profile-flair-preview-changed";
 type ProfileLookComponent = keyof ProfileFlair | "gradient" | "nameStyle";
+
+function notifyProfileFlairPreviewChanged(): void {
+    if (typeof window === "undefined") return;
+    window.dispatchEvent(new Event(PROFILE_FLAIR_PREVIEW_EVENT));
+}
 
 function profileLookComponentLabel(component: ProfileLookComponent): string {
     if (component === "bannerUrl") return "banner";
@@ -1188,6 +1194,62 @@ interface LocalMediaSelection {
     remembered: boolean;
 }
 
+interface FlairMediaPreviewProps {
+    kind: LocalMediaKind;
+    url: string;
+    isVideo: boolean;
+}
+
+/** Small, live-only preview for a draft URL or a selected local file. This
+ * deliberately reads the media directly in the settings panel; it does not
+ * upload, publish, or write the URL to Discord. Video URLs use the same
+ * dm-media proxy as the renderer so Chromium's ORB does not turn a valid
+ * HTTPS video into a blank preview. */
+function FlairMediaPreview({ kind, url, isVideo }: FlairMediaPreviewProps) {
+    const [state, setState] = React.useState<"empty" | "loading" | "ready" | "error">("empty");
+    const validSource = /^(?:https:\/\/|blob:|data:)/i.test(url);
+    const source = isVideo && validSource ? proxyVideoUrl(url) : url;
+
+    React.useEffect(() => {
+        setState(url && validSource ? "loading" : "empty");
+    }, [url, validSource]);
+
+    const frameStyle: React.CSSProperties = {
+        position: "relative", height: 74, width: "100%", overflow: "hidden",
+        borderRadius: 5, background: "rgba(0,0,0,0.28)",
+        border: "1px solid rgba(255,255,255,0.1)"
+    };
+    const mediaStyle: React.CSSProperties = {
+        display: state === "error" ? "none" : "block", width: "100%", height: "100%",
+        objectFit: "cover", background: "#17131d"
+    };
+    const messageStyle: React.CSSProperties = {
+        position: "absolute", inset: 0, display: "flex", alignItems: "center",
+        justifyContent: "center", padding: "0 8px", textAlign: "center",
+        color: state === "error" ? "#ffcfda" : "#cbd0e0", fontSize: 10.5,
+        lineHeight: 1.3
+    };
+
+    if (!url) {
+        return <div style={frameStyle}><div style={messageStyle}>Paste a direct HTTPS {kind} image, GIF, or video URL.</div></div>;
+    }
+    if (!validSource) {
+        return <div style={frameStyle}><div style={messageStyle}>Preview needs a direct HTTPS media URL.</div></div>;
+    }
+
+    const onReady = () => setState("ready");
+    const onError = () => setState("error");
+    return (
+        <div style={frameStyle} aria-label={`${kind} live preview`}>
+            {isVideo
+                ? <video src={source} muted loop autoPlay playsInline preload="metadata" style={mediaStyle} onLoadedData={onReady} onError={onError} />
+                : <img src={source} alt={`${kind} live preview`} referrerPolicy="no-referrer" style={mediaStyle} onLoad={onReady} onError={onError} />}
+            {state === "loading" && <div style={messageStyle}>Loading preview…</div>}
+            {state === "error" && <div style={messageStyle}>Could not load this URL. Use the direct media file link, not a webpage.</div>}
+        </div>
+    );
+}
+
 const MAX_LOCAL_IMAGE_BYTES = 5 * 1024 * 1024;
 const MAX_LOCAL_VIDEO_BYTES = 15 * 1024 * 1024;
 const LOCAL_MEDIA_KEYS: Record<LocalMediaKind, string> = {
@@ -1357,6 +1419,7 @@ async function uploadLocalMedia(media: LocalMediaSelection): Promise<string | nu
 
 function FlairEditor() {
     const s = settings.store;
+    const [, setPreviewRevision] = React.useState(0);
     const [busy, setBusy] = React.useState(false);
     const [shareCode, setShareCode] = React.useState("");
     const [shareImport, setShareImport] = React.useState("");
@@ -1403,6 +1466,11 @@ function FlairEditor() {
     }, []);
 
     React.useEffect(() => { localMediaRef.current = localMedia; }, [localMedia]);
+    React.useEffect(() => {
+        const onPreviewChanged = () => setPreviewRevision(value => value + 1);
+        window.addEventListener(PROFILE_FLAIR_PREVIEW_EVENT, onPreviewChanged);
+        return () => window.removeEventListener(PROFILE_FLAIR_PREVIEW_EVENT, onPreviewChanged);
+    }, []);
     React.useEffect(() => () => {
         Object.values(localMediaRef.current).forEach(media => {
             if (media) URL.revokeObjectURL(media.previewUrl);
@@ -2122,9 +2190,40 @@ function FlairEditor() {
         : sessionThemePreview !== undefined
             ? { ...(baseTheme ?? {}), ...sessionThemePreview }
             : baseTheme;
+    // The appearance card is an editor preview, so typed settings take
+    // precedence over the published roster. Otherwise an old shared color
+    // makes the card look unchanged while the user is editing a new one.
+    const localPrimaryDraft = String(s.myThemeColorPrimary ?? "").trim();
+    const localSecondaryDraft = String(s.myThemeColorSecondary ?? "").trim();
+    const primaryDraft = String(
+        sessionThemePreview === null
+            ? ""
+            : (sessionThemePreview?.themeColorPrimary ?? (localPrimaryDraft || visibleTheme?.themeColorPrimary || ""))
+    ).trim();
+    const secondaryDraft = String(
+        sessionThemePreview === null
+            ? ""
+            : (sessionThemePreview?.themeColorSecondary ?? (localSecondaryDraft || visibleTheme?.themeColorSecondary || ""))
+    ).trim();
+    const hasLocalThemeDraft = !!(localPrimaryDraft || localSecondaryDraft);
+    const primaryColor = normalizeColor(primaryDraft) ?? "#29223a";
+    const secondaryColor = normalizeColor(secondaryDraft) ?? "#17131d";
+    const primaryLabel = normalizeColor(primaryDraft) ?? (primaryDraft || "default");
+    const secondaryLabel = normalizeColor(secondaryDraft) ?? (secondaryDraft || "default");
+    const mediaPreviewFor = (kind: LocalMediaKind): { url: string; isVideo: boolean } => {
+        const draft = kind === "banner" ? s.myBannerUrl.trim() : s.myAvatarAnimatedUrl.trim();
+        if (draft) return { url: draft, isVideo: isVideoUrl(draft) };
+        const local = localMedia[kind];
+        if (local) return { url: local.previewUrl, isVideo: local.isVideo };
+        const shared = publishedFlair?.[kind === "banner" ? "bannerUrl" : "avatarAnimatedUrl"]?.trim() ?? "";
+        return { url: shared, isVideo: isVideoUrl(shared) };
+    };
+    const bannerPreview = mediaPreviewFor("banner");
+    const avatarPreview = mediaPreviewFor("avatar");
     const sourceFor = (kind: "gradient" | "banner" | "avatar"): string => {
         if (kind === "gradient") {
             if (sessionThemePreview !== undefined) return sessionThemePreview === null ? "Local clear • this session" : "Local preview • this session";
+            if (hasLocalThemeDraft) return "Local draft • preview";
             if (hasPublishedTheme) return "Shared roster";
             return localTheme ? "Local fallback • this PC" : "Not set";
         }
@@ -2139,6 +2238,7 @@ function FlairEditor() {
         if (kind === "gradient") {
             if (sessionThemePreview === null) return "The gradient is cleared in this session. If a shared gradient exists, the published value is unchanged until you clear it while authenticated.";
             if (sessionThemePreview !== undefined) return "This is your instant local preview. Save it to publish the colors; after publishing, the shared roster is canonical on every PC.";
+            if (hasLocalThemeDraft) return "These colors are the current editor draft. The card updates as you type; Save it to publish them or leave them local to this PC.";
             if (hasPublishedTheme) return "This gradient comes from the shared Discordmaxxer roster and should match on every install. Older per-PC color settings no longer override it.";
             if (localTheme) return "No shared gradient is published, so this saved local fallback appears only on this PC. Pick a preset and save with a claim to sync it.";
             return "No gradient is currently selected. Pick a preset or choose two colors below; the new choice previews immediately.";
@@ -2171,6 +2271,18 @@ function FlairEditor() {
         minWidth: 0, padding: "8px 9px", borderRadius: 6,
         background: "rgba(0, 0, 0, 0.18)", border: "1px solid rgba(255,255,255,0.1)"
     };
+    const colorPairStyle: React.CSSProperties = {
+        display: "grid", gridTemplateColumns: "1fr 1fr", gap: 5, marginTop: 5,
+        color: "#cbd0e0", fontSize: 9.5, lineHeight: 1.25
+    };
+    const colorValueStyle: React.CSSProperties = {
+        display: "flex", alignItems: "center", gap: 4, minWidth: 0,
+        overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis"
+    };
+    const colorDotStyle = (color: string): React.CSSProperties => ({
+        flex: "0 0 auto", width: 10, height: 10, borderRadius: 3,
+        background: color, border: "1px solid rgba(255,255,255,0.3)"
+    });
     const sourceBadgeStyle: React.CSSProperties = {
         display: "inline-block", marginTop: 4, padding: "2px 5px", borderRadius: 99,
         background: "rgba(155,231,255,0.12)", color: "#9be7ff", fontSize: 9.5
@@ -2204,8 +2316,18 @@ function FlairEditor() {
                     {(["gradient", "banner", "avatar"] as const).map(kind => {
                         const label = kind === "gradient" ? "🌈 Gradient" : kind === "banner" ? "🖼️ Banner" : "👤 Avatar";
                         const preview = kind === "gradient"
-                            ? <div style={{ height: 28, borderRadius: 4, background: `linear-gradient(180deg, ${visibleTheme?.themeColorPrimary ?? "#29223a"}, ${visibleTheme?.themeColorSecondary ?? "#17131d"})` }} />
-                            : <div style={{ height: 28, borderRadius: 4, background: "rgba(255,255,255,0.06)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12 }}>{localMedia[kind] ? (localMedia[kind]!.isVideo ? "🎬 local video" : "🖼️ local file") : sourceFor(kind)}</div>;
+                            ? <>
+                                <div style={{ height: 28, borderRadius: 4, background: `linear-gradient(180deg, ${primaryColor}, ${secondaryColor})` }} />
+                                <div style={colorPairStyle}>
+                                    <span style={colorValueStyle} title={primaryLabel}><span style={colorDotStyle(primaryColor)} />Top: {primaryLabel}</span>
+                                    <span style={colorValueStyle} title={secondaryLabel}><span style={colorDotStyle(secondaryColor)} />Bottom: {secondaryLabel}</span>
+                                </div>
+                            </>
+                            : <FlairMediaPreview
+                                kind={kind}
+                                url={kind === "banner" ? bannerPreview.url : avatarPreview.url}
+                                isVideo={kind === "banner" ? bannerPreview.isVideo : avatarPreview.isVideo}
+                            />;
                         return (
                             <div key={kind} style={appearanceCardStyle}>
                                 <div style={{ fontSize: 11.5, color: "#fbefff", fontWeight: 700 }}>{label}</div>
@@ -2648,6 +2770,14 @@ function FlairEditor() {
 }
 
 const settings = definePluginSettings({
+    // Keep the live preview first so the editor opens on visible proof of the
+    // current banner, avatar, and color drafts instead of raw fields alone.
+    editor: {
+        type: OptionType.COMPONENT,
+        description: "",
+        component: FlairEditor
+    },
+
     // ─── Setter side (your own flair) ─────────────────────────────────────
     myBannerUrl: {
         type: OptionType.STRING,
@@ -2661,6 +2791,7 @@ const settings = definePluginSettings({
         default: "",
         onChange: () => {
             sessionLocalMediaPreview.add("banner");
+            notifyProfileFlairPreviewChanged();
             repaintProfileFlairNow();
         }
     },
@@ -2675,6 +2806,7 @@ const settings = definePluginSettings({
         default: "",
         onChange: () => {
             sessionLocalMediaPreview.add("avatar");
+            notifyProfileFlairPreviewChanged();
             repaintProfileFlairNow();
         }
     },
@@ -2690,6 +2822,7 @@ const settings = definePluginSettings({
             const current = sessionThemePreview && sessionThemePreview !== null ? sessionThemePreview : {};
             const raw = settings.store.myThemeColorPrimary.trim();
             sessionThemePreview = { ...current, themeColorPrimary: normalizeColor(raw) ?? raw };
+            notifyProfileFlairPreviewChanged();
             repaintProfileFlairNow();
         }
     },
@@ -2704,6 +2837,7 @@ const settings = definePluginSettings({
             const current = sessionThemePreview && sessionThemePreview !== null ? sessionThemePreview : {};
             const raw = settings.store.myThemeColorSecondary.trim();
             sessionThemePreview = { ...current, themeColorSecondary: normalizeColor(raw) ?? raw };
+            notifyProfileFlairPreviewChanged();
             repaintProfileFlairNow();
         }
     },
@@ -2726,12 +2860,6 @@ const settings = definePluginSettings({
         description: "(hidden) JSON history of recent flair picks — managed by the editor's Save button.",
         default: "{}"
     },
-    editor: {
-        type: OptionType.COMPONENT,
-        description: "",
-        component: FlairEditor
-    },
-
     // ─── Viewer side (rendering others' flair) ────────────────────────────
     showOthersFlair: {
         type: OptionType.BOOLEAN,
