@@ -1,5 +1,29 @@
 # Discordmaxxer — RESUME
 
+## 2026-10-16 v0.7.94 published — two-style Catwoman preset restored
+
+Patch release `v0.7.94` restores the original two-pose Catwoman Featured render
+for the Fortnite widget preset. The prior Fortnite-API URL now serves a single
+pose, so `plugins/DMWidget/index.tsx` uses the verified 1024px public mirror at
+`https://image.fnbr.co/outfit/5d8610e074b719851d631e9c/featured.png`.
+
+Local verification passed: `pnpm test`, strict Vencord overlay, build
+verification, `pnpm build`, `pnpm package:dir`, `pnpm package:win`, and a direct
+HTTP 200 check for the Catwoman image. The release commit is `e66b7e3`; tag
+`v0.7.94` is on `main`; GitHub workflow `38966464900` passed; the public
+release contains the x64/ARM64 ZIPs, installer, blockmap, `latest.yml`, and
+readable release notes. The updater manifest reports version `0.7.94`.
+
+Still waiting after publication: install/reload v0.7.94 on both PCs and verify
+the real DiggyT -> DiggyAI recipient view. That user-owned test must confirm
+the existing widget is republished with the restored Catwoman preset and that
+the intended cross-account banner/avatar/widget behavior is present. This
+release does not change the Discord vanilla-client rendering limitations.
+
+Best next action: install v0.7.94 on the second PC, reload both clients, and
+republish DiggyAI's Fortnite widget once if it still points at the old hero
+URL; then check the recipient view before advertising the result as verified.
+
 ## 2026-10-16 v0.7.92 published — recipient test pending
 
 This is the published v0.7.92 follow-up in the `codex/release-v0.7.91`
