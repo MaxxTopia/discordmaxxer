@@ -51,10 +51,11 @@ const Native = VencordNative.pluginHelpers.DMWidget as PluginNative<typeof impor
 // giant cosmetics catalog. The user can still paste any direct image URL.
 const DEFAULT_HEROES: Record<string, string> = {
     valorant: "https://media.valorant-api.com/agents/bb2a4828-46eb-8cd1-e765-15848195d751/fullportrait.png",
-    // The base Catwoman render includes the two visible edit styles in the
-    // Fortnite API artwork. Keep this as the default/preset, not an automatic
-    // migration of every user's already-published widget.
-    fortnite: "https://fortnite-api.com/images/cosmetics/br/cid_530_athena_commando_f_blackmonday/featured.png"
+    // The original Catwoman preset was the two-pose featured render. The
+    // current Fortnite-API endpoint now serves only the single goggles-down
+    // pose, so use the verified public mirror that still serves the original
+    // 1024px artwork instead of silently changing the preset's appearance.
+    fortnite: "https://image.fnbr.co/outfit/5d8610e074b719851d631e9c/featured.png"
 };
 
 const VALORANT_HERO_PRESETS: Record<string, string> = {
