@@ -112,8 +112,9 @@ function ClaimPanel() {
                     claimedAt: now,
                     lastValidatedAt: now,
                     founderNumber: r.founderNumber,
-                    ...(typeof r.expiresAt === "number" ? { expiresAt: r.expiresAt } : {}),
-                    ...(typeof r.scope === "string" ? { scope: r.scope } : {})
+                    ...(r.expiresAt !== undefined ? { expiresAt: r.expiresAt } : {}),
+                    ...(r.scope ? { scope: r.scope } : {}),
+                    lastClientClockAt: now,
                 };
                 writeBinding(fresh);
                 setBinding(fresh);
@@ -232,22 +233,18 @@ export default definePlugin({
     settings,
 
     async start() {
-        // Re-validate the stored binding against the worker on launch.
-        // - true:    binding still alive, refresh lastValidatedAt
-        // - false:   worker rejected (claim wiped or hwid mismatch), wipe local
+        // Validate the stored binding against the worker's read-only route.
+        // - ok:      binding still alive, refresh timestamps + expiry metadata
+        // - !ok:     worker rejected (revoked, expired, wrong HWID, etc.), wipe local
         // - null:    network unreachable, leave alone (24h cache trust kicks in)
-        //
-        // Pass the current userId so pre-2026-05-10 claims (stored before
-        // the userId field existed) get backfilled and start showing up in
-        // the public /roster — which drives cross-user TierFlair badges.
         const b = readBinding();
         if (!b) return;
         try {
-            const result = await reValidateBinding(b, currentUserId());
-            if (result && typeof result === "object") writeBinding(bumpValidatedAt(result));
-            else if (result === false) writeBinding(null);
-            // null result: leave cached binding intact, vip.ts handles the
-            // 24-hour offline trust window.
+            const result = await reValidateBinding(b);
+            if (result?.ok) writeBinding(bumpValidatedAt(b, result));
+            else if (result === null) {
+                // Leave cached binding intact; vip.ts handles the 24h fade.
+            } else writeBinding(null);
         } catch (e) {
             console.warn("[DiscordmaxxerVipClaim] revalidation failed:", e);
         }

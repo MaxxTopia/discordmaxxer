@@ -17,10 +17,11 @@
  *   response 409:                        code claimed by a different rig
  *   response 400:                        malformed code or hwid
  *
- * Validation strategy: on plugin start, re-POST stored {code, hwid} to
- * the worker. Idempotent response keeps the binding alive. 409 wipes the
- * local binding (someone else claimed it OR we changed rigs). Network
- * failure trusts the cache for 24h before downgrading to FREE.
+ * Validation strategy: on plugin start, POST stored {code, hwid} to the
+ * worker's read-only /validate route. A successful response keeps the
+ * binding alive and refreshes expiry metadata. Network failure trusts the
+ * cache for 24h before downgrading to FREE; explicit server rejection is
+ * terminal and clears the local binding.
  */
 
 import * as DataStore from "@api/DataStore";
@@ -28,6 +29,7 @@ import * as DataStore from "@api/DataStore";
 import { normalizeTier, setClaimCache, Tier } from "./vip";
 
 export const WORKER_URL = "https://optmaxxing-vip.maxxtopia.workers.dev/claim";
+export const VALIDATE_URL = WORKER_URL.replace(/\/claim$/, "/validate");
 
 export interface ClaimBinding {
     /** The 16-char Crockford code (no MAXX- prefix, no dashes). */
@@ -50,10 +52,12 @@ export interface ClaimBinding {
     /** Unix ms when this binding expires (worker-set). Undefined =
      *  lifetime. tierFromCachedBinding() returns FREE once we're past
      *  this without needing a network round-trip. */
-    expiresAt?: number;
+    expiresAt?: number | null;
     /** Product scope from the worker: "om" | "dm" | "both". Diagnostic;
      *  not used for client-side enforcement (worker is authoritative). */
     scope?: string;
+    /** Last local wall-clock observation used to fail closed on rollback. */
+    lastClientClockAt?: number;
 }
 
 export const OFFLINE_TRUST_MS = 24 * 60 * 60 * 1000; // 24 hours
@@ -77,7 +81,7 @@ export function isValidCode(input: string): boolean {
 
 export interface ClaimResult {
     ok: boolean;
-    status?: "claimed" | "idempotent" | "rebound" | "expired" | "scope-mismatch";
+    status?: string;
     error?: string;
     boundHwid?: string;
     /** When the worker recognises a Founder code, it assigns the next
@@ -92,7 +96,7 @@ export interface ClaimResult {
      *  Stored in the ClaimBinding; the plugin proactively drops the
      *  binding to FREE once Date.now() > expiresAt without waiting for
      *  the next re-validation cycle. */
-    expiresAt?: number;
+    expiresAt?: number | null;
     /** Product scope: "om" | "dm" | "both". Returned for diagnostics +
      *  to confirm the scope-enforcement layer is engaged. */
     scope?: string;
@@ -134,7 +138,9 @@ export async function claimAgainstWorker(code: string, hwid: string, userId?: st
                 boundHwid: body.boundHwid,
                 founderNumber: typeof body.founderNumber === "number" ? body.founderNumber : undefined,
                 tier: typeof body.tier === "number" ? body.tier : undefined,
-                expiresAt: typeof body.expiresAt === "number" ? body.expiresAt : undefined,
+                expiresAt: Object.prototype.hasOwnProperty.call(body, "expiresAt")
+                    ? (typeof body.expiresAt === "number" ? body.expiresAt : null)
+                    : undefined,
                 scope: typeof body.scope === "string" ? body.scope : undefined,
             };
         }
@@ -156,37 +162,53 @@ export async function claimAgainstWorker(code: string, hwid: string, userId?: st
     }
 }
 
-/**
- * Validate an existing binding. Returns:
- *   - an updated binding when the worker confirms it is alive
- *   - false if the worker rejects (claim was nuked or different hwid)
- *   - null if the network is unreachable (caller decides whether to trust cache)
- *
- * Pass the current Discord userId so pre-2026-05-10 claims (which were
- * stored without userId) get backfilled and start showing up in /roster.
- */
-export async function reValidateBinding(b: ClaimBinding, userId?: string): Promise<ClaimBinding | false | null> {
-    const r = await claimAgainstWorker(b.code, b.hwid, userId);
-    if (r.ok && (r.status === "idempotent" || r.status === "claimed" || r.status === "rebound")) {
-        // The worker is authoritative for per-code tier and subscription
-        // expiry. Older workers omit these fields, so retain the cached value
-        // when they are absent for backwards compatibility.
-        const next: ClaimBinding = { ...b };
-        if (isGrantedTier(r.tier, r.founderNumber) || next.founderNumber) {
-            next.tier = normalizeTier(r.tier ?? next.tier, r.founderNumber ?? next.founderNumber);
+/** Read-only validation of an existing binding. */
+export async function validateAgainstWorker(code: string, hwid: string): Promise<ClaimResult> {
+    try {
+        const res = await fetch(VALIDATE_URL, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ code: normalizeCode(code), hwid, product: "dm" })
+        });
+        const body = await res.json().catch(() => ({}));
+        if (res.ok && body?.ok) {
+            return {
+                ok: true,
+                status: typeof body.status === "string" ? body.status : "valid",
+                boundHwid: body.boundHwid,
+                tier: typeof body.tier === "number" ? body.tier : undefined,
+                expiresAt: Object.prototype.hasOwnProperty.call(body, "expiresAt")
+                    ? (typeof body.expiresAt === "number" ? body.expiresAt : null)
+                    : undefined,
+                scope: typeof body.scope === "string" ? body.scope : undefined,
+            };
         }
-        if (typeof r.founderNumber === "number") next.founderNumber = r.founderNumber;
-        if (typeof r.expiresAt === "number") next.expiresAt = r.expiresAt;
-        if (typeof r.scope === "string") next.scope = r.scope;
-        return next;
+        return {
+            ok: false,
+            status: typeof body?.status === "string" ? body.status : (
+                res.status === 410 ? "expired" :
+                res.status === 404 ? "unclaimed" :
+                res.status === 403 ? "scope_mismatch" :
+                res.status === 409 ? "hwid_mismatch" : undefined
+            ),
+            error: body?.error || `http ${res.status}`,
+            boundHwid: body?.boundHwid,
+        };
+    } catch (e: any) {
+        return { ok: false, error: `network: ${e?.message || e}` };
     }
+}
+
+/**
+ * Validate an existing binding without mutating the server ledger.
+ * Returns null only when the network is unreachable, so the caller can use
+ * the bounded offline grace window. Explicit Worker responses are returned
+ * unchanged and are terminal when ok=false.
+ */
+export async function reValidateBinding(b: ClaimBinding): Promise<ClaimResult | null> {
+    const r = await validateAgainstWorker(b.code, b.hwid);
     if (!r.ok && r.error?.startsWith("network")) return null;
-    // Expired or scope-mismatch are both terminal "this binding is no
-    // longer valid" — caller wipes the local cache and downgrades to
-    // FREE. (Worker schema v0.6+ — older worker responses don't carry
-    // these statuses, fall through to false same as today.)
-    if (r.status === "expired" || r.status === "scope-mismatch") return false;
-    return false;
+    return r;
 }
 
 const STORE_KEY = "dm-vip-claim";
@@ -296,7 +318,11 @@ export function tierFromCachedBinding(): Tier {
     if (typeof b.expiresAt === "number" && Date.now() > b.expiresAt) {
         return Tier.FREE;
     }
-    const ageMs = Date.now() - b.lastValidatedAt;
+    const now = Date.now();
+    if (typeof b.lastClientClockAt === "number" && now + 5 * 60 * 1000 < b.lastClientClockAt) {
+        return Tier.FREE;
+    }
+    const ageMs = now - b.lastValidatedAt;
     if (ageMs < OFFLINE_TRUST_MS) {
         return normalizeTier(b.tier ?? Tier.MAXXER_PLUS_PLUS, b.founderNumber);
     }
@@ -304,8 +330,22 @@ export function tierFromCachedBinding(): Tier {
 }
 
 /** Refresh a binding's lastValidatedAt without changing other fields. */
-export function bumpValidatedAt(b: ClaimBinding): ClaimBinding {
-    return { ...b, lastValidatedAt: Date.now() };
+export function bumpValidatedAt(
+    b: ClaimBinding,
+    validation?: Pick<ClaimResult, "expiresAt" | "scope">,
+): ClaimBinding {
+    const now = Date.now();
+    const rolledBack = typeof b.lastClientClockAt === "number"
+        && now + 5 * 60 * 1000 < b.lastClientClockAt;
+    return {
+        ...b,
+        lastValidatedAt: now,
+        lastClientClockAt: rolledBack ? b.lastClientClockAt : now,
+        ...(validation?.expiresAt !== undefined
+            ? { expiresAt: validation.expiresAt ?? undefined }
+            : {}),
+        ...(validation?.scope !== undefined ? { scope: validation.scope } : {}),
+    };
 }
 
 /** Async HWID retrieval via the VesktopNative bridge. */
