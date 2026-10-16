@@ -33,12 +33,12 @@ export const TIER_LABELS: Record<Tier, string> = {
 };
 
 /** Normalize every tier-shaped value at the entitlement boundary.
- * Founder slots are always MAXXER++, and malformed / negative values are
+ * Founder slots are lifetime MAXXER+ access, and malformed / negative values are
  * FREE. Numeric comparison then gives the ladder its inherited benefits. */
 export function normalizeTier(value: unknown, founderNumber?: unknown): Tier {
     const founder = Number(founderNumber);
     if (Number.isInteger(founder) && founder >= 1 && founder <= 33) {
-        return Tier.MAXXER_PLUS_PLUS;
+        return Tier.MAXXER_PLUS;
     }
     const n = Number(value);
     if (!Number.isFinite(n) || n < Tier.MAXXER) return Tier.FREE;

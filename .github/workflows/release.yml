@@ -108,6 +108,30 @@ jobs:
               env:
                   GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+            # electron-builder creates the GitHub Release and uploads the
+            # artifacts, but it does not consume docs/releases/*.md. Attach
+            # the curated notes explicitly so the in-app updater never falls
+            # back to "This release did not include readable release notes".
+            - name: Attach readable release notes
+              shell: pwsh
+              env:
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              run: |
+                  $tag = $env:GITHUB_REF_NAME
+                  $version = $tag.TrimStart('v')
+                  $notes = "docs/releases/v$version.md"
+                  if (-not (Test-Path -LiteralPath $notes)) {
+                    throw "Missing release notes file: $notes"
+                  }
+                  $body = Get-Content -LiteralPath $notes -Raw
+                  if ([string]::IsNullOrWhiteSpace($body)) {
+                    throw "Release notes file is empty: $notes"
+                  }
+                  if ($body -notmatch '(?m)^## Highlights\s*$') {
+                    throw "Release notes must include a Highlights section: $notes"
+                  }
+                  gh release edit $tag --repo $env:GITHUB_REPOSITORY --notes-file $notes
+
             # ── Cross-repo: notify maxxtopia.com so the Download CTA on the
             # site picks up the new version. The listener workflow on the
             # other side rewrites src/data/discordmaxxer-release.json,

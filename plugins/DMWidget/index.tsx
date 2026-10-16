@@ -51,7 +51,10 @@ const Native = VencordNative.pluginHelpers.DMWidget as PluginNative<typeof impor
 // giant cosmetics catalog. The user can still paste any direct image URL.
 const DEFAULT_HEROES: Record<string, string> = {
     valorant: "https://media.valorant-api.com/agents/bb2a4828-46eb-8cd1-e765-15848195d751/fullportrait.png",
-    fortnite: "https://fortnite-api.com/images/cosmetics/br/cid_530_athena_commando_f_blackmonday_1bv6j/featured.png"
+    // The base Catwoman render includes the two visible edit styles in the
+    // Fortnite API artwork. Keep this as the default/preset, not an automatic
+    // migration of every user's already-published widget.
+    fortnite: "https://fortnite-api.com/images/cosmetics/br/cid_530_athena_commando_f_blackmonday/featured.png"
 };
 
 const VALORANT_HERO_PRESETS: Record<string, string> = {
@@ -3540,9 +3543,10 @@ function scanVisibleProfileWidgetCards(): number {
     if (!document.body || document.hidden || widgetSkinEditorOpen() || widgetSkinRendererSuspended) return 0;
     const localActive = knownWidgetStyles();
     const localHints = knownWidgetHints();
-    // The first pass can discover a profile card before its application
-    // metadata has been fetched. Start with the owner's local map for cards
-    // we own, then add only read-only markers fetched for foreign profiles.
+    // Hydrate every visible application id, even when the viewer has a local
+    // style for that same app. The owner-published marker must be resolved
+    // first; the viewer's local style remains a fallback only when no owner
+    // marker is available.
     const initialActive = visibleProfileWidgetStyles(localActive);
     const initialHints = visibleProfileWidgetHints(localHints);
     const initialHintLabels = Array.from(initialHints.values()).flat().filter(label => label.length >= 3);
@@ -3585,7 +3589,7 @@ function scanVisibleProfileWidgetCards(): number {
     const discovered = new Set<string>();
     for (const candidate of [...explicitCandidates, ...hintedCardCandidates].slice(0, WIDGET_SKIN_PROFILE_MATCH_MAX)) {
         const appId = visibleWidgetApplicationId(candidate);
-        if (appId && !localActive.has(appId)) discovered.add(appId);
+        if (appId) discovered.add(appId);
     }
     queueVisibleWidgetStyleHydration(discovered);
     const active = visibleProfileWidgetStyles(localActive);

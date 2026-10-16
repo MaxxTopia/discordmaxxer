@@ -79,7 +79,7 @@ interface RosterEntry {
     expiresAt?: string | null; // ISO 8601, null = never expires
     grantedBy?: string;
     /** Founder slot 1-33 if the user claimed a FNDR-prefixed code. Drives
-     *  the gold # badge in profile popouts (TierFlair plugin). */
+     *  the permanent Founder badge in profile popouts (TierFlair plugin). */
     founderNumber?: number;
     /** v2+ — user-set profile flair (banner / animated avatar / theme colors).
      *  Always optional. Missing on v1 payloads. */
@@ -204,10 +204,10 @@ function sanitizeUsers(raw: Record<string, any>): Record<string, RosterEntry> {
         if (!e || typeof e !== "object") continue;
         const founderNumber = typeof e.founderNumber === "number" ? e.founderNumber : undefined;
         const tierNum = typeof e.tier === "number" ? e.tier : Number(e.tier);
-        // Founder slots are always MAXXER++, and a higher numeric tier
+        // Founder slots receive lifetime MAXXER+ access, and a higher numeric tier
         // includes every lower-tier benefit.
         const tier: Tier = Number.isInteger(founderNumber) && founderNumber >= 1 && founderNumber <= 33
-            ? Tier.MAXXER_PLUS_PLUS
+            ? Tier.MAXXER_PLUS
             : VALID_TIERS.has(tierNum)
                 ? tierNum
                 : tierNum >= Tier.MAXXER_PLUS_PLUS

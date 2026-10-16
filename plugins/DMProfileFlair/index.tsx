@@ -2938,6 +2938,28 @@ const onVisibilityChange = () => {
 };
 const onRosterFocus = () => refreshRosterForVisibleSurface();
 
+// A foreign profile can carry a stale/deleted shared-media URL in the local
+// roster snapshot. One bounded refresh on media failure lets another PC
+// converge without creating a refresh loop for every failed image/video.
+const FOREIGN_BANNER_REFRESH_COOLDOWN_MS = 30_000;
+const foreignBannerRefreshes = new Map<string, number>();
+function requestForeignBannerRosterRefresh(ownerId: string | undefined, url: string): void {
+    if (!ownerId || !url || UserStore.getCurrentUser?.()?.id === ownerId) return;
+    const key = `${ownerId}|${url}`;
+    const now = Date.now();
+    const last = foreignBannerRefreshes.get(key) ?? 0;
+    if (now - last < FOREIGN_BANNER_REFRESH_COOLDOWN_MS) return;
+    foreignBannerRefreshes.set(key, now);
+    while (foreignBannerRefreshes.size > 64) {
+        const oldest = foreignBannerRefreshes.keys().next().value;
+        if (typeof oldest !== "string") break;
+        foreignBannerRefreshes.delete(oldest);
+    }
+    void refreshRoster()
+        .then(() => scheduleScan())
+        .catch(error => console.warn("[DMProfileFlair] foreign banner roster refresh failed:", error));
+}
+
 
 /** True if a URL is marked as video media or ends in a typical video extension. Used to decide whether to
  *  render as background-image (image) or as a <video> overlay (video). Pure
@@ -3482,7 +3504,7 @@ function clearBanner(banner: HTMLElement, preserveFailedUrl = false) {
     banner.removeAttribute("data-dm-flair-banner-applied");
 }
 
-function applyBanner(banner: HTMLElement, url: string, fallbackUrl?: string) {
+function applyBanner(banner: HTMLElement, url: string, fallbackUrl?: string, ownerId?: string) {
     const isVideo = isVideoUrl(url);
     const previousFailures = banner.dataset.dmFlairFailedUrl === url
         ? Number.parseInt(banner.dataset.dmFlairFailureCount ?? "0", 10) || 0
@@ -3541,6 +3563,7 @@ function applyBanner(banner: HTMLElement, url: string, fallbackUrl?: string) {
         banner.dataset.dmFlairFailureCount = String(failures);
         banner.dataset.dmFlairRetryAt = String(Date.now() + retryDelayMs);
         noteProfileFlairFailure(`banner ${kind} media failed; retry ${failures} scheduled in ${Math.round(retryDelayMs / 1000)}s (${url.slice(0, 80)})`);
+        requestForeignBannerRosterRefresh(ownerId, url);
     };
     const recordSuccess = () => {
         if (banner.dataset.dmFlairBannerUrl !== url) return;
@@ -3857,7 +3880,7 @@ function scanProfileSurfaceFast(root: HTMLElement): void {
         if (bannerFlair?.bannerUrl && !suppressBanner) {
             const me = UserStore.getCurrentUser?.();
             const fallbackUrl = me?.id === userId ? getLocalMediaValue("banner") : undefined;
-            applyBanner(banner, bannerFlair.bannerUrl, fallbackUrl);
+            applyBanner(banner, bannerFlair.bannerUrl, fallbackUrl, userId);
         } else clearBanner(banner);
 
         const themeFlair = resolveFlairForUserId(userId, "theme");
@@ -3924,7 +3947,7 @@ function scanForPopouts(_root: ParentNode = document) {
         const suppressForMedia = mediaSuppressed && !!bannerFlair?.bannerUrl && isAnimatedUrl(bannerFlair.bannerUrl);
         if (bannerFlair?.bannerUrl && !suppressForMedia) {
             const fallbackUrl = me?.id === userId ? getLocalMediaValue("banner") : undefined;
-            applyBanner(banner, bannerFlair.bannerUrl, fallbackUrl);
+            applyBanner(banner, bannerFlair.bannerUrl, fallbackUrl, userId);
         }
         else clearBanner(banner);
 

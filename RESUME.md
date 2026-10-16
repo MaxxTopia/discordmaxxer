@@ -1,5 +1,57 @@
 # Discordmaxxer — RESUME
 
+## 2026-10-16 v0.7.92 release candidate — publish authorized
+
+This is the v0.7.92 follow-up in the `codex/release-v0.7.91` worktree. The
+public v0.7.91 baseline is unchanged. The candidate repairs the
+owner/viewer boundary for profile widgets, refreshes a foreign profile's
+shared-banner roster entry after a failed media load, changes the default
+Fortnite preset to the two-style Catwoman artwork, and adds a DMHub shortcut
+that opens the Video Background editor directly. It also aligns the Founder
+normalization and public/ticket copy with the approved offer: $67 once,
+lifetime MAXXER+, a permanent numbered Founder badge, no required
+subscription, and MAXXER++ optional.
+
+The widget change is source-level owner precedence: a viewed profile's
+published `[DMWSTYLE1:...]` marker is hydrated even when the viewer has a
+local style for the same application; the viewer's local style remains only a
+fallback when no owner marker is available. The Catwoman preset changes the
+default/recovery choice; it does not rewrite an already-published DiggyAI
+widget. DiggyAI must select the preset and publish once if its existing widget
+still points at the old hero asset.
+
+Verification passed locally:
+
+- `pnpm test`, `pnpm build`, and `pnpm verifyPlugins` in the Discordmaxxer
+  candidate.
+- Strict Vencord overlay with zero rebrand warnings and
+  `node overlay-scripts/verify-build.mjs`.
+- `node --test vip-worker/profile-media.test.mjs`: 14/14 tests, including
+  Founder claims normalizing to lifetime MAXXER+.
+- `npm run build` in the Maxxtopia candidate, including release-truth and
+  sitemap checks.
+- `git diff --check` in all three worktrees.
+
+Read-only live checks found the current Catbox banner and profile-media URLs
+responding successfully (HTTP 200, with a valid video range response for the
+Catbox asset). That proves the current upstream URLs are reachable, not that
+the other signed-in client has loaded the correct owner record.
+
+Release work is authorized. The profile-media worker and ticket worker have
+passed their dry runs and are deployed. The Discordmaxxer GitHub release and
+the Maxxtopia Pages push are still pending in this candidate section. The
+client release-note attachment workflow is prepared locally.
+
+Still waiting after publication: installing/reloading the candidate on both
+PCs, confirming the exact DiggyAI account mapping, republishing the DiggyAI
+Catwoman widget if needed, and the real DiggyT -> DiggyAI recipient test for
+the animated banner, avatar, and each owner-selected widget skin. Do not
+advertise cross-account banner rendering as verified until that test passes.
+
+Best next action: publish the matching client and site candidates, then reload
+both clients and capture the recipient test before changing the media contract
+again.
+
 ## 2026-10-08 v0.7.90 published — cross-account fallback and banner default hardening
 
 Patch release `v0.7.90` is public at

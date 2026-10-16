@@ -257,7 +257,7 @@ interface QuickToggle {
 }
 
 const QUICK_TOGGLES: QuickToggle[] = [
-    { plugin: "VideoBackground", label: "🌟 Video Background", settingKey: "enable", minTier: Tier.MAXXER_PLUS, note: "Set URL in Discordmaxxer plugin settings" },
+    { plugin: "VideoBackground", label: "🌟 Video Background", settingKey: "enable", note: "Free playback; saved slots depend on your tier" },
     { plugin: "DMTheme", label: "🎨 Maxxer Theme", settingKey: "enable" },
     { plugin: "DMDisplayNameStyle", label: "✦ Display Name Style", settingKey: "active", note: "Browse 30 looks in the visual grid", noRestart: true },
     { plugin: "TournamentMode", label: "🎮 Tournament Mode", settingKey: "manuallyActive", note: "Or press Ctrl+Alt+T", noRestart: true },
@@ -420,7 +420,7 @@ function renderPanelHTML(): string {
         </div>
         <div class="dm-hub-tier ${tierClass}">${tierLabel}</div>
         ${tier === Tier.FREE
-            ? `<div class="dm-hub-info">⭐ Upgrade to MAXXER+ for video backgrounds and premium themes.</div>`
+            ? `<div class="dm-hub-info">⭐ Video backgrounds are free. MAXXER+ adds more saved slots and premium themes.</div>`
             : `<div class="dm-hub-info">Welcome back, ${tierLabel}.</div>`}
         <div class="dm-hub-section">Quick toggles</div>
         ${rows}
@@ -430,6 +430,12 @@ function renderPanelHTML(): string {
             <button class="dm-hub-action-btn" data-action="open-tour">Open</button>
         </div>
         <div class="dm-hub-info">Browse featured plugins, enable bundles, and see what each one actually does — no settings-digging required.</div>
+        <div class="dm-hub-section">Media setup</div>
+        <div class="dm-hub-row">
+            <div class="dm-hub-row-label">🎞️ Set up video background</div>
+            <button class="dm-hub-action-btn" data-action="open-video-background">Open</button>
+        </div>
+        <div class="dm-hub-info">Paste a direct video URL or choose a file in the Video Background editor. Playback is free; your tier controls saved-slot limits.</div>
         <div class="dm-hub-section">Profile look</div>
         <div class="dm-hub-row">
             <div class="dm-hub-row-label">✦ Browse display-name looks</div>
@@ -484,6 +490,11 @@ function ensurePanelRoot() {
             panelRoot!.classList.add("hidden");
             const reopen = (globalThis as any).__dmReopenWelcome;
             if (typeof reopen === "function") reopen();
+            return;
+        }
+        if (t.dataset.action === "open-video-background") {
+            panelRoot!.classList.add("hidden");
+            openDMPluginSettings("VideoBackground");
             return;
         }
         if (t.dataset.action === "refresh-widget-stats") {
