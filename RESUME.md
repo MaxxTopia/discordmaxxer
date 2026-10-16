@@ -1,9 +1,10 @@
 # Discordmaxxer — RESUME
 
-## 2026-10-16 v0.7.92 release candidate — publish authorized
+## 2026-10-16 v0.7.92 published — recipient test pending
 
-This is the v0.7.92 follow-up in the `codex/release-v0.7.91` worktree. The
-public v0.7.91 baseline is unchanged. The candidate repairs the
+This is the published v0.7.92 follow-up in the `codex/release-v0.7.91`
+worktree. The public v0.7.91 baseline is superseded by the release below. The
+release repairs the
 owner/viewer boundary for profile widgets, refreshes a foreign profile's
 shared-banner roster entry after a failed media load, changes the default
 Fortnite preset to the two-style Catwoman artwork, and adds a DMHub shortcut
@@ -37,10 +38,13 @@ responding successfully (HTTP 200, with a valid video range response for the
 Catbox asset). That proves the current upstream URLs are reachable, not that
 the other signed-in client has loaded the correct owner record.
 
-Release work is authorized. The profile-media worker and ticket worker have
-passed their dry runs and are deployed. The Discordmaxxer GitHub release and
-the Maxxtopia Pages push are still pending in this candidate section. The
-client release-note attachment workflow is prepared locally.
+Publication completed: commit `34ba4e9` and tag `v0.7.92` are on `main`, GitHub
+release workflow `38951007702` passed, and the release contains the Windows
+x64/ARM64 ZIPs, installer, blockmap, `latest.yml`, and attached readable notes.
+The profile-media worker deployed as version
+`5b3adb30-0eb2-4b64-9c51-52f64d48fc1c`; the ticket worker deployed as version
+`56a81c79-98ba-4467-8c91-103998b6d007`. Maxxtopia Pages deployed the VIP page
+and release-sync commit `7c74a69` is on its `main`.
 
 Still waiting after publication: installing/reloading the candidate on both
 PCs, confirming the exact DiggyAI account mapping, republishing the DiggyAI
@@ -48,9 +52,9 @@ Catwoman widget if needed, and the real DiggyT -> DiggyAI recipient test for
 the animated banner, avatar, and each owner-selected widget skin. Do not
 advertise cross-account banner rendering as verified until that test passes.
 
-Best next action: publish the matching client and site candidates, then reload
-both clients and capture the recipient test before changing the media contract
-again.
+Best next action: install/reload v0.7.92 on both PCs, republish DiggyAI's
+two-style Catwoman widget if it is still using the old asset, and capture the
+DiggyT -> DiggyAI recipient test before changing the media contract again.
 
 ## 2026-10-08 v0.7.90 published — cross-account fallback and banner default hardening
 
