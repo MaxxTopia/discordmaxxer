@@ -586,8 +586,13 @@ function handleClick(e: Event) {
             const key = toggleEl.dataset.identity;
             const current = getPluginSetting("DMBadge", key);
             const next = !current;
-            setPluginSetting("DMBadge", key, next);
-            toggleEl.classList.toggle("on", next);
+            const applied = setPluginSetting("DMBadge", key, next);
+            if (applied) {
+                toggleEl.classList.toggle("on", next);
+                toast(`DMBadge ${key}: ${next ? "enabled" : "disabled"}`);
+            } else {
+                toast("Couldn't save that DMBadge setting — open DMBadge once, then retry.", Toasts.Type.FAILURE);
+            }
             return;
         }
         if (toggleEl.dataset.plugin) {

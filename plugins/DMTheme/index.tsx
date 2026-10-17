@@ -25,7 +25,7 @@
 import { definePluginSettings } from "@api/Settings";
 import { managedStyleRootNode } from "@api/Styles";
 import { createAndAppendStyle } from "@utils/css";
-import { Toasts } from "@webpack/common";
+import { React, Toasts } from "@webpack/common";
 import definePlugin, { OptionType } from "@utils/types";
 
 import { DEFAULT_THEME, THEME_ORDER, themeCss, themeFlairCss, THEMES, ThemeId } from "../_dm-shared/themes";
@@ -66,22 +66,78 @@ function applyTheme(id: ThemeId) {
     console.log(`[DiscordmaxxerTheme] applied theme=${theme.id} flair=${settings.store.enableFlair !== false}`);
 }
 
-function optionLabel(id: ThemeId): string {
-    const t = THEMES[id];
-    if (t.tierGate !== undefined) {
-        const tierStr = TIER_LABELS[t.tierGate];
-        return `🔒 ${t.label} (${tierStr}) — ${t.blurb}`;
+function ThemePicker() {
+    const initial = settings.store.selected as ThemeId;
+    const [selected, setSelected] = React.useState<ThemeId>(THEMES[initial] ? initial : DEFAULT_THEME);
+    const theme = THEMES[selected] ?? THEMES[DEFAULT_THEME];
+
+    function choose(value: ThemeId) {
+        setSelected(value);
+        settings.store.selected = value;
+        applyTheme(value);
     }
-    return `${t.label} — ${t.blurb}`;
+
+    return (
+        <div style={{
+            border: "1px solid var(--background-modifier-accent)",
+            borderRadius: "8px",
+            padding: "12px",
+            background: "var(--background-secondary-alt)",
+            marginBottom: "12px"
+        }}>
+            <div style={{ fontSize: "14px", fontWeight: 700, marginBottom: "6px" }}>Choose your theme</div>
+            <div style={{ color: "var(--text-muted)", fontSize: "12px", lineHeight: 1.45, marginBottom: "10px" }}>
+                The native selector below is deliberately simple and reliable. Pick a palette, then use the swatches and description to confirm what it looks like.
+            </div>
+            <select
+                aria-label="Discordmaxxer theme"
+                value={selected}
+                onChange={event => choose(event.currentTarget.value as ThemeId)}
+                style={{
+                    width: "100%",
+                    boxSizing: "border-box",
+                    borderRadius: "5px",
+                    border: "1px solid var(--background-modifier-accent)",
+                    background: "var(--background-tertiary)",
+                    color: "var(--text-normal)",
+                    padding: "9px 10px",
+                    fontSize: "13px",
+                    cursor: "pointer"
+                }}
+            >
+                {THEME_ORDER.map(id => {
+                    const item = THEMES[id];
+                    const gate = item.tierGate === undefined ? "FREE" : TIER_LABELS[item.tierGate];
+                    return <option key={id} value={id}>{`${item.label} · ${gate}`}</option>;
+                })}
+            </select>
+            <div style={{ display: "flex", gap: "8px", alignItems: "center", marginTop: "10px" }}>
+                <span style={{ width: "18px", height: "18px", borderRadius: "4px", background: theme.swatch.primary, boxShadow: `0 0 0 1px ${theme.swatch.primary}` }} />
+                <span style={{ width: "18px", height: "18px", borderRadius: "4px", background: theme.swatch.secondary, boxShadow: `0 0 0 1px ${theme.swatch.secondary}` }} />
+                <span style={{ color: "var(--text-muted)", fontSize: "12px" }}>{theme.blurb}</span>
+            </div>
+            {theme.tierGate !== undefined && (
+                <div style={{ color: "#ffcc66", fontSize: "12px", marginTop: "8px" }}>
+                    {TIER_LABELS[theme.tierGate]} required. If your tier is lower, Discordmaxxer safely uses the default palette.
+                </div>
+            )}
+        </div>
+    );
 }
 
 const settings = definePluginSettings({
+    themePicker: {
+        type: OptionType.COMPONENT,
+        description: "",
+        component: ThemePicker
+    },
     selected: {
         type: OptionType.SELECT,
-        description: "Theme palette — covers Discord's full color graph (background, text, brand, channels, scrollbars). Locked themes require MAXXER+ — pick one and we'll fall back to the default if you don't qualify.",
+        description: "Stored theme value used by Discordmaxxer. Use the picker above.",
         default: DEFAULT_THEME,
+        hidden: true,
         options: THEME_ORDER.map(id => ({
-            label: optionLabel(id),
+            label: THEMES[id].label,
             value: id,
             default: id === DEFAULT_THEME
         })),

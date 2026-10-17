@@ -10,7 +10,7 @@
  * Surfaces (all opt-out via plugin settings):
  *   - Avatar tier ring     — 1px tier-color outline around PFPs
  *   - Member list name tint with glow-glimmer pulse (MAXXER+)
- *   - Profile popout banner stripe (MAXXER+)
+ *   - Profile popout banner stripe (all paid tiers)
  *   - Animated profile badge for MAXXER++ (shimmer)
  *   - Founder # badge (numbered gold gem in popouts) via addProfileBadge
  *
@@ -46,7 +46,15 @@ const COLORS = {
 // each numbered SVG icon is generated once and Vencord routes the right one
 // to the right user popout.
 const FOUNDER_CAP = 33;
-const FOUNDER_BADGE_IDS = new Set<string>();
+const FOUNDER_BADGES = new Map<string, ProfileBadge>();
+const MAXXER_PLUS_PLUS_BADGE_ID = "discordmaxxer-tier-maxxer-plus-plus";
+let maxxerPlusPlusBadge: ProfileBadge | null = null;
+
+const BADGE_FINISH_OPTIONS = [
+    { label: "Gold Sweep", value: "gold", description: "Classic gold with a warm red edge." },
+    { label: "Sunset Ember", value: "sunset", description: "Orange-to-crimson sunset finish." },
+    { label: "Aurora Ice", value: "aurora", description: "Cool cyan-to-violet aurora finish." }
+] as const;
 
 function makeFounderBadgeSvg(n: number): string {
     // Compact SVG: gold radial gem + the number centered, white text shadow
@@ -72,7 +80,7 @@ function makeFounderBadgeSvg(n: number): string {
 function registerFounderBadges() {
     for (let n = 1; n <= FOUNDER_CAP; n++) {
         const id = `discordmaxxer-founder-${n}`;
-        if (FOUNDER_BADGE_IDS.has(id)) continue;
+        if (FOUNDER_BADGES.has(id)) continue;
         const badge: ProfileBadge = {
             id,
             description: `Founder #${n} of ${FOUNDER_CAP} — Discordmaxxer Founder badge`,
@@ -81,24 +89,143 @@ function registerFounderBadges() {
             shouldShow: ({ userId }) => getRosterFounderNumber(userId) === n
         };
         addProfileBadge(badge);
-        FOUNDER_BADGE_IDS.add(id);
+        FOUNDER_BADGES.set(id, badge);
     }
 }
 
 function unregisterFounderBadges() {
-    for (const id of FOUNDER_BADGE_IDS) {
+    for (const [id, badge] of FOUNDER_BADGES) {
         try {
-            removeProfileBadge({ id } as ProfileBadge);
+            // Badges are stored in a Set, so removal must use the exact object
+            // that was passed to addProfileBadge rather than a new { id } object.
+            removeProfileBadge(badge);
         } catch (e) {
             console.warn("[TierFlair] removeProfileBadge failed for", id, e);
         }
     }
-    FOUNDER_BADGE_IDS.clear();
+    FOUNDER_BADGES.clear();
+}
+
+function makeMaxxerPlusPlusBadgeSvg(animated: boolean, finish: string): string {
+    // The badge is an ordinary data-URL image so it works in the same native
+    // profile-badge slot as Founder badges. The base gradient is the static
+    // fallback; the clipped sheen is an optional SMIL animation layered on
+    // top, so reduced-motion/older Chromium still gets a readable badge.
+    const palettes: Record<string, { light: string; mid: string; deep: string; shine: string; stroke: string; text: string }> = {
+        gold: { light: "#FFF0B3", mid: "#FFAA00", deep: "#FF5555", shine: "#FFF7D6", stroke: "#FFE7A8", text: "#2A1203" },
+        sunset: { light: "#FFD0A8", mid: "#FF6B35", deep: "#C92A5A", shine: "#FFE6C7", stroke: "#FFB38A", text: "#2B0B0B" },
+        aurora: { light: "#D7FFFF", mid: "#55FFFF", deep: "#7E5BFF", shine: "#F3FFFF", stroke: "#B3FFFF", text: "#07152A" }
+    };
+    const palette = palettes[finish] ?? palettes.gold;
+    const sheen = animated
+        ? `<rect x="-36" y="-4" width="7" height="40" rx="3.5" fill="${palette.shine}" opacity="0.88" transform="rotate(45 12 12)">
+    <animateTransform attributeName="transform" type="translate" from="-32 32" to="32 -32" dur="2.2s" repeatCount="indefinite" additive="sum"/>
+  </rect>`
+        : "";
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+  <defs>
+    <linearGradient id="dmpp-base" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="${palette.light}"/>
+      <stop offset="46%" stop-color="${palette.mid}"/>
+      <stop offset="100%" stop-color="${palette.deep}"/>
+    </linearGradient>
+    <clipPath id="dmpp-clip"><circle cx="12" cy="12" r="10.7"/></clipPath>
+  </defs>
+  <circle cx="12" cy="12" r="11" fill="url(#dmpp-base)" stroke="${palette.stroke}" stroke-width="0.8"/>
+  <g clip-path="url(#dmpp-clip)">${sheen}</g>
+  <text x="12" y="15.7" text-anchor="middle"
+    font-family="Tungsten Bold, Bebas Neue, Oswald, Arial Black, sans-serif"
+    font-size="9.5" font-weight="900" fill="${palette.text}" letter-spacing="-0.7">++</text>
+</svg>`;
+    return "data:image/svg+xml;utf8," + encodeURIComponent(svg);
+}
+
+function registerMaxxerPlusPlusBadge() {
+    if (maxxerPlusPlusBadge) return;
+    const badge: ProfileBadge = {
+        id: MAXXER_PLUS_PLUS_BADGE_ID,
+        description: "MAXXER++ tier badge — selectable finish with an optional light sweep",
+        iconSrc: makeMaxxerPlusPlusBadgeSvg(settings.store.animatedBadgePlusPlus, settings.store.badgeFinish),
+        position: BadgePosition.START,
+        link: "https://maxxtopia.com/discordmaxxer/vip/",
+        shouldShow: ({ userId }: { userId: string }) => getRosterTier(userId) >= Tier.MAXXER_PLUS_PLUS
+    };
+    addProfileBadge(badge);
+    maxxerPlusPlusBadge = badge;
+}
+
+function unregisterMaxxerPlusPlusBadge() {
+    if (!maxxerPlusPlusBadge) return;
+    try {
+        // See unregisterFounderBadges: the Vencord badge registry is Set-based.
+        removeProfileBadge(maxxerPlusPlusBadge);
+    } catch (e) {
+        console.warn("[TierFlair] removeProfileBadge failed for MAXXER++ badge", e);
+    }
+    maxxerPlusPlusBadge = null;
+}
+
+function BadgeFinishPreview() {
+    const selectedFinish = String(settings.store.badgeFinish);
+    const animated = settings.store.animatedBadgePlusPlus;
+
+    return (
+        <div
+            role="group"
+            aria-label="MAXXER++ badge finish previews"
+            style={{
+                marginTop: "8px",
+                padding: "12px",
+                borderRadius: "8px",
+                border: "1px solid rgba(255,255,255,0.12)",
+                background: "rgba(255,255,255,0.035)"
+            }}
+        >
+            <div style={{ color: "#e7eaf2", fontSize: "13px", fontWeight: 700, marginBottom: "4px" }}>
+                MAXXER++ badge finish previews
+            </div>
+            <div style={{ color: "#aeb5c7", fontSize: "12px", lineHeight: 1.35, marginBottom: "10px" }}>
+                Pick a finish above. The selected option is outlined here, and the same badge appears in eligible profile popouts.
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
+                {BADGE_FINISH_OPTIONS.map(finish => {
+                    const selected = finish.value === selectedFinish;
+                    return (
+                        <div
+                            key={finish.value}
+                            style={{
+                                flex: "1 1 120px",
+                                minWidth: "112px",
+                                padding: "9px 8px",
+                                borderRadius: "8px",
+                                border: `1px solid ${selected ? "#55FFFF" : "rgba(255,255,255,0.14)"}`,
+                                background: selected ? "rgba(85,255,255,0.09)" : "rgba(0,0,0,0.16)",
+                                boxShadow: selected ? "0 0 12px rgba(85,255,255,0.18)" : "none",
+                                textAlign: "center"
+                            }}
+                        >
+                            <img
+                                src={makeMaxxerPlusPlusBadgeSvg(animated, finish.value)}
+                                alt={`${finish.label} badge preview`}
+                                draggable={false}
+                                style={{ width: "52px", height: "52px", display: "block", margin: "0 auto 6px" }}
+                            />
+                            <div style={{ color: "#e7eaf2", fontSize: "12px", fontWeight: 700 }}>{finish.label}</div>
+                            <div style={{ color: selected ? "#55FFFF" : "#9299aa", fontSize: "11px", marginTop: "3px" }}>
+                                {selected ? "Selected" : finish.description}
+                            </div>
+                        </div>
+                    );
+                })}
+            </div>
+        </div>
+    );
 }
 
 let style: HTMLStyleElement | null = null;
 let observer: MutationObserver | null = null;
 let rescanTimer: ReturnType<typeof setInterval> | null = null;
+let tierFlairStarted = false;
 
 function buildCss() {
     const showRing = settings.store.avatarRing;
@@ -351,9 +478,36 @@ const settings = definePluginSettings({
     },
     animatedBadgePlusPlus: {
         type: OptionType.BOOLEAN,
-        description: "Animated shimmer for MAXXER++ name tint (gold→red→gold sweep). Disable if it's distracting.",
+        description: "Animate the MAXXER++ tier badge and name tint with a gold→red light sweep. Disable if it's distracting.",
         default: true,
-        onChange: () => { if (style) style.textContent = buildCss(); }
+        onChange: () => {
+            if (style) style.textContent = buildCss();
+            if (tierFlairStarted) {
+                unregisterMaxxerPlusPlusBadge();
+                registerMaxxerPlusPlusBadge();
+            }
+        }
+    },
+    badgeFinish: {
+        type: OptionType.SELECT,
+        description: "MAXXER++ only — choose the finish of your profile badge: Gold Sweep, Sunset Ember, or Aurora Ice.",
+        default: "gold",
+        options: [
+            { label: "Gold Sweep", value: "gold", default: true },
+            { label: "Sunset Ember", value: "sunset" },
+            { label: "Aurora Ice", value: "aurora" }
+        ],
+        onChange: () => {
+            if (tierFlairStarted) {
+                unregisterMaxxerPlusPlusBadge();
+                registerMaxxerPlusPlusBadge();
+            }
+        }
+    },
+    badgeFinishPreview: {
+        type: OptionType.COMPONENT,
+        description: "",
+        component: BadgeFinishPreview
     },
     voiceColor: {
         type: OptionType.BOOLEAN,
@@ -401,20 +555,24 @@ const settings = definePluginSettings({
 export default definePlugin({
     name: "DMTierFlair",
     description:
-        "Cross-user status flex (Hypixel-style). Avatar rings, name tints, popout banners, and numbered Founder gems for users in the public roster. Pure cosmetic, opt-out per surface, no webpack patches.",
+        "Cross-user status flex (Hypixel-style). Avatar rings, name tints, popout banners, a selectable animated MAXXER++ tier badge, and numbered Founder gems for users in the public roster. Pure cosmetic, opt-out per surface, no webpack patches.",
     authors: [{ name: "Diggy", id: 0n }],
     settings,
 
     start() {
+        tierFlairStarted = true;
         style = createAndAppendStyle("dm-tier-flair", managedStyleRootNode);
         style.textContent = buildCss();
         registerFounderBadges();
+        registerMaxxerPlusPlusBadge();
         startObserver();
     },
 
     stop() {
+        tierFlairStarted = false;
         stopObserver();
         unregisterFounderBadges();
+        unregisterMaxxerPlusPlusBadge();
         style?.remove();
         style = null;
     }

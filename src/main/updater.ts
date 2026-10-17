@@ -115,17 +115,21 @@ handle(IpcEvents.DM_UPDATER_CHECK, async (): Promise<UpdaterCheckResult> => {
 });
 
 handle(IpcEvents.DM_GET_ALLOW_PRERELEASE, () => State.store.allowPrerelease ?? false);
-handle(IpcEvents.DM_SET_ALLOW_PRERELEASE, async (_e, on: boolean) => {
+handle(IpcEvents.DM_SET_ALLOW_PRERELEASE, (_e, on: boolean) => {
     State.store.allowPrerelease = !!on;
     autoUpdater.allowPrerelease = !!on;
     // Re-check immediately so a freshly-flipped beta opt-in surfaces a
-    // pending beta release without waiting for the next periodic check.
-    try {
-        const res = await autoUpdater.checkForUpdates();
-        if (res?.isUpdateAvailable && res.updateInfo) openUpdater(res.updateInfo);
-    } catch (e) {
-        console.warn("[Discordmaxxer] DM_SET_ALLOW_PRERELEASE checkForUpdates failed:", e);
-    }
+    // pending beta release without waiting for the next periodic check. Do
+    // not await this network operation: the renderer needs the IPC call to
+    // resolve immediately so the user gets feedback that the setting saved.
+    void autoUpdater
+        .checkForUpdates()
+        .then(res => {
+            if (res?.isUpdateAvailable && res.updateInfo) openUpdater(res.updateInfo);
+        })
+        .catch(e => {
+            console.warn("[Discordmaxxer] DM_SET_ALLOW_PRERELEASE checkForUpdates failed:", e);
+        });
 });
 
 function openUpdater(update: UpdateInfo) {

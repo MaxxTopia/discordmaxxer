@@ -82,6 +82,28 @@ function parseHotkey(hk: string): ParsedHotkey {
     };
 }
 
+function validateHotkey(value: string): boolean | string {
+    const parts = value.toLowerCase().split("+").map(s => s.trim()).filter(Boolean);
+    const key = parts.at(-1) ?? "";
+    const modifiers = parts.slice(0, -1);
+    const allowed = new Set(["ctrl", "control", "alt", "shift"]);
+
+    if (parts.length < 2 || !modifiers.some(m => allowed.has(m))) {
+        return "Use a modifier plus a key, for example ctrl+alt+m.";
+    }
+    if (modifiers.some(m => !allowed.has(m))) {
+        return "Supported modifiers are ctrl, alt, and shift.";
+    }
+    if (!/^(?:[a-z0-9]|f(?:[1-9]|1[0-2]))$/i.test(key)) {
+        return "The final key must be A-Z, 0-9, or F1-F12.";
+    }
+    return true;
+}
+
+function safeHotkey(value: string, fallback: string): string {
+    return validateHotkey(value) === true ? value : fallback;
+}
+
 function matches(e: KeyboardEvent, hk: ParsedHotkey): boolean {
     return (
         e.ctrlKey === hk.ctrl &&
@@ -103,14 +125,16 @@ function reapplyKeybinds() {
 const settings = definePluginSettings({
     muteHotkey: {
         type: OptionType.STRING,
-        description: "Toggle self-mute (format: ctrl+alt+m). Works in-game when 'Use OS-level hotkeys' is on.",
+        description: "Toggle self-mute. Use ctrl+alt+m format; supported modifiers are ctrl, alt, and shift. Works in-game when OS-level hotkeys are on.",
         default: "ctrl+alt+m",
+        isValid: validateHotkey,
         onChange: reapplyKeybinds
     },
     deafenHotkey: {
         type: OptionType.STRING,
-        description: "Toggle self-deafen (format: ctrl+alt+d). Works in-game when 'Use OS-level hotkeys' is on.",
+        description: "Toggle self-deafen. Use ctrl+alt+d format; supported modifiers are ctrl, alt, and shift. Works in-game when OS-level hotkeys are on.",
         default: "ctrl+alt+d",
+        isValid: validateHotkey,
         onChange: reapplyKeybinds
     },
     useGlobalHotkey: {
@@ -135,14 +159,16 @@ async function tryRegisterGlobal(id: string, hotkey: string, cb: () => void): Pr
 }
 
 async function setupKeybinds() {
-    muteGlobalRegistered = await tryRegisterGlobal(MUTE_ID, settings.store.muteHotkey, toggleMute);
-    deafenGlobalRegistered = await tryRegisterGlobal(DEAFEN_ID, settings.store.deafenHotkey, toggleDeafen);
+    const muteHotkey = safeHotkey(settings.store.muteHotkey, "ctrl+alt+m");
+    const deafenHotkey = safeHotkey(settings.store.deafenHotkey, "ctrl+alt+d");
+    muteGlobalRegistered = await tryRegisterGlobal(MUTE_ID, muteHotkey, toggleMute);
+    deafenGlobalRegistered = await tryRegisterGlobal(DEAFEN_ID, deafenHotkey, toggleDeafen);
 
     // Window-focused fallback for whichever hotkey didn't register globally
     // (so the feature still works when the window is focused).
     if (!muteGlobalRegistered || !deafenGlobalRegistered) {
-        const mute = parseHotkey(settings.store.muteHotkey);
-        const deafen = parseHotkey(settings.store.deafenHotkey);
+        const mute = parseHotkey(muteHotkey);
+        const deafen = parseHotkey(deafenHotkey);
         windowHandler = (e: KeyboardEvent) => {
             // Discord's own keybind dispatcher gets first refusal. This is a
             // fallback only for a hotkey Electron could not register globally.
@@ -164,7 +190,7 @@ async function setupKeybinds() {
     }
 
     console.log(
-        `[DMVoiceKeybinds] mute=${settings.store.muteHotkey} deafen=${settings.store.deafenHotkey} ` +
+        `[DMVoiceKeybinds] mute=${muteHotkey} deafen=${deafenHotkey} ` +
             `(global: mute=${muteGlobalRegistered} deafen=${deafenGlobalRegistered})`
     );
 }

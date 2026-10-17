@@ -222,7 +222,7 @@ function onKeyDown(e: KeyboardEvent) {
 export default definePlugin({
     name: "DMStreamMute",
     description:
-        "🔇 Local mute toggle for incoming screenshare audio. Voice chat stays audible — only the streamer's game/system audio gets silenced. Use when a streamer's WASAPI loopback is echoing your own voice back at you and you don't want to walk them through fixing their settings. Hotkey: Ctrl+Shift+M.",
+        "🔇 Optional escape hatch for incoming screenshares: Ctrl+Shift+M persistently mutes stream/game audio while keeping voice chat audible. Useful for echoing or noisy streams; for one stream, Discord's volume slider is simpler.",
     authors: [{ name: "Diggy", id: 0n }],
     settings,
 
@@ -239,7 +239,7 @@ export default definePlugin({
         if (settings.store.showHotkeyHint) {
             console.log(
                 "[DiscordmaxxerStreamMute] Loaded. Toggle incoming screenshare audio with Ctrl+Shift+M, " +
-                    "or use the row in the Discordmaxxer Hub panel."
+                "or change the setting in the plugin settings."
             );
         }
     },

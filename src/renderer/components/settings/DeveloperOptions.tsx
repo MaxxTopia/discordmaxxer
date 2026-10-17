@@ -82,17 +82,19 @@ function StreamHealthSection() {
 
     const liveLines = live
         ? [
+              `Source:                       Screen share track`,
               `Encoder:                      ${live.encoderImplementation} [${live.encoderKind.toUpperCase()}]`,
               `Quality limitation:           ${live.qualityLimitationReason}`,
               `Sending:                      ${live.frameWidth}x${live.frameHeight} @ ${live.framesPerSecond}fps  ${live.kbps}kbps`,
               `Frames dropped at encoder:    ${live.dropPct}%`
           ].join("\n")
-        : "Live encoder:                 (start a screenshare to read it)";
+        : "Live screenshare:             (start a share; camera stats are excluded)";
 
     // Auto-captured ~6s into the most recent Go Live (patches/streamHealthAuto.ts),
     // persisted to settings.json so it's here even after the stream ends.
     const last = (s.lastStreamHealth ?? null) as null | {
         ts: number;
+        sourceKind?: string;
         encoderImplementation: string;
         encoderKind: string;
         qualityLimitationReason: string;
@@ -105,6 +107,7 @@ function StreamHealthSection() {
     const lastLines = last
         ? [
               `Last stream (${new Date(last.ts).toLocaleString()}):`,
+              `  source:    ${last.sourceKind ?? "unknown (older sample may be camera)"}`,
               `  encoder:   ${last.encoderImplementation} [${String(last.encoderKind).toUpperCase()}]`,
               `  limited:   ${last.qualityLimitationReason}   sending ${last.frameWidth}x${last.frameHeight}@${last.framesPerSecond}`,
               `  echo fix:  ${last.echoFix}`,
@@ -117,7 +120,7 @@ function StreamHealthSection() {
         `Hardware acceleration:        ${s.hardwareAcceleration !== false ? "ON" : "OFF"}`,
         `Hardware video acceleration:  ${s.hardwareVideoAcceleration ? "ON" : "OFF"}`,
         `Stream quality:               ${q?.resolution ?? 720}p${q?.frameRate ?? 30}`,
-        `Force WGC (cursor in games):  ${s.screenshareForceWgc ? "ON" : "OFF"}`,
+        `Windows Graphics Capture:     ${s.screenshareForceWgc ? "ON" : "OFF"}`,
         liveLines,
         lastLines
     ].join("\n");
@@ -125,7 +128,16 @@ function StreamHealthSection() {
     // Verdict line driven by the live encoder read.
     let verdict: React.ReactNode = null;
     if (live) {
-        if (live.encoderKind === "software") {
+        if (live.framesPerSecond < 24) {
+            verdict = (
+                <Paragraph>
+                    <b style={{ color: "var(--text-warning)" }}>
+                        Screen-share sender is outputting {live.framesPerSecond} FPS.
+                    </b>{" "}
+                    The capture or encode path is already constrained before the viewer receives it.
+                </Paragraph>
+            );
+        } else if (live.encoderKind === "software") {
             verdict = (
                 <Paragraph>
                     <b style={{ color: "var(--text-danger)" }}>
@@ -153,8 +165,8 @@ function StreamHealthSection() {
         } else {
             verdict = (
                 <Paragraph>
-                    <b style={{ color: "var(--text-positive)" }}>✓ Hardware encoder, no limitation.</b> The sender side
-                    is healthy — any choppiness a viewer sees is on their end or the network.
+                    <b style={{ color: "var(--text-positive)" }}>✓ Sender stats look healthy.</b> The viewer-side result
+                    still needs confirmation from someone watching the stream.
                 </Paragraph>
             );
         }

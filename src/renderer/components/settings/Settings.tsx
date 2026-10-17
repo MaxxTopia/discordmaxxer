@@ -13,6 +13,7 @@ import { Settings, useSettings } from "renderer/settings";
 import { isMac, isWindows } from "renderer/utils";
 
 import { AutoStartToggle } from "./AutoStartToggle";
+import { ChromeWindowOcclusionToggle } from "./ChromeWindowOcclusionToggle";
 import { DeveloperOptionsButton } from "./DeveloperOptions";
 import { DiscordBranchPicker } from "./DiscordBranchPicker";
 import { NotificationBadgeToggle } from "./NotificationBadgeToggle";
@@ -38,6 +39,7 @@ const SettingsOptions: Record<string, Array<BooleanSetting | SettingsComponent>>
     "Discord Branch": [DiscordBranchPicker],
     "System Startup & Performance": [
         AutoStartToggle,
+        ChromeWindowOcclusionToggle,
         {
             key: "hardwareAcceleration",
             title: "Hardware Acceleration",
@@ -54,9 +56,9 @@ const SettingsOptions: Record<string, Array<BooleanSetting | SettingsComponent>>
         },
         {
             key: "screenshareForceWgc",
-            title: "Stream cursor on per-window fullscreen captures",
+            title: "Use WGC for window and screen capture",
             description:
-                "Forces Windows Graphics Capture so the cursor shows up when capturing a single exclusive-fullscreen game window (e.g. Fortnite). WARNING: on this Chromium build WGC can roughly HALVE your screenshare framerate (e.g. ~20fps instead of ~50) — leave this OFF unless you specifically need the cursor on a single-window fullscreen capture. Whole-screen shares show the cursor with this off anyway. Audio works in both modes. Requires a full app restart.",
+                "Changes Discordmaxxer's Windows capture API. It cannot make Chrome keep rendering a covered window; use the Chrome setting above for that. Minimized source windows cannot be captured. WGC may reduce frame rate or affect share audio. Requires a full app restart.",
             defaultValue: false,
             invisible: () => !isWindows
         },

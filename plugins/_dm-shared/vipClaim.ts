@@ -15,10 +15,11 @@
  *   response 409:                        code claimed by a different rig
  *   response 400:                        malformed code or hwid
  *
- * Validation strategy: on plugin start, re-POST stored {code, hwid} to
- * the worker. Idempotent response keeps the binding alive. 409 wipes the
- * local binding (someone else claimed it OR we changed rigs). Network
- * failure trusts the cache for 24h before downgrading to FREE.
+ * Validation strategy: on plugin start, POST stored {code, hwid} to the
+ * worker's read-only /validate route. A successful response keeps the
+ * binding alive and refreshes expiry metadata. Network failure trusts the
+ * cache for 24h before downgrading to FREE; explicit server rejection is
+ * terminal and clears the local binding.
  */
 
 import * as DataStore from "@api/DataStore";
@@ -26,6 +27,9 @@ import * as DataStore from "@api/DataStore";
 import { setClaimCache, Tier } from "./vip";
 
 export const WORKER_URL = "https://optmaxxing-vip.maxxtopia.workers.dev/claim";
+export const VALIDATE_URL = WORKER_URL.replace(/\/claim$/, "/validate");
+export const FREE_CLAIM_START_URL = WORKER_URL.replace(/\/claim$/, "/free-claim/start");
+export const FREE_CLAIM_STATUS_URL = WORKER_URL.replace(/\/claim$/, "/free-claim/status");
 
 export interface ClaimBinding {
     /** The 16-char Crockford code (no MAXX- prefix, no dashes). */
@@ -48,10 +52,12 @@ export interface ClaimBinding {
     /** Unix ms when this binding expires (worker-set). Undefined =
      *  lifetime. tierFromCachedBinding() returns FREE once we're past
      *  this without needing a network round-trip. */
-    expiresAt?: number;
+    expiresAt?: number | null;
     /** Product scope from the worker: "om" | "dm" | "both". Diagnostic;
      *  not used for client-side enforcement (worker is authoritative). */
     scope?: string;
+    /** Last local wall-clock observation used to fail closed on rollback. */
+    lastClientClockAt?: number;
 }
 
 export const OFFLINE_TRUST_MS = 24 * 60 * 60 * 1000; // 24 hours
@@ -75,14 +81,14 @@ export function isValidCode(input: string): boolean {
 
 export interface ClaimResult {
     ok: boolean;
-    status?: "claimed" | "idempotent" | "expired" | "scope-mismatch";
+    status?: string;
     error?: string;
     boundHwid?: string;
     /** When the worker recognises a Founder code, it assigns the next
      *  sequential number (1-33) and returns it here. Stored in the
      *  ClaimBinding for permanent display by the TierFlair plugin. */
     founderNumber?: number;
-    /** Tier the worker granted (1=MAXXER, 2=MAXXER+, 3=MAXXER++). Absent
+    /** Tier the worker granted (0=FREE, 1=MAXXER, 2=MAXXER+, 3=MAXXER++). Absent
      *  for legacy worker responses; caller should default to
      *  MAXXER_PLUS_PLUS when missing. */
     tier?: number;
@@ -90,7 +96,7 @@ export interface ClaimResult {
      *  Stored in the ClaimBinding; the plugin proactively drops the
      *  binding to FREE once Date.now() > expiresAt without waiting for
      *  the next re-validation cycle. */
-    expiresAt?: number;
+    expiresAt?: number | null;
     /** Product scope: "om" | "dm" | "both". Returned for diagnostics +
      *  to confirm the scope-enforcement layer is engaged. */
     scope?: string;
@@ -128,7 +134,9 @@ export async function claimAgainstWorker(code: string, hwid: string, userId?: st
                 boundHwid: body.boundHwid,
                 founderNumber: typeof body.founderNumber === "number" ? body.founderNumber : undefined,
                 tier: typeof body.tier === "number" ? body.tier : undefined,
-                expiresAt: typeof body.expiresAt === "number" ? body.expiresAt : undefined,
+                expiresAt: Object.prototype.hasOwnProperty.call(body, "expiresAt")
+                    ? (typeof body.expiresAt === "number" ? body.expiresAt : null)
+                    : undefined,
                 scope: typeof body.scope === "string" ? body.scope : undefined,
             };
         }
@@ -150,26 +158,53 @@ export async function claimAgainstWorker(code: string, hwid: string, userId?: st
     }
 }
 
+/** Read-only validation of an existing binding. */
+export async function validateAgainstWorker(code: string, hwid: string): Promise<ClaimResult> {
+    try {
+        const res = await fetch(VALIDATE_URL, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ code: normalizeCode(code), hwid, product: "dm" })
+        });
+        const body = await res.json().catch(() => ({}));
+        if (res.ok && body?.ok) {
+            return {
+                ok: true,
+                status: typeof body.status === "string" ? body.status : "valid",
+                boundHwid: body.boundHwid,
+                tier: typeof body.tier === "number" ? body.tier : undefined,
+                expiresAt: Object.prototype.hasOwnProperty.call(body, "expiresAt")
+                    ? (typeof body.expiresAt === "number" ? body.expiresAt : null)
+                    : undefined,
+                scope: typeof body.scope === "string" ? body.scope : undefined,
+            };
+        }
+        return {
+            ok: false,
+            status: typeof body?.status === "string" ? body.status : (
+                res.status === 410 ? "expired" :
+                res.status === 404 ? "unclaimed" :
+                res.status === 403 ? "scope_mismatch" :
+                res.status === 409 ? "hwid_mismatch" : undefined
+            ),
+            error: body?.error || `http ${res.status}`,
+            boundHwid: body?.boundHwid,
+        };
+    } catch (e: any) {
+        return { ok: false, error: `network: ${e?.message || e}` };
+    }
+}
+
 /**
- * Validate an existing binding. Returns:
- *   - true if the worker confirms idempotent re-claim (binding is alive)
- *   - false if the worker rejects (claim was nuked or different hwid)
- *   - null if the network is unreachable (caller decides whether to trust cache)
- *
- * Pass the current Discord userId so pre-2026-05-10 claims (which were
- * stored without userId) get backfilled and start showing up in /roster.
+ * Validate an existing binding without mutating the server ledger.
+ * Returns null only when the network is unreachable, so the caller can use
+ * the bounded offline grace window. Explicit Worker responses are returned
+ * unchanged and are terminal when ok=false.
  */
-export async function reValidateBinding(b: ClaimBinding, userId?: string): Promise<boolean | null> {
-    const r = await claimAgainstWorker(b.code, b.hwid, userId);
-    if (r.ok && r.status === "idempotent") return true;
-    if (r.ok && r.status === "claimed") return true; // first re-claim after worker KV reset
+export async function reValidateBinding(b: ClaimBinding): Promise<ClaimResult | null> {
+    const r = await validateAgainstWorker(b.code, b.hwid);
     if (!r.ok && r.error?.startsWith("network")) return null;
-    // Expired or scope-mismatch are both terminal "this binding is no
-    // longer valid" — caller wipes the local cache and downgrades to
-    // FREE. (Worker schema v0.6+ — older worker responses don't carry
-    // these statuses, fall through to false same as today.)
-    if (r.status === "expired" || r.status === "scope-mismatch") return false;
-    return false;
+    return r;
 }
 
 const STORE_KEY = "dm-vip-claim";
@@ -260,6 +295,113 @@ export function writeBinding(b: ClaimBinding | null): void {
     }
 }
 
+export interface FreeActivationResult {
+    ok: boolean;
+    binding?: ClaimBinding;
+    status?: string;
+    error?: string;
+}
+
+/**
+ * Reserve the OAuth window while the user is still inside the click handler.
+ * The activation request itself is asynchronous, so opening it later can be
+ * rejected by normal popup protection. The caller keeps this handle and
+ * activateFreeProfile navigates it after the worker creates the session.
+ */
+export function reserveFreeActivationWindow(): any | null {
+    const openExternal = (globalThis as any).open;
+    if (typeof openExternal !== "function") return null;
+    try {
+        // Do not pass `noopener,noreferrer` here: Chromium may return null for
+        // that form, which prevents us from navigating the user-authorized tab.
+        return openExternal.call(globalThis, "about:blank", "_blank") ?? null;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Start the identity-checked free profile activation flow.
+ *
+ * The worker deliberately does not accept a userId from this request: the
+ * caller could otherwise claim another person's visible Discord snowflake.
+ * Instead, the worker creates a short-lived OAuth session, the browser asks
+ * Discord who is authorizing it, and the client polls until the worker returns
+ * the Tier 0 binding for this HWID.
+ */
+export async function activateFreeProfile(hwid: string, activationWindow?: any | null): Promise<FreeActivationResult> {
+    const normalizedHwid = typeof hwid === "string" ? hwid.toLowerCase() : "";
+    if (!/^[a-f0-9]{32}$/.test(normalizedHwid)) {
+        try { activationWindow?.close?.(); } catch { /* best effort */ }
+        return { ok: false, error: "HWID is not ready or has an invalid shape." };
+    }
+
+    const existing = readBinding();
+    if (existing?.hwid?.toLowerCase() === normalizedHwid && existing.tier === Tier.FREE) {
+        try { activationWindow?.close?.(); } catch { /* best effort */ }
+        return { ok: true, status: "already-active", binding: existing };
+    }
+
+    try {
+        // DMHub reserves this during its click handler. The dedicated claim
+        // panel has no asynchronous work before calling us, so reserve here
+        // when it did not receive a handle from its caller.
+        const authorizationWindow = activationWindow ?? reserveFreeActivationWindow();
+        if (!authorizationWindow) {
+            return { ok: false, error: "Discord authorization was blocked. Allow the browser window and try again." };
+        }
+
+        const startResponse = await fetch(FREE_CLAIM_START_URL, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ hwid: normalizedHwid }),
+            cache: "no-store",
+        });
+        const start = await startResponse.json().catch(() => ({}));
+        if (!startResponse.ok || !start?.ok || typeof start.session !== "string" || typeof start.authorizeUrl !== "string") {
+            try { authorizationWindow.close?.(); } catch { /* best effort */ }
+            return { ok: false, error: start?.error || `free activation start failed (http ${startResponse.status})` };
+        }
+
+        try {
+            authorizationWindow.location.href = start.authorizeUrl;
+        } catch {
+            try { authorizationWindow.close?.(); } catch { /* best effort */ }
+            return { ok: false, error: "Could not navigate the Discord authorization window." };
+        }
+
+        const deadline = Date.now() + 120_000;
+        while (Date.now() < deadline) {
+            await new Promise(resolve => setTimeout(resolve, 1500));
+            const statusResponse = await fetch(
+                `${FREE_CLAIM_STATUS_URL}?session=${encodeURIComponent(start.session)}`,
+                { method: "GET", cache: "no-store" },
+            );
+            const status = await statusResponse.json().catch(() => ({}));
+            if (status?.status === "claimed" && typeof status.code === "string" && isValidCode(status.code)) {
+                const now = Date.now();
+                const binding: ClaimBinding = {
+                    code: normalizeCode(status.code),
+                    hwid: normalizedHwid,
+                    tier: Tier.FREE,
+                    claimedAt: typeof status.claimedAt === "number" ? status.claimedAt : now,
+                    lastValidatedAt: now,
+                    scope: "dm",
+                    lastClientClockAt: now,
+                };
+                writeBinding(binding);
+                return { ok: true, status: "claimed", binding };
+            }
+            if (status?.status === "error" || status?.status === "expired" || statusResponse.status === 410) {
+                return { ok: false, status: status.status, error: status.error || "free activation did not complete" };
+            }
+        }
+        return { ok: false, status: "timeout", error: "Still waiting for Discord authorization. Open DMVipClaim and try again if you cancelled the browser step." };
+    } catch (error: any) {
+        return { ok: false, error: `network: ${error?.message || error}` };
+    }
+}
+
 /**
  * Tier resolution from local binding alone (no network). Used for
  * synchronous tier checks. Trusts the cache for OFFLINE_TRUST_MS.
@@ -273,14 +415,35 @@ export function tierFromCachedBinding(): Tier {
     if (typeof b.expiresAt === "number" && Date.now() > b.expiresAt) {
         return Tier.FREE;
     }
-    const ageMs = Date.now() - b.lastValidatedAt;
+    const now = Date.now();
+    if (typeof b.lastClientClockAt === "number" && now + 5 * 60 * 1000 < b.lastClientClockAt) {
+        return Tier.FREE;
+    }
+    const ageMs = now - b.lastValidatedAt;
     if (ageMs < OFFLINE_TRUST_MS) return b.tier;
     return Tier.FREE;
 }
 
 /** Refresh a binding's lastValidatedAt without changing other fields. */
-export function bumpValidatedAt(b: ClaimBinding): ClaimBinding {
-    return { ...b, lastValidatedAt: Date.now() };
+export function bumpValidatedAt(
+    b: ClaimBinding,
+    validation?: Pick<ClaimResult, "tier" | "expiresAt" | "scope">,
+): ClaimBinding {
+    const now = Date.now();
+    const rolledBack = typeof b.lastClientClockAt === "number"
+        && now + 5 * 60 * 1000 < b.lastClientClockAt;
+    return {
+        ...b,
+        lastValidatedAt: now,
+        lastClientClockAt: rolledBack ? b.lastClientClockAt : now,
+        ...(typeof validation?.tier === "number" && validation.tier >= Tier.FREE && validation.tier <= Tier.MAXXER_PLUS_PLUS
+            ? { tier: validation.tier as Tier }
+            : {}),
+        ...(validation?.expiresAt !== undefined
+            ? { expiresAt: validation.expiresAt ?? undefined }
+            : {}),
+        ...(validation?.scope !== undefined ? { scope: validation.scope } : {}),
+    };
 }
 
 /** Async HWID retrieval via the VesktopNative bridge. */

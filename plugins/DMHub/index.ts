@@ -16,8 +16,10 @@ import { managedStyleRootNode } from "@api/Styles";
 import { openPluginModal } from "@components/settings/tabs";
 import { createAndAppendStyle } from "@utils/css";
 import definePlugin from "@utils/types";
+import { Toasts } from "@webpack/common";
 
 import { getMyTier, hasTier, Tier, TIER_LABELS } from "../_dm-shared/vip";
+import { activateFreeProfile, getMyHwid, readBinding, reserveFreeActivationWindow } from "../_dm-shared/vipClaim";
 
 const FAB_ID = "dm-hub-fab";
 const PANEL_ID = "dm-hub-panel";
@@ -138,6 +140,26 @@ const HUB_CSS = `
         border-color: rgba(243,175,25,0.45);
         background: linear-gradient(135deg, rgba(243,175,25,0.08), rgba(226,91,255,0.08));
     }
+    .dm-hub-free-activation {
+        padding: 10px;
+        margin: 6px 0 10px;
+        border: 1px solid rgba(96, 220, 255, 0.42);
+        border-radius: 9px;
+        background: linear-gradient(135deg, rgba(57, 182, 255, 0.09), rgba(136, 92, 255, 0.12));
+    }
+    .dm-hub-free-activation-title {
+        font-size: 12px;
+        font-weight: 700;
+        color: #dffaff;
+        margin-bottom: 4px;
+    }
+    .dm-hub-free-activation-copy {
+        font-size: 11px;
+        line-height: 1.4;
+        color: #bfeaf4;
+        opacity: 0.9;
+        margin-bottom: 8px;
+    }
     .dm-hub-row-label {
         flex: 1;
         display: flex;
@@ -257,13 +279,13 @@ interface QuickToggle {
 }
 
 const QUICK_TOGGLES: QuickToggle[] = [
-    { plugin: "VideoBackground", label: "🌟 Video Background", settingKey: "enable", minTier: Tier.MAXXER_PLUS, note: "Set URL in Discordmaxxer plugin settings" },
-    { plugin: "DMTheme", label: "🎨 Maxxer Theme", settingKey: "enable" },
+    { plugin: "VideoBackground", label: "🌟 Video Background", settingKey: "enable", note: "Free for every tier · set URL in Discordmaxxer plugin settings" },
+    { plugin: "DMTheme", label: "🎨 Theme flair", settingKey: "enableFlair", note: "Toggle the extra Discordmaxxer theme personality effects; colors stay applied" },
+    { plugin: "DMDisplayNameStyle", label: "✦ Display Name Style", settingKey: "active", note: "Browse 30 looks in the visual grid", noRestart: true },
     { plugin: "TournamentMode", label: "🎮 Tournament Mode", settingKey: "manuallyActive", note: "Or press Ctrl+Alt+T", noRestart: true },
     { plugin: "CompactView", label: "📐 Compact View", settingKey: "manuallyActive", note: "Or press Ctrl+Alt+H", noRestart: true },
     { plugin: "MassDelete", label: "🗑️ Mass-Delete menu", settingKey: "enableContextMenu", note: "OPT-IN — TOS risk" },
     { plugin: "DMBadge", label: "💎 Profile Badge", settingKey: "showOnOwnProfile" },
-    { plugin: "DMStreamMute", label: "🔇 Mute screenshare audio", settingKey: "muted", note: "Or press Ctrl+Shift+M", noRestart: true }
 ];
 
 function vencord(): any {
@@ -278,9 +300,9 @@ function getSetting(plugin: string, key: string): boolean {
     return !!vencord()?.PlainSettings?.plugins?.[plugin]?.[key];
 }
 
-function setSetting(plugin: string, key: string, value: boolean, noRestart?: boolean) {
+function setSetting(plugin: string, key: string, value: boolean, noRestart?: boolean): boolean {
     const v = vencord();
-    if (!v?.Settings?.plugins?.[plugin]) return;
+    if (!v?.Settings?.plugins?.[plugin]) return false;
 
     // 1) Persist the value through Vencord's settings proxy.
     v.Settings.plugins[plugin][key] = value;
@@ -288,24 +310,55 @@ function setSetting(plugin: string, key: string, value: boolean, noRestart?: boo
     // 2) noRestart: setting's onChange handles runtime state cleanly (e.g.,
     //    TournamentMode's manuallyActive flips active+CSS without needing
     //    a full plugin re-init). Skip the heavy restart in that case.
-    if (noRestart) return;
+    if (noRestart) return true;
 
     // 3) Otherwise re-init the plugin so its start() reads the new value and
     //    onChange-style side effects (CSS injection, badge re-registration,
     //    hotkey re-binding) actually take effect.
     const pluginObj = v.Plugins?.plugins?.[plugin];
-    if (!pluginObj) return;
+    if (!pluginObj) return false;
+
+    let runtimeReady = true;
 
     try {
         v.Plugins.stopPlugin?.(pluginObj);
     } catch (e) {
+        runtimeReady = false;
         console.warn(`[DiscordmaxxerHub] stopPlugin(${plugin}) threw:`, e);
     }
     try {
         v.Plugins.startPlugin?.(pluginObj);
     } catch (e) {
+        runtimeReady = false;
         console.warn(`[DiscordmaxxerHub] startPlugin(${plugin}) threw:`, e);
     }
+    return runtimeReady;
+}
+
+function showHubToast(message: string, type = Toasts.Type.MESSAGE, durationMs = 3500) {
+    Toasts.show({
+        message,
+        type,
+        id: Toasts.genId(),
+        options: { duration: durationMs, position: Toasts.Position.TOP }
+    });
+}
+
+async function activateFreeFromHub(authorizationWindow?: any | null) {
+    panelRoot?.classList.add("hidden");
+    const hwid = await getMyHwid();
+    if (!hwid) {
+        try { authorizationWindow?.close?.(); } catch { /* best effort */ }
+        showHubToast("Could not read this PC's HWID yet. Open DMVipClaim and try again in a moment.", Toasts.Type.FAILURE, 5000);
+        return;
+    }
+    showHubToast("Opening Discord authorization… return here when it is finished.", Toasts.Type.MESSAGE, 5000);
+    const result = await activateFreeProfile(hwid, authorizationWindow);
+    if (result.ok) {
+        showHubToast("Free profile flair is active. Your banner, animated avatar, and colors can sync across PCs.", Toasts.Type.SUCCESS, 6000);
+        return;
+    }
+    showHubToast(result.error || "Free profile activation did not complete.", Toasts.Type.FAILURE, 6000);
 }
 
 function openDMWidgetSettings() {
@@ -329,10 +382,90 @@ function openDMWidgetSettings() {
     }
 }
 
+function openVideoBackgroundSettings() {
+    const plugin = vencord()?.Plugins?.plugins?.VideoBackground;
+    if (plugin) {
+        try {
+            openPluginModal(plugin);
+            return;
+        } catch (e) {
+            console.warn("[DiscordmaxxerHub] could not open VideoBackground modal:", e);
+        }
+    }
+
+    // Keep the same safe fallback used by the other direct plugin shortcuts
+    // if the registry has not finished loading or the settings resolver moves.
+    try {
+        const settingsRouter = vencord()?.Webpack?.Common?.SettingsRouter
+            ?? vencord()?.Webpack?.findByProps?.("openUserSettings");
+        if (typeof settingsRouter?.openUserSettings === "function") {
+            settingsRouter.openUserSettings("vencord_plugins");
+            return;
+        }
+    } catch (e) {
+        console.warn("[DiscordmaxxerHub] could not open VideoBackground settings:", e);
+    }
+
+    console.warn("[DiscordmaxxerHub] VideoBackground settings route is unavailable");
+}
+
+function openDMProfileFlairSettings() {
+    // Open the same editor used by the DMProfileFlair plugin card's cog. The
+    // local Vencord modal shell was repaired to handle this custom editor
+    // safely; sending the user to the generic Plugins list makes the shortcut
+    // look broken and forces them to search for DMProfileFlair manually.
+    try {
+        const v = vencord();
+        const plugin = v?.Plugins?.plugins?.DMProfileFlair;
+        if (plugin) {
+            try {
+                openPluginModal(plugin);
+                return;
+            } catch (e) {
+                console.warn("[DiscordmaxxerHub] could not open DMProfileFlair editor:", e);
+            }
+        }
+
+        // Keep a graceful fallback if the plugin registry has not finished
+        // loading yet or the modal resolver changes in a future Vencord build.
+        const settingsRouter = v?.Webpack?.Common?.SettingsRouter
+            ?? v?.Webpack?.findByProps?.("openUserSettings");
+        if (typeof settingsRouter?.openUserSettings === "function") {
+            settingsRouter.openUserSettings("vencord_plugins");
+            return;
+        }
+    } catch (e) {
+        console.warn("[DiscordmaxxerHub] could not open DMProfileFlair settings:", e);
+    }
+
+    console.warn("[DiscordmaxxerHub] DMProfileFlair settings route is unavailable");
+}
+
+function openDMDisplayNameStyleSettings() {
+    const plugin = vencord()?.Plugins?.plugins?.DMDisplayNameStyle;
+    if (plugin) {
+        try {
+            openPluginModal(plugin);
+            return;
+        } catch (e) {
+            console.warn("[DiscordmaxxerHub] could not open DMDisplayNameStyle modal:", e);
+        }
+    }
+
+    // The style picker is a normal, lightweight plugin settings page. Keep a
+    // safe fallback if the plugin has not finished registering yet.
+    try {
+        vencord()?.Webpack?.Common?.SettingsRouter?.openUserSettings?.("vencord_plugins");
+    } catch (e) {
+        console.warn("[DiscordmaxxerHub] could not open display-name plugin settings:", e);
+    }
+}
+
 function renderPanelHTML(): string {
     const tier = getMyTier();
     const tierLabel = TIER_LABELS[tier];
     const tierClass = tier === Tier.FREE ? "free" : "";
+    const showFreeActivation = tier === Tier.FREE && !readBinding();
 
     const rows = QUICK_TOGGLES.map(t => {
         if (!isPluginEnabled(t.plugin)) {
@@ -369,8 +502,13 @@ function renderPanelHTML(): string {
         </div>
         <div class="dm-hub-tier ${tierClass}">${tierLabel}</div>
         ${tier === Tier.FREE
-            ? `<div class="dm-hub-info">⭐ Upgrade to MAXXER+ for video backgrounds and premium themes.</div>`
+            ? `<div class="dm-hub-info">⭐ Video playback is free. MAXXER+ adds premium themes and more saved background slots.</div>`
             : `<div class="dm-hub-info">Welcome back, ${tierLabel}.</div>`}
+        ${showFreeActivation ? `<div class="dm-hub-free-activation">
+            <div class="dm-hub-free-activation-title">Make your free profile flair visible across PCs</div>
+            <div class="dm-hub-free-activation-copy">Activate once with Discord — no payment and no VIP code. This lets your banner, animated avatar, and profile colors sync to other Discordmaxxer users.</div>
+            <button class="dm-hub-action-btn" data-action="activate-free-profile">Activate free profile</button>
+        </div>` : ""}
         <div class="dm-hub-section">Quick toggles</div>
         ${rows}
         <div class="dm-hub-section">Discover</div>
@@ -379,6 +517,24 @@ function renderPanelHTML(): string {
             <button class="dm-hub-action-btn" data-action="open-tour">Open</button>
         </div>
         <div class="dm-hub-info">Browse featured plugins, enable bundles, and see what each one actually does — no settings-digging required.</div>
+        <div class="dm-hub-section">Background media</div>
+        <div class="dm-hub-row">
+            <div class="dm-hub-row-label">🌟 Set up video background</div>
+            <button class="dm-hub-action-btn" data-action="open-videobackground">Open</button>
+        </div>
+        <div class="dm-hub-info">Choose a direct MP4/WebM URL or upload a local video, then adjust opacity and blur. Playback is free; saved URL slots vary by tier.</div>
+        <div class="dm-hub-section">Profile look</div>
+        <div class="dm-hub-row">
+            <div class="dm-hub-row-label">✦ Browse display-name looks</div>
+            <button class="dm-hub-action-btn" data-action="open-dm-display-name-style">Open</button>
+        </div>
+        <div class="dm-hub-info">Open the visual grid of 30 fonts, colors, finishes, and motion presets. These effects change only how profiles are rendered in Discordmaxxer.</div>
+        <div class="dm-hub-section">Profile flair</div>
+        <div class="dm-hub-row">
+            <div class="dm-hub-row-label">🎨 Customize profile flair</div>
+            <button class="dm-hub-action-btn" data-action="open-dmprofileflair">Open</button>
+        </div>
+        <div class="dm-hub-info">Jump straight to DMProfileFlair's banner, profile-media, and native-color controls.</div>
         <div class="dm-hub-section">Profile widget</div>
         <div class="dm-hub-row">
             <div class="dm-hub-row-label">✨ Create / edit profile widget</div>
@@ -424,10 +580,23 @@ function ensurePanelRoot() {
             if (typeof reopen === "function") reopen();
             return;
         }
+        if (t.dataset.action === "activate-free-profile") {
+            const authorizationWindow = reserveFreeActivationWindow();
+            if (!authorizationWindow) {
+                showHubToast("Discord authorization was blocked. Allow the browser window and try again.", Toasts.Type.FAILURE, 5000);
+                return;
+            }
+            void activateFreeFromHub(authorizationWindow);
+            return;
+        }
         if (t.dataset.action === "refresh-widget-stats") {
             panelRoot!.classList.add("hidden");
             const refresh = (globalThis as any).__dmWidgetRefresh;
-            if (typeof refresh === "function") refresh();
+            if (typeof refresh === "function") {
+                refresh();
+            } else {
+                showHubToast("Widget refresh is unavailable in this client build.", Toasts.Type.FAILURE, 5000);
+            }
             return;
         }
         if (t.dataset.action === "open-dmwidget") {
@@ -435,12 +604,33 @@ function ensurePanelRoot() {
             openDMWidgetSettings();
             return;
         }
+        if (t.dataset.action === "open-videobackground") {
+            panelRoot!.classList.add("hidden");
+            openVideoBackgroundSettings();
+            return;
+        }
+        if (t.dataset.action === "open-dmprofileflair") {
+            panelRoot!.classList.add("hidden");
+            openDMProfileFlairSettings();
+            return;
+        }
+        if (t.dataset.action === "open-dm-display-name-style") {
+            panelRoot!.classList.add("hidden");
+            openDMDisplayNameStyleSettings();
+            return;
+        }
         if (t.classList.contains("dm-hub-toggle") && !t.dataset.locked) {
             const plugin = t.dataset.plugin!;
             const key = t.dataset.key!;
             const next = !getSetting(plugin, key);
             const entry = QUICK_TOGGLES.find(e => e.plugin === plugin && e.settingKey === key);
-            setSetting(plugin, key, next, entry?.noRestart);
+            const applied = setSetting(plugin, key, next, entry?.noRestart);
+            const label = entry?.label ?? plugin;
+            if (applied) {
+                showHubToast(`${label} ${next ? "enabled" : "disabled"}.`, Toasts.Type.SUCCESS);
+            } else {
+                showHubToast(`${label} was saved, but its live state could not be refreshed.`, Toasts.Type.FAILURE, 5000);
+            }
             // Re-render after setting
             panelRoot!.innerHTML = renderPanelHTML();
         }

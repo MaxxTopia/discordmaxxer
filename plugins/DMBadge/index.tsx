@@ -16,9 +16,9 @@
 import { addProfileBadge, BadgePosition, ProfileBadge, removeProfileBadge } from "@api/Badges";
 import { definePluginSettings } from "@api/Settings";
 import definePlugin, { OptionType } from "@utils/types";
-import { RestAPI, Toasts, UserStore } from "@webpack/common";
+import { React, RestAPI, Toasts, UserStore } from "@webpack/common";
 
-import { getRosterTier, refreshRoster } from "../_dm-shared/roster";
+import { getRosterStatus, getRosterTier, refreshRoster } from "../_dm-shared/roster";
 import { Tier } from "../_dm-shared/vip";
 
 // Profile-badge mark — v1 horror-Clyde, 96px PNG with TRANSPARENT background,
@@ -54,26 +54,93 @@ async function clearCustomStatus() {
     }
 }
 
+function BadgeSettingsPanel() {
+    const [busy, setBusy] = React.useState(false);
+    const [status, setStatus] = React.useState("Roster refresh runs automatically when Discordmaxxer starts.");
+
+    async function syncRoster() {
+        if (busy) return;
+        setBusy(true);
+        setStatus("Refreshing the shared roster…");
+        try {
+            await refreshRoster();
+            await loadRemoteList();
+            rebuildKnownIds();
+            const roster = getRosterStatus();
+            setStatus(`Ready — ${roster.userCount} roster users loaded; ${knownIds.size} local badge IDs configured.`);
+        } catch (e) {
+            console.warn("[DiscordmaxxerBadge] manual roster refresh failed:", e);
+            setStatus("Refresh failed. The last known-good roster remains in use.");
+        } finally {
+            setBusy(false);
+        }
+    }
+
+    return (
+        <div style={{
+            border: "1px solid var(--background-modifier-accent)",
+            borderRadius: "8px",
+            padding: "14px",
+            background: "var(--background-secondary-alt)",
+            marginBottom: "12px"
+        }}>
+            <div style={{ fontSize: "15px", fontWeight: 700, marginBottom: "6px" }}>What DMBadge does</div>
+            <div style={{ color: "var(--text-muted)", fontSize: "12px", lineHeight: 1.5 }}>
+                Adds a small Discordmaxxer mark to profiles and popouts inside Discordmaxxer. It is a local client feature: vanilla Discord does not receive this badge and will look unchanged.
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "minmax(90px, 0.35fr) 1fr", gap: "6px 12px", marginTop: "12px", fontSize: "12px" }}>
+                <span style={{ color: "var(--text-muted)" }}>Visible in</span>
+                <strong>Discordmaxxer clients only</strong>
+                <span style={{ color: "var(--text-muted)" }}>Who is found</span>
+                <span>Paid roster users, your own profile, and any IDs you add below</span>
+                <span style={{ color: "var(--text-muted)" }}>Account changes</span>
+                <span>None, except the optional one-time legacy-status cleanup</span>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: "10px", marginTop: "13px", flexWrap: "wrap" }}>
+                <button
+                    type="button"
+                    onClick={syncRoster}
+                    disabled={busy}
+                    style={{
+                        border: "0",
+                        borderRadius: "4px",
+                        padding: "7px 12px",
+                        background: busy ? "var(--background-modifier-accent)" : "var(--brand-experiment, #5865f2)",
+                        color: "white",
+                        cursor: busy ? "wait" : "pointer",
+                        fontWeight: 600
+                    }}
+                >
+                    {busy ? "Refreshing…" : "Refresh roster now"}
+                </button>
+                <span style={{ color: "var(--text-muted)", fontSize: "11px" }}>{status}</span>
+            </div>
+        </div>
+    );
+}
+
 const settings = definePluginSettings({
+    guide: {
+        type: OptionType.COMPONENT,
+        description: "",
+        component: BadgeSettingsPanel
+    },
     // Channel A — profile badge
     showOnOwnProfile: {
         type: OptionType.BOOLEAN,
         description:
-            "[Channel A] Render the DM badge on YOUR OWN profile in YOUR OWN Discordmaxxer client. " +
-            "Note: this toggle is LOCAL-ONLY — it doesn't affect what other people see. The badge only renders inside Discordmaxxer (vanilla Discord doesn't show it). " +
-            "Visibility logic: any user found on the Discordmaxxer tier roster (= anyone who's redeemed a MAXXER / MAXXER+ / MAXXER++ / Founder code) automatically gets a badge on their profile when viewed from another Discordmaxxer client. " +
-            "Free-tier friends who haven't claimed a code aren't in the roster yet — paste their user IDs into 'extraUserIds' below to show their badge.",
+            "Show the badge on your own profile inside Discordmaxxer. This is local-only and does not change what vanilla Discord users see.",
         default: true
     },
     extraUserIds: {
         type: OptionType.STRING,
         description:
-            "[Channel A] Comma-separated additional user IDs to show the badge for. Use this to surface badges on free-tier Discordmaxxer friends who aren't in the tier roster. Right-click a user → 'Copy User ID' (requires Discord Developer Mode in Advanced settings).",
+            "Optional comma-separated Discord user IDs to show the badge for when they are not on the paid roster. Right-click a user → Copy User ID (Developer Mode required).",
         default: ""
     },
     remoteListUrl: {
         type: OptionType.STRING,
-        description: "[Channel A] Optional URL returning a JSON array of user IDs (fetched once on plugin start). Most users can leave this empty — the tier roster covers anyone who's claimed a code.",
+        description: "Advanced: optional HTTPS URL returning a JSON array of user IDs. Most users should leave this empty; the shared tier roster is enough.",
         default: ""
     },
 
@@ -83,7 +150,7 @@ const settings = definePluginSettings({
     clearLegacyStatus: {
         type: OptionType.BOOLEAN,
         description:
-            "Clear any 'Using Discordmaxxer' custom status set by a prior version. Flip ON once to PATCH custom_status to null. Toggling OFF does nothing.",
+            "Advanced one-time cleanup for an old 'Using Discordmaxxer' custom status. Turn ON once only if an older build left that status on your account.",
         default: false,
         onChange: (value: boolean) => {
             if (value) clearCustomStatus();
@@ -156,7 +223,7 @@ const badge: ProfileBadge = {
 export default definePlugin({
     name: "DMBadge",
     description:
-        "A small Discordmaxxer badge on your profile, mod-only visibility (other DM users see it; vanilla Discord users see nothing different). Custom-status / bio / pronouns broadcasting was retired — see DiscordmaxxerPresence (rich presence card with the brand logo) for the identity-broadcast job those channels used to do.",
+        "A small Discordmaxxer-only profile badge. Other Discordmaxxer users can see it; vanilla Discord users see no change. The settings page explains visibility and roster behavior before the advanced fields.",
     authors: [{ name: "Diggy", id: 0n }],
     settings,
 

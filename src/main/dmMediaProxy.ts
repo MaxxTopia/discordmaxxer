@@ -174,7 +174,16 @@ function fetchOnce(
                 path: (parsed.pathname || "/") + parsed.search,
                 method: "GET",
                 lookup: pinnedLookup,
-                headers: rangeHeader ? { range: rangeHeader } : {}
+                // Catbox accepts the same media URL from a browser/curl, but
+                // resets Node's otherwise-valid request when it has no normal
+                // client headers. Keep the request range-aware while sending
+                // a small, honest media-proxy identity so animated banners
+                // can be fetched cross-PC too.
+                headers: {
+                    "user-agent": "Discordmaxxer/0.7 media-proxy",
+                    accept: "*/*",
+                    ...(rangeHeader ? { range: rangeHeader } : {})
+                }
             },
             res => {
                 const status = res.statusCode ?? 0;

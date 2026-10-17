@@ -36,22 +36,33 @@ const FETCH_TIMEOUT_MS = 8000;
 
 /** Custom profile flair set by the user — visible only to other Discordmaxxer
  *  clients (channels E/F/G in DiscordmaxxerBadge). All fields optional; absent
- *  fields fall through to Discord's stock rendering. Tier-gated at render time:
- *  banner needs MAXXER+; avatar needs MAXXER+; theme colors need MAXXER++. */
+ *  fields fall through to Discord's stock rendering. The current showcase
+ *  fields are free at the tier layer but still claim-gated and validated by
+ *  the worker when published. */
 export interface ProfileFlair {
     /** https:// URL to image (png/jpg/webp/gif) or short MP4 video for the
      *  profile-popout banner. ~256 char URL cap; viewer plugin HEAD-checks
      *  Content-Length and bails on >5MB image / >15MB video. */
     bannerUrl?: string;
-    /** https:// URL to an animated avatar (GIF or MP4). Replaces the user's
+    /** https:// URL to an animated avatar (GIF/image). Replaces the user's
      *  Discord avatar in profile popouts (P2) and member list + chat (P5).
-     *  Suppressed when TournamentMode is active. */
+     *  Cross-PC video avatars are not supported; native Discord video-avatar
+     *  actions remain separate. Suppressed when TournamentMode is active. */
     avatarAnimatedUrl?: string;
     /** Hex string `#RRGGBB` — patched into Discord's
      *  `--profile-gradient-primary-color` CSS var on the popout root. */
     themeColorPrimary?: string;
     /** Hex string `#RRGGBB` — patched into `--profile-gradient-secondary-color`. */
     themeColorSecondary?: string;
+    /** Optional owner-chosen crop anchor. MAXXER only; empty/default means center. */
+    bannerPosition?: "center" | "top" | "bottom";
+    avatarPosition?: "center" | "top" | "bottom";
+    /** Optional owner-chosen fit/scale controls. MAXXER+ only. */
+    bannerFit?: "cover" | "contain";
+    avatarFit?: "cover" | "contain";
+    avatarScale?: "0.9" | "1" | "1.1";
+    /** Optional owner-chosen presentation effect. MAXXER++ only. */
+    mediaEffect?: "none" | "glow" | "scanline";
 }
 
 interface RosterEntry {
@@ -82,6 +93,22 @@ interface CacheState {
 let cache: CacheState | null = null;
 let inFlight: Promise<void> | null = null;
 
+type RosterListener = () => void;
+const rosterListeners = new Set<RosterListener>();
+
+function notifyRosterListeners(): void {
+    for (const listener of rosterListeners) {
+        try { listener(); }
+        catch (e) { console.warn("[Discordmaxxer roster] listener failed:", e); }
+    }
+}
+
+/** Repaint consumers as soon as an asynchronous roster replacement lands. */
+export function onRosterChange(listener: RosterListener): () => void {
+    rosterListeners.add(listener);
+    return () => rosterListeners.delete(listener);
+}
+
 /** Highest version we know how to read. The worker may emit a lower version
  *  (e.g. v1 before the worker is redeployed with profile-flair support) — those
  *  payloads parse fine, they just have no `profile` field on any entry. We
@@ -97,6 +124,10 @@ const SUPPORTED_VERSION = 2;
 // one could break out of a CSS value.
 const URL_RE = /^https:\/\/[^\s"']+$/i;
 const COLOR_RE = /^#[0-9a-fA-F]{6}$/;
+const POSITIONS = new Set(["center", "top", "bottom"]);
+const FITS = new Set(["cover", "contain"]);
+const SCALES = new Set(["0.9", "1", "1.1"]);
+const EFFECTS = new Set(["none", "glow", "scanline"]);
 const VALID_TIERS = new Set<number>([Tier.FREE, Tier.MAXXER, Tier.MAXXER_PLUS, Tier.MAXXER_PLUS_PLUS]);
 
 function sanitizeProfile(p: any): ProfileFlair | undefined {
@@ -106,6 +137,12 @@ function sanitizeProfile(p: any): ProfileFlair | undefined {
     if (typeof p.avatarAnimatedUrl === "string" && URL_RE.test(p.avatarAnimatedUrl)) out.avatarAnimatedUrl = p.avatarAnimatedUrl;
     if (typeof p.themeColorPrimary === "string" && COLOR_RE.test(p.themeColorPrimary)) out.themeColorPrimary = p.themeColorPrimary;
     if (typeof p.themeColorSecondary === "string" && COLOR_RE.test(p.themeColorSecondary)) out.themeColorSecondary = p.themeColorSecondary;
+    if (typeof p.bannerPosition === "string" && POSITIONS.has(p.bannerPosition)) out.bannerPosition = p.bannerPosition;
+    if (typeof p.avatarPosition === "string" && POSITIONS.has(p.avatarPosition)) out.avatarPosition = p.avatarPosition;
+    if (typeof p.bannerFit === "string" && FITS.has(p.bannerFit)) out.bannerFit = p.bannerFit;
+    if (typeof p.avatarFit === "string" && FITS.has(p.avatarFit)) out.avatarFit = p.avatarFit;
+    if (typeof p.avatarScale === "string" && SCALES.has(p.avatarScale)) out.avatarScale = p.avatarScale;
+    if (typeof p.mediaEffect === "string" && EFFECTS.has(p.mediaEffect)) out.mediaEffect = p.mediaEffect;
     return Object.keys(out).length ? out : undefined;
 }
 
@@ -163,6 +200,7 @@ async function doFetch(): Promise<void> {
             return;
         }
         cache = { fetchedAt: Date.now(), users: sanitizeUsers(payload.users) };
+        notifyRosterListeners();
     } catch (e) {
         // Network error / abort / parse fail — keep prior cache if any, just
         // refresh the timestamp so we don't hammer the URL on every read.

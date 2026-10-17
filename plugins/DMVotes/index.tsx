@@ -15,7 +15,7 @@
  *
  * Worker source: maxxtopia/votes-worker/{worker.js,wrangler.toml}.
  *
- * Top-voted candidate gets shipped in the next release. The candidate
+ * Top-voted candidate is prioritized for the next release. The candidate
  * list is hand-curated per release — Diggy edits CANDIDATES below and
  * runs `wrangler kv key delete count:<id>` for shipped items.
  */
@@ -47,52 +47,51 @@ interface Candidate {
     blurb: string;
 }
 
-// Curated v0.7.0 candidate list. Removes shipped items each release;
-// always 5-8 candidates. Updated 2026-05-10 — twenty-mention-chimes
-// and real-sound-packs-extension shipped in this same release, so
-// they're out.
+// Curated candidate slate. These are deliberate product bets, not features
+// already shipped in another plugin. Replacing a candidate between polls
+// hides its old tally from the current slate without mutating worker data.
 const CANDIDATES: Candidate[] = [
     {
-        id: "voice-channel-themes",
-        name: "Tier-themed voice-channel audio cues",
+        id: "per-server-profiles",
+        name: "Per-server profiles",
         blurb:
-            "Custom join/leave/mute SFX matched to your active theme — replaces Discord's defaults for MAXXER+/++."
+            "Save a look for each server: theme, cursor, flair, presence, widget skins, and privacy switches change together when you enter."
+    },
+    {
+        id: "profile-flair-presets",
+        name: "Shareable profile flair presets",
+        blurb:
+            "Export a flair, color, and cursor look as a small previewable code, then import it locally without changing your Discord account."
+    },
+    {
+        id: "command-palette",
+        name: "Command palette (Ctrl+K)",
+        blurb:
+            "Search one launcher to open settings, toggle plugins, switch themes, jump to DMs, and run common Discordmaxxer actions."
+    },
+    {
+        id: "screenshare-privacy-lock",
+        name: "Screen-share privacy lock",
+        blurb:
+            "One hotkey temporarily hides custom banners, profile flair, presence text, and media previews while streaming, then restores them."
+    },
+    {
+        id: "animated-theme-studio",
+        name: "Animated theme studio",
+        blurb:
+            "Build and save your own primary/secondary gradient with motion intensity, contrast checks, and a live profile preview."
+    },
+    {
+        id: "widget-layout-builder",
+        name: "Widget layout builder",
+        blurb:
+            "Arrange your profile widget cards, choose a skin per card, and save multiple layouts instead of rebuilding the board each time."
     },
     {
         id: "custom-cursor-byo",
-        name: "Bring-your-own cursor (PNG upload)",
+        name: "Custom cursor editor",
         blurb:
-            "MAXXER++ uploads a custom PNG cursor instead of picking from the bundled six. Local-only, never synced."
-    },
-    {
-        id: "tournament-mode-hotkey",
-        name: "Tournament Mode global keyboard shortcut",
-        blurb:
-            "One-key toggle to enter performance mode without alt-tabbing. Bind whatever you like."
-    },
-    {
-        id: "rich-presence-game-detector",
-        name: "Game-aware Rich Presence",
-        blurb:
-            "MAXXER++ presence shows your current game's name + elapsed time, not just 'Discordmaxxer'. Auto-detects from running processes."
-    },
-    {
-        id: "plugin-spotlight-rotation",
-        name: "Hub Plugin Spotlight rotation",
-        blurb:
-            "Auto-rotating featured-plugin card in the Hub showing one less-known Vencord plugin each launch with a one-click enable."
-    },
-    {
-        id: "username-gradient-nameplates",
-        name: "Tier-color username gradient in chat",
-        blurb:
-            "Your messages render with a subtle MAXXER+/++ gradient on the username — visible only to other Discordmaxxer users."
-    },
-    {
-        id: "afk-auto-deafen-sound",
-        name: "AFK auto-deafen with custom chime",
-        blurb:
-            "Auto-deafen + play your active chime when you go AFK in a voice channel. Also auto-undeafens on return."
+            "Upload a local cursor image, set its hotspot and click effect, and preview it before saving; the file never leaves your PC."
     }
 ];
 
@@ -187,7 +186,7 @@ function VotesPanel() {
                 </div>
                 <div style={{ fontSize: "11.5px", color: "#8a91a3", marginTop: "8px", lineHeight: 1.4 }}>
                     MAXXER++ subscribers vote on what features get built next. The top-voted candidate
-                    ships in the next release. Visit <code>maxxtopia.com/discordmaxxer/vip</code> to upgrade.
+                    is prioritized for the next release. Visit <code>maxxtopia.com/discordmaxxer/vip</code> to upgrade.
                 </div>
             </div>
         );
@@ -227,7 +226,7 @@ function VotesPanel() {
         });
     };
 
-    const total = Object.values(counts).reduce((a, b) => a + b, 0);
+    const total = CANDIDATES.reduce((sum, c) => sum + (counts[c.id] ?? 0), 0);
     const sorted = [...CANDIDATES].sort((a, b) => (counts[b.id] ?? 0) - (counts[a.id] ?? 0));
 
     return (
@@ -243,7 +242,7 @@ function VotesPanel() {
             }}>
                 <strong style={{ color: "#FFD27A" }}>★ MAXXER++ — Plugin Votes</strong>
                 <br />
-                Vote on what ships next. One vote per feature per rig (HWID-bound). Top candidate ships in the next release.
+                Vote for the next feature you would actually use. You may vote for multiple ideas, but only once per idea per rig (HWID-bound). The top candidate is prioritized for the next release.
                 {!loading && (
                     <span style={{ display: "block", marginTop: "4px", fontSize: "11.5px", color: "#8a91a3" }}>
                         {total} total vote{total === 1 ? "" : "s"} · refreshes every 30s
@@ -321,7 +320,7 @@ const settings = definePluginSettings({
 export default definePlugin({
     name: "DMVotes",
     description:
-        "MAXXER++ perk — vote on what ships next. Real-time HWID-bound voting backed by a Cloudflare Worker tally; one vote per rig per feature. The top-voted candidate ships in the next release.",
+        "MAXXER++ perk — vote on what ships next. Real-time HWID-bound voting backed by a Cloudflare Worker tally; one vote per rig per feature. The top-voted candidate is prioritized for the next release.",
     authors: [{ name: "Diggy", id: 0n }],
     settings,
 

@@ -40,47 +40,86 @@ declare global {
 function BetaPanel() {
     const [enabled, setEnabled] = React.useState<boolean>(false);
     const [loaded, setLoaded] = React.useState<boolean>(false);
+    const [saving, setSaving] = React.useState<boolean>(false);
+    const [feedback, setFeedback] = React.useState<{
+        kind: "message" | "success" | "error";
+        text: string;
+    } | null>(null);
     const allowed = hasTier(VIP_GATE);
 
     React.useEffect(() => {
         let alive = true;
-        window.VesktopNative?.beta?.getAllowPrerelease()
+        const beta = window.VesktopNative?.beta;
+        if (typeof beta?.getAllowPrerelease !== "function") {
+            setFeedback({ kind: "error", text: "Beta settings are unavailable in this client build." });
+            setLoaded(true);
+            return () => { alive = false; };
+        }
+        beta.getAllowPrerelease()
             .then(v => { if (alive) { setEnabled(!!v); setLoaded(true); } })
-            .catch(() => { if (alive) setLoaded(true); });
+            .catch(() => {
+                if (alive) {
+                    setFeedback({ kind: "error", text: "Could not read the beta channel setting." });
+                    setLoaded(true);
+                }
+            });
         return () => { alive = false; };
     }, []);
 
     const onToggle = async () => {
         if (!allowed) {
+            const message = `🔒 ${tierGateMessage(VIP_GATE)}`;
+            setFeedback({ kind: "message", text: message });
             Toasts.show({
-                message: `🔒 ${tierGateMessage(VIP_GATE)}`,
+                message,
                 id: Toasts.genId(),
                 type: Toasts.Type.MESSAGE,
-                options: { duration: 4000 }
+                options: { duration: 4000, position: Toasts.Position.TOP }
             });
             return;
         }
+        const beta = window.VesktopNative?.beta;
+        if (typeof beta?.setAllowPrerelease !== "function") {
+            const message = "Beta settings are unavailable in this client build.";
+            setFeedback({ kind: "error", text: message });
+            Toasts.show({
+                message,
+                id: Toasts.genId(),
+                type: Toasts.Type.FAILURE,
+                options: { duration: 4000, position: Toasts.Position.TOP }
+            });
+            return;
+        }
+        if (saving) return;
         const next = !enabled;
         setEnabled(next);
+        setSaving(true);
+        setFeedback({ kind: "message", text: "Saving beta channel preference…" });
         try {
-            await window.VesktopNative?.beta?.setAllowPrerelease(next);
+            await beta.setAllowPrerelease(next);
+            const message = next
+                ? "✅ Beta channel enabled — the next published -beta.N build can auto-update."
+                : "Stable channel restored.";
+            setFeedback({ kind: "success", text: message });
             Toasts.show({
-                message: next
-                    ? "✅ Beta channel enabled — pre-release builds will auto-update."
-                    : "Stable channel restored.",
+                message,
                 id: Toasts.genId(),
                 type: Toasts.Type.SUCCESS,
-                options: { duration: 4000 }
+                options: { duration: 4000, position: Toasts.Position.TOP }
             });
         } catch (e) {
             console.error("[DiscordmaxxerBeta] setAllowPrerelease failed:", e);
             setEnabled(!next); // revert
+            const message = "Failed to switch update channel — check console.";
+            setFeedback({ kind: "error", text: message });
             Toasts.show({
-                message: "Failed to switch update channel — check console.",
+                message,
                 id: Toasts.genId(),
                 type: Toasts.Type.FAILURE,
-                options: { duration: 4000 }
+                options: { duration: 4000, position: Toasts.Position.TOP }
             });
+        } finally {
+            setSaving(false);
         }
     };
 
@@ -113,6 +152,7 @@ function BetaPanel() {
                     border: "none",
                     background: trackColor,
                     cursor: allowed ? "pointer" : "not-allowed",
+                    opacity: saving ? 0.65 : 1,
                     flexShrink: 0,
                     padding: 0,
                     transition: "background 0.15s ease"
@@ -139,6 +179,24 @@ function BetaPanel() {
                         ? "Auto-update from GitHub pre-releases (vX.Y.Z-beta.N). Get features earlier; expect bugs."
                         : "Upgrade to MAXXER++ to opt into early features at https://maxxtopia.com/discordmaxxer/vip"}
                 </div>
+                {feedback && (
+                    <div
+                        role="status"
+                        aria-live="polite"
+                        style={{
+                            marginTop: "7px",
+                            color: feedback.kind === "error"
+                                ? "#ff8d8d"
+                                : feedback.kind === "success"
+                                    ? "#7dffae"
+                                    : "#ffd27a",
+                            fontSize: "11.5px",
+                            lineHeight: 1.35
+                        }}
+                    >
+                        {feedback.text}
+                    </div>
+                )}
             </div>
         </div>
     );
@@ -155,7 +213,7 @@ const settings = definePluginSettings({
 export default definePlugin({
     name: "DMBeta",
     description:
-        "MAXXER++ perk — opt into the beta update channel. When enabled, electron-updater accepts GitHub pre-release tags so you get features ahead of the stable channel. Single toggle in plugin settings.",
+        "MAXXER++ perk — opt into separately published GitHub pre-release builds such as 0.7.91-beta.1. This does not turn your current stable build into a beta; it only changes which published updater releases you can receive.",
     authors: [{ name: "Diggy", id: 0n }],
     settings,
 

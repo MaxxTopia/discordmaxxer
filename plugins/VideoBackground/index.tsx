@@ -1,5 +1,5 @@
 /*
- * Discordmaxxer — VideoBackground plugin (VIP+ feature)
+ * Discordmaxxer — VideoBackground plugin (free core feature)
  * Copyright (c) 2026 Diggy
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
@@ -7,13 +7,13 @@
  * behind Discord's UI, with adjustable opacity and blur. Discord chrome stays
  * fully usable on top.
  *
- * VIP+ feature — gated by Tier.MAXXER_PLUS. Plugin loads for all users so the
- * settings panel shows the upgrade message; actual video injection only fires
- * when the tier check passes.
+ * Video playback is available to every tier. Paid tiers increase the number
+ * of saved background slots; playback itself is not paywalled.
  *
  * Sources: http(s):// URL field, OR an "Upload local video" button that uses
  * URL.createObjectURL on a user-picked file (blob: URLs satisfy Discord's CSP).
- * Local picks are runtime-only — not persisted across reloads.
+ * Local picks are remembered in IndexedDB up to 200 MB and stay separate from
+ * the tiered saved-URL slots.
  */
 
 import * as DataStore from "@api/DataStore";
@@ -24,16 +24,15 @@ import definePlugin, { OptionType } from "@utils/types";
 import { Button, React, Toasts } from "@webpack/common";
 
 import { makePersistentValue } from "../_dm-shared/persist";
-import { getMyTier, hasTier, Tier, TIER_LABELS, tierGateMessage } from "../_dm-shared/vip";
+import { getMyTier, Tier, TIER_LABELS } from "../_dm-shared/vip";
 
-const REQUIRED_TIER = Tier.MAXXER_PLUS;
 const VIDEO_ID = "dm-video-bg";
 
 // Saved video bg slots — persisted via DataStore (IndexedDB). Tier-gated max:
-//   FREE = 1 (funnel: gives a taste, friction to swap pushes upgrade)
-//   MAXXER = 5 · MAXXER+ = 20 · MAXXER++ = unlimited
-// Local file uploads (blob: URLs) stay runtime-only — those are scratchpad
-// content, can't survive relaunch anyway, so they don't count toward slots.
+//   FREE = 1 · MAXXER = 5 · MAXXER+ = 20 · MAXXER++ = unlimited
+// Local file uploads use a runtime blob URL, while the File itself can be
+// remembered in IndexedDB (up to MAX_PERSIST_BYTES). They do not count toward
+// the tiered saved-URL slots.
 // (Was localStorage, which modern Discord nukes → slots silently never saved.)
 const SLOTS_KEY = "dm-video-bg-slots";
 
@@ -102,7 +101,7 @@ function reconcileTournamentMode() {
     const tm = isTournamentModeActive();
     if (tm && !videoEl.paused) {
         videoEl.pause();
-    } else if (!tm && videoEl.paused && settings.store.enable && hasTier(REQUIRED_TIER)) {
+    } else if (!tm && videoEl.paused && settings.store.enable) {
         videoEl.play().catch(() => { /* autoplay policy — harmless, user can toggle */ });
     }
 }
@@ -349,11 +348,6 @@ function logCoverageDiagnostic() {
 }
 
 function refresh() {
-    if (!hasTier(REQUIRED_TIER)) {
-        console.log("[VideoBackground] refresh: tier check failed (need MAXXER+, got tier from claim cache or hardcoded list)");
-        tearDownVideo();
-        return;
-    }
     if (!settings.store.enable) {
         console.log("[VideoBackground] refresh: plugin disabled in settings");
         tearDownVideo();
@@ -678,11 +672,9 @@ function SavedSlotsPanel() {
                 <div style={titleStyle}>💾 Saved video backgrounds</div>
                 <div style={counterStyle}>{slots.length} / {capLabel} · {tierName}</div>
             </div>
-            {!hasTier(REQUIRED_TIER) && (
-                <div style={{ fontSize: 11.5, color: "#cbd0e0", marginBottom: 8, opacity: 0.85 }}>
-                    Saving is available at every tier (FREE saves 1). The video bg <em>feature</em> needs MAXXER+ to actually play — see settings above.
-                </div>
-            )}
+            <div style={{ fontSize: 11.5, color: "#cbd0e0", marginBottom: 8, opacity: 0.85 }}>
+                Video playback is free for every tier. Your tier controls how many background URLs you can save here: FREE 1 · MAXXER 5 · MAXXER+ 20 · MAXXER++ unlimited.
+            </div>
             <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
                 <input
                     type="text"
@@ -733,19 +725,9 @@ function SavedSlotsPanel() {
 const settings = definePluginSettings({
     enable: {
         type: OptionType.BOOLEAN,
-        description: "🌟 Enable video background (requires MAXXER+ tier)",
+        description: "🌟 Enable a video background (free for every tier)",
         default: false,
         onChange: () => {
-            if (settings.store.enable && !hasTier(REQUIRED_TIER)) {
-                Toasts.show({
-                    message: `🔒 ${tierGateMessage(REQUIRED_TIER)}`,
-                    type: Toasts.Type.FAILURE,
-                    id: Toasts.genId(),
-                    options: { duration: 5000, position: Toasts.Position.TOP }
-                });
-                settings.store.enable = false;
-                return;
-            }
             refresh();
         }
     },
@@ -755,8 +737,8 @@ const settings = definePluginSettings({
             "Video URL — must be a DIRECT video file (the link itself ends in .mp4 or .webm). " +
             "YouTube, TikTok and other page links will NOT work: they serve a web page, not a video file. " +
             "TIP: upload your clip to catbox.moe (or any host that hands back a direct .mp4 link) and paste that link here — " +
-            "a URL keeps working after a restart, unlike a local upload. " +
-            "Or use 'Upload local video' below to play a file off your disk (held in memory only — cleared when you reload or restart Discordmaxxer).",
+            "a URL keeps working after a restart. " +
+            "Or use 'Upload local video' below to play a file off your disk (uploads up to 200MB are remembered between restarts and do not use a saved URL slot).",
         default: "",
         onChange: refresh
     },
@@ -835,8 +817,8 @@ const settings = definePluginSettings({
 export default definePlugin({
     name: "VideoBackground",
     description:
-        "🌟 MAXXER+ — Plays a video as Discord's background with adjustable opacity and blur. Use any http(s):// MP4 URL. " +
-        "Discord stays fully usable on top. Tier-gated; non-MAXXER+ users see the settings but can't activate.",
+        "🌟 Free for every tier — play a video as Discord's background with adjustable opacity and blur. Use any http(s):// MP4 URL. " +
+        "Discord stays fully usable on top; paid tiers add more saved background slots.",
     authors: [{ name: "Diggy", id: 0n }],
     settings,
 

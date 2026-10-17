@@ -6,7 +6,7 @@
  * Replaces Vencord's <SpecialCard> donation slot with a 4-tier ladder
  * styled after OG Hypixel 2016 ranks. The ladder shows all tiers, with
  * the user's current tier highlighted, owned tiers checkmarked, and a
- * CTA pointing at discordmaxxer.dev/vip for the next tier up.
+ * CTA pointing at maxxtopia.com/discordmaxxer/vip for the next tier up.
  *
  * Color palette (verified against Minecraft chat colors §a/§b/§c/§6):
  *   FREE        gray   #9aa1ad  (placeholder; not a Hypixel color)
@@ -35,14 +35,23 @@ const LADDER: TierVisual[] = [
         tier: Tier.FREE,
         bracketColor: "#9aa1ad",
         plusColor: null,
-        perks: ["All plugins · all themes", "Tournament Mode · Hub panel", "1 active video bg"],
+        perks: [
+            "57 curated plugins · 5 free themes",
+            "Tournament Mode · Hub panel · Widget Mode",
+            "1 playable video bg · 1 full-quality animated banner · 1 full-quality animated avatar · profile colors"
+        ],
         priceLabel: "Free forever"
     },
     {
         tier: Tier.MAXXER,
         bracketColor: "#55FF55",
         plusColor: null,
-        perks: ["Typing prefix · avatar ring", "5 animated cursor skins", "5 saved video bg slots"],
+        perks: [
+            "Typing prefix · avatar ring",
+            "5 animated cursor skins",
+            "5 saved video bg slots · premium status cosmetics",
+            "Cross-PC banner/avatar crop anchor (center · top · bottom)"
+        ],
         priceLabel: "$4 / month"
     },
     {
@@ -50,9 +59,9 @@ const LADDER: TierVisual[] = [
         bracketColor: "#55FFFF",
         plusColor: null,
         perks: [
-            "Video backgrounds · 3 exclusive themes",
-            "Member list name glow",
-            "Profile popout banner stripe"
+            "20 saved video bg slots · 3 exclusive themes",
+            "Member list name glow · aqua name shimmer",
+            "Show-whole-image fit · avatar scale (90% · 100% · 110%)"
         ],
         priceLabel: "$9 / month"
     },
@@ -61,9 +70,10 @@ const LADDER: TierVisual[] = [
         bracketColor: "#FFAA00",
         plusColor: "#FF5555",
         perks: [
-            "Animated badge · custom presence text",
-            "Voice channel name color",
-            "Beta builds · plugin votes · About credit"
+            "Animated badge · selectable finish",
+            "Voice channel name color · supporter credit",
+            "Beta builds · unlimited video bg slots",
+            "Cross-PC profile-media finishes (soft glow · scanline tint)"
         ],
         priceLabel: "$17 / month"
     }
@@ -263,18 +273,15 @@ export function DiscordmaxxerVipCard() {
                 </a>
             )}
 
-            {/* Founder strip — Hypixel-style scarcity slot. 33 ever, never reissued.
-                Pays $67 once, gets a numbered # badge (hover: "Founder badge"),
-                1 month MAXXER++ free + a 1-month MAXXER++ gift code, plus
-                MAXXER++ price-locked at $12/mo for life (immune to future raises). */}
+            {/* Founder strip — a clear one-time lifetime offer for the first 33 supporters. */}
             <div style={{
                 position: "relative",
                 marginTop: "4px",
                 padding: "14px 16px",
                 borderRadius: "10px",
-                background: "linear-gradient(135deg, rgba(243,175,25,0.12) 0%, rgba(255,85,85,0.10) 100%)",
-                border: "1px solid rgba(243,175,25,0.45)",
-                boxShadow: "0 0 0 1px rgba(243,175,25,0.18) inset, 0 6px 22px rgba(243,175,25,0.18)"
+                background: "linear-gradient(135deg, rgba(226,91,255,0.14) 0%, rgba(0,212,255,0.08) 100%)",
+                border: "1px solid rgba(226,91,255,0.48)",
+                boxShadow: "0 0 0 1px rgba(0,212,255,0.12) inset, 0 6px 22px rgba(226,91,255,0.17)"
             }}>
                 <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
                     <span style={{
@@ -284,24 +291,24 @@ export function DiscordmaxxerVipCard() {
                         width: "44px",
                         height: "44px",
                         borderRadius: "50%",
-                        background: "radial-gradient(circle at 30% 30%, #FFD27A, #C68A1A 60%, #5A3508 100%)",
-                        boxShadow: "0 0 14px rgba(255,170,0,0.6), inset 0 0 6px rgba(255,255,255,0.35)",
+                        background: "radial-gradient(circle at 30% 30%, #f4d4ff, #e25bff 60%, #4a1671 100%)",
+                        boxShadow: "0 0 14px rgba(226,91,255,0.65), 0 0 24px rgba(0,212,255,0.22), inset 0 0 6px rgba(255,255,255,0.35)",
                         fontFamily: '"Tungsten Bold","Bebas Neue","Oswald","Arial Black",sans-serif',
                         fontSize: "18px",
                         fontWeight: 800,
-                        color: "#1a0e02",
+                        color: "#190b2e",
                         letterSpacing: "0.02em",
                         flexShrink: 0
                     }} title="Founder badge">
                         #
                     </span>
                     <div style={{ flex: 1, minWidth: "200px" }}>
-                        <div style={{ fontSize: "14px", fontWeight: 700, color: "#FFD580", letterSpacing: "0.01em" }}>
-                            Founder · 33 ever, never reissued
+                        <div style={{ fontSize: "14px", fontWeight: 700, color: "#f4d4ff", letterSpacing: "0.01em" }}>
+                            Founder · first 33 slots only
                         </div>
                         <div style={{ fontSize: "12px", color: "#cbd0e0", marginTop: "3px", lineHeight: 1.4 }}>
-                            $67 one-time → your own numbered badge · 1 mo MAXXER++ free · 1-mo gift code for a friend ·
-                            <strong style={{ color: "#FFD27A" }}> MAXXER++ at $12/mo for life</strong> (price-locked).
+                            $67 once → lifetime MAXXER+ on your account · numbered Founder badge #1–#33 ·
+                            <strong style={{ color: "#8feaff" }}> no monthly charge</strong>.
                         </div>
                     </div>
                 </div>
@@ -315,10 +322,10 @@ export function DiscordmaxxerVipCard() {
                             borderRadius: "6px",
                             fontSize: "12.5px",
                             fontWeight: 700,
-                            color: "#1a0e02",
-                            background: "linear-gradient(135deg, #FFD27A, #FFAA00)",
+                            color: "#190b2e",
+                            background: "linear-gradient(135deg, #e25bff, #00d4ff)",
                             textDecoration: "none",
-                            boxShadow: "0 0 16px rgba(255,170,0,0.45)",
+                            boxShadow: "0 0 16px rgba(226,91,255,0.45)",
                             letterSpacing: "0.04em",
                             textTransform: "uppercase"
                         }}
@@ -326,7 +333,7 @@ export function DiscordmaxxerVipCard() {
                         Claim a Founder slot →
                     </a>
                     <span style={{ fontSize: "11px", color: "#8a91a3", fontFamily: 'ui-monospace,Menlo,Consolas,monospace' }}>
-                        Hover the # to confirm: "Founder badge"
+                        One payment. No auto-renewal.
                     </span>
                 </div>
             </div>

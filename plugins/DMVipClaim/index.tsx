@@ -10,13 +10,13 @@
  *   3. On success, store binding in localStorage keyed dm-vip-claim.
  *   4. vip.ts reads that binding cache for getMyTier() resolution.
  *
- * On plugin start, if there's already a stored binding, re-validate it
- * against the worker (idempotent re-claim). If the worker rejects, the
- * binding is wiped and the user drops to FREE on next tier check.
+ * On plugin start, if there's already a stored binding, validate it against
+ * the worker's read-only route. If the worker rejects, the binding is wiped
+ * and the user drops to FREE on next tier check.
  *
  * Codes minted via optimizationmaxxing/scripts/mint-unbound-codes.py.
- * Each successful claim grants Tier.MAXXER_PLUS_PLUS in v0.5 (single-tier).
- * Multi-tier codes are a v0.6 schema extension.
+ * The worker is authoritative for the tier and duration. Legacy worker
+ * responses without tier metadata still fall back to MAXXER++ below.
  */
 
 import { definePluginSettings } from "@api/Settings";
@@ -26,6 +26,7 @@ import { React, Toasts, UserStore } from "@webpack/common";
 import {
     bumpValidatedAt,
     ClaimBinding,
+    activateFreeProfile,
     claimAgainstWorker,
     getMyHwid,
     isValidCode,
@@ -63,12 +64,20 @@ function formatCodeForDisplay(code: string): string {
     return "MAXX-" + chunks.join("-");
 }
 
+function tierFromWorkerResult(tier: number | undefined): Tier {
+    const numeric = Number(tier);
+    return Number.isInteger(numeric) && numeric >= Tier.FREE && numeric <= Tier.MAXXER_PLUS_PLUS
+        ? numeric as Tier
+        : Tier.MAXXER_PLUS_PLUS;
+}
+
 function ClaimPanel() {
     const [hwid, setHwid] = React.useState<string | null>(null);
     const [hwidErr, setHwidErr] = React.useState<string | null>(null);
     const [binding, setBinding] = React.useState<ClaimBinding | null>(() => readBinding());
     const [code, setCode] = React.useState("");
     const [claiming, setClaiming] = React.useState(false);
+    const [activatingFree, setActivatingFree] = React.useState(false);
 
     React.useEffect(() => {
         let cancelled = false;
@@ -89,21 +98,29 @@ function ClaimPanel() {
             const r = await claimAgainstWorker(norm, hwid, currentUserId());
             if (r.ok) {
                 const now = Date.now();
+                const grantedTier = tierFromWorkerResult(r.tier);
+                const grantedLabel = TIER_LABELS[grantedTier];
+                const durationLabel = r.expiresAt == null
+                    ? "Lifetime access."
+                    : `Access until ${new Date(r.expiresAt).toLocaleDateString()}.`;
                 const fresh: ClaimBinding = {
                     code: norm,
                     hwid,
-                    tier: Tier.MAXXER_PLUS_PLUS,
+                    tier: grantedTier,
                     claimedAt: now,
                     lastValidatedAt: now,
-                    founderNumber: r.founderNumber
+                    founderNumber: r.founderNumber,
+                    ...(r.expiresAt !== undefined ? { expiresAt: r.expiresAt } : {}),
+                    ...(r.scope ? { scope: r.scope } : {}),
+                    lastClientClockAt: now,
                 };
                 writeBinding(fresh);
                 setBinding(fresh);
                 setCode("");
                 const founderTag = r.founderNumber ? ` Founder #${r.founderNumber} of 33.` : "";
                 toast(r.status === "claimed"
-                    ? `🎉 MAXXER++ unlocked.${founderTag} Restart Discordmaxxer to refresh badges.`
-                    : `✅ Code already bound to this rig — VIP active.${founderTag}`, Toasts.Type.SUCCESS);
+                    ? `🎉 ${grantedLabel} unlocked. ${durationLabel}${founderTag} Restart Discordmaxxer to refresh badges.`
+                    : `✅ Code already bound to this rig — ${grantedLabel} active. ${durationLabel}${founderTag}`, Toasts.Type.SUCCESS);
             } else {
                 if (r.boundHwid && r.boundHwid !== hwid) {
                     toast("That code is already claimed by another rig. One code, one machine.", Toasts.Type.FAILURE);
@@ -122,6 +139,22 @@ function ClaimPanel() {
         toast("Local VIP binding cleared. The code stays bound to this rig on the server — re-enter to restore.", Toasts.Type.MESSAGE);
     };
 
+    const onActivateFree = async () => {
+        if (!hwid) { toast("HWID not ready yet — try again in a sec.", Toasts.Type.FAILURE); return; }
+        setActivatingFree(true);
+        try {
+            const result = await activateFreeProfile(hwid);
+            if (result.ok && result.binding) {
+                setBinding(result.binding);
+                toast("Free profile flair is active. Your banner, animated avatar, and colors can now sync across Discordmaxxer PCs.", Toasts.Type.SUCCESS);
+            } else {
+                toast(result.error || "Free activation did not complete.", Toasts.Type.FAILURE);
+            }
+        } finally {
+            setActivatingFree(false);
+        }
+    };
+
     const wrap: React.CSSProperties = {
         display: "flex", flexDirection: "column", gap: "10px",
         padding: "14px 16px", marginTop: "10px",
@@ -135,6 +168,7 @@ function ClaimPanel() {
     const mono: React.CSSProperties = { fontFamily: "ui-monospace, Menlo, Consolas, monospace", fontSize: "12px", color: "#cbd0e0", userSelect: "all" };
     const input: React.CSSProperties = { padding: "9px 11px", borderRadius: "6px", border: "1px solid rgba(255,255,255,0.12)", background: "rgba(0,0,0,0.3)", color: "#fff", fontFamily: "ui-monospace, Menlo, Consolas, monospace", fontSize: "13px", width: "100%" };
     const btn: React.CSSProperties = { padding: "9px 16px", borderRadius: "6px", border: "none", color: "#0e1330", background: "linear-gradient(135deg,#ffaa00,#ff5555)", fontWeight: 700, cursor: "pointer", letterSpacing: "0.02em" };
+    const freeBtn: React.CSSProperties = { padding: "9px 16px", borderRadius: "6px", border: "1px solid rgba(96, 220, 255, 0.65)", color: "#dffaff", background: "linear-gradient(135deg, rgba(57, 182, 255, 0.32), rgba(136, 92, 255, 0.35))", fontWeight: 700, cursor: "pointer", letterSpacing: "0.02em" };
     const btnSecondary: React.CSSProperties = { padding: "7px 12px", borderRadius: "6px", border: "1px solid rgba(255,255,255,0.12)", background: "transparent", color: "#cbd0e0", fontSize: "12px", cursor: "pointer" };
 
     return (
@@ -149,7 +183,8 @@ function ClaimPanel() {
                     <div style={mono}>{formatCodeForDisplay(binding.code)} → {TIER_LABELS[binding.tier]}</div>
                     <div style={{ ...mono, marginTop: 4, opacity: 0.7 }}>
                         Claimed {new Date(binding.claimedAt).toLocaleString()} ·
-                        last checked {new Date(binding.lastValidatedAt).toLocaleString()}
+                        last checked {new Date(binding.lastValidatedAt).toLocaleString()} ·
+                        {binding.expiresAt ? ` expires ${new Date(binding.expiresAt).toLocaleDateString()}` : " lifetime access"}
                     </div>
                     <div style={{ marginTop: 10 }}>
                         <button style={btnSecondary} onClick={onRevoke}>Clear local binding</button>
@@ -157,9 +192,18 @@ function ClaimPanel() {
                 </div>
             ) : (
                 <div>
+                    <div style={{ marginBottom: 14, padding: "12px", borderRadius: "8px", border: "1px solid rgba(96, 220, 255, 0.35)", background: "linear-gradient(135deg, rgba(57, 182, 255, 0.08), rgba(136, 92, 255, 0.10))" }}>
+                        <div style={label}>Activate free profile flair</div>
+                        <div style={{ marginBottom: 9, opacity: 0.85 }}>
+                            No payment and no VIP code. Click once, authorize the Discord account in your browser, then return here. This activates one free Tier 0 binding for this PC so your banner, animated avatar, and profile colors can sync to other Discordmaxxer users.
+                        </div>
+                        <button style={freeBtn} onClick={onActivateFree} disabled={activatingFree || !hwid}>
+                            {activatingFree ? "Waiting for Discord…" : "Activate free profile"}
+                        </button>
+                    </div>
                     <div style={label}>Redeem a VIP code</div>
                     <div style={{ marginBottom: 8, opacity: 0.85 }}>
-                        Codes look like <code>MAXX-XXXX-XXXX-XXXX-XXXX</code>. Each one binds to ONE rig — the first machine to claim it wins, future attempts on other rigs are rejected.
+                        Paid codes still unlock higher tiers. They look like <code>MAXX-XXXX-XXXX-XXXX-XXXX</code> and bind to ONE rig — the first machine to claim one wins.
                     </div>
                     <input
                         style={input}
@@ -197,7 +241,7 @@ const settings = definePluginSettings({
 export default definePlugin({
     name: "DMVipClaim",
     description:
-        "Redeem a HWID-locked VIP code to unlock MAXXER++ tier. Each code binds to one rig (BIOS UUID + serial + CPU). " +
+        "Activate free profile flair with Discord, or redeem a HWID-locked VIP code; the worker chooses the tier and duration, including lifetime Founder claims. Each binding uses one rig (BIOS UUID + serial + CPU). " +
         "Same backend as optimizationmaxxing — codes work across both products on the same machine. " +
         "Validation is online; offline access trusts the cache for 24 hours.",
     authors: [{ name: "Diggy", id: 0n }],
@@ -205,20 +249,17 @@ export default definePlugin({
 
     async start() {
         // Re-validate the stored binding against the worker on launch.
-        // - true:    binding still alive, refresh lastValidatedAt
-        // - false:   worker rejected (claim wiped or hwid mismatch), wipe local
+        // - ok:      binding still alive, refresh timestamps + expiry metadata
+        // - !ok:     worker rejected (revoked, expired, wrong HWID, etc.), wipe local
         // - null:    network unreachable, leave alone (24h cache trust kicks in)
-        //
-        // Pass the current userId so pre-2026-05-10 claims (stored before
-        // the userId field existed) get backfilled and start showing up in
-        // the public /roster — which drives cross-user TierFlair badges.
         const b = readBinding();
         if (!b) return;
         try {
-            const ok = await reValidateBinding(b, currentUserId());
-            if (ok === true) writeBinding(bumpValidatedAt(b));
-            else if (ok === false) writeBinding(null);
-            // ok === null: leave cached binding intact, vip.ts handles 24h fade
+            const result = await reValidateBinding(b);
+            if (result?.ok) writeBinding(bumpValidatedAt(b, result));
+            else if (result === null) {
+                // Leave cached binding intact; vip.ts handles the 24h fade.
+            } else writeBinding(null);
         } catch (e) {
             console.warn("[DiscordmaxxerVipClaim] revalidation failed:", e);
         }

@@ -36,6 +36,7 @@
 
 import { definePluginSettings } from "@api/Settings";
 import definePlugin, { OptionType, PluginNative } from "@utils/types";
+import * as DataStore from "@api/DataStore";
 import { Button, React, RestAPI, Toasts, UserStore } from "@webpack/common";
 
 import { makePersistentValue } from "../_dm-shared/persist";
@@ -50,7 +51,11 @@ const Native = VencordNative.pluginHelpers.DMWidget as PluginNative<typeof impor
 // giant cosmetics catalog. The user can still paste any direct image URL.
 const DEFAULT_HEROES: Record<string, string> = {
     valorant: "https://media.valorant-api.com/agents/bb2a4828-46eb-8cd1-e765-15848195d751/fullportrait.png",
-    fortnite: "https://fortnite-api.com/images/cosmetics/br/cid_530_athena_commando_f_blackmonday_1bv6j/featured.png"
+    // The original Catwoman preset was the two-pose featured render. The
+    // current Fortnite-API endpoint now serves only the single goggles-down
+    // pose, so use the verified public mirror that still serves the original
+    // 1024px artwork instead of silently changing the preset's appearance.
+    fortnite: "https://image.fnbr.co/outfit/5d8610e074b719851d631e9c/featured.png"
 };
 
 const VALORANT_HERO_PRESETS: Record<string, string> = {
@@ -62,8 +67,31 @@ const VALORANT_HERO_PRESETS: Record<string, string> = {
 };
 
 const FORTNITE_HERO_PRESETS: Record<string, string> = {
-    catwoman: DEFAULT_HEROES.fortnite
+    // Keep this intentionally small: these are reliable transparent cutouts
+    // that make good widget heroes without turning the editor into a full
+    // cosmetics catalog. Custom image URL remains available for everything
+    // else.
+    catwoman: DEFAULT_HEROES.fortnite,
+    midas: "https://fortnite-api.com/images/cosmetics/br/cid_694_athena_commando_m_catburglar/featured.png",
+    spiderGwen: "https://fortnite-api.com/images/cosmetics/br/character_rosedust/featured.png",
+    drift: "https://fortnite-api.com/images/cosmetics/br/cid_161_athena_commando_m_drift/featured.png",
+    blackKnight: "https://fortnite-api.com/images/cosmetics/br/cid_035_athena_commando_m_medieval/featured.png",
+    peely: "https://fortnite-api.com/images/cosmetics/br/cid_349_athena_commando_m_banana/featured.png"
 };
+
+const FORTNITE_HERO_PRESET_OPTIONS = [
+    { label: "Catwoman", value: "catwoman" },
+    { label: "Midas", value: "midas" },
+    { label: "Spider-Gwen", value: "spiderGwen" },
+    { label: "Drift", value: "drift" },
+    { label: "Black Knight", value: "blackKnight" },
+    { label: "Peely", value: "peely" }
+] as const;
+
+// Private account-specific repair: Diggyai's existing Fortnite widget uses the
+// two-style Catwoman hero, while shared Automatic behavior stays unchanged for
+// every other Discordmaxxer account.
+const DIGGYAI_ACCOUNT_ID = "1501342589318594625";
 
 // ---- local (per-user) identity: the self-owned app + its widget config ------
 interface WidgetIdentity {
@@ -76,9 +104,36 @@ interface WidgetIdentity {
     rankIconName: string; // the rank name that badge is for (skip re-upload until it changes)
     peakIconKey: string;  // uploaded rank-badge asset for the peak-rank stat cell
     peakIconName: string;
+    widgetStyle?: string;
+    widgetStyleSource?: "local" | "remote" | "default";
+    widgetStyleUpdatedAt?: number;
+    vanillaSkinAssetKey?: string;
+    topLayout?: "hero" | "contained";
+    bottomLayout?: "stats" | "progress";
 }
-const EMPTY_IDENTITY: WidgetIdentity = { appId: "", configId: "", heroAssetKey: "", heroImageUrl: "", appIconUrl: "", rankIconKey: "", rankIconName: "", peakIconKey: "", peakIconName: "" };
-const parseId = (raw: any): WidgetIdentity => ({ appId: String(raw?.appId ?? ""), configId: String(raw?.configId ?? ""), heroAssetKey: String(raw?.heroAssetKey ?? ""), heroImageUrl: String(raw?.heroImageUrl ?? ""), appIconUrl: String(raw?.appIconUrl ?? ""), rankIconKey: String(raw?.rankIconKey ?? ""), rankIconName: String(raw?.rankIconName ?? ""), peakIconKey: String(raw?.peakIconKey ?? ""), peakIconName: String(raw?.peakIconName ?? "") });
+const EMPTY_IDENTITY: WidgetIdentity = { appId: "", configId: "", heroAssetKey: "", heroImageUrl: "", appIconUrl: "", rankIconKey: "", rankIconName: "", peakIconKey: "", peakIconName: "", vanillaSkinAssetKey: "" };
+const parseId = (raw: any): WidgetIdentity => ({ appId: String(raw?.appId ?? ""), configId: String(raw?.configId ?? ""), heroAssetKey: String(raw?.heroAssetKey ?? ""), heroImageUrl: String(raw?.heroImageUrl ?? ""), appIconUrl: String(raw?.appIconUrl ?? ""), rankIconKey: String(raw?.rankIconKey ?? ""), rankIconName: String(raw?.rankIconName ?? ""), peakIconKey: String(raw?.peakIconKey ?? ""), peakIconName: String(raw?.peakIconName ?? ""), widgetStyle: typeof raw?.widgetStyle === "string" ? raw.widgetStyle : undefined, widgetStyleSource: raw?.widgetStyleSource === "local" || raw?.widgetStyleSource === "remote" || raw?.widgetStyleSource === "default" ? raw.widgetStyleSource : undefined, widgetStyleUpdatedAt: Number.isSafeInteger(raw?.widgetStyleUpdatedAt) && raw.widgetStyleUpdatedAt >= 0 ? raw.widgetStyleUpdatedAt : undefined, vanillaSkinAssetKey: typeof raw?.vanillaSkinAssetKey === "string" ? raw.vanillaSkinAssetKey : undefined, topLayout: raw?.topLayout === "hero" || raw?.topLayout === "contained" ? raw.topLayout : undefined, bottomLayout: raw?.bottomLayout === "stats" || raw?.bottomLayout === "progress" ? raw.bottomLayout : undefined });
+
+// Discord keeps the published widget config remotely, while DMWidget's
+// editor draft (including game IDs and keys) is local. Keep a small, safe
+// snapshot of the public part of the config so a reinstall can restore the
+// visible fields without ever pretending that a private API key was recovered.
+interface PublishedWidgetSnapshot {
+    appName: string;
+    configId: string;
+    title: string;
+    topLayout: "hero" | "contained";
+    bottomLayout: "stats" | "progress";
+    stats: string[];
+    progressLabel: string;
+    progressPercent: number;
+    heroAssetKey: string;
+    appIconUrl: string;
+    updatedAt: string;
+}
+
+const publishedWidgetSnapshots = new Map<string, PublishedWidgetSnapshot>();
+const publishedWidgetHydrated = new Set<string>();
 
 // Multiple widgets = one Discord app per game template ("slot"). The slot key
 // IS the gameTemplate value ("fortnite" / "valorant" / "none"), so the template
@@ -91,12 +146,71 @@ const slots = makePersistentValue<Slots>("dm-widget-slots", {}, raw => {
     for (const k of Object.keys(raw)) out[k] = parseId((raw as any)[k]);
     return out;
 });
+// The old store was global to the Discordmaxxer install. That meant switching
+// between DiggyAI and DiggyT could make one account's local app ids appear to
+// vanish or, worse, make the editor point at the other account's app. Keep the
+// old key for backwards compatibility, but archive the recovered identities by
+// Discord account once the current user is known.
+type AccountSlots = Record<string, Slots>;
+const accountSlots = makePersistentValue<AccountSlots>("dm-widget-slots-by-account", {}, raw => {
+    if (typeof raw !== "object" || raw === null) return null;
+    const out: AccountSlots = {};
+    for (const accountId of Object.keys(raw)) {
+        const value = (raw as any)[accountId];
+        if (typeof value !== "object" || value === null) continue;
+        const scoped: Slots = {};
+        for (const k of Object.keys(value)) scoped[k] = parseId(value[k]);
+        out[accountId] = scoped;
+    }
+    return out;
+});
 // Legacy single-widget store — migrated into a slot on first load.
 const legacyIdentity = makePersistentValue<WidgetIdentity>("dm-widget-identity", EMPTY_IDENTITY, raw => (raw && typeof raw === "object" ? parseId(raw) : null));
 
 let slotsMigrated = false;
+let activeSlotsAccountId = "";
 async function ensureSlots(): Promise<void> {
-    await slots.ready; await legacyIdentity.ready;
+    await slots.ready; await accountSlots.ready; await legacyIdentity.ready;
+
+    const accountId = String(UserStore.getCurrentUser()?.id ?? "");
+    if (accountId && activeSlotsAccountId !== accountId) {
+        const previousAccountId = activeSlotsAccountId;
+        const previousSlots = slots.get();
+        const archived = accountSlots.get()[accountId];
+
+        // The first account seen owns any pre-v0.7.73 unscoped data. On a real
+        // account switch, save the previous account before loading the new one.
+        if (previousAccountId && previousAccountId !== accountId) {
+            accountSlots.set({ ...accountSlots.get(), [previousAccountId]: previousSlots });
+        } else if (!previousAccountId && !archived && Object.keys(previousSlots).length > 0) {
+            accountSlots.set({ ...accountSlots.get(), [accountId]: previousSlots });
+        }
+
+        activeSlotsAccountId = accountId;
+        publishedWidgetSnapshots.clear();
+        publishedWidgetHydrated.clear();
+        // Runtime attachment maps belong to the signed-in account too. Clear
+        // them before loading another account so a profile card cannot briefly
+        // inherit the previous account's skin or application hints.
+        attachedWidgetStyles.clear();
+        attachedWidgetSlots.clear();
+        attachedWidgetHints.clear();
+        attachedWidgetProfileAccountId = "";
+        attachedWidgetProfileVerifiedAt = 0;
+        attachedWidgetRefreshAt = 0;
+        // Let the new account start its own reconciliation immediately. The
+        // old task remains harmless because it checks the account before every
+        // commit, and its finally block will not clear a newer task.
+        attachedWidgetRefreshPromise = null;
+        widgetApplicationCacheEpoch++;
+        if (archived) {
+            slots.set(archived);
+        } else if (previousAccountId && previousAccountId !== accountId) {
+            // Do not leak the previous account's app ids into a new account.
+            slots.set({});
+        }
+    }
+
     if (slotsMigrated) return;
     slotsMigrated = true;
     if (Object.keys(slots.get()).length === 0) {
@@ -104,16 +218,96 @@ async function ensureSlots(): Promise<void> {
         if (SNOWFLAKE.test(legacy.appId)) {
             const key = String((settings.store as any).gameTemplate ?? "none") || "none";
             slots.set({ [key]: legacy });
+            if (activeSlotsAccountId) accountSlots.set({ ...accountSlots.get(), [activeSlotsAccountId]: { [key]: legacy } });
         }
     }
 }
 const getSlot = (key: string): WidgetIdentity => ({ ...EMPTY_IDENTITY, ...(slots.get()[key] ?? {}) });
-const setSlot = (key: string, v: WidgetIdentity): void => slots.set({ ...slots.get(), [key]: v });
+const setSlot = (key: string, v: WidgetIdentity): void => {
+    const next = { ...slots.get(), [key]: v };
+    slots.set(next);
+    if (activeSlotsAccountId) accountSlots.set({ ...accountSlots.get(), [activeSlotsAccountId]: next });
+};
 const slotKeyOf = (): string => String((settings.store as any).gameTemplate ?? "none") || "none";
 // Game slots that currently have a deployed app (for auto-refresh).
 const deployedGameSlots = (): string[] => Object.entries(slots.get()).filter(([k, v]) => (k === "fortnite" || k === "valorant") && SNOWFLAKE.test(v.appId)).map(([k]) => k);
 
+const MAX_WIDGET_IMAGE_BYTES = 8 * 1024 * 1024;
+const LOCAL_WIDGET_IMAGE_PREFIX = "dm-widget-local-hero:";
+const widgetImageMime = (blob: Blob): string => {
+    const mime = String(blob.type ?? "").toLowerCase();
+    if (["image/png", "image/jpeg", "image/webp", "image/gif"].includes(mime)) return mime;
+    const name = String((blob as File).name ?? "").toLowerCase();
+    return name.endsWith(".png") ? "image/png"
+        : name.endsWith(".jpg") || name.endsWith(".jpeg") ? "image/jpeg"
+            : name.endsWith(".webp") ? "image/webp"
+                : name.endsWith(".gif") ? "image/gif" : "";
+};
+const localWidgetImageKey = (slotKey: string): string => `${LOCAL_WIDGET_IMAGE_PREFIX}${slotKey}`;
+
+async function readWidgetImageBlob(url: string, localFile?: Blob | null, announce = true): Promise<Blob | null> {
+    if (!url && !localFile) return null;
+    let blob: Blob | null = localFile ?? null;
+    if (!blob && url) {
+        try {
+            const r = await fetch(url, { credentials: "omit" });
+            if (!r.ok) throw new Error("HTTP " + r.status);
+            blob = await r.blob();
+        } catch {
+            // Renderer fetch can be blocked by CORS / CSP. The main process is
+            // not CORS-bound, so use it as the same fallback as the upload path.
+            const nat = await Native.fetchImageData(url);
+            if (!("error" in nat)) {
+                try {
+                    const bytes = Uint8Array.from(atob(nat.dataBase64), c => c.charCodeAt(0));
+                    blob = new Blob([bytes], { type: nat.contentType || "image/png" });
+                } catch { /* fall through */ }
+            }
+        }
+    }
+    if (!blob) {
+        if (announce) toast("Couldn't read the hero image. Check the link or choose the file again.", Toasts.Type.MESSAGE, 5000);
+        return null;
+    }
+    const ct = widgetImageMime(blob);
+    if (!ct) throw new Error("The hero must be PNG, JPG, WebP, or GIF.");
+    if (blob.size > MAX_WIDGET_IMAGE_BYTES) throw new Error("The hero image is over 8 MB. Choose a smaller file.");
+    return blob.type === ct ? blob : new Blob([blob], { type: ct });
+}
+
+async function getLocalWidgetImage(slotKey: string): Promise<File | null> {
+    try {
+        const value = await DataStore.get(localWidgetImageKey(slotKey));
+        if (!(value instanceof Blob) || value.size > MAX_WIDGET_IMAGE_BYTES || !widgetImageMime(value)) return null;
+        const name = String((value as File).name ?? `widget-${slotKey}`);
+        return new File([value], name, { type: widgetImageMime(value) });
+    } catch (e) {
+        console.warn(`[DMWidget] could not read local image for ${slotKey}:`, e);
+        return null;
+    }
+}
+
+async function saveLocalWidgetImage(slotKey: string, file: File): Promise<void> {
+    const mime = widgetImageMime(file);
+    if (!mime) throw new Error("Choose a PNG, JPG, WebP, or GIF image.");
+    if (file.size > MAX_WIDGET_IMAGE_BYTES) throw new Error("That image is over 8 MB. Choose a smaller file.");
+    await DataStore.set(localWidgetImageKey(slotKey), new File([file], file.name, { type: mime }));
+}
+
+async function removeLocalWidgetImage(slotKey: string): Promise<void> {
+    await DataStore.del(localWidgetImageKey(slotKey));
+}
+
+type LastResultKind = "success" | "failure" | "message";
 let lastResult = "";
+let lastResultKind: LastResultKind = "message";
+
+function setLastResult(message: string, kind: LastResultKind): void {
+    const prefix = kind === "success" ? "✅" : kind === "failure" ? "⚠" : "ℹ";
+    const text = String(message).replace(/^(?:✅|⚠|ℹ)\s*/, "");
+    lastResult = `${prefix} ${text}`;
+    lastResultKind = kind;
+}
 
 // ---- game templates (auto-stat cards) --------------------------------------
 // Latest fetched Fortnite overall stats (null until first refresh). Kept in a
@@ -123,24 +317,31 @@ let fnStats: Record<string, number> | null = null;
 let valStats: Record<string, any> | null = null;
 let fnRefreshTimer: ReturnType<typeof setInterval> | null = null;
 
-function presetHeroUrl(tpl: string): string {
+function presetHeroUrl(tpl: string, choiceOverride?: string): string {
     const s = settings.store as any;
-    if (tpl === "valorant") return VALORANT_HERO_PRESETS[String(s.valHeroPreset ?? "auto")] ?? "";
-    if (tpl === "fortnite") return FORTNITE_HERO_PRESETS[String(s.fnHeroPreset ?? "auto")] ?? "";
+    if (tpl === "valorant") return VALORANT_HERO_PRESETS[choiceOverride ?? String(s.valHeroPreset ?? "auto")] ?? "";
+    if (tpl === "fortnite") return FORTNITE_HERO_PRESETS[choiceOverride ?? String(s.fnHeroPreset ?? "auto")] ?? "";
     return "";
 }
 
-function heroUrlFor(tpl: string, id: WidgetIdentity): string {
+function heroUrlFor(tpl: string, id: WidgetIdentity, choiceOverride?: string): string {
     const custom = String((settings.store as any).heroImageUrl ?? "").trim();
-    const preset = presetHeroUrl(tpl);
+    const choice = choiceOverride ?? (tpl === "valorant"
+        ? String((settings.store as any).valHeroPreset ?? "auto")
+        : tpl === "fortnite" ? String((settings.store as any).fnHeroPreset ?? "auto") : "custom");
+    // Only Diggyai's own Automatic choice gets the Catwoman restoration. For
+    // every other account, Automatic keeps the account's remembered hero (or
+    // the normal game default), so this repair cannot rewrite other users'
+    // Fortnite widgets.
+    if (tpl === "fortnite" && choice === "auto" && String(UserStore.getCurrentUser()?.id ?? "") === DIGGYAI_ACCOUNT_ID) {
+        return DEFAULT_HEROES.fortnite;
+    }
+    const preset = presetHeroUrl(tpl, choice);
     if (preset) return preset;
     // For a game slot, Automatic means the slot's own remembered image (or its
     // game default). Do not accidentally carry the previous slot's draft image
     // across when someone switches from Fortnite to Valorant. Custom image URL
     // is the explicit opt-in for the shared URL field.
-    const choice = tpl === "valorant"
-        ? String((settings.store as any).valHeroPreset ?? "auto")
-        : tpl === "fortnite" ? String((settings.store as any).fnHeroPreset ?? "auto") : "custom";
     return (tpl === "none" || choice === "custom")
         ? custom || id.heroImageUrl || DEFAULT_HEROES[tpl] || ""
         : id.heroImageUrl || DEFAULT_HEROES[tpl] || "";
@@ -164,7 +365,7 @@ function fortniteStatLines(): string[] {
     // Prioritized; take the first 6 that exist. 👑 = Unreal badge, 💵 = green $
     // (Discord styles all stat text one color, so an emoji is the only "color").
     const all = [
-        `Highest Rank | ${rank}`, // rank badge is drawn as the stat icon (fields.icon)
+        `Current Rank | ${rank}`, // rank badge is drawn as the stat icon (fields.icon)
         `Earnings | 💵 ${earn}`,
         placement ? `Best (Ch) | ${placement}` : null,
         `Wins | ${fmtNum(o.wins)}`,
@@ -209,8 +410,10 @@ function valorantStatLines(): string[] {
 
 // ---- helpers ---------------------------------------------------------------
 function toast(msg: string, type: any = Toasts.Type.SUCCESS, durationMs = 5000) {
-    if (type === Toasts.Type.SUCCESS) lastResult = "✅ " + msg;
-    else if (type === Toasts.Type.FAILURE) lastResult = "⚠ " + msg;
+    const kind: LastResultKind = type === Toasts.Type.SUCCESS
+        ? "success"
+        : type === Toasts.Type.FAILURE ? "failure" : "message";
+    setLastResult(msg, kind);
     Toasts.show({ message: msg, type, id: Toasts.genId(), options: { duration: durationMs, position: Toasts.Position.TOP } });
 }
 
@@ -220,7 +423,11 @@ async function copyText(t: string): Promise<boolean> {
 
 function classifyDiscordError(err: any): string {
     const body = err?.body ?? err?.response?.body ?? {};
-    return body?.message ?? err?.message ?? "unknown error";
+    const message = String(body?.message ?? err?.message ?? "unknown error");
+    if (/requires a claimed game on the application team/i.test(message)) {
+        return "Discord requires this application team to claim an eligible game before it can deploy this game widget. The local style preview still works; retrying Create/Update will keep failing until Discord clears that requirement.";
+    }
+    return message;
 }
 
 const SNOWFLAKE = /^\d{17,20}$/;
@@ -259,29 +466,10 @@ async function resolveConfigId(appId: string, appName: string): Promise<string> 
 
 // Download the hero URL and (re)upload it as an "application_asset" the widget
 // can reference. Returns the asset key, or null if there's no/invalid image.
-async function uploadHeroAsset(appId: string, url: string): Promise<string | null> {
-    if (!url) return null;
-    let blob: Blob | null = null;
-    try {
-        const r = await fetch(url, { credentials: "omit" });
-        if (!r.ok) throw new Error("HTTP " + r.status);
-        blob = await r.blob();
-    } catch {
-        // Renderer fetch blocked (CORS / CSP) — pull it through the main process,
-        // which isn't CORS-bound, so any image host works.
-        const nat = await Native.fetchImageData(url);
-        if (!("error" in nat)) {
-            try {
-                const bytes = Uint8Array.from(atob(nat.dataBase64), c => c.charCodeAt(0));
-                blob = new Blob([bytes], { type: nat.contentType || "image/png" });
-            } catch { /* fall through */ }
-        }
-    }
-    if (!blob) {
-        toast("Couldn't download the hero image (use a direct image link). Deploying without it.", Toasts.Type.MESSAGE, 5000);
-        return null;
-    }
-    const ct = blob.type || "image/png";
+async function uploadHeroAsset(appId: string, url: string, localFile?: Blob | null): Promise<string | null> {
+    const blob = await readWidgetImageBlob(url, localFile);
+    if (!blob) return null;
+    const ct = widgetImageMime(blob);
     const ext = ct.includes("gif") ? "gif" : ct.includes("webp") ? "webp" : ct.includes("jpeg") ? "jpg" : "png";
     // Clean up any prior hero assets (best effort) so re-deploys don't pile up.
     try {
@@ -447,6 +635,13 @@ async function setAppIcon(appId: string, src: string): Promise<void> {
 
 function buildSurfaces(tpl: string, imageKey: string | null, opts?: { titleIconKey?: string }) {
     const s = settings.store as any;
+    const savedSlot = getSlot(tpl);
+    // A refresh can run while the editor is pointed at another slot. Read the
+    // appearance/layout from the slot being published, not from whichever
+    // settings tab happens to be visible. This is what makes a skin choice
+    // durable across Fortnite / Valorant / Custom and across restarts.
+    const selectedTopLayout = savedSlot.topLayout ?? s.topLayout;
+    const selectedBottomLayout = savedSlot.bottomLayout ?? s.bottomLayout;
     const img = imageKey
         ? { presentation_type: "image", value_type: "application_asset", value: imageKey }
         : { presentation_type: "image", value_type: "custom_string", value: "" };
@@ -483,7 +678,7 @@ function buildSurfaces(tpl: string, imageKey: string | null, opts?: { titleIconK
         if (slot.peakIconKey && stats.stat_3) stats.stat_3.fields.icon = assetImg(slot.peakIconKey);
     }
     if (tpl === "fortnite") {
-        // Highest Rank (stat_1) wears the Fortnite rank badge.
+        // Current Rank (stat_1) wears the Fortnite rank badge.
         const slot = getSlot(tpl);
         if (slot.rankIconKey && stats.stat_1) stats.stat_1.fields.icon = assetImg(slot.rankIconKey);
     }
@@ -493,7 +688,7 @@ function buildSurfaces(tpl: string, imageKey: string | null, opts?: { titleIconK
     // asset — we reuse the hero) + name, and progress.current as a 0..1 fraction,
     // so it falls back to stats when there's no hero image to borrow.
     let widget_bottom: any;
-    if (s.bottomLayout === "progress" && imageKey && !fnMode) {
+    if (selectedBottomLayout === "progress" && imageKey && !fnMode) {
         const pct = Math.max(0, Math.min(100, Number(s.progressPercent ?? 50))) / 100;
         widget_bottom = {
             layout: "widget_bottom_progress",
@@ -514,7 +709,7 @@ function buildSurfaces(tpl: string, imageKey: string | null, opts?: { titleIconK
     // publishSurfaces retries WITHOUT it if Discord rejects a title icon.
     const titleFields: any = { text: tf(title) };
     if (opts?.titleIconKey) titleFields.icon = assetImg(opts.titleIconKey);
-    const widget_top = s.topLayout === "contained"
+    const widget_top = selectedTopLayout === "contained"
         ? { layout: "widget_top_contained", components: { contained_image: { fields: { image: img } }, title: { fields: titleFields } } }
         : { layout: "widget_top_hero", components: { hero_image: { fields: { image: img } }, title: { fields: titleFields } } };
 
@@ -524,7 +719,7 @@ function buildSurfaces(tpl: string, imageKey: string | null, opts?: { titleIconK
             widget_bottom,
             add_widget_preview: { layout: "add_widget_preview_hero", components: { hero_image: { fields: { image: img } } } },
             // Drives the profile-popout cutout: hero image + one stat line.
-            mini_profile: { layout: "mini_profile_hero_stat", components: { hero_image: { fields: { image: img } }, stat: { fields: { text: tf(firstStat || (s.bottomLayout === "progress" ? String(s.progressLabel ?? "").trim() : "") || title) } } } }
+            mini_profile: { layout: "mini_profile_hero_stat", components: { hero_image: { fields: { image: img } }, stat: { fields: { text: tf(firstStat || (selectedBottomLayout === "progress" ? String(s.progressLabel ?? "").trim() : "") || title) } } } }
         }
     };
 }
@@ -551,9 +746,10 @@ async function publishSurfaces(appId: string, configId: string, slotKey: string,
 }
 
 async function attachToProfile(appId: string, userId: string) {
-    let widgets: any[] = [];
-    try { const prof = await apiGet(`/users/${userId}/profile`); widgets = Array.isArray(prof?.widgets) ? prof.widgets : []; } catch { widgets = []; }
-    if (!widgets.some(w => w?.data?.application_id === appId)) widgets = [{ data: { type: "application", application_id: appId } }, ...widgets];
+    const profile = await apiGet(`/users/${userId}/profile`);
+    const widgets = profileWidgetEntries(profile);
+    if (!widgets) throw new Error("Discord returned an unrecognized profile widget list; no board changes were made. Retry after the profile finishes loading.");
+    if (!widgets.some(widget => profileWidgetApplicationId(widget) === appId)) widgets.unshift({ data: { type: "application", application_id: appId } });
     await apiPut("/users/@me/widgets", { widgets });
 }
 
@@ -604,10 +800,170 @@ async function republishConfig(slotKey: string): Promise<string | null> {
         }
         // The rendered header line is the app NAME (not display_name), so keep it
         // current on every refresh — e.g. Valorant's "Act 3 Ep 3: <live rank>".
-        try { await apiPatch(`/applications/${id.appId}`, { name: sanitizeAppName(slotHeader(slotKey)) }); } catch (e) { lastResult = "⚠ header rename failed: " + classifyDiscordError(e); console.warn("[DMWidget] header name:", e); }
+        try { await apiPatch(`/applications/${id.appId}`, { name: sanitizeAppName(slotHeader(slotKey)) }); } catch (e) { setLastResult("header rename failed: " + classifyDiscordError(e), "failure"); console.warn("[DMWidget] header name:", e); }
         await publishSurfaces(id.appId, id.configId, slotKey, assetKey || null);
+        if (id.vanillaSkinAssetKey) {
+            // A normal content/stats refresh restores the real hero. Keep the
+            // editor's fallback status truthful so it does not imply vanilla
+            // viewers still see the old static skin.
+            setSlot(slotKey, { ...getSlot(slotKey), vanillaSkinAssetKey: "" });
+        }
         return null;
     } catch (e) { return classifyDiscordError(e); }
+}
+
+const widgetStylePublishSerial = new Map<string, number>();
+let widgetStyleSyncQueue: Promise<void> = Promise.resolve();
+
+function nextWidgetStylePublishRequest(slotKey: string): number {
+    const request = (widgetStylePublishSerial.get(slotKey) ?? 0) + 1;
+    widgetStylePublishSerial.set(slotKey, request);
+    return request;
+}
+
+function isCurrentWidgetStylePublishRequest(slotKey: string, accountId: string, request: number): boolean {
+    return widgetStylePublishSerial.get(slotKey) === request
+        && !!accountId
+        && String(UserStore.getCurrentUser()?.id ?? "") === accountId
+        && activeSlotsAccountId === accountId;
+}
+
+async function syncRemoteWidgetStyle(appId: string, slotKey: string, accountId: string, preset: WidgetStylePreset, updatedAt: number, request: number): Promise<boolean> {
+    // Style selection is user-visible and can be changed several times while
+    // Discord is reading the application. Discard stale requests before they
+    // can overwrite the newest selection.
+    if (!isCurrentWidgetStylePublishRequest(slotKey, accountId, request)) return false;
+    if (!SNOWFLAKE.test(appId)) return false;
+    try {
+        const application = await apiGet(`/applications/${appId}`);
+        const currentDescription = applicationDescription(application);
+        if (currentDescription === null) return false;
+        if (!isCurrentWidgetStylePublishRequest(slotKey, accountId, request)) return false;
+        const latest = getSlot(slotKey);
+        if (latest.widgetStyle !== preset.id || latest.widgetStyleUpdatedAt !== updatedAt) return false;
+        const description = remoteWidgetDescriptionFor(currentDescription, preset, updatedAt);
+        if (!description) return false;
+        if (description !== currentDescription) {
+            if (!isCurrentWidgetStylePublishRequest(slotKey, accountId, request)) return false;
+            await apiPatch(`/applications/${appId}`, { description });
+        }
+        // Confirm the marker through the same read path used by another install.
+        // A successful PATCH alone is not enough: Discord can accept a request
+        // while returning a stale/partial application object to the client.
+        const confirmedApplication = await apiGet(`/applications/${appId}`);
+        if (!isCurrentWidgetStylePublishRequest(slotKey, accountId, request)) return false;
+        const confirmed = remoteWidgetStyleFromApplication(confirmedApplication);
+        return confirmed?.style === preset.id && confirmed.updatedAt === updatedAt;
+    } catch (error) {
+        console.warn("[DMWidget] cross-install widget skin sync failed:", error);
+        return false;
+    }
+}
+
+interface WidgetStyleSyncResult {
+    confirmed: number;
+    total: number;
+}
+
+function queueRemoteWidgetStyleSync(appIds: string[], slotKey: string, accountId: string, preset: WidgetStylePreset, updatedAt: number, request: number): Promise<WidgetStyleSyncResult> {
+    const result = widgetStyleSyncQueue.then(
+        async () => {
+            let confirmed = 0;
+            for (const appId of appIds) {
+                if (!isCurrentWidgetStylePublishRequest(slotKey, accountId, request)) break;
+                if (await syncRemoteWidgetStyle(appId, slotKey, accountId, preset, updatedAt, request)) confirmed++;
+            }
+            return { confirmed, total: appIds.length };
+        },
+        async () => {
+            let confirmed = 0;
+            for (const appId of appIds) {
+                if (!isCurrentWidgetStylePublishRequest(slotKey, accountId, request)) break;
+                if (await syncRemoteWidgetStyle(appId, slotKey, accountId, preset, updatedAt, request)) confirmed++;
+            }
+            return { confirmed, total: appIds.length };
+        }
+    );
+    widgetStyleSyncQueue = result.then(() => undefined, () => undefined);
+    return result;
+}
+
+async function republishSelectedWidgetStyleUnsafe(slotKey: string): Promise<void> {
+    const request = nextWidgetStylePublishRequest(slotKey);
+    await ensureSlots();
+    // The local slot can be empty after a reinstall, an account switch, or a
+    // DataStore migration even though the widget is still attached to this
+    // account's profile. Recover it before deciding that the skin is preview-only.
+    await refreshAttachedWidgetStyles(true);
+    const accountId = String(UserStore.getCurrentUser()?.id ?? "");
+    if (!isCurrentWidgetStylePublishRequest(slotKey, accountId, request)) return;
+    const id = getSlot(slotKey);
+    const basePreset = WIDGET_STYLE_PRESETS.find(item => item.id === id.widgetStyle) ?? selectedWidgetPreset();
+    const attachedAppIds = attachedWidgetAppIdsForSlot(slotKey);
+    let preset = presetWithLayouts(basePreset, id.topLayout, id.bottomLayout);
+    if (attachedAppIds.length) {
+        // Applying a skin is cosmetic. Read the currently published config so
+        // a preset's default geometry (for example, "contained") cannot
+        // replace an existing widget's hero presentation in the local slot.
+        // This is deliberately read-only: heroImageUrl and remote surfaces are
+        // never written on this path.
+        const published = await hydratePublishedWidgetContent(slotKey);
+        if (!isCurrentWidgetStylePublishRequest(slotKey, accountId, request)) return;
+        if (published) {
+            const latest = getSlot(slotKey);
+            const repaired = { ...latest, topLayout: published.topLayout, bottomLayout: published.bottomLayout };
+            if (JSON.stringify(repaired) !== JSON.stringify(latest)) setSlot(slotKey, repaired);
+            preset = presetWithLayouts(basePreset, published.topLayout, published.bottomLayout);
+        } else {
+            const latest = getSlot(slotKey);
+            preset = presetWithLayouts(basePreset, latest.topLayout, latest.bottomLayout);
+        }
+    }
+    const updatedAt = Number(getSlot(slotKey).widgetStyleUpdatedAt ?? 0);
+    updateAttachedWidgetStylesForSlot(slotKey, preset);
+    const editorWasOpen = widgetSkinEditorOpen();
+    scanWidgetSkinCards();
+    scheduleWidgetSkinScan();
+    if (!attachedAppIds.length) {
+        toast(`${SLOT_LABEL[slotKey] ?? slotKey} skin is saved locally, but Discord did not confirm an attached widget for this game on the current profile. Open the profile Board and retry; the published card was not changed.`, Toasts.Type.MESSAGE, 8000);
+        return;
+    }
+    // A skin is a Discordmaxxer renderer feature, not a Discord widget-v2
+    // field. Do not rebuild the remote card from an empty post-reinstall form
+    // just because the user picked a new skin; that would replace a perfectly
+    // good published card with blank stats. The existing app identity has been
+    // recovered above, so the renderer can apply the skin immediately. The
+    // deliberate Update action remains the place where supported card fields
+    // are sent to Discord after the user reviews the recovered form.
+    const sync = await queueRemoteWidgetStyleSync(attachedAppIds, slotKey, accountId, preset, updatedAt, request);
+    if (!isCurrentWidgetStylePublishRequest(slotKey, accountId, request)) return;
+    scanWidgetSkinCards();
+    scheduleWidgetSkinScan();
+    const visibleAppIds = attachedAppIds.filter(appId => hasVisibleWidgetSkin(appId, preset.id));
+    const remoteNote = sync.confirmed === sync.total
+        ? ` Style preference was verified on all ${sync.total} attached widget${sync.total === 1 ? "" : "s"} for your other Discordmaxxer installs.`
+        : sync.confirmed
+            ? ` Style preference was verified on ${sync.confirmed} of ${sync.total} attached widgets; the rest could not be confirmed.`
+            : " Cross-install style preference could not be verified.";
+    if (editorWasOpen) {
+        toast(`${SLOT_LABEL[slotKey] ?? slotKey} skin selection was saved.${remoteNote} The editor is open, so no visible Board card is claimed as updated; close it and reopen the profile Board to see the renderer apply it. The published widget content was left unchanged.`, Toasts.Type.MESSAGE, 9000);
+    } else if (visibleAppIds.length) {
+        const visibleNote = visibleAppIds.length === attachedAppIds.length
+            ? ` The exact selected skin is visible on all ${visibleAppIds.length} matching Board card${visibleAppIds.length === 1 ? "" : "s"}.`
+            : ` The exact selected skin is visible on ${visibleAppIds.length} of ${attachedAppIds.length} matching Board cards.`;
+        toast(`${SLOT_LABEL[slotKey] ?? slotKey} skin rendered on the matching widget.${remoteNote}${visibleNote} Published widget content was left unchanged.`, Toasts.Type.SUCCESS, 9000);
+    } else {
+        toast(`${SLOT_LABEL[slotKey] ?? slotKey} skin selection was saved.${remoteNote} No visible card with this exact app ID and skin was detected; reopen the profile Board to check the local renderer. Published widget content was left unchanged.`, Toasts.Type.MESSAGE, 9000);
+    }
+}
+
+async function republishSelectedWidgetStyle(slotKey: string): Promise<void> {
+    try {
+        await republishSelectedWidgetStyleUnsafe(slotKey);
+    } catch (error) {
+        console.warn("[DMWidget] applying a widget skin failed safely:", error);
+        toast("DMWidget could not apply that skin right now. Your existing published widget was left unchanged; try again after the profile finishes loading.", Toasts.Type.FAILURE, 8000);
+    }
 }
 
 // Fetch a specific game slot's live stats (native, no CORS) and re-publish it.
@@ -637,7 +993,7 @@ async function refreshGameSlot(tpl: string, announce = false): Promise<boolean> 
             }
             fnStats = res.overall;
             // Upload the current rank badge before republishing so buildSurfaces can
-            // hang it on the Highest Rank stat cell.
+            // hang it on the Current Rank stat cell.
             await syncFortniteRankIcon(tpl);
         } else {
             const riot = String(s.valRiotId ?? "").trim(); const key = String(s.valApiKey ?? "").trim();
@@ -682,6 +1038,19 @@ async function refreshGameSlot(tpl: string, announce = false): Promise<boolean> 
 // Manual "Refresh now" button — refreshes the slot the picker is on.
 const refreshGame = (announce = false) => refreshGameSlot(slotKeyOf(), announce);
 
+function privateCredentialsMissingForSlot(slotKey: string): boolean {
+    const draft = settings.store as any;
+    if (slotKey === "valorant") {
+        const riotId = String(draft.valRiotId ?? "").trim();
+        const hash = riotId.indexOf("#");
+        return hash < 1 || hash === riotId.length - 1 || !String(draft.valApiKey ?? "").trim();
+    }
+    if (slotKey === "fortnite") {
+        return !String(draft.fnIgn ?? "").trim() || !String(draft.fnApiKey ?? "").trim();
+    }
+    return false;
+}
+
 // Timer — refresh EVERY deployed game slot (so FN + Valorant both stay live).
 async function refreshAllGames(): Promise<{ updated: number; failed: number; }> {
     await ensureSlots();
@@ -694,6 +1063,13 @@ async function refreshAllGames(): Promise<{ updated: number; failed: number; }> 
     return { updated, failed };
 }
 
+// Background timers are intentionally fire-and-forget, but a rejected
+// refresh must never become an unhandled promise that destabilizes the
+// renderer. Manual callers still receive their own result/error handling.
+function scheduleStatsRefresh(): void {
+    void refreshAllGames().catch(error => console.warn("[DMWidget] scheduled stats refresh failed:", error));
+}
+
 // ---- the whole flow --------------------------------------------------------
 async function deployWidget(): Promise<void> {
     const me = UserStore.getCurrentUser();
@@ -703,6 +1079,10 @@ async function deployWidget(): Promise<void> {
     if (nameErr) { toast(nameErr, Toasts.Type.FAILURE, 8000); return; }
 
     await ensureSlots();
+    // Rehydrate an app/config that is still on this account's profile before
+    // falling back to the create flow. This keeps a reinstall or account
+    // switch from silently creating a duplicate widget.
+    await refreshAttachedWidgetStyles(true);
     const slotKey = slotKeyOf();
     let id: WidgetIdentity = getSlot(slotKey);
 
@@ -717,7 +1097,25 @@ async function deployWidget(): Promise<void> {
             const ownerId = String(app?.owner?.id ?? app?.team?.owner_user_id ?? "");
             if (ownerId && ownerId !== me.id) { id = { ...EMPTY_IDENTITY }; setSlot(slotKey, id); }
         } catch (e: any) {
-            if (e?.status === 403 || e?.status === 404) { id = { ...EMPTY_IDENTITY }; setSlot(slotKey, id); }
+            // A profile-attached app is still a valid update target even when
+            // Discord temporarily hides its metadata. Only discard a stale
+            // local id when the current profile did not just prove that this
+            // app belongs to the active account.
+            if ((e?.status === 403 || e?.status === 404) && !attachedWidgetSlots.has(id.appId)) {
+                id = { ...EMPTY_IDENTITY }; setSlot(slotKey, id);
+            }
+        }
+    }
+
+    // Reinstall/account recovery can recover the published app without
+    // recovering private game credentials. Never let an apparently normal
+    // Update click turn that missing draft into a blank Valorant/Fortnite
+    // publish; the gallery skin is already safe to apply locally.
+    if (SNOWFLAKE.test(id.appId)) {
+        if (privateCredentialsMissingForSlot(slotKey)) {
+            const game = slotKey === "valorant" ? "Riot ID (Name#Tag) + HenrikDev key" : "Epic IGN + Fortnite API key";
+            toast(`Existing ${SLOT_LABEL[slotKey] ?? slotKey} widget recovered. Re-enter your ${game} before Update existing widget; changing the skin is already applied locally and will not erase the published card.`, Toasts.Type.MESSAGE, 10000);
+            return;
         }
     }
 
@@ -733,19 +1131,40 @@ async function deployWidget(): Promise<void> {
         toast(slotKey === "fortnite" || slotKey === "valorant" ? "Uploading image + fetching live stats…" : "Uploading image + publishing layout…", Toasts.Type.MESSAGE, 3000);
         // The app NAME is what renders as the small header above the title
         // (not the config display_name), so set it to "Fn · Ch6 S3" / "Val".
-        try { await apiPatch(`/applications/${id.appId}`, { name: sanitizeAppName(slotHeader(slotKey)) }); } catch (e) { lastResult = "⚠ header rename failed: " + classifyDiscordError(e); console.warn("[DMWidget] app name:", e); }
+        try { await apiPatch(`/applications/${id.appId}`, { name: sanitizeAppName(slotHeader(slotKey)) }); } catch (e) { setLastResult("header rename failed: " + classifyDiscordError(e), "failure"); console.warn("[DMWidget] app name:", e); }
         // Per-slot media: remember the URLs on THIS slot so switching slots keeps
         // each widget's own hero/icon (FN and Valorant no longer share one image).
         const iconUrl = String((settings.store as any).appIconUrl ?? "").trim() || id.appIconUrl || "";
         // An explicit curated preset wins; otherwise keep the typed field, the
         // slot's remembered/imported hero, or the game's default. This preserves
         // existing custom cards while making a new game card one-click friendly.
+        const localHeroFile = await getLocalWidgetImage(slotKey);
         const heroUrl = heroUrlFor(slotKey, id);
-        id.heroImageUrl = heroUrl; id.appIconUrl = iconUrl; setSlot(slotKey, id);
+        // Prefer the style saved on THIS game slot. The mirrored setting is
+        // kept for backwards compatibility, but using it first could publish
+        // the last-edited widget's skin onto a different slot when a user
+        // switched templates and hit Create/Update quickly.
+        const chosenPreset = WIDGET_STYLE_PRESETS.find(preset => preset.id === String(id.widgetStyle ?? ""))
+            ?? WIDGET_STYLE_PRESETS.find(preset => preset.id === String((settings.store as any).widgetStyle ?? ""));
+        id.heroImageUrl = heroUrl;
+        id.appIconUrl = iconUrl;
+        // Persist the complete gallery choice on the slot at publish time too.
+        // This matters when Create/Update is the first action after selecting a
+        // skin: the deployed app must keep the same style/layout on the next
+        // render, even if the settings panel is reopened on another slot.
+        if (chosenPreset) {
+            id.widgetStyle = chosenPreset.id;
+            id.topLayout = chosenPreset.topLayout;
+            id.bottomLayout = chosenPreset.bottomLayout;
+        } else {
+            id.topLayout = (settings.store as any).topLayout === "contained" ? "contained" : "hero";
+            id.bottomLayout = (settings.store as any).bottomLayout === "progress" ? "progress" : "stats";
+        }
+        setSlot(slotKey, id);
         // Top-left logo: your custom icon if set, otherwise the game's baked logo
         // (Fortnite F / Valorant V) so a game card auto-brands with no image hosting.
         await setAppIcon(id.appId, iconUrl || DEFAULT_APP_ICONS[slotKey] || "");
-        let imageKey = await uploadHeroAsset(id.appId, heroUrl);
+        let imageKey = await uploadHeroAsset(id.appId, heroUrl, localHeroFile);
         // No new/valid image URL but this slot already has an uploaded asset —
         // reuse it so "Update" never blanks an existing widget's hero.
         if (!imageKey && SNOWFLAKE.test(id.appId) && id.heroAssetKey) imageKey = id.heroAssetKey;
@@ -761,6 +1180,13 @@ async function deployWidget(): Promise<void> {
             ? await refreshGameSlot(slotKey, false)
             : false;
         if (!liveStatsPublished) await publishSurfaces(id.appId, id.configId, slotKey, imageKey);
+        // A normal content update intentionally restores the real hero asset;
+        // make the editor's vanilla-fallback status honest until the user
+        // explicitly publishes a new static skin.
+        if (id.vanillaSkinAssetKey) {
+            id.vanillaSkinAssetKey = "";
+            setSlot(slotKey, id);
+        }
 
         await authorizeApp(id.appId);
         await attachToProfile(id.appId, me.id);
@@ -786,9 +1212,10 @@ async function removeFromProfile(): Promise<void> {
     const id = getSlot(slotKey);
     if (!id.appId) { toast("No widget to remove.", Toasts.Type.MESSAGE); return; }
     try {
-        let widgets: any[] = [];
-        try { const prof = await apiGet(`/users/${me.id}/profile`); widgets = Array.isArray(prof?.widgets) ? prof.widgets : []; } catch { widgets = []; }
-        await apiPut("/users/@me/widgets", { widgets: widgets.filter(w => w?.data?.application_id !== id.appId) });
+        const profile = await apiGet(`/users/${me.id}/profile`);
+        const widgets = profileWidgetEntries(profile);
+        if (!widgets) throw new Error("Discord returned an unrecognized profile widget list; nothing was removed. Retry after the profile finishes loading.");
+        await apiPut("/users/@me/widgets", { widgets: widgets.filter(widget => profileWidgetApplicationId(widget) !== id.appId) });
         setSlot(slotKey, { ...EMPTY_IDENTITY }); // forget this slot so status resets
         toast("Widget removed from your profile board. (Your app stays in the Developer Portal — delete it there if you want.)", Toasts.Type.MESSAGE, 7000);
     } catch (e: any) {
@@ -806,11 +1233,12 @@ async function moveToTop(): Promise<void> {
     const id = getSlot(slotKey);
     if (!me?.id || !SNOWFLAKE.test(id.appId)) { toast("Create this widget first.", Toasts.Type.FAILURE); return; }
     try {
-        let widgets: any[] = [];
-        try { const prof = await apiGet(`/users/${me.id}/profile`); widgets = Array.isArray(prof?.widgets) ? prof.widgets : []; } catch { widgets = []; }
-        const mine = widgets.filter(w => w?.data?.application_id === id.appId);
+        const profile = await apiGet(`/users/${me.id}/profile`);
+        const widgets = profileWidgetEntries(profile);
+        if (!widgets) throw new Error("Discord returned an unrecognized profile widget list; no board changes were made. Retry after the profile finishes loading.");
+        const mine = widgets.filter(widget => profileWidgetApplicationId(widget) === id.appId);
         if (!mine.length) { toast("This card isn't on your board yet — hit Create first.", Toasts.Type.FAILURE); return; }
-        const rest = widgets.filter(w => w?.data?.application_id !== id.appId);
+        const rest = widgets.filter(widget => profileWidgetApplicationId(widget) !== id.appId);
         await apiPut("/users/@me/widgets", { widgets: [...mine, ...rest] });
         toast("Moved to the top of your profile board.", Toasts.Type.SUCCESS, 5000);
     } catch (e: any) {
@@ -823,7 +1251,7 @@ async function moveToTop(): Promise<void> {
 // API keys) to a short code the user can paste on another account. Secrets are
 // excluded by construction: only these fields are ever read or written.
 const SHAREABLE = [
-    "gameTemplate", "appName", "widgetTitle", "topLayout", "bottomLayout",
+    "gameTemplate", "appName", "widgetTitle", "topLayout", "bottomLayout", "widgetStyle",
     "stat1", "stat2", "stat3", "stat4", "stat5", "stat6",
     "progressLabel", "progressPercent", "heroImageUrl", "appIconUrl",
     "fnIgn", "fnAccountType", "fnUnrealRank", "fnEarnings", "fnChapterSeason", "fnTopPlacement",
@@ -834,20 +1262,30 @@ const SHAREABLE = [
 const b64encode = (s: string): string => btoa(unescape(encodeURIComponent(s)));
 const b64decode = (s: string): string => decodeURIComponent(escape(atob(s)));
 
-function exportConfig(): string {
+async function exportConfig(): Promise<string> {
     const s = settings.store as any;
     const o: Record<string, any> = {};
     for (const k of SHAREABLE) o[k] = s[k];
-    // Per-slot media (hero + app-icon URLs) so a paste reproduces each card's
-    // look on another account. Only the URLs travel — never appId, asset keys,
-    // or tokens, which are account-bound.
-    const media: Record<string, { heroImageUrl: string; appIconUrl: string; }> = {};
+    // Per-slot content and appearance so a paste reproduces each card's
+    // supported layout/style choice. Only remote URLs travel; local files stay
+    // on this PC and account-bound IDs/tokens are never exported.
+    const media: Record<string, { heroImageUrl: string; appIconUrl: string; widgetStyle?: string; topLayout?: string; bottomLayout?: string; }> = {};
     const cur = slots.get();
     for (const key of Object.keys(cur)) {
         const v = cur[key];
-        if (v && (v.heroImageUrl || v.appIconUrl)) media[key] = { heroImageUrl: v.heroImageUrl || "", appIconUrl: v.appIconUrl || "" };
+        if (!v) continue;
+        const localFile = await getLocalWidgetImage(key);
+        const entry = {
+            heroImageUrl: localFile ? "" : v.heroImageUrl || "",
+            appIconUrl: v.appIconUrl || "",
+            widgetStyle: v.widgetStyle,
+            topLayout: v.topLayout,
+            bottomLayout: v.bottomLayout
+        };
+        if (entry.heroImageUrl || entry.appIconUrl || entry.widgetStyle || entry.topLayout || entry.bottomLayout || localFile) media[key] = entry;
     }
     if (Object.keys(media).length) o.__slots = media;
+    if (await getLocalWidgetImage(String(s.gameTemplate ?? "none"))) o.heroImageUrl = "";
     return "DMW1:" + b64encode(JSON.stringify(o));
 }
 
@@ -861,16 +1299,45 @@ function importConfig(code: string): string | null {
     if (!obj || typeof obj !== "object") return "That code is empty or malformed.";
     const s = settings.store as any;
     let n = 0;
-    for (const k of SHAREABLE) if (k in obj) { s[k] = obj[k]; n++; }
-    // Restore per-slot hero/icon URLs so Create reproduces each card's image.
-    // Never import appId/assetKeys/tokens — keep any real deploy intact, only
-    // seed the media URLs so the next Create re-uploads the same picture.
+    for (const k of SHAREABLE) {
+        if (!(k in obj)) continue;
+        const value = obj[k];
+        // These new appearance fields affect the request sent to Discord, so
+        // accept only values the gallery itself can produce.
+        if (k === "widgetStyle") {
+            if (typeof value === "string" && WIDGET_STYLE_PRESETS.some(preset => preset.id === value)) { s[k] = value; n++; }
+            continue;
+        }
+        if (k === "topLayout") {
+            if (value === "hero" || value === "contained") { s[k] = value; n++; }
+            continue;
+        }
+        if (k === "bottomLayout") {
+            if (value === "stats" || value === "progress") { s[k] = value; n++; }
+            continue;
+        }
+        s[k] = value;
+        n++;
+    }
+    // Restore per-slot URLs and style selection. A local file intentionally
+    // never travels in a share code; only seed remote URLs and safe layout IDs.
+    // Never import appId/assetKeys/tokens — keep any real deploy intact.
     const media = obj.__slots;
     if (media && typeof media === "object") {
         for (const key of Object.keys(media)) {
             const m = media[key] || {};
             const existing = getSlot(key);
-            setSlot(key, { ...existing, heroImageUrl: String(m.heroImageUrl ?? existing.heroImageUrl ?? ""), appIconUrl: String(m.appIconUrl ?? existing.appIconUrl ?? "") });
+            let importedStyle = false;
+            const next: WidgetIdentity = {
+                ...existing,
+                heroImageUrl: String(m.heroImageUrl ?? existing.heroImageUrl ?? ""),
+                appIconUrl: String(m.appIconUrl ?? existing.appIconUrl ?? "")
+            };
+            if (typeof m.widgetStyle === "string" && WIDGET_STYLE_PRESETS.some(preset => preset.id === m.widgetStyle)) { next.widgetStyle = m.widgetStyle; importedStyle = true; }
+            if (m.topLayout === "hero" || m.topLayout === "contained") { next.topLayout = m.topLayout; importedStyle = true; }
+            if (m.bottomLayout === "stats" || m.bottomLayout === "progress") { next.bottomLayout = m.bottomLayout; importedStyle = true; }
+            if (importedStyle) next.widgetStyleSource = "local";
+            setSlot(key, next);
             n++;
         }
     }
@@ -879,72 +1346,3867 @@ function importConfig(code: string): string | null {
 }
 
 // ---- settings UI -----------------------------------------------------------
-function ImgPreview({ url, label, round }: { url: string; label: string; round?: boolean; }) {
+// Discord's renderer can block direct third-party image URLs. Keep one
+// native-fetched data URI per URL so the gallery and live widget preview share
+// the same reliable source, do not refetch on every settings rerender, and do
+// not lose a thumbnail after it has been loaded once.
+const previewDataCache = new Map<string, string>();
+const previewDataPending = new Map<string, Promise<string | null>>();
+
+function loadPreviewData(src: string): Promise<string | null> {
+    const cached = previewDataCache.get(src);
+    if (cached) return Promise.resolve(cached);
+    const pending = previewDataPending.get(src);
+    if (pending) return pending;
+    const request = Native.fetchImageData(src).then(result => {
+        if ("error" in result) return null;
+        const resolved = `data:${result.contentType};base64,${result.dataBase64}`;
+        previewDataCache.set(src, resolved);
+        return resolved;
+    }).catch(() => null).finally(() => {
+        previewDataPending.delete(src);
+    });
+    previewDataPending.set(src, request);
+    return request;
+}
+
+function useResolvedPreview(url: string) {
     const src = url.trim();
-    const [previewSrc, setPreviewSrc] = React.useState("");
-    const [failed, setFailed] = React.useState(false);
+    const [state, setState] = React.useState(() => ({
+        previewSrc: previewDataCache.get(src) ?? "",
+        failed: false
+    }));
     React.useEffect(() => {
         let active = true;
-        setPreviewSrc("");
-        setFailed(false);
+        const cached = previewDataCache.get(src);
+        setState({ previewSrc: cached ?? "", failed: false });
         if (!src) return () => { active = false; };
         if (!/^https?:\/\//i.test(src)) {
-            setPreviewSrc(src);
+            setState({ previewSrc: src, failed: false });
             return () => { active = false; };
         }
-        // Discord's renderer can block direct third-party image URLs even
-        // though the native upload path can fetch them. Reuse that native path
-        // for the preview so presets look selectable before the user deploys.
-        Native.fetchImageData(src).then(result => {
+        void loadPreviewData(src).then(previewSrc => {
             if (!active) return;
-            if ("error" in result) setFailed(true);
-            else setPreviewSrc(`data:${result.contentType};base64,${result.dataBase64}`);
-        }).catch(() => { if (active) setFailed(true); });
+            setState({ previewSrc: previewSrc ?? "", failed: !previewSrc });
+        });
         return () => { active = false; };
     }, [src]);
+    return state;
+}
+
+function ImgPreview({ url, label, round }: { url: string; label: string; round?: boolean; }) {
+    const src = url.trim();
+    const { previewSrc, failed } = useResolvedPreview(src);
+    const [imageFailed, setImageFailed] = React.useState(false);
+    React.useEffect(() => setImageFailed(false), [previewSrc]);
     if (!src) return null;
     return (
         <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
-            {failed
+            {failed || imageFailed
                 ? <div style={{ width: round ? 48 : 96, height: 48, display: "grid", placeItems: "center", borderRadius: round ? "50%" : 6, border: "1px dashed var(--text-danger, #f23f43)", color: "var(--text-danger, #f23f43)", fontSize: 11, textAlign: "center", padding: 2 }}>can't load</div>
                 : previewSrc
-                    ? <img src={previewSrc} onError={() => setFailed(true)} style={{ width: round ? 48 : 96, height: 48, objectFit: "cover", borderRadius: round ? "50%" : 6, border: "1px solid var(--background-modifier-accent)", background: "var(--background-secondary)" }} />
+                    ? <img src={previewSrc} onError={() => setImageFailed(true)} style={{ width: round ? 48 : 96, height: 48, objectFit: "cover", borderRadius: round ? "50%" : 6, border: "1px solid var(--background-modifier-accent)", background: "var(--background-secondary)" }} />
                     : <div style={{ width: round ? 48 : 96, height: 48, display: "grid", placeItems: "center", borderRadius: round ? "50%" : 6, border: "1px dashed var(--background-modifier-accent)", color: "var(--text-muted)", fontSize: 11, textAlign: "center", padding: 2 }}>loading…</div>}
             <span style={{ fontSize: 11, color: "var(--text-muted)" }}>{label}</span>
         </div>
     );
 }
 
+function PreviewImage({ url, alt, style, fallbackLabel = "Preview unavailable" }: { url: string; alt?: string; style: React.CSSProperties; fallbackLabel?: string; }) {
+    const { previewSrc, failed } = useResolvedPreview(url);
+    const [imageFailed, setImageFailed] = React.useState(false);
+    React.useEffect(() => setImageFailed(false), [previewSrc]);
+    if (previewSrc && !failed && !imageFailed) {
+        return <img src={previewSrc} alt={alt ?? ""} onError={() => setImageFailed(true)} style={style} />;
+    }
+    return (
+        <span
+            aria-label={failed || imageFailed ? fallbackLabel : "Loading preview"}
+            style={{
+                ...style,
+                display: "grid",
+                placeItems: "center",
+                boxSizing: "border-box",
+                padding: 5,
+                color: "var(--text-muted)",
+                fontSize: 9,
+                lineHeight: 1.1,
+                textAlign: "center",
+                filter: "none"
+            }}
+        >
+            {failed || imageFailed ? fallbackLabel : "Loading…"}
+        </span>
+    );
+}
+
 const SLOT_LABEL: Record<string, string> = { fortnite: "Fortnite", valorant: "Valorant", none: "Custom" };
+const WIDGET_STYLE_SLOT_KEYS = ["valorant", "fortnite", "none"];
+
+type WidgetStylePreset = {
+    id: string;
+    name: string;
+    mood: string;
+    glyph: string;
+    accent: string;
+    secondary: string;
+    surface: string;
+    topLayout: "hero" | "contained";
+    bottomLayout: "stats" | "progress";
+    motion: "none" | "scan" | "embers" | "aurora" | "glint" | "laurel" | "orbit" | "bloom" | "glitch" | "solar" | "blood" | "pursuit";
+    frame: "rail" | "ember" | "dream" | "glass" | "relic" | "horizon" | "bloom" | "crt" | "halo" | "velvet" | "nocturne";
+    ornament: "prism" | "cinder" | "ribbon" | "shard" | "crown" | "orbit" | "petal" | "pixel" | "flare" | "medallion" | "fang";
+};
+
+// Layout choices here map to fields in Discord's current widget schema. The
+// rest of the preset is a Discordmaxxer client skin: Discord's widget payload
+// has no CSS channel, so the renderer below applies these attributes to the
+// actual card after Discord mounts it. Stable IDs are kept for saved profiles
+// and imported DMW1 codes; names/art direction can evolve without losing a
+// user's selection.
+const WIDGET_STYLE_PRESETS: WidgetStylePreset[] = [
+    { id: "neonCircuit", name: "Prism Relay", mood: "Kinetic / chromatic", glyph: "⟡", accent: "#55f6e8", secondary: "#ff4fc8", surface: "#0b1420", topLayout: "hero", bottomLayout: "stats", motion: "scan", frame: "rail", ornament: "prism" },
+    { id: "emberProtocol", name: "Mothlight Reliquary", mood: "Nocturnal / lantern-lit", glyph: "❈", accent: "#ffd36a", secondary: "#b9f08b", surface: "#121a19", topLayout: "contained", bottomLayout: "stats", motion: "embers", frame: "ember", ornament: "cinder" },
+    { id: "cottonCandy", name: "Cotton Candy", mood: "Dream / pastel", glyph: "✧", accent: "#ff6ec7", secondary: "#4a73ff", surface: "#1a1425", topLayout: "hero", bottomLayout: "stats", motion: "aurora", frame: "dream", ornament: "ribbon" },
+    { id: "frostedGlass", name: "Frosted Glass", mood: "Glacier / refracted light", glyph: "◇", accent: "#d8f3ff", secondary: "#7586a9", surface: "#121a25", topLayout: "contained", bottomLayout: "stats", motion: "glint", frame: "glass", ornament: "shard" },
+    { id: "championRun", name: "Sanguine Court", mood: "Velvet / blood-lust", glyph: "♛", accent: "#ff526e", secondary: "#e9b36b", surface: "#150912", topLayout: "hero", bottomLayout: "progress", motion: "blood", frame: "velvet", ornament: "medallion" },
+    { id: "deepSpace", name: "Event Horizon", mood: "Starfield / nocturne", glyph: "✦", accent: "#b8cbff", secondary: "#78e0da", surface: "#060914", topLayout: "contained", bottomLayout: "progress", motion: "orbit", frame: "horizon", ornament: "orbit" },
+    { id: "voidBloom", name: "Void Bloom", mood: "Bioluminescent / alien garden", glyph: "✿", accent: "#d173ff", secondary: "#79f0cf", surface: "#170e24", topLayout: "hero", bottomLayout: "stats", motion: "bloom", frame: "bloom", ornament: "petal" },
+    { id: "pixelOverdrive", name: "Vesper Hunt", mood: "Midnight / lantern chase", glyph: "✶", accent: "#ff6a8f", secondary: "#ffd36a", surface: "#0c0d1a", topLayout: "contained", bottomLayout: "stats", motion: "pursuit", frame: "nocturne", ornament: "fang" },
+    { id: "solarFlare", name: "Solar Cathedral", mood: "Noon king / radiant", glyph: "☼", accent: "#ffe3a0", secondary: "#f06b4d", surface: "#24100d", topLayout: "hero", bottomLayout: "stats", motion: "solar", frame: "halo", ornament: "flare" }
+];
+
+const VANILLA_SKIN_ASSET_PREFIX = "vanillaSkin";
+
+async function loadWidgetImage(blob: Blob): Promise<{ image: HTMLImageElement; url: string; }> {
+    const url = URL.createObjectURL(blob);
+    return new Promise((resolve, reject) => {
+        const image = new Image();
+        image.onload = () => resolve({ image, url });
+        image.onerror = () => { URL.revokeObjectURL(url); reject(new Error("The hero image could not be decoded.")); };
+        image.src = url;
+    });
+}
+
+function drawImageCover(ctx: CanvasRenderingContext2D, image: HTMLImageElement, x: number, y: number, width: number, height: number): void {
+    const imageRatio = Math.max(1, image.naturalWidth) / Math.max(1, image.naturalHeight);
+    const boxRatio = width / Math.max(1, height);
+    const drawWidth = imageRatio > boxRatio ? height * imageRatio : width;
+    const drawHeight = imageRatio > boxRatio ? height : width / Math.max(.01, imageRatio);
+    ctx.drawImage(image, x + (width - drawWidth) / 2, y + (height - drawHeight) / 2, drawWidth, drawHeight);
+}
+
+function drawVanillaSkinOrnament(ctx: CanvasRenderingContext2D, preset: WidgetStylePreset, width: number, height: number): void {
+    ctx.save();
+    ctx.globalAlpha = .7;
+    ctx.strokeStyle = preset.secondary;
+    ctx.fillStyle = preset.secondary;
+    ctx.lineWidth = 3;
+    if (preset.ornament === "orbit" || preset.ornament === "flare") {
+        ctx.beginPath();
+        ctx.ellipse(width - 150, 150, 110, 42, -.35, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.ellipse(width - 150, 150, 68, 25, .35, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(width - 150, 150, 11, 0, Math.PI * 2);
+        ctx.fill();
+    } else if (preset.ornament === "cinder" || preset.ornament === "petal" || preset.ornament === "ribbon") {
+        for (let index = 0; index < 7; index++) {
+            const x = 760 + index * 46;
+            const y = 88 + (index % 3) * 42;
+            ctx.beginPath();
+            ctx.arc(x, y, 4 + (index % 2) * 3, 0, Math.PI * 2);
+            ctx.fill();
+        }
+    } else {
+        ctx.beginPath();
+        ctx.moveTo(width - 250, 74);
+        ctx.lineTo(width - 74, 250);
+        ctx.moveTo(width - 206, 52);
+        ctx.lineTo(width - 52, 206);
+        ctx.stroke();
+    }
+    ctx.restore();
+}
+
+async function renderVanillaSkinImage(preset: WidgetStylePreset, source: Blob | null): Promise<Blob> {
+    const canvas = document.createElement("canvas");
+    canvas.width = 1200;
+    canvas.height = 630;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("Your client could not prepare the vanilla skin image.");
+
+    const background = ctx.createLinearGradient(0, 0, canvas.width, canvas.height);
+    background.addColorStop(0, preset.surface);
+    background.addColorStop(.58, "#0d111b");
+    background.addColorStop(1, preset.secondary);
+    ctx.fillStyle = background;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    if (source) {
+        const loaded = await loadWidgetImage(source);
+        try {
+            ctx.save();
+            ctx.globalAlpha = .42;
+            drawImageCover(ctx, loaded.image, 0, 0, canvas.width, canvas.height);
+            ctx.restore();
+        } finally {
+            URL.revokeObjectURL(loaded.url);
+        }
+    }
+
+    const veil = ctx.createLinearGradient(0, 0, canvas.width, 0);
+    veil.addColorStop(0, `${preset.surface}f2`);
+    veil.addColorStop(.55, `${preset.surface}9c`);
+    veil.addColorStop(1, `${preset.surface}35`);
+    ctx.fillStyle = veil;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    drawVanillaSkinOrnament(ctx, preset, canvas.width, canvas.height);
+
+    ctx.strokeStyle = preset.accent;
+    ctx.lineWidth = 4;
+    ctx.strokeRect(18, 18, canvas.width - 36, canvas.height - 36);
+    ctx.strokeStyle = `${preset.secondary}b8`;
+    ctx.lineWidth = 1;
+    ctx.strokeRect(31, 31, canvas.width - 62, canvas.height - 62);
+
+    ctx.fillStyle = preset.accent;
+    ctx.font = "800 30px sans-serif";
+    ctx.fillText(`${preset.glyph}  DISCORD WIDGET`, 58, 94);
+    ctx.fillStyle = "#f4f6fb";
+    ctx.font = "800 54px sans-serif";
+    ctx.fillText(preset.name, 58, 190);
+    ctx.fillStyle = preset.secondary;
+    ctx.font = "600 23px sans-serif";
+    ctx.fillText("STATIC SKIN · VISIBLE TO VANILLA DISCORD VIEWERS", 60, 236);
+    ctx.fillStyle = "rgba(244,246,251,.78)";
+    ctx.font = "500 20px sans-serif";
+    ctx.fillText("Discordmaxxer keeps the full client skin on supported installs.", 60, 565);
+
+    return await new Promise<Blob>((resolve, reject) => {
+        canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error("Your client could not encode the vanilla skin image.")), "image/png");
+    });
+}
+
+async function removeOldVanillaSkinAssets(appId: string, keepKey = ""): Promise<void> {
+    try {
+        const list = await apiGet(`/applications/${appId}/assets`);
+        const arr: any[] = Array.isArray(list) ? list : list?.assets ?? [];
+        for (const asset of arr) {
+            const key = String(asset.key ?? asset.name ?? "");
+            const assetId = asset.id ?? asset.asset_id;
+            if (key.startsWith(VANILLA_SKIN_ASSET_PREFIX) && key !== keepKey && assetId) {
+                try { await RestAPI.del({ url: `/applications/${appId}/assets/${assetId}` }); } catch { /* best effort cleanup */ }
+            }
+        }
+    } catch { /* an orphaned prior image is harmless; continue with a new key */ }
+}
+
+async function uploadVanillaSkinAsset(appId: string, blob: Blob): Promise<string> {
+    const key = VANILLA_SKIN_ASSET_PREFIX + Date.now();
+    const slot = await apiPost(`/applications/${appId}/assets/upload`, { filename: `${key}.png`, file_size: blob.size });
+    const put = await fetch(slot.upload_url, { method: "PUT", body: blob });
+    if (!put.ok) throw new Error("vanilla skin image upload failed: HTTP " + put.status);
+    const asset = await apiPost(`/applications/${appId}/assets`, { key, upload_filename: slot.upload_filename, visibility: "public" });
+    return String(asset?.key ?? key);
+}
+
+// A skin is rendered by Discordmaxxer, not by Discord's native widget card.
+// Keep a compact marker on the self-owned application so another Discordmaxxer
+// install can recover the same choice without rewriting the published card.
+const REMOTE_WIDGET_STYLE_RE = /\[DMWSTYLE1:([A-Za-z0-9+/=_-]+)\]/;
+const REMOTE_WIDGET_STYLE_ALL_RE = /\[DMWSTYLE1:[A-Za-z0-9+/=_-]+\]/g;
+
+function applicationDescription(application: any): string | null {
+    const candidates = [
+        application?.description,
+        application?.data?.description,
+        application?.application?.description,
+        application?.application?.data?.description,
+    ];
+    const description = candidates.find(value => typeof value === "string");
+    return typeof description === "string" ? description : null;
+}
+
+function remoteWidgetStyleFromApplication(application: any): { style: string; topLayout: "hero" | "contained"; bottomLayout: "stats" | "progress"; updatedAt: number; } | null {
+    const match = String(applicationDescription(application) ?? "").match(REMOTE_WIDGET_STYLE_RE);
+    if (!match) return null;
+    try {
+        const raw = JSON.parse(b64decode(match[1]));
+        if (!raw || typeof raw !== "object") return null;
+        if (typeof raw.style !== "string" || !WIDGET_STYLE_PRESETS.some(preset => preset.id === raw.style)) return null;
+        const preset = WIDGET_STYLE_PRESETS.find(item => item.id === raw.style) ?? WIDGET_STYLE_PRESETS[0];
+        return {
+            style: raw.style,
+            topLayout: raw.topLayout === "hero" || raw.topLayout === "contained" ? raw.topLayout : preset.topLayout,
+            bottomLayout: raw.bottomLayout === "stats" || raw.bottomLayout === "progress" ? raw.bottomLayout : preset.bottomLayout,
+            updatedAt: Number.isSafeInteger(raw.updatedAt) && raw.updatedAt >= 0 ? raw.updatedAt : 0
+        };
+    } catch {
+        return null;
+    }
+}
+
+function remoteWidgetDescriptionFor(description: unknown, preset: WidgetStylePreset, updatedAt: number): string | null {
+    const base = String(description ?? "").replace(REMOTE_WIDGET_STYLE_ALL_RE, "").replace(/\s+$/, "");
+    const marker = `[DMWSTYLE1:${b64encode(JSON.stringify({ v: 1, style: preset.id, topLayout: preset.topLayout, bottomLayout: preset.bottomLayout, updatedAt }))}]`;
+    const next = base ? `${base}\n\n${marker}` : marker;
+    // Discord caps application descriptions. Never replace a user's existing
+    // description with a truncated value just to sync a cosmetic preference.
+    return next.length <= 4000 ? next : null;
+}
+
+const WIDGET_PREVIEW_MOTION_CSS = `
+@keyframes dm-widget-preview-scan { from { transform: translateY(-70%); } to { transform: translateY(280%); } }
+@keyframes dm-widget-preview-embers { 0%, 100% { opacity: .3; transform: translateY(10%) scale(.94); } 50% { opacity: .86; transform: translateY(-3%) scale(1.06); } }
+@keyframes dm-widget-preview-aurora { 0%, 100% { transform: translateX(-12%) rotate(-8deg); opacity: .34; } 50% { transform: translateX(12%) rotate(8deg); opacity: .8; } }
+@keyframes dm-widget-preview-glint {
+    0%, 18% { transform: translateX(-190%) skewX(-22deg); opacity: 0; }
+    30% { transform: translateX(-58%) skewX(-22deg); opacity: .08; }
+    43% { transform: translateX(22%) skewX(-22deg); opacity: .38; }
+    55% { transform: translateX(102%) skewX(-22deg); opacity: .72; }
+    66% { transform: translateX(184%) skewX(-22deg); opacity: .46; }
+    77% { transform: translateX(268%) skewX(-22deg); opacity: .12; }
+    88%, 100% { transform: translateX(445%) skewX(-22deg); opacity: 0; }
+}
+@keyframes dm-widget-preview-ice-drift { 0%, 100% { transform: translate3d(-1%, .5%, 0) rotate(-.5deg); opacity: .54; } 50% { transform: translate3d(1%, -.5%, 0) rotate(.5deg); opacity: .92; } }
+@keyframes dm-widget-preview-laurel { from { transform: rotate(-14deg) scale(.96); opacity: .28; } to { transform: rotate(14deg) scale(1.04); opacity: .72; } }
+@keyframes dm-widget-preview-orbit { to { transform: rotate(360deg); } }
+@keyframes dm-widget-preview-bloom { 0%, 100% { opacity: .32; transform: scale(.86); } 50% { opacity: .82; transform: scale(1.13); } }
+@keyframes dm-widget-preview-glitch { 0%, 86%, 100% { transform: translateX(0); opacity: .24; } 88% { transform: translateX(2px); opacity: .82; } 91% { transform: translateX(-3px); opacity: .52; } 94% { transform: translateX(1px); opacity: .9; } }
+@keyframes dm-widget-preview-solar { to { transform: rotate(360deg); } }
+.dm-widget-style-preview, .dm-widget-style-swatch { isolation: isolate; }
+.dm-widget-style-swatch { position: relative; }
+.dm-widget-style-choice:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+.dm-widget-style-preview::before, .dm-widget-style-swatch::before { content: ""; position: absolute; z-index: 0; inset: 0; pointer-events: none; border-radius: inherit; }
+.dm-widget-style-preview::after { content: ""; position: absolute; z-index: 3; inset: 0; pointer-events: none; overflow: hidden; border-radius: inherit; }
+.dm-widget-style-preview[data-style="neonCircuit"]::before, .dm-widget-style-swatch[data-style="neonCircuit"]::before { background-image: repeating-linear-gradient(135deg, transparent 0 13px, rgba(85,246,232,.09) 14px 15px), linear-gradient(90deg, transparent 72%, rgba(140,99,255,.16)); }
+  .dm-widget-style-preview[data-style="emberProtocol"]::before, .dm-widget-style-swatch[data-style="emberProtocol"]::before { background-image: radial-gradient(ellipse 18% 44% at 2% 18%, rgba(255,211,106,.34), transparent 70%), radial-gradient(ellipse 16% 42% at 98% 82%, rgba(185,240,139,.26), transparent 70%), radial-gradient(circle at 10% 92%, rgba(255,211,106,.42) 0 2px, transparent 3px), radial-gradient(circle at 91% 12%, rgba(185,240,139,.4) 0 2px, transparent 3px); }
+.dm-widget-style-preview[data-style="cottonCandy"]::before, .dm-widget-style-swatch[data-style="cottonCandy"]::before { background-image: radial-gradient(ellipse at 12% 0%, rgba(255,110,199,.27), transparent 42%), radial-gradient(ellipse at 94% 100%, rgba(74,115,255,.32), transparent 47%); }
+.dm-widget-style-preview[data-style="frostedGlass"]::before, .dm-widget-style-swatch[data-style="frostedGlass"]::before { background-image: linear-gradient(132deg, transparent 0 18%, rgba(216,243,255,.11) 19% 20%, transparent 21% 58%, rgba(216,243,255,.08) 59% 60%, transparent 61%), radial-gradient(ellipse at 0% 100%, rgba(216,243,255,.17), transparent 38%), radial-gradient(ellipse at 100% 0%, rgba(117,134,169,.2), transparent 34%); clip-path: polygon(0 0, 100% 0, 100% 100%, 83% 94%, 64% 100%, 45% 93%, 25% 100%, 0 91%); animation: dm-widget-preview-ice-drift 8s ease-in-out infinite alternate; }
+  .dm-widget-style-preview[data-style="championRun"]::before, .dm-widget-style-swatch[data-style="championRun"]::before { background-image: radial-gradient(ellipse at 0% 14%, rgba(255,82,110,.28), transparent 38%), radial-gradient(ellipse at 100% 88%, rgba(233,179,107,.2), transparent 34%), linear-gradient(90deg, rgba(95,8,32,.56), transparent 19% 81%, rgba(95,8,32,.5)); }
+.dm-widget-style-preview[data-style="deepSpace"]::before, .dm-widget-style-swatch[data-style="deepSpace"]::before { background-image: radial-gradient(circle at 12% 28%, #d6e2ff 0 1px, transparent 1.5px), radial-gradient(circle at 77% 22%, #43d9d0 0 1px, transparent 1.5px), radial-gradient(circle at 62% 78%, #89a7ff 0 1px, transparent 1.5px), radial-gradient(circle at 91% 61%, #d6e2ff 0 1px, transparent 1.5px); background-size: 100% 100%; }
+.dm-widget-style-preview[data-style="voidBloom"]::before, .dm-widget-style-swatch[data-style="voidBloom"]::before { background-image: radial-gradient(ellipse at 82% 18%, rgba(209,115,255,.34), transparent 32%), radial-gradient(ellipse at 88% 90%, rgba(121,240,207,.23), transparent 40%), radial-gradient(ellipse at 8% 76%, rgba(115,62,165,.22), transparent 38%); }
+  .dm-widget-style-preview[data-style="pixelOverdrive"]::before, .dm-widget-style-swatch[data-style="pixelOverdrive"]::before { background-image: radial-gradient(ellipse at 0% 0%, rgba(255,106,143,.22), transparent 35%), radial-gradient(ellipse at 100% 100%, rgba(255,211,106,.2), transparent 34%), linear-gradient(90deg, rgba(255,106,143,.1), transparent 15% 85%, rgba(255,211,106,.08)); }
+.dm-widget-style-preview[data-style="solarFlare"]::before, .dm-widget-style-swatch[data-style="solarFlare"]::before { background-image: repeating-conic-gradient(from 2deg at 100% 0%, rgba(255,219,103,.12) 0deg 1deg, transparent 2deg 16deg), radial-gradient(ellipse at 100% 0%, rgba(255,100,77,.29), transparent 48%); }
+.dm-widget-style-preview[data-motion="scan"]:not([data-motion-paused="true"])::after { inset: -35% 0 auto; height: 35%; background: linear-gradient(180deg, transparent, var(--dmw-glow), transparent); animation: dm-widget-preview-scan 3.2s ease-in-out infinite; }
+.dm-widget-style-preview[data-motion="embers"]:not([data-motion-paused="true"])::after { inset: auto -10% -35%; height: 75%; background: radial-gradient(ellipse at 50% 100%, #ff593a88, var(--dmw-glow) 30%, transparent 72%); filter: blur(7px); animation: dm-widget-preview-embers 2.4s ease-in-out infinite; }
+.dm-widget-style-preview[data-motion="aurora"]:not([data-motion-paused="true"])::after { inset: -35% -20%; background: linear-gradient(112deg, transparent 24%, #ff6ec733 42%, #7b7dff55 55%, #4a73ff22 68%, transparent 82%); filter: blur(10px); animation: dm-widget-preview-aurora 6s ease-in-out infinite alternate; }
+.dm-widget-style-preview[data-motion="glint"]:not([data-motion-paused="true"])::after { inset: 0 auto 0 -34%; width: 28%; background: linear-gradient(90deg, transparent 0%, rgba(216,243,255,.04) 16%, rgba(255,255,255,.24) 44%, rgba(216,243,255,.12) 58%, rgba(255,255,255,.05) 76%, transparent 100%); filter: blur(.2px); will-change: transform, opacity; animation: dm-widget-preview-glint 7.4s cubic-bezier(.22,.72,.3,1) infinite; }
+.dm-widget-style-preview[data-motion="laurel"]:not([data-motion-paused="true"])::after { inset: -70% -10% auto auto; width: 72%; aspect-ratio: 1; border: 1px solid #ffd66b70; border-radius: 50%; box-shadow: 0 0 22px #ffd66b24, inset 0 0 22px #e28d4220; background: repeating-conic-gradient(from 0deg, #ffd66b18 0deg 2deg, transparent 3deg 20deg); animation: dm-widget-preview-laurel 4.5s ease-in-out infinite alternate; }
+.dm-widget-style-preview[data-motion="orbit"]:not([data-motion-paused="true"])::after { inset: 15% -18%; border: 1px solid #89a7ff70; border-right-color: #43d9d0; border-radius: 50%; box-shadow: 0 0 18px #89a7ff24, inset 0 0 16px #43d9d018; animation: dm-widget-preview-orbit 16s linear infinite; }
+.dm-widget-style-preview[data-motion="bloom"]:not([data-motion-paused="true"])::after { inset: 8% 5% auto auto; width: 42%; aspect-ratio: 1; border-radius: 50%; background: radial-gradient(circle, #79f0cf55, #d173ff40 42%, transparent 72%); filter: blur(9px); animation: dm-widget-preview-bloom 3.6s ease-in-out infinite; }
+.dm-widget-style-preview[data-motion="glitch"]:not([data-motion-paused="true"])::after { inset: 0; background: repeating-linear-gradient(0deg, transparent 0 13px, #a7ff4f32 14px 15px, transparent 16px 25px); mix-blend-mode: screen; animation: dm-widget-preview-glitch 2.8s steps(1, end) infinite; }
+.dm-widget-style-preview[data-motion="solar"]:not([data-motion-paused="true"])::after { inset: -65%; background: repeating-conic-gradient(from 0deg at 50% 50%, transparent 0deg 12deg, #ffdb6726 13deg 15deg, transparent 16deg 24deg); mask: radial-gradient(circle, transparent 27%, #000 42%, #000 54%, transparent 66%); animation: dm-widget-preview-solar 24s linear infinite; }
+/* The five refreshed directions use layered geometry rather than one flat
+ * gradient. They are intentionally graphic and a little imperfect: a card
+ * should feel art-directed, not like a generic AI-generated dashboard tile. */
+@keyframes dm-widget-preview-prism { 0%, 100% { transform: translateX(-18%) rotate(-7deg); opacity: .28; } 50% { transform: translateX(22%) rotate(7deg); opacity: .82; } }
+@keyframes dm-widget-preview-aurora { 0%, 100% { transform: translateX(-3%) skewX(-3deg); opacity: .62; } 50% { transform: translateX(3%) skewX(3deg); opacity: .98; } }
+@keyframes dm-widget-preview-crown { 0%, 100% { transform: rotate(-8deg) scale(.94); opacity: .36; } 50% { transform: rotate(8deg) scale(1.06); opacity: .9; } }
+@keyframes dm-widget-preview-horizon { from { transform: rotateX(64deg) rotateZ(0deg); } to { transform: rotateX(64deg) rotateZ(360deg); } }
+@keyframes dm-widget-preview-riot { 0%, 78%, 100% { transform: translate(0); clip-path: inset(0); } 80% { transform: translate(3px, -1px); clip-path: inset(12% 0 62% 0); } 83% { transform: translate(-4px, 2px); clip-path: inset(57% 0 18% 0); } 87% { transform: translate(1px); clip-path: inset(0); } }
+@keyframes dm-widget-preview-cathedral { to { transform: rotate(360deg); } }
+@keyframes dm-widget-preview-relic-drift { 0%, 100% { transform: translate3d(-2%, 1%, 0) rotate(-1deg); opacity: .58; } 50% { transform: translate3d(2%, -1%, 0) rotate(1deg); opacity: .96; } }
+@keyframes dm-widget-preview-relic-orbit { from { transform: rotate(0deg); opacity: .42; } to { transform: rotate(360deg); opacity: .86; } }
+@keyframes dm-widget-preview-blood-tide { 0%, 100% { transform: translate3d(-2%, 1%, 0) scale(.96); opacity: .56; } 50% { transform: translate3d(2%, -1%, 0) scale(1.04); opacity: .96; } }
+@keyframes dm-widget-preview-hunger { 0%, 100% { transform: rotate(-3deg) scale(.94); opacity: .42; } 50% { transform: rotate(3deg) scale(1.05); opacity: .94; } }
+@keyframes dm-widget-preview-starfield { 0%, 100% { transform: translate3d(-1%, .5%, 0) scale(.99); opacity: .56; } 50% { transform: translate3d(1%, -.5%, 0) scale(1.015); opacity: .98; } }
+@keyframes dm-widget-preview-night-orbit { from { transform: rotateX(58deg) rotateZ(0deg); opacity: .42; } to { transform: rotateX(58deg) rotateZ(360deg); opacity: .9; } }
+@keyframes dm-widget-preview-route { 0%, 100% { transform: translateX(-4%); opacity: .38; } 50% { transform: translateX(4%); opacity: .92; } }
+  @keyframes dm-widget-preview-hunt-pulse { 0%, 100% { transform: scale(.94) rotate(-2deg); opacity: .46; } 48% { transform: scale(1.04) rotate(2deg); opacity: .98; } 56%, 72% { transform: scale(.98) rotate(0deg); opacity: .72; } }
+  @keyframes dm-widget-preview-hunt-lights { 0%, 100% { opacity: .46; filter: saturate(.86) brightness(.9); } 26% { opacity: .92; filter: saturate(1.16) brightness(1.12); } 54% { opacity: .62; filter: saturate(1.02) brightness(1.02); } 78% { opacity: .84; filter: saturate(1.22) brightness(1.08); } }
+  @keyframes dm-widget-preview-sanguine-velvet { 0%, 100% { transform: translate3d(-1%, .5%, 0) scale(1); opacity: .68; } 50% { transform: translate3d(1%, -.5%, 0) scale(1.035); opacity: .98; } }
+  @keyframes dm-widget-preview-mothlight-dust { 0%, 100% { transform: translate3d(-2%, 1%, 0) scale(.96); opacity: .42; } 50% { transform: translate3d(3%, -2%, 0) scale(1.05); opacity: .94; } }
+@keyframes dm-widget-preview-sun-crown { from { transform: rotate(0deg) scale(.96); opacity: .45; } to { transform: rotate(360deg) scale(1.04); opacity: .9; } }
+  .dm-widget-style-preview[data-style="neonCircuit"]::before, .dm-widget-style-swatch[data-style="neonCircuit"]::before { background-image: linear-gradient(104deg, transparent 0 23%, rgba(85,246,232,.12) 35%, rgba(140,99,255,.13) 51%, rgba(255,79,200,.19) 69%, transparent 92%), linear-gradient(180deg, transparent 9%, rgba(255,79,200,.2) 52%, transparent 92%), repeating-linear-gradient(90deg, transparent 0 21px, rgba(85,246,232,.07) 22px 23px), radial-gradient(circle at 92% 8%, rgba(255,79,200,.38), transparent 38%); clip-path: polygon(0 0, 100% 0, 100% 65%, 72% 52%, 53% 100%, 0 82%); animation: dm-widget-preview-aurora 8s ease-in-out infinite alternate; }
+  .dm-widget-style-preview[data-style="neonCircuit"]::after { inset: -15% -30%; width: 42%; background: linear-gradient(90deg, transparent, rgba(255,255,255,.7), rgba(85,246,232,.22), transparent); filter: blur(2px); transform: rotate(18deg); animation: dm-widget-preview-prism 4.8s ease-in-out infinite; }
+  .dm-widget-style-preview[data-style="emberProtocol"]::before, .dm-widget-style-swatch[data-style="emberProtocol"]::before { background-image: radial-gradient(ellipse 18% 44% at 2% 18%, rgba(255,211,106,.44), transparent 70%), radial-gradient(ellipse 16% 42% at 98% 82%, rgba(185,240,139,.34), transparent 70%), radial-gradient(circle at 10% 92%, rgba(255,211,106,.5) 0 2px, transparent 3px), radial-gradient(circle at 91% 12%, rgba(185,240,139,.46) 0 2px, transparent 3px), linear-gradient(118deg, transparent 0 42%, rgba(255,211,106,.08) 52%, transparent 62%); clip-path: polygon(0 0, 100% 0, 100% 100%, 80% 95%, 62% 100%, 37% 94%, 0 100%); animation: dm-widget-preview-mothlight-dust 5.4s ease-in-out infinite alternate; }
+  .dm-widget-style-preview[data-style="emberProtocol"]::after { inset: 0; background-image: radial-gradient(circle at 7% 14%, #ffe29a 0 1.5px, transparent 3px), radial-gradient(circle at 94% 16%, #b9f08b 0 1.5px, transparent 3px), radial-gradient(circle at 3% 78%, #ffd36a 0 1.5px, transparent 3px), radial-gradient(circle at 96% 84%, #e2ffb3 0 1.5px, transparent 3px), radial-gradient(circle at 18% 95%, rgba(255,211,106,.8) 0 1.5px, transparent 3px), radial-gradient(circle at 81% 5%, rgba(185,240,139,.75) 0 1.5px, transparent 3px), radial-gradient(ellipse at 0% 50%, rgba(255,211,106,.16), transparent 24%), radial-gradient(ellipse at 100% 50%, rgba(185,240,139,.14), transparent 24%); mix-blend-mode: screen; animation: dm-widget-preview-mothlight-dust 4.2s ease-in-out infinite reverse; }
+  .dm-widget-style-preview[data-style="championRun"]::before, .dm-widget-style-swatch[data-style="championRun"]::before { background-image: radial-gradient(ellipse at -4% 12%, rgba(255,82,110,.46), transparent 36%), radial-gradient(ellipse at 104% 90%, rgba(233,179,107,.28), transparent 34%), linear-gradient(90deg, rgba(95,8,32,.8), transparent 18% 82%, rgba(95,8,32,.74)), repeating-linear-gradient(104deg, transparent 0 17px, rgba(255,82,110,.045) 18px 20px), radial-gradient(ellipse at 50% 100%, #260d1a, #150912 74%); animation: dm-widget-preview-sanguine-velvet 7.2s ease-in-out infinite alternate; }
+  .dm-widget-style-preview[data-style="championRun"]::after { inset: 0; background-image: radial-gradient(circle at 4% 12%, #ffd08a 0 1.5px, transparent 3px), radial-gradient(circle at 96% 86%, #ff526e 0 2px, transparent 4px), radial-gradient(circle at 8% 78%, #ff526e 0 1.5px, transparent 3px), radial-gradient(circle at 91% 22%, #e9b36b 0 1.5px, transparent 3px), radial-gradient(ellipse at 50% 100%, rgba(126,9,43,.38), transparent 58%); mix-blend-mode: screen; animation: dm-widget-preview-sanguine-velvet 5.9s ease-in-out infinite reverse; }
+.dm-widget-style-preview[data-style="deepSpace"]::before, .dm-widget-style-swatch[data-style="deepSpace"]::before { background-image: radial-gradient(circle at 8% 18%, #f8fbff 0 1px, transparent 1.8px), radial-gradient(circle at 21% 72%, #b8cbff 0 1px, transparent 1.8px), radial-gradient(circle at 34% 31%, #fff 0 1.3px, transparent 2px), radial-gradient(circle at 47% 82%, #78e0da 0 1px, transparent 1.8px), radial-gradient(circle at 58% 16%, #dce6ff 0 1px, transparent 1.8px), radial-gradient(circle at 69% 56%, #fff 0 1.2px, transparent 2px), radial-gradient(circle at 82% 21%, #78e0da 0 1px, transparent 1.8px), radial-gradient(circle at 93% 74%, #b8cbff 0 1px, transparent 1.8px), radial-gradient(circle at 77% 90%, #fff 0 1px, transparent 1.7px), radial-gradient(ellipse at 64% 57%, rgba(120,224,218,.14), transparent 31%), radial-gradient(ellipse at 28% 18%, rgba(112,123,255,.16), transparent 36%), linear-gradient(145deg, #060914 12%, #0c1530 61%, #050711); animation: dm-widget-preview-starfield 7s ease-in-out infinite; }
+.dm-widget-style-preview[data-style="deepSpace"]::after { inset: 4% -8% auto auto; width: 66%; aspect-ratio: 1; border: 1px solid rgba(120,224,218,.66); border-radius: 50%; box-shadow: 0 0 22px rgba(120,224,218,.18), 0 0 0 11px rgba(184,203,255,.05), inset 0 0 20px rgba(184,203,255,.1); background: conic-gradient(from 4deg, transparent 0 21deg, rgba(184,203,255,.5) 22deg 24deg, transparent 25deg 76deg, rgba(120,224,218,.48) 77deg 80deg, transparent 81deg 142deg); -webkit-mask: radial-gradient(circle, transparent 0 54%, #000 55% 58%, transparent 59%); mask: radial-gradient(circle, transparent 0 54%, #000 55% 58%, transparent 59%); transform: rotateX(58deg); animation: dm-widget-preview-night-orbit 22s linear infinite; }
+  .dm-widget-style-preview[data-style="pixelOverdrive"]::before, .dm-widget-style-swatch[data-style="pixelOverdrive"]::before { inset: 3px; border: 1px solid rgba(255,106,143,.42); border-radius: 8px; background-image: linear-gradient(90deg, rgba(255,106,143,.12), transparent 14% 86%, rgba(255,211,106,.1)), radial-gradient(ellipse at 0% 0%, rgba(255,106,143,.28), transparent 31%), radial-gradient(ellipse at 100% 100%, rgba(255,211,106,.22), transparent 32%); box-shadow: inset 0 0 0 3px rgba(255,211,106,.045), 0 0 12px rgba(255,106,143,.16); animation: dm-widget-preview-hunt-lights 3.1s ease-in-out infinite; }
+  .dm-widget-style-preview[data-style="pixelOverdrive"]::after { inset: 0; background-image: radial-gradient(circle at 7% 7%, #ffdca0 0 2px, transparent 3.5px), radial-gradient(circle at 20% 5%, #ff6a8f 0 2px, transparent 3.5px), radial-gradient(circle at 35% 7%, #ffd36a 0 2px, transparent 3.5px), radial-gradient(circle at 50% 4%, #ff8fb2 0 2px, transparent 3.5px), radial-gradient(circle at 66% 7%, #ffd36a 0 2px, transparent 3.5px), radial-gradient(circle at 81% 5%, #ff6a8f 0 2px, transparent 3.5px), radial-gradient(circle at 94% 8%, #ffdca0 0 2px, transparent 3.5px), radial-gradient(circle at 5% 93%, #ff6a8f 0 2px, transparent 3.5px), radial-gradient(circle at 19% 96%, #ffd36a 0 2px, transparent 3.5px), radial-gradient(circle at 34% 94%, #ff8fb2 0 2px, transparent 3.5px), radial-gradient(circle at 50% 97%, #ffdca0 0 2px, transparent 3.5px), radial-gradient(circle at 66% 94%, #ff6a8f 0 2px, transparent 3.5px), radial-gradient(circle at 82% 96%, #ffd36a 0 2px, transparent 3.5px), radial-gradient(circle at 95% 91%, #ff8fb2 0 2px, transparent 3.5px), radial-gradient(circle at 3% 29%, #ffd36a 0 2px, transparent 3.5px), radial-gradient(circle at 97% 30%, #ff6a8f 0 2px, transparent 3.5px), radial-gradient(circle at 3% 52%, #ff8fb2 0 2px, transparent 3.5px), radial-gradient(circle at 97% 54%, #ffdca0 0 2px, transparent 3.5px), radial-gradient(ellipse at 0% 50%, rgba(255,106,143,.18), transparent 24%), radial-gradient(ellipse at 100% 50%, rgba(255,211,106,.16), transparent 24%); mix-blend-mode: screen; animation: dm-widget-preview-hunt-lights 3.1s steps(5, end) infinite reverse; }
+.dm-widget-style-preview[data-style="solarFlare"]::before, .dm-widget-style-swatch[data-style="solarFlare"]::before { background-image: radial-gradient(circle at 84% 18%, #fff2bf 0 6%, rgba(255,227,160,.8) 7% 12%, rgba(240,107,77,.28) 13% 27%, transparent 40%), repeating-conic-gradient(from 0deg at 84% 18%, rgba(255,227,160,.32) 0deg 2deg, transparent 3deg 14deg), linear-gradient(152deg, #24100d 0 42%, rgba(240,107,77,.18) 43% 55%, #351714 56% 72%, #160d13 73%); clip-path: polygon(0 0, 100% 0, 100% 100%, 13% 100%, 21% 77%, 0 64%); }
+.dm-widget-style-preview[data-style="solarFlare"]::after { inset: -61% -56%; background: repeating-conic-gradient(from 2deg at 50% 50%, transparent 0deg 8deg, rgba(255,227,160,.46) 9deg 12deg, transparent 13deg 22deg); -webkit-mask: radial-gradient(circle, transparent 27%, #000 34%, #000 54%, transparent 64%); mask: radial-gradient(circle, transparent 27%, #000 34%, #000 54%, transparent 64%); animation: dm-widget-preview-sun-crown 23s linear infinite; }
+.dm-widget-style-preview[data-motion-paused="true"]::before, .dm-widget-style-preview[data-motion-paused="true"]::after, .dm-widget-style-swatch[data-motion-paused="true"]::before, .dm-widget-style-swatch[data-motion-paused="true"]::after { animation-play-state: paused !important; }
+`;
+
+// Discord only stores the widget's supported content/layout fields. It does
+// not have a custom-CSS field, so this second stylesheet is deliberately
+// client-side: it targets the real profile-board/popout card after Discord
+// mounts it. The data attributes contain every preset attribute (skin, frame,
+// ornament, motion, pause state, and palette), which also makes the renderer
+// easy to diagnose without guessing from a screenshot.
+const WIDGET_CLIENT_SKIN_CSS = `
+@keyframes dm-widget-client-prism { 0%, 100% { transform: translateX(-24%) rotate(16deg); opacity: .18; } 50% { transform: translateX(224%) rotate(16deg); opacity: .86; } }
+@keyframes dm-widget-client-aurora { 0%, 100% { transform: translateX(-3%) skewX(-3deg); opacity: .62; } 50% { transform: translateX(3%) skewX(3deg); opacity: .98; } }
+@keyframes dm-widget-client-cinder { 0%, 100% { transform: translateY(9%) scale(.92); opacity: .25; } 50% { transform: translateY(-5%) scale(1.08); opacity: .82; } }
+@keyframes dm-widget-client-ribbon { 0%, 100% { transform: translateX(-16%) rotate(-8deg); opacity: .24; } 50% { transform: translateX(16%) rotate(8deg); opacity: .78; } }
+@keyframes dm-widget-client-glint {
+    0%, 18% { transform: translateX(-190%) skewX(-22deg); opacity: 0; }
+    30% { transform: translateX(-58%) skewX(-22deg); opacity: .08; }
+    43% { transform: translateX(22%) skewX(-22deg); opacity: .38; }
+    55% { transform: translateX(102%) skewX(-22deg); opacity: .72; }
+    66% { transform: translateX(184%) skewX(-22deg); opacity: .46; }
+    77% { transform: translateX(268%) skewX(-22deg); opacity: .12; }
+    88%, 100% { transform: translateX(445%) skewX(-22deg); opacity: 0; }
+}
+@keyframes dm-widget-client-ice-drift { 0%, 100% { transform: translate3d(-1%, .5%, 0) rotate(-.5deg); opacity: .54; } 50% { transform: translate3d(1%, -.5%, 0) rotate(.5deg); opacity: .92; } }
+@keyframes dm-widget-client-crown { 0%, 100% { transform: rotate(-10deg) scale(.93); opacity: .34; } 50% { transform: rotate(10deg) scale(1.05); opacity: .9; } }
+@keyframes dm-widget-client-horizon { to { transform: rotateX(65deg) rotateZ(360deg); } }
+@keyframes dm-widget-client-bloom { 0%, 100% { transform: scale(.82); opacity: .2; } 50% { transform: scale(1.16); opacity: .78; } }
+@keyframes dm-widget-client-riot { 0%, 78%, 100% { transform: translate(0); clip-path: inset(0); opacity: .27; } 80% { transform: translate(4px, -1px); clip-path: inset(9% 0 64% 0); opacity: .82; } 84% { transform: translate(-5px, 2px); clip-path: inset(58% 0 16% 0); opacity: .64; } 88% { transform: translate(1px); clip-path: inset(0); opacity: .34; } }
+@keyframes dm-widget-client-flare { to { transform: rotate(360deg); } }
+@keyframes dm-widget-client-relic-drift { 0%, 100% { transform: translate3d(-2%, 1%, 0) rotate(-1deg); opacity: .56; } 50% { transform: translate3d(2%, -1%, 0) rotate(1deg); opacity: .96; } }
+@keyframes dm-widget-client-relic-orbit { from { transform: rotate(0deg); opacity: .4; } to { transform: rotate(360deg); opacity: .9; } }
+@keyframes dm-widget-client-blood-tide { 0%, 100% { transform: translate3d(-2%, 1%, 0) scale(.96); opacity: .54; } 50% { transform: translate3d(2%, -1%, 0) scale(1.04); opacity: .98; } }
+@keyframes dm-widget-client-hunger { 0%, 100% { transform: rotate(-3deg) scale(.94); opacity: .42; } 50% { transform: rotate(3deg) scale(1.05); opacity: .96; } }
+@keyframes dm-widget-client-starfield { 0%, 100% { transform: translate3d(-1%, .5%, 0) scale(.99); opacity: .52; } 50% { transform: translate3d(1%, -.5%, 0) scale(1.02); opacity: .98; } }
+@keyframes dm-widget-client-night-orbit { from { transform: rotateX(58deg) rotateZ(0deg); opacity: .42; } to { transform: rotateX(58deg) rotateZ(360deg); opacity: .9; } }
+@keyframes dm-widget-client-route { 0%, 100% { transform: translateX(-4%); opacity: .34; } 50% { transform: translateX(4%); opacity: .94; } }
+  @keyframes dm-widget-client-hunt-pulse { 0%, 100% { transform: scale(.94) rotate(-2deg); opacity: .44; } 48% { transform: scale(1.04) rotate(2deg); opacity: .98; } 56%, 72% { transform: scale(.98) rotate(0deg); opacity: .72; } }
+  @keyframes dm-widget-client-hunt-lights { 0%, 100% { opacity: .46; filter: saturate(.86) brightness(.9); } 26% { opacity: .92; filter: saturate(1.16) brightness(1.12); } 54% { opacity: .62; filter: saturate(1.02) brightness(1.02); } 78% { opacity: .84; filter: saturate(1.22) brightness(1.08); } }
+  @keyframes dm-widget-client-sanguine-velvet { 0%, 100% { transform: translate3d(-1%, .5%, 0) scale(1); opacity: .68; } 50% { transform: translate3d(1%, -.5%, 0) scale(1.035); opacity: .98; } }
+  @keyframes dm-widget-client-mothlight-dust { 0%, 100% { transform: translate3d(-2%, 1%, 0) scale(.96); opacity: .42; } 50% { transform: translate3d(3%, -2%, 0) scale(1.05); opacity: .94; } }
+@keyframes dm-widget-client-sun-crown { from { transform: rotate(0deg) scale(.96); opacity: .44; } to { transform: rotate(360deg) scale(1.04); opacity: .92; } }
+[data-dm-widget-skin] { position: relative !important; isolation: isolate; overflow: hidden !important; border-radius: 12px !important; border: 1px solid color-mix(in srgb, var(--dmw-skin-accent) 62%, transparent) !important; box-shadow: 0 0 0 1px color-mix(in srgb, var(--dmw-skin-accent) 16%, transparent), 0 8px 24px color-mix(in srgb, var(--dmw-skin-accent) 18%, transparent), inset 0 0 24px color-mix(in srgb, var(--dmw-skin-accent) 10%, transparent); background-color: var(--dmw-skin-surface) !important; }
+[data-dm-widget-skin]::before, [data-dm-widget-skin]::after { content: ""; position: absolute; pointer-events: none; border-radius: inherit; }
+[data-dm-widget-skin]::before { z-index: 0; inset: 0; background-repeat: no-repeat; }
+[data-dm-widget-skin]::after { z-index: 2; inset: 0; }
+[data-dm-widget-skin] > * { position: relative; z-index: 1; }
+[data-dm-widget-skin="neonCircuit"] { background-image: linear-gradient(104deg, transparent 0 24%, color-mix(in srgb, var(--dmw-skin-accent) 12%, transparent) 36%, color-mix(in srgb, #8c63ff 13%, transparent) 52%, color-mix(in srgb, var(--dmw-skin-secondary) 20%, transparent) 70%, transparent 92%), linear-gradient(180deg, transparent 8%, color-mix(in srgb, var(--dmw-skin-secondary) 13%, transparent) 53%, transparent 94%), linear-gradient(135deg, var(--dmw-skin-surface), #111d31 72%) !important; }
+[data-dm-widget-skin="neonCircuit"]::before { background-image: linear-gradient(104deg, transparent 0 23%, color-mix(in srgb, var(--dmw-skin-accent) 16%, transparent) 35%, color-mix(in srgb, #8c63ff 14%, transparent) 51%, color-mix(in srgb, var(--dmw-skin-secondary) 22%, transparent) 69%, transparent 92%), linear-gradient(180deg, transparent 9%, color-mix(in srgb, var(--dmw-skin-secondary) 22%, transparent) 52%, transparent 92%), repeating-linear-gradient(90deg, transparent 0 22px, color-mix(in srgb, var(--dmw-skin-accent) 7%, transparent) 23px 24px), radial-gradient(circle at 94% 8%, color-mix(in srgb, var(--dmw-skin-secondary) 44%, transparent), transparent 38%); clip-path: polygon(0 0, 100% 0, 100% 64%, 73% 52%, 51% 100%, 0 82%); filter: blur(.15px); animation: dm-widget-client-aurora 8s ease-in-out infinite alternate; }
+[data-dm-widget-skin="neonCircuit"]::after { inset: -15% -34%; width: 38%; background: linear-gradient(90deg, transparent, color-mix(in srgb, #fff 68%, var(--dmw-skin-accent)), transparent); filter: blur(2px); transform: rotate(17deg); animation: dm-widget-client-prism 5s ease-in-out infinite; }
+  [data-dm-widget-skin="emberProtocol"] { background-image: radial-gradient(ellipse at 4% 100%, color-mix(in srgb, var(--dmw-skin-accent) 34%, transparent), transparent 42%), radial-gradient(ellipse at 96% 4%, color-mix(in srgb, var(--dmw-skin-secondary) 24%, transparent), transparent 36%), linear-gradient(115deg, #101819, #1d2b24 55%, #100f18 100%) !important; }
+  [data-dm-widget-skin="emberProtocol"]::before { background-image: radial-gradient(ellipse 18% 44% at 2% 18%, color-mix(in srgb, var(--dmw-skin-accent) 46%, transparent), transparent 70%), radial-gradient(ellipse 16% 42% at 98% 82%, color-mix(in srgb, var(--dmw-skin-secondary) 35%, transparent), transparent 70%), radial-gradient(circle at 10% 92%, color-mix(in srgb, var(--dmw-skin-accent) 72%, transparent) 0 2px, transparent 3px), radial-gradient(circle at 91% 12%, color-mix(in srgb, var(--dmw-skin-secondary) 72%, transparent) 0 2px, transparent 3px), linear-gradient(118deg, transparent 0 42%, color-mix(in srgb, var(--dmw-skin-accent) 10%, transparent) 52%, transparent 62%); clip-path: polygon(0 0, 100% 0, 100% 100%, 80% 95%, 62% 100%, 37% 94%, 0 100%); animation: dm-widget-client-mothlight-dust 5.4s ease-in-out infinite alternate; }
+  [data-dm-widget-skin="emberProtocol"]::after { inset: 0; background-image: radial-gradient(circle at 7% 14%, color-mix(in srgb, var(--dmw-skin-accent) 88%, white) 0 2px, transparent 3.5px), radial-gradient(circle at 94% 16%, color-mix(in srgb, var(--dmw-skin-secondary) 88%, white) 0 2px, transparent 3.5px), radial-gradient(circle at 3% 78%, color-mix(in srgb, var(--dmw-skin-accent) 74%, transparent) 0 2px, transparent 3.5px), radial-gradient(circle at 96% 84%, color-mix(in srgb, var(--dmw-skin-secondary) 74%, transparent) 0 2px, transparent 3.5px), radial-gradient(circle at 18% 95%, color-mix(in srgb, var(--dmw-skin-accent) 82%, transparent) 0 1.5px, transparent 3px), radial-gradient(circle at 81% 5%, color-mix(in srgb, var(--dmw-skin-secondary) 78%, transparent) 0 1.5px, transparent 3px), radial-gradient(ellipse at 0% 50%, color-mix(in srgb, var(--dmw-skin-accent) 16%, transparent), transparent 24%), radial-gradient(ellipse at 100% 50%, color-mix(in srgb, var(--dmw-skin-secondary) 14%, transparent), transparent 24%); mix-blend-mode: screen; animation: dm-widget-client-mothlight-dust 4.2s ease-in-out infinite reverse; }
+[data-dm-widget-skin="cottonCandy"] { background-image: radial-gradient(ellipse at 8% 0%, color-mix(in srgb, var(--dmw-skin-accent) 29%, transparent), transparent 42%), radial-gradient(ellipse at 96% 104%, color-mix(in srgb, var(--dmw-skin-secondary) 36%, transparent), transparent 49%), linear-gradient(135deg, var(--dmw-skin-surface), #171b39 84%) !important; }
+[data-dm-widget-skin="cottonCandy"]::before { background: linear-gradient(116deg, transparent 20%, color-mix(in srgb, var(--dmw-skin-accent) 15%, transparent) 36%, color-mix(in srgb, var(--dmw-skin-secondary) 18%, transparent) 55%, transparent 72%); filter: blur(4px); animation: dm-widget-client-ribbon 6s ease-in-out infinite alternate; }
+[data-dm-widget-skin="cottonCandy"]::after { inset: -30% -22%; background: radial-gradient(ellipse at 35% 50%, color-mix(in srgb, var(--dmw-skin-accent) 22%, transparent), transparent 40%), radial-gradient(ellipse at 74% 50%, color-mix(in srgb, var(--dmw-skin-secondary) 21%, transparent), transparent 40%); filter: blur(13px); animation: dm-widget-client-ribbon 7s ease-in-out infinite alternate-reverse; }
+[data-dm-widget-skin="frostedGlass"] { background-image: radial-gradient(ellipse at 0% 100%, rgba(216,243,255,.18), transparent 38%), radial-gradient(ellipse at 100% 0%, rgba(117,134,169,.22), transparent 34%), linear-gradient(135deg, #18283a 0%, rgba(18,26,37,.96) 52%, #202f46 100%) !important; backdrop-filter: blur(12px) saturate(1.25); }
+[data-dm-widget-skin="frostedGlass"]::before { inset: 2px; border: 1px solid rgba(216,243,255,.28); background-image: linear-gradient(132deg, transparent 0 18%, rgba(216,243,255,.14) 19% 20%, transparent 21% 58%, rgba(216,243,255,.1) 59% 60%, transparent 61%), radial-gradient(ellipse at 0% 100%, rgba(216,243,255,.21), transparent 38%), radial-gradient(ellipse at 100% 0%, rgba(117,134,169,.22), transparent 34%), linear-gradient(0deg, rgba(255,255,255,.045), transparent); clip-path: polygon(0 0, 100% 0, 100% 100%, 83% 94%, 64% 100%, 45% 93%, 25% 100%, 0 91%); box-shadow: inset 0 0 0 3px rgba(216,243,255,.045), 0 0 15px rgba(216,243,255,.1); animation: dm-widget-client-ice-drift 8s ease-in-out infinite alternate; }
+[data-dm-widget-skin="frostedGlass"]::after { inset: 0 auto 0 -34%; width: 28%; background: linear-gradient(90deg, transparent 0%, rgba(216,243,255,.04) 16%, rgba(255,255,255,.3) 44%, rgba(216,243,255,.14) 58%, rgba(255,255,255,.05) 76%, transparent 100%); filter: blur(.2px); will-change: transform, opacity; animation: dm-widget-client-glint 7.4s cubic-bezier(.22,.72,.3,1) infinite; }
+  [data-dm-widget-skin="championRun"] { background-image: radial-gradient(ellipse at -4% 12%, color-mix(in srgb, var(--dmw-skin-accent) 46%, transparent), transparent 36%), radial-gradient(ellipse at 104% 90%, color-mix(in srgb, var(--dmw-skin-secondary) 28%, transparent), transparent 34%), linear-gradient(90deg, color-mix(in srgb, #5f0820 80%, transparent), transparent 18% 82%, color-mix(in srgb, #5f0820 74%, transparent)), repeating-linear-gradient(104deg, transparent 0 17px, color-mix(in srgb, var(--dmw-skin-accent) 5%, transparent) 18px 20px), radial-gradient(ellipse at 50% 100%, #260d1a, var(--dmw-skin-surface) 74%) !important; border-color: color-mix(in srgb, var(--dmw-skin-secondary) 64%, var(--dmw-skin-accent)) !important; }
+  [data-dm-widget-skin="championRun"]::before { background-image: radial-gradient(ellipse at -4% 12%, color-mix(in srgb, var(--dmw-skin-accent) 56%, transparent), transparent 36%), radial-gradient(ellipse at 104% 90%, color-mix(in srgb, var(--dmw-skin-secondary) 34%, transparent), transparent 34%), linear-gradient(90deg, color-mix(in srgb, #5f0820 86%, transparent), transparent 18% 82%, color-mix(in srgb, #5f0820 78%, transparent)), repeating-linear-gradient(104deg, transparent 0 17px, color-mix(in srgb, var(--dmw-skin-accent) 6%, transparent) 18px 20px); animation: dm-widget-client-sanguine-velvet 7.2s ease-in-out infinite alternate; }
+  [data-dm-widget-skin="championRun"]::after { inset: 0; background-image: radial-gradient(circle at 4% 12%, color-mix(in srgb, var(--dmw-skin-secondary) 88%, white) 0 2px, transparent 4px), radial-gradient(circle at 96% 86%, color-mix(in srgb, var(--dmw-skin-accent) 82%, transparent) 0 2px, transparent 4px), radial-gradient(circle at 8% 78%, color-mix(in srgb, var(--dmw-skin-accent) 72%, transparent) 0 1.5px, transparent 3px), radial-gradient(circle at 91% 22%, color-mix(in srgb, var(--dmw-skin-secondary) 74%, transparent) 0 1.5px, transparent 3px), radial-gradient(ellipse at 50% 100%, color-mix(in srgb, #7e092b 42%, transparent), transparent 58%); mix-blend-mode: screen; animation: dm-widget-client-sanguine-velvet 5.9s ease-in-out infinite reverse; }
+[data-dm-widget-skin="deepSpace"] { background-image: radial-gradient(ellipse at 64% 58%, color-mix(in srgb, var(--dmw-skin-secondary) 13%, transparent), transparent 30%), radial-gradient(ellipse at 28% 14%, color-mix(in srgb, #707bff 16%, transparent), transparent 36%), linear-gradient(145deg, #060914 12%, #0c1530 61%, #050711) !important; }
+[data-dm-widget-skin="deepSpace"]::before { background-image: radial-gradient(circle at 8% 18%, #f8fbff 0 1px, transparent 1.8px), radial-gradient(circle at 21% 72%, var(--dmw-skin-accent) 0 1px, transparent 1.8px), radial-gradient(circle at 34% 31%, #fff 0 1.3px, transparent 2px), radial-gradient(circle at 47% 82%, var(--dmw-skin-secondary) 0 1px, transparent 1.8px), radial-gradient(circle at 58% 16%, #dce6ff 0 1px, transparent 1.8px), radial-gradient(circle at 69% 56%, #fff 0 1.2px, transparent 2px), radial-gradient(circle at 82% 21%, var(--dmw-skin-secondary) 0 1px, transparent 1.8px), radial-gradient(circle at 93% 74%, var(--dmw-skin-accent) 0 1px, transparent 1.8px), radial-gradient(circle at 77% 90%, #fff 0 1px, transparent 1.7px); animation: dm-widget-client-starfield 7s ease-in-out infinite; }
+[data-dm-widget-skin="deepSpace"]::after { inset: 4% -8% auto auto; width: 66%; aspect-ratio: 1; border: 1px solid color-mix(in srgb, var(--dmw-skin-secondary) 66%, transparent); border-radius: 50%; box-shadow: 0 0 22px color-mix(in srgb, var(--dmw-skin-secondary) 18%, transparent), 0 0 0 11px color-mix(in srgb, var(--dmw-skin-accent) 5%, transparent), inset 0 0 20px color-mix(in srgb, var(--dmw-skin-accent) 10%, transparent); background: conic-gradient(from 4deg, transparent 0 21deg, color-mix(in srgb, var(--dmw-skin-accent) 50%, transparent) 22deg 24deg, transparent 25deg 76deg, color-mix(in srgb, var(--dmw-skin-secondary) 48%, transparent) 77deg 80deg, transparent 81deg 142deg); -webkit-mask: radial-gradient(circle, transparent 0 54%, #000 55% 58%, transparent 59%); mask: radial-gradient(circle, transparent 0 54%, #000 55% 58%, transparent 59%); animation: dm-widget-client-night-orbit 22s linear infinite; }
+[data-dm-widget-skin="voidBloom"] { background-image: radial-gradient(ellipse at 82% 18%, color-mix(in srgb, var(--dmw-skin-accent) 35%, transparent), transparent 33%), radial-gradient(ellipse at 88% 92%, color-mix(in srgb, var(--dmw-skin-secondary) 25%, transparent), transparent 42%), linear-gradient(135deg, #170e24, #101b2a 88%) !important; }
+[data-dm-widget-skin="voidBloom"]::before { background-image: radial-gradient(ellipse at 8% 76%, rgba(115,62,165,.23), transparent 38%), radial-gradient(circle at 76% 20%, color-mix(in srgb, var(--dmw-skin-accent) 35%, transparent) 0 1px, transparent 2px), radial-gradient(circle at 88% 73%, color-mix(in srgb, var(--dmw-skin-secondary) 32%, transparent) 0 1px, transparent 2px); }
+[data-dm-widget-skin="voidBloom"]::after { inset: 7% 5% auto auto; width: 40%; aspect-ratio: 1; border-radius: 50%; background: radial-gradient(circle, color-mix(in srgb, var(--dmw-skin-secondary) 35%, transparent), color-mix(in srgb, var(--dmw-skin-accent) 24%, transparent) 43%, transparent 72%); filter: blur(8px); animation: dm-widget-client-bloom 3.8s ease-in-out infinite; }
+[data-dm-widget-skin="pixelOverdrive"] { background-image: radial-gradient(ellipse at 0% 0%, color-mix(in srgb, var(--dmw-skin-accent) 26%, transparent), transparent 32%), radial-gradient(ellipse at 100% 100%, color-mix(in srgb, var(--dmw-skin-secondary) 22%, transparent), transparent 32%), linear-gradient(116deg, #0c0d1a, #151327 54%, #0b101b 100%) !important; }
+[data-dm-widget-skin="pixelOverdrive"]::before { inset: 3px; border: 1px solid color-mix(in srgb, var(--dmw-skin-accent) 64%, transparent); border-radius: 8px; background-image: linear-gradient(90deg, color-mix(in srgb, var(--dmw-skin-accent) 15%, transparent), transparent 14% 86%, color-mix(in srgb, var(--dmw-skin-secondary) 12%, transparent)), radial-gradient(ellipse at 0% 0%, color-mix(in srgb, var(--dmw-skin-accent) 24%, transparent), transparent 31%), radial-gradient(ellipse at 100% 100%, color-mix(in srgb, var(--dmw-skin-secondary) 21%, transparent), transparent 32%); box-shadow: inset 0 0 0 3px color-mix(in srgb, var(--dmw-skin-secondary) 5%, transparent), 0 0 14px color-mix(in srgb, var(--dmw-skin-accent) 15%, transparent); animation: dm-widget-client-hunt-lights 3.1s ease-in-out infinite; }
+[data-dm-widget-skin="pixelOverdrive"]::after { inset: 0; background-image: radial-gradient(circle at 7% 7%, color-mix(in srgb, var(--dmw-skin-secondary) 86%, white) 0 2px, transparent 3.5px), radial-gradient(circle at 20% 5%, color-mix(in srgb, var(--dmw-skin-accent) 88%, white) 0 2px, transparent 3.5px), radial-gradient(circle at 35% 7%, color-mix(in srgb, var(--dmw-skin-secondary) 78%, white) 0 2px, transparent 3.5px), radial-gradient(circle at 50% 4%, color-mix(in srgb, var(--dmw-skin-accent) 88%, white) 0 2px, transparent 3.5px), radial-gradient(circle at 66% 7%, color-mix(in srgb, var(--dmw-skin-secondary) 78%, white) 0 2px, transparent 3.5px), radial-gradient(circle at 81% 5%, color-mix(in srgb, var(--dmw-skin-accent) 88%, white) 0 2px, transparent 3.5px), radial-gradient(circle at 94% 8%, color-mix(in srgb, var(--dmw-skin-secondary) 86%, white) 0 2px, transparent 3.5px), radial-gradient(circle at 5% 93%, color-mix(in srgb, var(--dmw-skin-accent) 88%, white) 0 2px, transparent 3.5px), radial-gradient(circle at 19% 96%, color-mix(in srgb, var(--dmw-skin-secondary) 78%, white) 0 2px, transparent 3.5px), radial-gradient(circle at 34% 94%, color-mix(in srgb, var(--dmw-skin-accent) 88%, white) 0 2px, transparent 3.5px), radial-gradient(circle at 50% 97%, color-mix(in srgb, var(--dmw-skin-secondary) 86%, white) 0 2px, transparent 3.5px), radial-gradient(circle at 66% 94%, color-mix(in srgb, var(--dmw-skin-accent) 88%, white) 0 2px, transparent 3.5px), radial-gradient(circle at 82% 96%, color-mix(in srgb, var(--dmw-skin-secondary) 78%, white) 0 2px, transparent 3.5px), radial-gradient(circle at 95% 91%, color-mix(in srgb, var(--dmw-skin-accent) 88%, white) 0 2px, transparent 3.5px), radial-gradient(circle at 3% 29%, color-mix(in srgb, var(--dmw-skin-secondary) 82%, white) 0 2px, transparent 3.5px), radial-gradient(circle at 97% 30%, color-mix(in srgb, var(--dmw-skin-accent) 88%, white) 0 2px, transparent 3.5px), radial-gradient(circle at 3% 52%, color-mix(in srgb, var(--dmw-skin-accent) 78%, white) 0 2px, transparent 3.5px), radial-gradient(circle at 97% 54%, color-mix(in srgb, var(--dmw-skin-secondary) 82%, white) 0 2px, transparent 3.5px), radial-gradient(ellipse at 0% 50%, color-mix(in srgb, var(--dmw-skin-accent) 18%, transparent), transparent 24%), radial-gradient(ellipse at 100% 50%, color-mix(in srgb, var(--dmw-skin-secondary) 16%, transparent), transparent 24%); mix-blend-mode: screen; animation: dm-widget-client-hunt-lights 3.1s steps(5, end) infinite reverse; }
+[data-dm-widget-skin="solarFlare"] { background-image: radial-gradient(circle at 84% 18%, #fff2bf 0 6%, color-mix(in srgb, var(--dmw-skin-accent) 80%, transparent) 7% 12%, color-mix(in srgb, var(--dmw-skin-secondary) 28%, transparent) 13% 27%, transparent 40%), repeating-conic-gradient(from 0deg at 84% 18%, color-mix(in srgb, var(--dmw-skin-accent) 32%, transparent) 0deg 2deg, transparent 3deg 14deg), linear-gradient(152deg, #24100d 0 42%, color-mix(in srgb, var(--dmw-skin-secondary) 18%, transparent) 43% 55%, #351714 56% 72%, #160d13 73%) !important; }
+[data-dm-widget-skin="solarFlare"]::before { background-image: radial-gradient(circle at 84% 18%, rgba(255,255,255,.72) 0 3%, transparent 4% 9%, color-mix(in srgb, var(--dmw-skin-accent) 24%, transparent) 10% 15%, transparent 16% 34%), repeating-conic-gradient(from 0deg at 84% 18%, color-mix(in srgb, var(--dmw-skin-accent) 28%, transparent) 0deg 2deg, transparent 3deg 14deg), linear-gradient(152deg, transparent 0 42%, color-mix(in srgb, var(--dmw-skin-secondary) 18%, transparent) 43% 55%, transparent 56%); clip-path: polygon(0 0, 100% 0, 100% 100%, 13% 100%, 21% 77%, 0 64%); }
+[data-dm-widget-skin="solarFlare"]::after { inset: -61% -56%; background: repeating-conic-gradient(from 2deg at 50% 50%, transparent 0deg 8deg, color-mix(in srgb, var(--dmw-skin-accent) 46%, transparent) 9deg 12deg, transparent 13deg 22deg); -webkit-mask: radial-gradient(circle, transparent 27%, #000 34%, #000 54%, transparent 64%); mask: radial-gradient(circle, transparent 27%, #000 34%, #000 54%, transparent 64%); animation: dm-widget-client-sun-crown 23s linear infinite; }
+[data-dm-widget-motion-paused="true"]::before, [data-dm-widget-motion-paused="true"]::after { animation-play-state: paused !important; }
+/* Discord remounts the Rich Presence card as its elapsed-time text changes.
+ * Keep only that card's cosmetic layers on the renderer clock so a remount
+ * resumes the same phase instead of flashing back to animation frame zero. */
+[data-dm-widget-card-root="true"][data-dm-widget-playing-card="true"]::before,
+[data-dm-widget-card-root="true"][data-dm-widget-playing-card="true"]::after { animation-delay: var(--dmw-skin-animation-delay, 0ms) !important; }
+/*
+ * Discord treats Rich Presence cards as interactive and changes the card
+ * palette on :hover. The Playing card already has its own skin, so that
+ * second palette makes the skin look like it is only correct while hovered.
+ * Keep the card's idle and pointer states visually identical without touching
+ * other activity cards or the click/keyboard interaction itself.
+ */
+[data-dm-widget-card-root="true"][data-dm-widget-playing-card="true"],
+[data-dm-widget-card-root="true"][data-dm-widget-playing-card="true"]:hover,
+[data-dm-widget-card-root="true"][data-dm-widget-playing-card="true"]:focus-within {
+    background-color: var(--dmw-skin-surface) !important;
+    border-color: color-mix(in srgb, var(--dmw-skin-accent) 62%, transparent) !important;
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--dmw-skin-accent) 16%, transparent), 0 8px 24px color-mix(in srgb, var(--dmw-skin-accent) 18%, transparent), inset 0 0 24px color-mix(in srgb, var(--dmw-skin-accent) 10%, transparent) !important;
+    filter: none !important;
+    opacity: 1 !important;
+    visibility: visible !important;
+    transform: none !important;
+}
+
+/*
+ * Discord's profile activity component can put the hover fill on a nested
+ * overlay/container instead of the card node above. On some layouts the
+ * semantic article/listitem is the painted host and the selected card is its
+ * child. Normalize those paint layers only for the branded Playing card;
+ * pointer events, layout, text, and media remain untouched.
+ */
+[data-dm-widget-playing-card-host="true"],
+[data-dm-widget-playing-card-host="true"]:hover,
+[data-dm-widget-playing-card-host="true"]:focus-within {
+    background-color: transparent !important;
+    background-image: none !important;
+    box-shadow: none !important;
+    filter: none !important;
+    opacity: 1 !important;
+    visibility: visible !important;
+    transform: none !important;
+    transition: none !important;
+}
+:is([data-dm-widget-card-root="true"][data-dm-widget-playing-card="true"], [data-dm-widget-playing-card-host="true"]) :is(
+    [class*="overlay"], [class*="Overlay"],
+    [class*="innerContainer"], [class*="InnerContainer"],
+    [class*="container"], [class*="Container"],
+    [class*="wrapper"], [class*="Wrapper"],
+    [class*="body"], [class*="Body"],
+    [class*="activity"], [class*="Activity"],
+    [class*="interactive"], [class*="Interactive"]
+):not([data-dm-widget-card-root="true"][data-dm-widget-playing-card="true"]),
+:is([data-dm-widget-card-root="true"][data-dm-widget-playing-card="true"], [data-dm-widget-playing-card-host="true"]) :is(
+    [class*="overlay"], [class*="Overlay"],
+    [class*="innerContainer"], [class*="InnerContainer"],
+    [class*="container"], [class*="Container"],
+    [class*="wrapper"], [class*="Wrapper"],
+    [class*="body"], [class*="Body"],
+    [class*="activity"], [class*="Activity"],
+    [class*="interactive"], [class*="Interactive"]
+):not([data-dm-widget-card-root="true"][data-dm-widget-playing-card="true"]):hover,
+:is([data-dm-widget-card-root="true"][data-dm-widget-playing-card="true"], [data-dm-widget-playing-card-host="true"]) :is(
+    [class*="overlay"], [class*="Overlay"],
+    [class*="innerContainer"], [class*="InnerContainer"],
+    [class*="container"], [class*="Container"],
+    [class*="wrapper"], [class*="Wrapper"],
+    [class*="body"], [class*="Body"],
+    [class*="activity"], [class*="Activity"],
+    [class*="interactive"], [class*="Interactive"]
+):not([data-dm-widget-card-root="true"][data-dm-widget-playing-card="true"]):focus-within {
+    background-color: transparent !important;
+    background-image: none !important;
+    box-shadow: none !important;
+    filter: none !important;
+    opacity: 1 !important;
+    visibility: visible !important;
+    transform: none !important;
+    transition: none !important;
+}
+:is([data-dm-widget-card-root="true"][data-dm-widget-playing-card="true"], [data-dm-widget-playing-card-host="true"]) :is(
+    [class*="overlay"], [class*="Overlay"], [class*="hover"], [class*="Hover"], [class*="interactive"], [class*="Interactive"]
+):not([data-dm-widget-card-root="true"][data-dm-widget-playing-card="true"])::before,
+:is([data-dm-widget-card-root="true"][data-dm-widget-playing-card="true"], [data-dm-widget-playing-card-host="true"]) :is(
+    [class*="overlay"], [class*="Overlay"], [class*="hover"], [class*="Hover"], [class*="interactive"], [class*="Interactive"]
+):not([data-dm-widget-card-root="true"][data-dm-widget-playing-card="true"])::after {
+    background: transparent !important;
+    box-shadow: none !important;
+    filter: none !important;
+    opacity: 0 !important;
+}
+
+/*
+ * Discord surface skin
+ *
+ * This is intentionally a separate, cheaper treatment from the full widget
+ * card skin. Discord's channel rows, people list items, and Active Now card
+ * can share the same app-id-bearing React host as a profile widget. They are
+ * a fun surface for the visual language, but they must not inherit the card's
+ * two-layer ornament, card schema, or playing-card animation contract.
+ */
+@keyframes dm-widget-client-surface-drift {
+    0%, 100% { transform: translate3d(-4%, 0, 0); opacity: .16; }
+    50% { transform: translate3d(4%, -1%, 0); opacity: .42; }
+}
+[data-dm-widget-surface-root="true"] {
+    position: relative !important;
+    isolation: isolate;
+    border-radius: 10px !important;
+    border: 1px solid color-mix(in srgb, var(--dmw-surface-accent) 54%, transparent) !important;
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--dmw-surface-accent) 12%, transparent), 0 5px 16px color-mix(in srgb, var(--dmw-surface-accent) 11%, transparent), inset 0 0 16px color-mix(in srgb, var(--dmw-surface-accent) 7%, transparent);
+    background-color: var(--dmw-surface-surface) !important;
+}
+[data-dm-widget-surface-root="true"]::before,
+[data-dm-widget-surface-root="true"]::after { content: ""; position: absolute; pointer-events: none; border-radius: inherit; }
+[data-dm-widget-surface-root="true"]::before { z-index: 0; inset: 0; opacity: .62; background-repeat: no-repeat; }
+[data-dm-widget-surface-root="true"]::after { z-index: 0; inset: 0; background: linear-gradient(112deg, transparent 25%, color-mix(in srgb, var(--dmw-surface-accent) 17%, transparent) 50%, color-mix(in srgb, var(--dmw-surface-secondary) 13%, transparent) 68%, transparent 82%); will-change: transform, opacity; animation: dm-widget-client-surface-drift 7.5s ease-in-out infinite alternate; }
+[data-dm-widget-surface-root="true"] > * { position: relative; z-index: 1; }
+[data-dm-widget-surface-skin="neonCircuit"] { background-image: linear-gradient(120deg, color-mix(in srgb, var(--dmw-surface-surface) 94%, #132c35), color-mix(in srgb, var(--dmw-surface-accent) 7%, var(--dmw-surface-surface)) 55%, color-mix(in srgb, var(--dmw-surface-secondary) 9%, var(--dmw-surface-surface))) !important; }
+[data-dm-widget-surface-skin="neonCircuit"]::before { background-image: repeating-linear-gradient(135deg, transparent 0 20px, color-mix(in srgb, var(--dmw-surface-accent) 8%, transparent) 21px 22px), radial-gradient(circle at 94% 10%, color-mix(in srgb, var(--dmw-surface-secondary) 28%, transparent), transparent 35%); }
+[data-dm-widget-surface-skin="emberProtocol"] { background-image: radial-gradient(ellipse at 4% 100%, color-mix(in srgb, var(--dmw-surface-accent) 22%, transparent), transparent 46%), radial-gradient(ellipse at 96% 0%, color-mix(in srgb, var(--dmw-surface-secondary) 18%, transparent), transparent 40%), linear-gradient(115deg, #101819, #1b2923 55%, #100f18) !important; }
+[data-dm-widget-surface-skin="emberProtocol"]::before { background-image: radial-gradient(circle at 8% 16%, color-mix(in srgb, var(--dmw-surface-accent) 76%, white) 0 1.5px, transparent 3px), radial-gradient(circle at 92% 84%, color-mix(in srgb, var(--dmw-surface-secondary) 72%, white) 0 1.5px, transparent 3px), radial-gradient(circle at 19% 92%, color-mix(in srgb, var(--dmw-surface-accent) 48%, transparent), transparent 22%); }
+[data-dm-widget-surface-skin="cottonCandy"] { background-image: radial-gradient(ellipse at 8% 0%, color-mix(in srgb, var(--dmw-surface-accent) 22%, transparent), transparent 45%), radial-gradient(ellipse at 98% 100%, color-mix(in srgb, var(--dmw-surface-secondary) 25%, transparent), transparent 48%), linear-gradient(135deg, var(--dmw-surface-surface), #171b39) !important; }
+[data-dm-widget-surface-skin="frostedGlass"] { background-image: linear-gradient(135deg, color-mix(in srgb, var(--dmw-surface-surface) 94%, #d8f3ff), #1c2b3f 72%) !important; }
+[data-dm-widget-surface-skin="frostedGlass"]::before { background-image: linear-gradient(132deg, transparent 0 27%, color-mix(in srgb, var(--dmw-surface-accent) 13%, transparent) 28% 29%, transparent 30% 64%, color-mix(in srgb, var(--dmw-surface-secondary) 11%, transparent) 65% 66%, transparent 67%); }
+[data-dm-widget-surface-skin="championRun"] { background-image: radial-gradient(ellipse at 0% 10%, color-mix(in srgb, var(--dmw-surface-accent) 26%, transparent), transparent 38%), linear-gradient(90deg, #3a0c22, var(--dmw-surface-surface) 50%, #2d101d) !important; }
+[data-dm-widget-surface-skin="deepSpace"] { background-image: radial-gradient(circle at 84% 18%, color-mix(in srgb, var(--dmw-surface-secondary) 26%, transparent), transparent 30%), linear-gradient(145deg, #060914, #0c1530 62%, #050711) !important; }
+[data-dm-widget-surface-skin="voidBloom"] { background-image: radial-gradient(ellipse at 82% 18%, color-mix(in srgb, var(--dmw-surface-accent) 28%, transparent), transparent 34%), radial-gradient(ellipse at 88% 92%, color-mix(in srgb, var(--dmw-surface-secondary) 21%, transparent), transparent 42%), linear-gradient(135deg, #170e24, #101b2a) !important; }
+[data-dm-widget-surface-skin="pixelOverdrive"] { background-image: linear-gradient(90deg, color-mix(in srgb, var(--dmw-surface-accent) 10%, var(--dmw-surface-surface)), var(--dmw-surface-surface) 50%, color-mix(in srgb, var(--dmw-surface-secondary) 9%, var(--dmw-surface-surface))) !important; }
+[data-dm-widget-surface-skin="solarFlare"] { background-image: radial-gradient(circle at 88% 18%, color-mix(in srgb, var(--dmw-surface-accent) 48%, transparent), transparent 26%), linear-gradient(152deg, #24100d, var(--dmw-surface-surface) 68%, #351714) !important; }
+[data-dm-widget-surface-motion="none"]::after { animation: none !important; opacity: .12; }
+[data-dm-widget-surface-motion="orbit"]::after { animation-duration: 18s; }
+[data-dm-widget-surface-motion="solar"]::after { animation-duration: 20s; }
+[data-dm-widget-surface-motion="pursuit"]::after { animation-duration: 3.8s; }
+[data-dm-widget-surface-motion-paused="true"]::after { animation-play-state: paused !important; }
+@media (prefers-reduced-motion: reduce) {
+    [data-dm-widget-surface-root="true"]::after { animation: none !important; }
+}
+`;
+
+type WidgetSkinSnapshot = {
+    attrs: Record<string, string | null>;
+    vars: Record<string, { value: string; priority: string; }>;
+};
+
+const WIDGET_SKIN_ATTRS = [
+    "data-dm-widget-skin",
+    "data-dm-widget-card-root",
+    "data-dm-widget-frame",
+    "data-dm-widget-ornament",
+    "data-dm-widget-motion",
+    "data-dm-widget-motion-paused",
+    "data-dm-widget-app-id",
+    "data-dm-widget-top-layout",
+    "data-dm-widget-bottom-layout",
+    "data-dm-widget-playing-card"
+];
+const WIDGET_SKIN_VARS = ["--dmw-skin-accent", "--dmw-skin-secondary", "--dmw-skin-surface", "--dmw-skin-animation-delay"];
+const widgetSkinRoots = new Map<HTMLElement, WidgetSkinSnapshot>();
+type SurfaceSkinMode = "follow" | "independent" | "off";
+type SurfaceSkinSnapshot = {
+    attrs: Record<string, string | null>;
+    vars: Record<string, { value: string; priority: string; }>;
+};
+const SURFACE_SKIN_ATTRS = [
+    "data-dm-widget-surface-root",
+    "data-dm-widget-surface-skin",
+    "data-dm-widget-surface-motion",
+    "data-dm-widget-surface-motion-paused"
+];
+const SURFACE_SKIN_VARS = ["--dmw-surface-accent", "--dmw-surface-secondary", "--dmw-surface-surface"];
+const surfaceSkinRoots = new Map<HTMLElement, SurfaceSkinSnapshot>();
+let activeDiscordConversationRowCache: { path: string; row: HTMLElement | null; } | null = null;
+type WidgetCardMatch = { appId: string; root: HTMLElement; };
+const widgetApplicationCache = new WeakMap<HTMLElement, {
+    match: WidgetCardMatch | null;
+    checkedAt: number;
+    epoch: number;
+}>();
+let widgetApplicationCacheEpoch = 0;
+let widgetSkinStyleElement: HTMLStyleElement | null = null;
+let widgetSkinObserver: MutationObserver | null = null;
+let widgetSkinProfileMountObserver: MutationObserver | null = null;
+let widgetSkinProfileMountReleaseTimer: number | null = null;
+let widgetSkinProfileFastScanTimer: number | null = null;
+let widgetSkinPlayingCardObserver: MutationObserver | null = null;
+let widgetSkinPlayingCardObserverHost: HTMLElement | null = null;
+let widgetSkinPlayingCardObserverReleaseTimer: number | null = null;
+let widgetSkinPlayingCardRoot: HTMLElement | null = null;
+const widgetSkinPlayingCardHosts = new Set<HTMLElement>();
+let widgetSkinPlayingCardHostRoot: HTMLElement | null = null;
+let lastPlayingCardDirectProbeAt = 0;
+const PLAYING_CARD_DIRECT_PROBE_INTERVAL_MS = 1000;
+let widgetSkinPlayingCardTimelineStartedAt = -1;
+let removeTournamentModeListener: (() => void) | null = null;
+let removeWidgetSkinProfileTriggerListeners: (() => void) | null = null;
+let widgetSkinTimer: number | null = null;
+let widgetSkinIdle: number | null = null;
+let widgetSkinRescanTimer: number | null = null;
+const widgetSkinProfileScanTimers = new Set<number>();
+let widgetSkinProfileScanQueuedAt = 0;
+let widgetSkinLastScanAt = 0;
+let widgetSkinRun = 0;
+let widgetSkinRendererSuspended = false;
+let widgetSkinLegacyCleanupDone = false;
+const WIDGET_SKIN_RECONCILE_INTERVAL_MS = 3000;
+const WIDGET_SKIN_PROFILE_MOUNT_WATCH_MS = 2500;
+const WIDGET_SKIN_PROFILE_SURFACE_MAX = 16;
+const WIDGET_SKIN_PROFILE_EXPLICIT_CANDIDATE_MAX = 32;
+const WIDGET_SKIN_PROFILE_CARD_CANDIDATE_MAX = 64;
+const WIDGET_SKIN_PROFILE_MATCH_MAX = 48;
+// The editor is a large settings surface, not a Discord profile Board. Do not
+// scan it while it mounts: its cards/buttons can match Discord's generic
+// widget selectors and a renderer scan during that mount is pure risk.
+let widgetSkinEditorMounts = 0;
+let widgetSkinRescanAfterEditor = false;
+const widgetSkinEditorOpen = (): boolean => widgetSkinEditorMounts > 0;
+// The local slot can outlive an app replacement or an account switch. Keep a
+// second runtime map for the application IDs that Discord says are actually
+// attached to the current profile board, then reconcile those IDs back to the
+// slot's selected design before scanning visible cards.
+const attachedWidgetStyles = new Map<string, WidgetStylePreset>();
+const attachedWidgetSlots = new Map<string, string>();
+const attachedWidgetHints = new Map<string, string[]>();
+// The attached maps above are deliberately scoped to the signed-in owner:
+// they are used by the editor and by the publish/confirm path. A profile
+// opened by another account needs a second, read-only map keyed by the app id
+// visible in that profile. Otherwise the Playing-card fallback can mistake
+// the viewer's first widget for the profile owner's widget and paint the
+// viewer's selected skin onto somebody else's card.
+type VisibleWidgetStyleRecord = {
+    preset: WidgetStylePreset;
+    updatedAt: number;
+    checkedAt: number;
+    hints: string[];
+};
+type VisibleWidgetStyleMissRecord = {
+    checkedAt: number;
+    hints: string[];
+};
+const visibleWidgetStyles = new Map<string, VisibleWidgetStyleRecord>();
+const visibleWidgetStyleMisses = new Map<string, VisibleWidgetStyleMissRecord>();
+const visibleWidgetStyleRequests = new Map<string, Promise<void>>();
+const VISIBLE_WIDGET_STYLE_CACHE_MS = 30_000;
+const VISIBLE_WIDGET_STYLE_MISS_RETRY_MS = 15_000;
+const VISIBLE_WIDGET_STYLE_MAX = 24;
+const VISIBLE_WIDGET_STYLE_BATCH_MAX = 8;
+let attachedWidgetProfileAccountId = "";
+let attachedWidgetProfileVerifiedAt = 0;
+let attachedWidgetRefreshAt = 0;
+let attachedWidgetRefreshPromise: Promise<void> | null = null;
+let widgetStyleRefreshTimer: number | null = null;
+const ATTACHED_WIDGET_REFRESH_INTERVAL_MS = 30_000;
+
+function attachedWidgetProfileIsFresh(): boolean {
+    const accountId = String(UserStore.getCurrentUser()?.id ?? "");
+    return !!accountId
+        && accountId === activeSlotsAccountId
+        && accountId === attachedWidgetProfileAccountId
+        && Date.now() - attachedWidgetProfileVerifiedAt <= ATTACHED_WIDGET_REFRESH_INTERVAL_MS * 2;
+}
+
+function attachedWidgetAppIdsForSlot(slotKey: string): string[] {
+    if (!attachedWidgetProfileIsFresh()) return [];
+    return Array.from(attachedWidgetSlots)
+        .filter(([appId, attachedSlot]) => attachedSlot === slotKey && SNOWFLAKE.test(appId))
+        .map(([appId]) => appId);
+}
+
+function selectedWidgetPreset(): WidgetStylePreset {
+    return WIDGET_STYLE_PRESETS.find(item => item.id === String((settings.store as any).widgetStyle ?? ""))
+        ?? WIDGET_STYLE_PRESETS[0];
+}
+
+function surfaceSkinMode(): SurfaceSkinMode {
+    const value = String((settings.store as any).surfaceSkinMode ?? "follow");
+    return value === "independent" || value === "off" ? value : "follow";
+}
+
+function selectedSurfacePreset(active: Map<string, WidgetStylePreset>): WidgetStylePreset | null {
+    const mode = surfaceSkinMode();
+    if (mode === "off") return null;
+    if (mode === "independent") {
+        return WIDGET_STYLE_PRESETS.find(item => item.id === String((settings.store as any).surfaceSkinStyle ?? "emberProtocol"))
+            ?? WIDGET_STYLE_PRESETS.find(item => item.id === "emberProtocol")
+            ?? WIDGET_STYLE_PRESETS[0];
+    }
+    // Follow mode preserves the look users already have on supported installs,
+    // but only when a real attached widget style exists. It must not turn on a
+    // global animated surface layer for users who have no widget to follow.
+    const first = active.values().next();
+    return first.done ? null : first.value;
+}
+
+function presetWithLayouts(
+    preset: WidgetStylePreset,
+    topLayout?: WidgetStylePreset["topLayout"],
+    bottomLayout?: WidgetStylePreset["bottomLayout"]
+): WidgetStylePreset {
+    return {
+        ...preset,
+        topLayout: topLayout === "hero" || topLayout === "contained" ? topLayout : preset.topLayout,
+        bottomLayout: bottomLayout === "stats" || bottomLayout === "progress" ? bottomLayout : preset.bottomLayout
+    };
+}
+
+function presetForSlot(slotKey: string): WidgetStylePreset {
+    const slot = getSlot(slotKey);
+    const preset = WIDGET_STYLE_PRESETS.find(item => item.id === slot.widgetStyle)
+        // If an update left the per-slot DataStore entry behind, the global
+        // gallery selection is still a useful recovery style. This keeps a
+        // published card visibly skinned instead of silently falling back to
+        // plain Discord until the user opens the editor again.
+        ?? selectedWidgetPreset();
+    return presetWithLayouts(preset, slot.topLayout, slot.bottomLayout);
+}
+
+function profileWidgetEntries(profile: any): any[] | null {
+    if (!profile || typeof profile !== "object") return null;
+    const candidates: Array<{ entries: any[]; appCount: number; explicit: boolean; complete: boolean; }> = [];
+    const visited = new WeakSet<object>();
+    const queuedArrays = new WeakMap<object, number>();
+    const pending: Array<{ value: any; depth: number; widgetContext: boolean; }> = [
+        { value: profile, depth: 0, widgetContext: false }
+    ];
+    let visitedNodes = 0;
+
+    // Discord has returned the same Board list at several different depths
+    // across client/API versions. Search only bounded response data, preferring
+    // arrays under a widget-named key and arrays with actual application IDs.
+    // A guessed empty list is dangerous because callers PUT the whole Board.
+    while (pending.length && visitedNodes < 512) {
+        const { value, depth, widgetContext } = pending.pop()!;
+        if (!value || typeof value !== "object" || depth > 6) continue;
+        if (Array.isArray(value)) {
+            const existingIndex = queuedArrays.get(value);
+            if (widgetContext || existingIndex === undefined) {
+                const appCount = value.reduce((count, widget) => count + (profileWidgetApplicationId(widget) ? 1 : 0), 0);
+                if (widgetContext || appCount > 0) {
+                    if (existingIndex === undefined) {
+                        queuedArrays.set(value, candidates.length);
+                        candidates.push({ entries: value, appCount, explicit: widgetContext, complete: appCount === value.length });
+                    } else if (widgetContext && !candidates[existingIndex].explicit) {
+                        candidates[existingIndex].explicit = true;
+                    }
+                }
+            }
+            for (let index = Math.min(value.length, 128) - 1; index >= 0; index--) {
+                const entry = value[index];
+                if (entry && typeof entry === "object") pending.push({ value: entry, depth: depth + 1, widgetContext });
+            }
+            continue;
+        }
+        if (visited.has(value)) continue;
+        visited.add(value);
+        visitedNodes++;
+        for (const [key, child] of Object.entries(value)) {
+            if (!child || typeof child !== "object") continue;
+            pending.push({ value: child, depth: depth + 1, widgetContext: widgetContext || /widget/i.test(key) });
+        }
+    }
+
+    if (!candidates.length) return null;
+    const populated = candidates.filter(candidate => candidate.appCount > 0);
+    const complete = populated.filter(candidate => candidate.complete);
+    if (complete.length) {
+        // A stale empty wrapper should not beat the live nested list.
+        complete.sort((a, b) => Number(b.explicit) - Number(a.explicit) || b.appCount - a.appCount || b.entries.length - a.entries.length);
+        return complete[0].entries;
+    }
+    // A partial/unknown non-empty array is not proof of the complete Board.
+    // Preserve last-good state rather than styling a subset or writing a
+    // truncated list back through Add/Remove/Reorder.
+    if (candidates.some(candidate => candidate.entries.length > 0)) return null;
+    return [];
+}
+
+function profileWidgetApplicationId(widget: any): string {
+    const candidates = [
+        widget?.data?.application_id,
+        widget?.data?.applicationId,
+        widget?.data?.app_id,
+        widget?.data?.appId,
+        widget?.application_id,
+        widget?.applicationId,
+        widget?.data?.application?.id,
+        widget?.data?.application?.application_id,
+        widget?.data?.application?.applicationId,
+        widget?.data?.application?.data?.id,
+        widget?.application?.id,
+        widget?.application?.application_id,
+        widget?.application?.applicationId,
+        widget?.application?.data?.id
+    ];
+    const direct = candidates.map(value => String(value ?? "")).find(value => SNOWFLAKE.test(value));
+    if (direct) return direct;
+
+    // Some profile responses wrap the app object more deeply. Accept `id`
+    // only inside an explicit application/app object; generic widget, config,
+    // or user IDs must never be mistaken for the application ID.
+    // The same object could be reached through both a generic wrapper and an
+    // explicit app/application wrapper. Track those contexts separately so a
+    // generic visit cannot hide a later, valid app-id path.
+    const visitedGeneric = new WeakSet<object>();
+    const visitedApplication = new WeakSet<object>();
+    const pending: Array<{ value: any; depth: number; insideApplication: boolean; }> = [
+        { value: widget, depth: 0, insideApplication: false }
+    ];
+    let visitedNodes = 0;
+    while (pending.length && visitedNodes < 128) {
+        const { value, depth, insideApplication } = pending.pop()!;
+        if (!value || typeof value !== "object" || depth > 5) continue;
+        const visited = insideApplication ? visitedApplication : visitedGeneric;
+        if (visited.has(value)) continue;
+        visited.add(value);
+        visitedNodes++;
+        const pairs = Array.isArray(value) ? value.map((entry, index) => [String(index), entry] as const) : Object.entries(value);
+        for (const [key, child] of pairs) {
+            const normalizedKey = key.toLowerCase().replace(/[^a-z]/g, "");
+            if ((normalizedKey === "applicationid" || normalizedKey === "appid") && SNOWFLAKE.test(String(child ?? ""))) return String(child);
+            if (insideApplication && normalizedKey === "id" && SNOWFLAKE.test(String(child ?? ""))) return String(child);
+            if (child && typeof child === "object") {
+                const childInsideApplication = insideApplication || normalizedKey === "application" || normalizedKey === "app";
+                pending.push({ value: child, depth: depth + 1, insideApplication: childInsideApplication });
+            }
+        }
+    }
+    return "";
+}
+
+function profileWidgetConfigId(widget: any): string {
+    const candidates = [
+        widget?.data?.config_id,
+        widget?.data?.configId,
+        widget?.data?.configuration_id,
+        widget?.data?.configurationId,
+        widget?.config_id,
+        widget?.configId,
+        widget?.data?.application?.config_id,
+        widget?.data?.application?.configId,
+        widget?.data?.application?.configuration_id,
+        widget?.data?.application?.configurationId
+    ];
+    return candidates.map(value => String(value ?? "")).find(value => SNOWFLAKE.test(value)) ?? "";
+}
+
+function publishedConfigField(config: any, surface: string, component: string, field: string): any {
+    return config?.surfaces?.[surface]?.components?.[component]?.fields?.[field];
+}
+
+function publishedConfigText(config: any, surface: string, component: string, field: string): string {
+    return String(publishedConfigField(config, surface, component, field)?.value ?? "").trim();
+}
+
+function publishedConfigAsset(config: any, surface: string, component: string, field: string): string {
+    const value = publishedConfigField(config, surface, component, field);
+    return value?.value_type === "application_asset" ? String(value.value ?? "").trim() : "";
+}
+
+function publishedWidgetSnapshot(application: any, config: any): PublishedWidgetSnapshot {
+    const stats = Array.from({ length: 6 }, (_, index) => {
+        const component = `stat_${index + 1}`;
+        const label = publishedConfigText(config, "widget_bottom", component, "label");
+        const value = publishedConfigText(config, "widget_bottom", component, "value");
+        return label && value ? `${label} | ${value}` : label || value;
+    });
+    const progressRaw = Number(publishedConfigField(config, "widget_bottom", "progress", "current")?.value ?? 0);
+    const progressPercent = Number.isFinite(progressRaw) ? (progressRaw <= 1 ? progressRaw * 100 : progressRaw) : 0;
+    const top = config?.surfaces?.widget_top;
+    const topImage = top?.components?.contained_image ? "contained_image" : "hero_image";
+    const heroAssetKey = publishedConfigAsset(config, "widget_top", topImage, "image")
+        || publishedConfigAsset(config, "add_widget_preview", "hero_image", "image")
+        || publishedConfigAsset(config, "mini_profile", "hero_image", "image");
+    const appId = String(application?.id ?? config?.application?.id ?? "");
+    const icon = String(application?.icon ?? config?.application?.icon ?? "").trim();
+    const appIconUrl = icon
+        ? (/^https?:\/\//i.test(icon) ? icon : `https://cdn.discordapp.com/app-icons/${appId}/${icon}.png?size=128`)
+        : "";
+    return {
+        appName: String(application?.name ?? config?.application?.name ?? config?.display_name ?? "").trim(),
+        configId: String(config?.config_id ?? config?.configId ?? ""),
+        title: publishedConfigText(config, "widget_top", "title", "text"),
+        topLayout: top?.layout === "widget_top_contained" ? "contained" : "hero",
+        bottomLayout: config?.surfaces?.widget_bottom?.layout === "widget_bottom_progress" ? "progress" : "stats",
+        stats,
+        progressLabel: publishedConfigText(config, "widget_bottom", "objective", "name"),
+        progressPercent: Math.max(0, Math.min(100, progressPercent)),
+        heroAssetKey,
+        appIconUrl,
+        updatedAt: String(config?.updated_at ?? "")
+    };
+}
+
+function parsePublishedNumber(value: string): number | undefined {
+    const match = String(value ?? "").replace(/,/g, "").match(/-?\d+(?:\.\d+)?/);
+    if (!match) return undefined;
+    const number = Number(match[0]);
+    return Number.isFinite(number) ? number : undefined;
+}
+
+function publishedStatParts(raw: string): { label: string; value: string; } {
+    const divider = String(raw ?? "").indexOf("|");
+    return divider < 0
+        ? { label: "", value: String(raw ?? "").trim() }
+        : { label: String(raw).slice(0, divider).trim(), value: String(raw).slice(divider + 1).trim() };
+}
+
+async function hydratePublishedWidgetContent(slotKey: string): Promise<PublishedWidgetSnapshot | null> {
+    await ensureSlots();
+    const id = getSlot(slotKey);
+    if (!SNOWFLAKE.test(id.appId)) return null;
+    const cached = publishedWidgetSnapshots.get(slotKey);
+    try {
+        const application = await apiGet(`/applications/${id.appId}`);
+        const list = await apiGet(`/applications/${id.appId}/widget-configs`);
+        const configs: any[] = Array.isArray(list) ? list : list?.configs ?? [];
+        const config = configs.find(item => String(item?.config_id ?? item?.configId ?? "") === id.configId)
+            ?? configs.find(item => item?.status === "published")
+            ?? configs[0];
+        if (!config) return cached ?? null;
+        const snapshot = publishedWidgetSnapshot(application, config);
+        const next: WidgetIdentity = {
+            ...id,
+            configId: snapshot.configId || id.configId,
+            heroAssetKey: id.heroAssetKey || snapshot.heroAssetKey,
+            appIconUrl: id.appIconUrl || snapshot.appIconUrl,
+            topLayout: id.topLayout ?? snapshot.topLayout,
+            bottomLayout: id.bottomLayout ?? snapshot.bottomLayout
+        };
+        if (JSON.stringify(next) !== JSON.stringify(id)) setSlot(slotKey, next);
+        publishedWidgetSnapshots.set(slotKey, snapshot);
+        return snapshot;
+    } catch (error) {
+        console.warn("[DMWidget] published widget content recovery failed:", error);
+        return cached ?? null;
+    }
+}
+
+function replacePublishedWidgetImages(value: any, assetKey: string): number {
+    if (!value || typeof value !== "object") return 0;
+    let replaced = 0;
+    if (value.fields?.image && typeof value.fields.image === "object") {
+        value.fields.image = assetImg(assetKey);
+        replaced++;
+    }
+    for (const child of Object.values(value)) {
+        if (child && typeof child === "object") replaced += replacePublishedWidgetImages(child, assetKey);
+    }
+    return replaced;
+}
+
+async function patchPublishedWidgetHero(slotKey: string, assetKey: string): Promise<void> {
+    const id = getSlot(slotKey);
+    if (!SNOWFLAKE.test(id.appId)) throw new Error("Create this widget first.");
+    const list = await apiGet(`/applications/${id.appId}/widget-configs`);
+    const configs: any[] = Array.isArray(list) ? list : list?.configs ?? [];
+    const config = configs.find(item => String(item?.config_id ?? item?.configId ?? "") === id.configId)
+        ?? configs.find(item => item?.status === "published")
+        ?? configs[0];
+    const configId = String(config?.config_id ?? config?.configId ?? id.configId);
+    if (!config || !SNOWFLAKE.test(configId)) throw new Error("Discord did not return the published widget config.");
+    const surfaces = config.surfaces ? JSON.parse(JSON.stringify(config.surfaces)) : null;
+    if (!surfaces) throw new Error("Discord returned no widget surfaces, so the public card was left unchanged.");
+    const replaced = replacePublishedWidgetImages(surfaces, assetKey);
+    if (!replaced) throw new Error("Discord returned no supported hero image field, so the public card was left unchanged.");
+    await apiPatch(`/applications/${id.appId}/widget-configs/${configId}`, {
+        surfaces,
+        display_name: String(config.display_name ?? config.displayName ?? slotHeader(slotKey))
+    });
+    await apiPost(`/applications/${id.appId}/widget-configs/${configId}/publish`, {});
+    if (configId !== id.configId) setSlot(slotKey, { ...getSlot(slotKey), configId });
+    publishedWidgetSnapshots.delete(slotKey);
+    publishedWidgetHydrated.delete(slotKey);
+}
+
+async function publishVanillaSkin(slotKey: string, preset: WidgetStylePreset): Promise<void> {
+    await ensureSlots();
+    const id = getSlot(slotKey);
+    if (!SNOWFLAKE.test(id.appId)) {
+        toast("Create this widget first, then publish its vanilla skin.", Toasts.Type.FAILURE);
+        return;
+    }
+    const source = await readWidgetImageBlob(heroUrlFor(slotKey, id), await getLocalWidgetImage(slotKey), false);
+    const staticImage = await renderVanillaSkinImage(preset, source);
+    if (staticImage.size > MAX_WIDGET_IMAGE_BYTES) throw new Error("The generated vanilla skin image is over 8 MB.");
+    const assetKey = await uploadVanillaSkinAsset(id.appId, staticImage);
+    await patchPublishedWidgetHero(slotKey, assetKey);
+    setSlot(slotKey, { ...getSlot(slotKey), vanillaSkinAssetKey: assetKey });
+    // Do cleanup only after the config has published successfully. If the
+    // patch/publish fails, the old public image remains valid instead of
+    // pointing at an asset we deleted during a half-complete replacement.
+    await removeOldVanillaSkinAssets(id.appId, assetKey);
+    toast(`${SLOT_LABEL[slotKey] ?? slotKey} now has a static ${preset.name} hero for vanilla Discord viewers. Discordmaxxer installs still get the live skin.`, Toasts.Type.SUCCESS, 9500);
+}
+
+function applyPublishedWidgetSnapshot(slotKey: string, snapshot: PublishedWidgetSnapshot): void {
+    if (publishedWidgetHydrated.has(slotKey)) return;
+    const store = settings.store as any;
+    const fill = (key: string, value: string, defaults: string[] = []) => {
+        const current = String(store[key] ?? "").trim();
+        if (value && (!current || defaults.includes(current))) store[key] = value;
+    };
+    const stats = snapshot.stats.map(publishedStatParts);
+    fill("appIconUrl", snapshot.appIconUrl);
+    if (snapshot.topLayout === "hero" || snapshot.topLayout === "contained") store.topLayout = snapshot.topLayout;
+    if (snapshot.bottomLayout === "stats" || snapshot.bottomLayout === "progress") store.bottomLayout = snapshot.bottomLayout;
+    if (snapshot.bottomLayout === "progress") {
+        fill("progressLabel", snapshot.progressLabel, ["Level 1", "Progress"]);
+        if (snapshot.progressPercent > 0 && (Number(store.progressPercent) === 50 || !Number.isFinite(Number(store.progressPercent)))) store.progressPercent = snapshot.progressPercent;
+    }
+
+    if (slotKey === "none") {
+        fill("appName", snapshot.appName, ["My Widget"]);
+        fill("widgetTitle", snapshot.title, ["My Widget"]);
+        for (let index = 0; index < stats.length; index++) fill(`stat${index + 1}`, snapshot.stats[index]);
+    } else if (slotKey === "fortnite") {
+        fill("fnIgn", snapshot.title || snapshot.appName, ["Fortnite"]);
+        fill("fnUnrealRank", stats[0]?.value);
+        fill("fnEarnings", stats[1]?.value.replace(/^💵\s*/u, ""), ["$0"]);
+        const placement = stats.find(item => /best|placement/i.test(item.label));
+        fill("fnTopPlacement", placement?.value ?? "");
+        const wins = parsePublishedNumber(stats[2]?.value ?? "");
+        const kd = parsePublishedNumber(stats[3]?.value ?? "");
+        const hours = parsePublishedNumber(stats[4]?.value ?? "");
+        const kills = parsePublishedNumber(stats[5]?.value ?? "");
+        fnStats = { ...(fnStats ?? {}), ...(wins === undefined ? {} : { wins }), ...(kd === undefined ? {} : { kd }), ...(hours === undefined ? {} : { minutesPlayed: hours * 60 }), ...(kills === undefined ? {} : { kills }) };
+    } else if (slotKey === "valorant") {
+        // Discord publishes the visible Riot name but never the private tag or
+        // HenrikDev key. Keep the preview useful while leaving the valid
+        // Name#Tag field empty rather than inventing a credential.
+        const rr = parsePublishedNumber(stats[1]?.value ?? "");
+        const recentWR = parsePublishedNumber(stats[4]?.value ?? "");
+        const avgKD = parsePublishedNumber(stats[5]?.value ?? "");
+        valStats = {
+            ...(valStats ?? {}),
+            rank: stats[0]?.value || valStats?.rank,
+            ...(rr === undefined ? {} : { rr }),
+            peak: stats[2]?.value || valStats?.peak,
+            mainAgent: stats[3]?.value || valStats?.mainAgent,
+            ...(recentWR === undefined ? {} : { recentWR }),
+            ...(avgKD === undefined ? {} : { avgKD: avgKD.toFixed(2) })
+        };
+    }
+    publishedWidgetHydrated.add(slotKey);
+}
+
+function inferWidgetSlot(application: any): string {
+    const name = String(application?.name ?? application?.description ?? "").toLowerCase();
+    if (/valorant|^val(?:\s|$)|riot/.test(name)) return "valorant";
+    if (/fortnite|^fort(?:\s|$)|epic/.test(name)) return "fortnite";
+    // Unknown or unavailable metadata is not enough evidence to assign a
+    // published app to whichever game template happens to be selected now.
+    return "none";
+}
+
+async function recoverAttachedWidgetIdentity(
+    slotKey: string,
+    appId: string,
+    configIdHint = ""
+): Promise<void> {
+    if (!SNOWFLAKE.test(appId)) return;
+    const current = getSlot(slotKey);
+    // Never replace a different locally-known app in the same slot. A user can
+    // have several cards on a board; only fill an empty slot or complete the
+    // exact app that is already mapped to it.
+    if (SNOWFLAKE.test(current.appId) && current.appId !== appId) return;
+
+    let configId = SNOWFLAKE.test(configIdHint) ? configIdHint : current.configId;
+    if (!SNOWFLAKE.test(configId)) {
+        try {
+            const list = await apiGet(`/applications/${appId}/widget-configs`);
+            const arr: any[] = Array.isArray(list) ? list : list?.configs ?? [];
+            const found = arr.map(item => String(item?.config_id ?? item?.configId ?? item?.id ?? ""))
+                .find(value => SNOWFLAKE.test(value));
+            if (found) configId = found;
+        } catch { /* a private/pre-GA app may hide config metadata */ }
+    }
+
+    let heroAssetKey = current.heroAssetKey;
+    if (!heroAssetKey) {
+        try {
+            const list = await apiGet(`/applications/${appId}/assets`);
+            const arr: any[] = Array.isArray(list) ? list : list?.assets ?? [];
+            heroAssetKey = arr.map(asset => String(asset?.key ?? asset?.name ?? ""))
+                .find(value => value.startsWith("hero")) ?? "";
+        } catch { /* republishConfig has its own best-effort asset recovery */ }
+    }
+
+    const next: WidgetIdentity = {
+        ...current,
+        appId,
+        configId: configId || current.configId,
+        heroAssetKey: heroAssetKey || current.heroAssetKey,
+        widgetStyle: current.widgetStyle ?? selectedWidgetPreset().id,
+        widgetStyleSource: current.widgetStyleSource ?? "default"
+    };
+    if (JSON.stringify(next) !== JSON.stringify(current)) setSlot(slotKey, next);
+}
+
+async function refreshAttachedWidgetStyles(force = false): Promise<void> {
+    const now = Date.now();
+    if (!force && now - attachedWidgetRefreshAt < ATTACHED_WIDGET_REFRESH_INTERVAL_MS) return;
+    if (attachedWidgetRefreshPromise) {
+        const pending = attachedWidgetRefreshPromise;
+        await pending;
+        if (!force) return;
+        // A forced Apply must not mistake an older in-flight response for the
+        // fresh profile read it explicitly requested. If another forced read
+        // started while this one was waiting, join that newer request instead.
+        if (attachedWidgetRefreshPromise && attachedWidgetRefreshPromise !== pending) {
+            await attachedWidgetRefreshPromise;
+            return;
+        }
+    }
+    if (!force && Date.now() - attachedWidgetRefreshAt < ATTACHED_WIDGET_REFRESH_INTERVAL_MS) return;
+    attachedWidgetRefreshAt = Date.now();
+    const task = (async () => {
+        await ensureSlots();
+        const me = UserStore.getCurrentUser();
+        if (!me?.id) {
+            attachedWidgetStyles.clear();
+            attachedWidgetSlots.clear();
+            attachedWidgetHints.clear();
+            attachedWidgetProfileAccountId = "";
+            attachedWidgetProfileVerifiedAt = 0;
+            widgetApplicationCacheEpoch++;
+            return;
+        }
+        const accountId = String(me.id);
+        const profile = await apiGet(`/users/${accountId}/profile`);
+        if (String(UserStore.getCurrentUser()?.id ?? "") !== accountId || activeSlotsAccountId !== accountId) return;
+        const widgets = profileWidgetEntries(profile);
+        if (!widgets) {
+            console.warn("[DMWidget] profile widget list missing; keeping the last attached skin map");
+            return;
+        }
+        if (widgets.length === 0) {
+            // Only a positively recognized, genuinely empty widget list can
+            // clear state. An unknown response shape above preserves the last
+            // confirmed map so Apply does not report a phantom missing card.
+            attachedWidgetStyles.clear();
+            attachedWidgetSlots.clear();
+            attachedWidgetHints.clear();
+            widgetApplicationCacheEpoch++;
+            attachedWidgetProfileAccountId = accountId;
+            attachedWidgetProfileVerifiedAt = Date.now();
+            return;
+        }
+        const entries = widgets
+            .map(widget => ({ widget, appId: profileWidgetApplicationId(widget), configId: profileWidgetConfigId(widget) }))
+            .filter(entry => SNOWFLAKE.test(entry.appId));
+        const ids: string[] = Array.from(new Set<string>(entries.map(entry => entry.appId)));
+        const stored = new Map<string, string>();
+        for (const [slotKey, identity] of Object.entries(slots.get())) {
+            if (SNOWFLAKE.test(identity.appId)) stored.set(identity.appId, slotKey);
+        }
+        const nextStyles = new Map<string, WidgetStylePreset>();
+        const nextSlots = new Map<string, string>();
+        const nextHints = new Map<string, string[]>();
+        for (const appId of ids) {
+            if (String(UserStore.getCurrentUser()?.id ?? "") !== accountId || activeSlotsAccountId !== accountId) return;
+            const hasStoredSlot = stored.has(appId);
+            let slotKey = stored.get(appId) ?? "";
+            let application: any = null;
+            try { application = await apiGet(`/applications/${appId}`); } catch { /* a private app may reject metadata */ }
+            if (String(UserStore.getCurrentUser()?.id ?? "") !== accountId || activeSlotsAccountId !== accountId) return;
+            if (!slotKey) slotKey = inferWidgetSlot(application);
+            const remoteStyle = remoteWidgetStyleFromApplication(application);
+            if (slotKey === "none" && !hasStoredSlot) {
+                // A custom/unknown app with no local slot is not a Val/Fort
+                // widget merely because that gallery happens to be selected.
+                // A valid remote marker still supports a custom card's skin.
+                if (remoteStyle) {
+                    const remotePreset = WIDGET_STYLE_PRESETS.find(item => item.id === remoteStyle.style) ?? WIDGET_STYLE_PRESETS[0];
+                    nextStyles.set(appId, presetWithLayouts(remotePreset, remoteStyle.topLayout, remoteStyle.bottomLayout));
+                    nextSlots.set(appId, "none");
+                    const appName = String(application?.name ?? "").trim();
+                    nextHints.set(appId, appName ? [appName] : []);
+                }
+                continue;
+            }
+            const entry = entries.find(item => item.appId === appId);
+            await recoverAttachedWidgetIdentity(slotKey, appId, entry?.configId ?? "");
+            if (String(UserStore.getCurrentUser()?.id ?? "") !== accountId || activeSlotsAccountId !== accountId) return;
+            const current = getSlot(slotKey);
+            const sameLocalApp = current.appId === appId;
+            const localUpdatedAt = Number(current.widgetStyleUpdatedAt ?? 0);
+            const remoteWins = !!remoteStyle && (!sameLocalApp
+                || (remoteStyle.updatedAt > 0 && remoteStyle.updatedAt >= localUpdatedAt)
+                || (remoteStyle.updatedAt === 0 && sameLocalApp && current.widgetStyleSource !== "local"));
+            if (remoteStyle && remoteWins) {
+                // Keep the per-app map authoritative when this profile's card
+                // is not the app currently cached in the local game slot. The
+                // slot itself is only safe to hydrate when it refers to the
+                // same attached application.
+                if (sameLocalApp && (remoteStyle.updatedAt >= localUpdatedAt || current.widgetStyleSource !== "local")) {
+                    const next = { ...current, widgetStyle: remoteStyle.style, widgetStyleSource: "remote" as const, widgetStyleUpdatedAt: remoteStyle.updatedAt, topLayout: remoteStyle.topLayout, bottomLayout: remoteStyle.bottomLayout };
+                    if (JSON.stringify(next) !== JSON.stringify(current)) setSlot(slotKey, next);
+                }
+                const remotePreset = WIDGET_STYLE_PRESETS.find(item => item.id === remoteStyle.style) ?? presetForSlot(slotKey);
+                nextStyles.set(appId, presetWithLayouts(remotePreset, remoteStyle.topLayout, remoteStyle.bottomLayout));
+            } else {
+                nextStyles.set(appId, presetForSlot(slotKey));
+            }
+            nextSlots.set(appId, slotKey);
+            const identity = getSlot(slotKey);
+            const labels = [
+                String(application?.name ?? ""),
+                SLOT_LABEL[slotKey] ?? slotKey,
+                slotKey === "valorant" ? "Val" : "",
+                slotKey === "fortnite" ? "Fort" : "",
+                identity.heroAssetKey
+            ]
+                .map(value => value.trim())
+                .filter(value => value.length >= 3);
+            nextHints.set(appId, Array.from(new Set(labels)));
+        }
+        if (String(UserStore.getCurrentUser()?.id ?? "") !== accountId || activeSlotsAccountId !== accountId) return;
+        attachedWidgetStyles.clear();
+        attachedWidgetSlots.clear();
+        attachedWidgetHints.clear();
+        // A prior scan may have cached a negative React/DOM lookup while the
+        // profile request was still in flight. Invalidate those results as
+        // soon as the recovered app map is replaced so an explicit Apply
+        // action can render immediately instead of waiting for the TTL.
+        widgetApplicationCacheEpoch++;
+        for (const [appId, preset] of nextStyles) attachedWidgetStyles.set(appId, preset);
+        for (const [appId, slotKey] of nextSlots) attachedWidgetSlots.set(appId, slotKey);
+        for (const [appId, labels] of nextHints) attachedWidgetHints.set(appId, labels);
+        attachedWidgetProfileAccountId = accountId;
+        attachedWidgetProfileVerifiedAt = Date.now();
+    })();
+    attachedWidgetRefreshPromise = task;
+    try {
+        await task;
+    } catch (error) {
+        console.warn("[DMWidget] attached profile widget reconciliation failed:", error);
+    } finally {
+        if (attachedWidgetRefreshPromise === task) attachedWidgetRefreshPromise = null;
+    }
+    // Style recovery can finish while the renderer's startup timer is already
+    // queued. Replace that stale pass so the recovered app hints are applied
+    // immediately instead of waiting for the periodic reconciliation sweep.
+    scheduleWidgetSkinScan(true);
+}
+
+function updateAttachedWidgetStylesForSlot(slotKey: string, preset: WidgetStylePreset): void {
+    for (const [appId, attachedSlot] of attachedWidgetSlots) {
+        if (attachedSlot === slotKey) attachedWidgetStyles.set(appId, preset);
+    }
+    // Before the account's profile list is available, a same-PC saved ID can
+    // still render locally. It is deliberately not treated as a confirmed
+    // attached app for cross-install writes (see attachedWidgetAppIdsForSlot).
+    if (!attachedWidgetProfileIsFresh()) {
+        const currentId = getSlot(slotKey).appId;
+        if (SNOWFLAKE.test(currentId)) attachedWidgetStyles.set(currentId, preset);
+    }
+}
+
+function knownWidgetStyles(): Map<string, WidgetStylePreset> {
+    const out = new Map<string, WidgetStylePreset>();
+    for (const [appId, preset] of attachedWidgetStyles) out.set(appId, preset);
+    if (attachedWidgetProfileIsFresh()) return out;
+    for (const [slotKey, identity] of Object.entries(slots.get())) {
+        if (!SNOWFLAKE.test(identity.appId)) continue;
+        const preset = presetForSlot(slotKey);
+        // The reconciled profile map knows which app is actually attached and
+        // can carry the gallery fallback after an update. Do not overwrite it
+        // with an older slot default.
+        if (!out.has(identity.appId)) out.set(identity.appId, preset);
+        // Keep the slot key in the attribute contract for diagnostics without
+        // adding another style rule; app IDs remain the source of truth.
+        void slotKey;
+    }
+    return out;
+}
+
+function knownWidgetHints(): Map<string, string[]> {
+    const out = new Map<string, string[]>();
+    const add = (appId: string, values: string[]) => {
+        if (!SNOWFLAKE.test(appId)) return;
+        const current = out.get(appId) ?? [];
+        for (const value of values) {
+            const clean = String(value ?? "").trim();
+            if (clean.length >= 3 && !/^(none|custom|my widget)$/i.test(clean) && !current.includes(clean)) current.push(clean);
+        }
+        if (current.length) out.set(appId, current);
+    };
+    for (const [appId, labels] of attachedWidgetHints) add(appId, labels);
+    if (attachedWidgetProfileIsFresh()) return out;
+    for (const [slotKey, identity] of Object.entries(slots.get())) {
+        if (!SNOWFLAKE.test(identity.appId)) continue;
+        add(identity.appId, [
+            SLOT_LABEL[slotKey] ?? slotKey,
+            slotKey === "valorant" ? "Val" : "",
+            slotKey === "fortnite" ? "Fort" : "",
+            identity.heroAssetKey
+        ]);
+    }
+    return out;
+}
+
+const WIDGET_APPLICATION_ID_ATTRIBUTES = [
+    "data-application-id",
+    "data-application_id",
+    "data-app-id",
+    "data-app_id",
+    "application-id",
+    "application_id"
+];
+
+function visibleProfileWidgetStyles(local: Map<string, WidgetStylePreset>): Map<string, WidgetStylePreset> {
+    const out = new Map(local);
+    const now = Date.now();
+    const fallbackPreset = selectedWidgetPreset();
+    for (const appId of visibleWidgetStyleMisses.keys()) {
+        if (!SNOWFLAKE.test(appId)) continue;
+        // A missing or unreadable owner marker is an availability error, not
+        // permission to render the foreign widget plain. Borrow the viewer's
+        // selected skin until the owner marker becomes readable again. This
+        // deliberately overrides a stale local entry for the same id; a
+        // confirmed remote record below remains authoritative.
+        out.set(appId, fallbackPreset);
+    }
+    for (const [appId, record] of visibleWidgetStyles) {
+        if (!SNOWFLAKE.test(appId) || now - record.checkedAt > VISIBLE_WIDGET_STYLE_CACHE_MS) continue;
+        // The marker is written by the owner of this application. When the
+        // viewer happens to own the same app, the remote marker is still the
+        // authoritative cross-client value; the viewer fallback is used only
+        // until the marker has been read.
+        out.set(appId, record.preset);
+    }
+    return out;
+}
+
+function visibleProfileWidgetHints(local: Map<string, string[]>): Map<string, string[]> {
+    const out = new Map<string, string[]>();
+    for (const [appId, labels] of local) out.set(appId, Array.from(new Set(labels)));
+    const now = Date.now();
+    for (const [appId, miss] of visibleWidgetStyleMisses) {
+        if (!SNOWFLAKE.test(appId) || !miss.hints.length) continue;
+        const current = out.get(appId) ?? [];
+        for (const label of miss.hints) {
+            const clean = String(label ?? "").trim();
+            if (clean.length >= 3 && !current.includes(clean)) current.push(clean);
+        }
+        if (current.length) out.set(appId, current);
+    }
+    for (const [appId, record] of visibleWidgetStyles) {
+        if (!SNOWFLAKE.test(appId) || now - record.checkedAt > VISIBLE_WIDGET_STYLE_CACHE_MS) continue;
+        const current = out.get(appId) ?? [];
+        for (const label of record.hints) {
+            const clean = String(label ?? "").trim();
+            if (clean.length >= 3 && !current.includes(clean)) current.push(clean);
+        }
+        if (current.length) out.set(appId, current);
+    }
+    return out;
+}
+
+function rememberVisibleWidgetStyle(appId: string, record: VisibleWidgetStyleRecord): void {
+    visibleWidgetStyles.delete(appId);
+    visibleWidgetStyles.set(appId, record);
+    visibleWidgetStyleMisses.delete(appId);
+    while (visibleWidgetStyles.size > VISIBLE_WIDGET_STYLE_MAX) {
+        const oldest = visibleWidgetStyles.keys().next().value;
+        if (typeof oldest !== "string") break;
+        visibleWidgetStyles.delete(oldest);
+    }
+}
+
+function rememberVisibleWidgetStyleMiss(appId: string, hints: string[] = []): void {
+    visibleWidgetStyles.delete(appId);
+    const previous = visibleWidgetStyleMisses.get(appId);
+    const cleanHints = Array.from(new Set(hints.map(label => String(label ?? "").trim()).filter(label => label.length >= 3)));
+    visibleWidgetStyleMisses.delete(appId);
+    visibleWidgetStyleMisses.set(appId, {
+        checkedAt: Date.now(),
+        hints: cleanHints.length ? cleanHints : (previous?.hints ?? [])
+    });
+    while (visibleWidgetStyleMisses.size > VISIBLE_WIDGET_STYLE_MAX) {
+        const oldest = visibleWidgetStyleMisses.keys().next().value;
+        if (typeof oldest !== "string") break;
+        visibleWidgetStyleMisses.delete(oldest);
+    }
+}
+
+function queueVisibleWidgetStyleHydration(appIds: Iterable<string>): void {
+    const now = Date.now();
+    const pending = Array.from(new Set(Array.from(appIds).filter(appId => SNOWFLAKE.test(appId)))).slice(0, VISIBLE_WIDGET_STYLE_BATCH_MAX);
+    for (const appId of pending) {
+        const cached = visibleWidgetStyles.get(appId);
+        if (cached && now - cached.checkedAt <= VISIBLE_WIDGET_STYLE_CACHE_MS) continue;
+        const missAt = visibleWidgetStyleMisses.get(appId)?.checkedAt ?? 0;
+        if (missAt && now - missAt <= VISIBLE_WIDGET_STYLE_MISS_RETRY_MS) continue;
+        if (visibleWidgetStyleRequests.has(appId)) continue;
+
+        const task = apiGet(`/applications/${appId}`).then(application => {
+            const remoteStyle = remoteWidgetStyleFromApplication(application);
+            if (remoteStyle) {
+                const remotePreset = WIDGET_STYLE_PRESETS.find(item => item.id === remoteStyle.style) ?? WIDGET_STYLE_PRESETS[0];
+                const appName = String(application?.name ?? application?.application?.name ?? "").trim();
+                rememberVisibleWidgetStyle(appId, {
+                    preset: presetWithLayouts(remotePreset, remoteStyle.topLayout, remoteStyle.bottomLayout),
+                    updatedAt: remoteStyle.updatedAt,
+                    checkedAt: Date.now(),
+                    hints: appName ? [appName] : []
+                });
+            } else {
+                // A missing marker is an availability error. Remove stale
+                // metadata, keep the profile visibly skinned via the viewer
+                // fallback, and retry so a repaired owner marker takes over.
+                const appName = String(application?.name ?? application?.application?.name ?? "").trim();
+                rememberVisibleWidgetStyleMiss(appId, appName ? [appName] : []);
+            }
+            widgetApplicationCacheEpoch++;
+            scheduleWidgetSkinProfileFastScan();
+            scheduleWidgetSkinScan(true);
+        }).catch(() => {
+            // An unreadable marker is an availability error. Use the viewer
+            // fallback immediately—even if an older marker exists—so a
+            // profile never flashes back to plain Discord. A fresh owner
+            // marker takes over on the next successful retry.
+            rememberVisibleWidgetStyleMiss(appId);
+            widgetApplicationCacheEpoch++;
+            scheduleWidgetSkinProfileFastScan();
+            scheduleWidgetSkinScan(true);
+        }).finally(() => {
+            visibleWidgetStyleRequests.delete(appId);
+        });
+        visibleWidgetStyleRequests.set(appId, task);
+    }
+}
+
+function applicationIdCandidate(value: unknown, known: Set<string>, allowUnknown: boolean): string | null {
+    const candidate = String(value ?? "").trim();
+    if (!SNOWFLAKE.test(candidate)) return null;
+    return allowUnknown || known.has(candidate) ? candidate : null;
+}
+
+function explicitWidgetApplicationId(element: Element, known: Set<string>, allowUnknown: boolean): string | null {
+    for (const attribute of WIDGET_APPLICATION_ID_ATTRIBUTES) {
+        const value = applicationIdCandidate(element.getAttribute(attribute), known, allowUnknown);
+        if (value) return value;
+    }
+    return null;
+}
+
+// The full profile Board sometimes keeps the application id in a plain DOM
+// attribute instead of the shallow React props attached to the compact card.
+// Inspect only the candidate subtree and only return ids that belong to a
+// widget attached to this account; this remains safe even when the selector is
+// deliberately broad below.
+function domApplicationId(element: Element, known: Set<string>, allowUnknown = false): string | null {
+    const nodes: Element[] = [element];
+    try {
+        // Only inspect explicit id-bearing descendants here. The previous
+        // fallback enumerated every descendant of every broad card candidate,
+        // which made opening a large profile surface needlessly expensive.
+        const selector = WIDGET_APPLICATION_ID_ATTRIBUTES.map(attribute => `[${attribute}]`).join(",");
+        nodes.push(...Array.from(element.querySelectorAll(selector)).slice(0, 96));
+    } catch { /* ignore malformed/tearing DOM */ }
+    for (const node of nodes) {
+        const explicit = explicitWidgetApplicationId(node, known, allowUnknown);
+        if (explicit) return explicit;
+        // Board releases have also put the snowflake in an aria label or a
+        // versioned data payload. Comparing every attribute value is cheaper
+        // and more reliable than guessing each new attribute name.
+        try {
+            for (const attribute of Array.from(node.attributes)) {
+                if (known.has(attribute.value.trim())) return attribute.value.trim();
+            }
+        } catch { /* ignore a node that is being removed */ }
+        const id = node.getAttribute("id");
+        if (id && known.has(id)) return id;
+    }
+    // A few Board wrappers expose the id only in a short aria/data payload.
+    // Avoid serializing a large profile surface during routine scans.
+    try {
+        const html = element.outerHTML;
+        if (html.length > 24_000) return null;
+        const matches = Array.from(known).filter(appId => html.includes(appId));
+        // A profile/Board wrapper can contain several widget applications. Do
+        // not let the first matching snowflake style the entire wrapper.
+        if (matches.length === 1) return matches[0];
+    } catch { /* ignore transient detached nodes */ }
+    return null;
+}
+
+function reactApplicationId(element: Element, known: Set<string>, maxBudget = 1000, maxDepth = 16, allowUnknown = false): string | null {
+    const roots = Object.keys(element).filter(key => key.startsWith("__reactFiber") || key.startsWith("__reactProps"));
+    const seen = new WeakSet<object>();
+    const queue: Array<{ value: any; depth: number; hint: string; }> = roots.map(key => ({ value: (element as any)[key], depth: 0, hint: key }));
+    let budget = maxBudget;
+    while (queue.length && budget-- > 0) {
+        const item = queue.shift()!;
+        const value = item.value;
+        if (!value || (typeof value !== "object" && typeof value !== "function") || item.depth > maxDepth) continue;
+        if (seen.has(value)) continue;
+        seen.add(value);
+        let keys: string[];
+        try { keys = Object.keys(value).slice(0, 90); } catch { continue; }
+        keys.sort((a, b) => {
+            const rank = (key: string) => /application|activity|pendingProps|memoizedProps|props|return|child/i.test(key) ? 0 : 1;
+            return rank(a) - rank(b);
+        });
+        for (const key of keys) {
+            let child: any;
+            try { child = value[key]; } catch { continue; }
+            const lower = key.toLowerCase();
+            if ((lower === "applicationid" || lower === "application_id" || lower === "appid" || lower === "app_id")) {
+                const id = applicationIdCandidate(child, known, allowUnknown);
+                if (id) return id;
+            }
+            if (lower === "application" && child && typeof child === "object") {
+                const id = applicationIdCandidate(child.id, known, allowUnknown);
+                if (id) return id;
+            }
+            if (lower === "activity" && child && typeof child === "object") {
+                const id = applicationIdCandidate(child.application_id, known, allowUnknown);
+                if (id) return id;
+            }
+            if (child && (typeof child === "object" || typeof child === "function")) queue.push({ value: child, depth: item.depth + 1, hint: key });
+        }
+    }
+    return null;
+}
+
+function visibleWidgetApplicationId(element: HTMLElement): string | null {
+    const empty = new Set<string>();
+    const direct = explicitWidgetApplicationId(element, empty, true);
+    if (direct) return direct;
+    try {
+        const selector = WIDGET_APPLICATION_ID_ATTRIBUTES.map(attribute => `[${attribute}]`).join(",");
+        const ids = new Set<string>();
+        for (const node of Array.from(element.querySelectorAll(selector)).slice(0, 48)) {
+            const id = explicitWidgetApplicationId(node, empty, true);
+            if (id) ids.add(id);
+            if (ids.size > 1) return null;
+        }
+        if (ids.size === 1) return ids.values().next().value ?? null;
+    } catch { /* ignore a tearing/partially-mounted profile card */ }
+    const directReact = reactApplicationId(element, empty, 450, 8, true);
+    if (directReact) return directReact;
+    for (let current: HTMLElement | null = element.parentElement, depth = 0; current && depth < WIDGET_CARD_MAX_ANCESTOR_DEPTH; depth++, current = current.parentElement) {
+        const id = explicitWidgetApplicationId(current, empty, true) ?? reactApplicationId(current, empty, 240, 6, true);
+        if (id) return id;
+    }
+    return null;
+}
+
+// Discord reuses the same widget card component in three places: the small
+// profile popout, the right-hand profile sidebar, and the full Board/profile
+// view. The latter has changed class names and wrapper roles several times;
+// keep the selector broad, then use the known attached application id as the
+// safety filter so ordinary activity cards are never skinned by accident.
+const WIDGET_CARD_SELECTOR = [
+    // Only target the actual application-card family. Profile/header/body
+    // wrappers can contain an application id too, but they must never become
+    // skin roots because that would cover the avatar, banner, and gradient.
+    '[class*="card__"]',
+    '[class*="card_"]',
+    '[class~="card"]',
+    '[class*="widget"]',
+    '[class*="Widget"]',
+    '[class*="application"]',
+    '[class*="Application"]',
+    '[class*="cardsList"] > li > div',
+    '[data-list-item-id*="application" i]',
+    // Some Board builds use semantic cards with no stable class token.
+    // These are still filtered by widgetApplicationMatch/text hints below.
+    'article',
+    '[role="article"]',
+    'li[role="listitem"]',
+    '[role="listitem"]'
+].join(",");
+const WIDGET_CARD_FALLBACK_SELECTOR = `${WIDGET_CARD_SELECTOR}`;
+const WIDGET_SURFACE_SELECTOR = [
+    '[class*="profile"]',
+    '[class*="Profile"]',
+    '[class*="popout"]',
+    '[class*="Popout"]',
+    '[class*="board"]',
+    '[class*="Board"]',
+    '[role="dialog"]'
+].join(",");
+// The compact account popout and profile modal can contain a branded Playing
+// card after enough ordinary profile nodes that the general surface-card
+// budget never reaches it. Keep a narrow, profile-owned candidate query so
+// the Rich Presence card is found without reopening the old document-wide
+// sweep that caused normal-mode renderer stalls.
+const PLAYING_CARD_SELECTOR = '[class*="card__"], [class*="card_"], article, [role="article"]';
+const PLAYING_CARD_PROFILE_SURFACE_SELECTOR = [
+    '[role="dialog"]',
+    '[class*="accountPopout"]',
+    '[class*="userProfile"]',
+    '[class*="profilePopout"]',
+    '[class*="profileContent"]'
+].join(",");
+// Keep this list deliberately specific. The chrome layer is intentionally limited
+// to the open conversation name and the user's account panel. A generic
+// [role=listitem], [class*=card], or profile sweep makes ordinary Discord
+// navigation/activity/message hosts look like widgets and adds avoidable renderer
+// work. The candidate list is still capped and filtered by visibility below.
+const WIDGET_SURFACE_SKIN_SELECTOR = [
+    '[class*="channel__"]',
+    '[class*="channel_"]',
+    '[class*="accountPopoutButtonWrapper"]',
+    'div[class*="hoverableContainer__"]',
+    'h1[class*="title__"]'
+].join(",");
+const WIDGET_SURFACE_SKIN_MAX_ROOTS = 12;
+const WIDGET_CARD_MAX_ANCESTOR_DEPTH = 20;
+// The Discordmaxxer Rich Presence card is not one of the user's attached
+// Social SDK applications, so it cannot be resolved through the app-id map.
+// It is still part of the same compact profile composition and should carry
+// the active widget treatment without affecting unrelated activity cards.
+const DISCORDMAXXER_PLAYING_APP_ID = "discordmaxxer-playing";
+
+function escapeWidgetHint(value: string): string {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function discordSurfacePath(value: string): string {
+    const raw = String(value ?? "").trim();
+    if (!raw) return "";
+    try {
+        return new URL(raw, window.location.origin).pathname.replace(/\/+$/, "") || "/";
+    } catch {
+        return raw.split(/[?#]/, 1)[0].replace(/\/+$/, "") || "/";
+    }
+}
+
+function isOpenDiscordConversationPath(path = window.location.pathname): boolean {
+    return /^\/channels\/@me\/[^/]+$/i.test(discordSurfacePath(path));
+}
+
+function isDiscordChannelRow(element: HTMLElement): boolean {
+    const className = typeof element.className === "string" ? element.className : "";
+    return element.tagName.toUpperCase() === "LI"
+        && /(?:^|[\s_-])channel(?:__|_)/i.test(className);
+}
+
+function activeDiscordConversationPath(): string {
+    const path = discordSurfacePath(window.location.pathname);
+    return isOpenDiscordConversationPath(path) ? path : "";
+}
+
+function discordConversationRowMatchesPath(element: HTMLElement, path: string): boolean {
+    if (!isDiscordChannelRow(element)) return false;
+    const className = typeof element.className === "string" ? element.className : "";
+    if (!/(?:^|[\s_-])dm(?:__|_)/i.test(className) || !path) return false;
+    const href = element.querySelector<HTMLAnchorElement>('a[href^="/channels/@me/"]')?.getAttribute("href") ?? "";
+    return !!href && discordSurfacePath(href) === path;
+}
+
+function visibleDiscordConversationRow(element: HTMLElement): boolean {
+    try {
+        const rect = element.getBoundingClientRect();
+        if (rect.width < 40 || rect.height < 20 || rect.right <= 0 || rect.bottom <= 0 || rect.left >= window.innerWidth || rect.top >= window.innerHeight) return false;
+        const computed = window.getComputedStyle(element);
+        return computed.display !== "none" && computed.visibility !== "hidden" && Number(computed.opacity) > 0;
+    } catch {
+        return false;
+    }
+}
+
+function activeDiscordConversationRowScore(element: HTMLElement): number {
+    let score = visibleDiscordConversationRow(element) ? 20 : 0;
+    const anchor = element.querySelector<HTMLAnchorElement>('a[href^="/channels/@me/"]');
+    const ariaCurrent = `${element.getAttribute("aria-current") ?? ""} ${anchor?.getAttribute("aria-current") ?? ""}`.trim().toLowerCase();
+    const ariaSelected = `${element.getAttribute("aria-selected") ?? ""} ${anchor?.getAttribute("aria-selected") ?? ""}`.trim().toLowerCase();
+    const selectedDescendant = element.querySelector('[aria-current="page"], [aria-current="true"], [aria-selected="true"], [data-is-selected="true"]');
+    if (ariaCurrent === "page" || ariaCurrent === "true" || ariaSelected === "true" || selectedDescendant) score += 100;
+    const signal = `${typeof element.className === "string" ? element.className : ""} ${typeof anchor?.className === "string" ? anchor.className : ""}`;
+    if (/(?:^|[\s_-])(?:selected|current|active)(?:(?:__|_|-)[A-Za-z0-9]+|$)/i.test(signal)
+        || /(?:^|[\s_-])isSelected(?:__|_|-)?/i.test(signal)) score += 50;
+    return score;
+}
+
+function activeDiscordConversationRow(): HTMLElement | null {
+    const path = activeDiscordConversationPath();
+    if (!path) {
+        activeDiscordConversationRowCache = { path: "", row: null };
+        return null;
+    }
+    const cached = activeDiscordConversationRowCache;
+    if (cached?.path === path && cached.row?.isConnected && discordConversationRowMatchesPath(cached.row, path)) return cached.row;
+    const candidates: HTMLElement[] = [];
+    try {
+        for (const row of Array.from(document.querySelectorAll<HTMLElement>('li[class*="channel__"], li[class*="channel_"]'))) {
+            if (discordConversationRowMatchesPath(row, path)) candidates.push(row);
+        }
+    } catch { /* ignore a row tree that is being replaced */ }
+    candidates.sort((left, right) => activeDiscordConversationRowScore(right) - activeDiscordConversationRowScore(left));
+    const row = candidates[0] ?? null;
+    activeDiscordConversationRowCache = { path, row };
+    return row;
+}
+
+function isOpenDiscordConversationRow(element: HTMLElement): boolean {
+    return activeDiscordConversationRow() === element;
+}
+
+function isDiscordAccountPanel(element: HTMLElement): boolean {
+    const className = typeof element.className === "string" ? element.className : "";
+    return /accountPopoutButtonWrapper/i.test(className);
+}
+
+function isOpenDiscordConversationHeader(element: HTMLElement): boolean {
+    if (!isOpenDiscordConversationPath()) return false;
+    const className = typeof element.className === "string" ? element.className : "";
+    const inChatHeader = element.closest<HTMLElement>('section[class*="title_"]');
+    if (!inChatHeader) return false;
+    if (/hoverableContainer__/i.test(className)) return true;
+    return element.tagName.toUpperCase() === "H1" && /(?:^|[\s_-])title(?:__|_)/i.test(className);
+}
+
+function discordSurfaceSkinTarget(element: HTMLElement): boolean {
+    return isOpenDiscordConversationRow(element)
+        || isDiscordAccountPanel(element)
+        || isOpenDiscordConversationHeader(element);
+}
+
+function discordSurfaceSkinBlocked(element: HTMLElement): boolean {
+    const className = typeof element.className === "string" ? element.className : "";
+    const role = element.getAttribute("role") ?? "";
+    if (isDiscordChannelRow(element)) return !isOpenDiscordConversationRow(element);
+    if (isDiscordAccountPanel(element) || isOpenDiscordConversationHeader(element)) return false;
+    if (/peopleListItem/i.test(className)) return true;
+    // Active Now is a Discord card, but it is not one of the user's attached
+    // widget cards. Keep it out of both the lightweight and full-card paths.
+    if (/(?:^|[\s_-])card(?:__|_)/i.test(className) && /active now|this section could be better/i.test(String(element.textContent ?? "").slice(0, 420))) return true;
+    // Keep generic profile/popout/dialog shells out of the full-card resolver;
+    // actual widget cards inside them are still found by the nested-card pass.
+    if (/(?:profile|popout)/i.test(`${className} ${role}`) && !/(?:card|widget|application)/i.test(className)) return true;
+    if (role === "dialog" && !/(?:card|widget|application)/i.test(className)) return true;
+    return false;
+}
+
+function discordSurfaceSkinPriority(element: HTMLElement): number {
+    if (isDiscordAccountPanel(element)) return 4;
+    if (isOpenDiscordConversationHeader(element)) return 3;
+    if (isOpenDiscordConversationRow(element)) return 2;
+    return 1;
+}
+
+function hasHigherOrEqualSurfaceSkinAncestor(element: HTMLElement): boolean {
+    const priority = discordSurfaceSkinPriority(element);
+    for (let current = element.parentElement; current; current = current.parentElement) {
+        if (discordSurfaceSkinTarget(current) && discordSurfaceSkinPriority(current) >= priority) return true;
+    }
+    return false;
+}
+
+function visibleSurfaceSkinTarget(element: HTMLElement): boolean {
+    try {
+        const rect = element.getBoundingClientRect();
+        const compactConversationName = isOpenDiscordConversationHeader(element);
+        const minimumWidth = compactConversationName ? 32 : 80;
+        const minimumHeight = compactConversationName ? 18 : 24;
+        if (rect.width < minimumWidth || rect.height < minimumHeight || rect.right <= 0 || rect.bottom <= 0 || rect.left >= window.innerWidth || rect.top >= window.innerHeight) return false;
+        const computed = window.getComputedStyle(element);
+        return computed.display !== "none" && computed.visibility !== "hidden" && Number(computed.opacity) > 0;
+    } catch {
+        return false;
+    }
+}
+
+function widgetSurfaceLike(element: HTMLElement): boolean {
+    const className = typeof element.className === "string" ? element.className : "";
+    const role = element.getAttribute("role") ?? "";
+    const tagName = element.tagName.toUpperCase();
+    const semanticCard = tagName === "ARTICLE" || role === "article" || role === "listitem";
+    const explicitCard = /(?:^|[\s_-])card(?:(?:__|_)[A-Za-z0-9]+|[A-Z][A-Za-z0-9]*|$)/i.test(className)
+        || /Card(?:(?:__|_)[A-Za-z0-9]+|[A-Z][A-Za-z0-9]*|$)/.test(className);
+    // A semantic/article card or an explicit *Card class is allowed to live
+    // inside a profile surface. A generic profileWidget/profileApplication
+    // wrapper is still rejected so the skin cannot cover the banner/avatar.
+    if (semanticCard || explicitCard) return false;
+    return role === "dialog" || /profile|popout|header|body|modal|dialog|outer|inner|avatar|banner/i.test(`${className} ${role}`);
+}
+
+function widgetCardLike(element: HTMLElement): boolean {
+    const className = typeof element.className === "string" ? element.className : "";
+    const role = element.getAttribute("role") ?? "";
+    const tagName = element.tagName.toUpperCase();
+    if (tagName === "ARTICLE" || role === "article" || role === "listitem") return !widgetSurfaceLike(element);
+    if (widgetSurfaceLike(element)) return false;
+    // Hashed Discord class names use forms such as card__9d597,
+    // widgetContainer__0ea1a, and application__abc. The Board currently uses
+    // the camel-cased middle form; the old boundary-only expression missed it
+    // and left the full Board plain while the compact popout still worked.
+    // Keep the token boundary so profileWidget/profileApplication wrappers do
+    // not become skin roots merely because they contain the word.
+    return /(?:^|[\s_-])(?:card|widget|application)(?:(?:__|_)[A-Za-z0-9]+|[A-Z][A-Za-z0-9]*|$)/i.test(className)
+        || /(?:Card|Widget|Application)(?:(?:__|_)[A-Za-z0-9]+|[A-Z][A-Za-z0-9]*|$)/.test(className);
+}
+
+function widgetCardContainerLike(element: HTMLElement): boolean {
+    const className = typeof element.className === "string" ? element.className : "";
+    const tagName = element.tagName.toUpperCase();
+    const role = element.getAttribute("role") ?? "";
+    // Discord's Board wraps its visible cards in a cardsList/UL. That wrapper
+    // is not a card root: styling it makes the whole list inherit one skin and
+    // leaves the actual cards visually plain. Keep this guard centralized so
+    // discovery, ancestor scoring, and stale-marker cleanup agree.
+    return /cardsList/i.test(className) || tagName === "UL" || tagName === "OL" || role === "list";
+}
+
+function widgetSkinCardCandidate(element: HTMLElement, appHints: string[] = [], knownAppId = ""): boolean {
+    if (discordSurfaceSkinTarget(element) || discordSurfaceSkinBlocked(element)) return false;
+    if (!widgetCardLike(element)) return false;
+    if (widgetCardContainerLike(element)) return false;
+    const rect = element.getBoundingClientRect();
+    if (rect.width < 120 || rect.height < 40 || rect.width > 760 || rect.height > 560) return false;
+    // A recovered, attached application id is stronger than a text-label
+    // guess. Board titles can be concatenated with decorative glyphs (for
+    // example `ValツDiggy`), so insisting on a text boundary here rejects the
+    // correct card even though the DOM has already identified its app.
+    if (!appHints.length || knownAppId) return true;
+    const text = String(element.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 1800);
+    return widgetTextMatchesHints(text, appHints);
+}
+
+function widgetTextMatchesHints(text: string, appHints: string[]): boolean {
+    const normalized = String(text ?? "").replace(/\s+/g, " ").trim().slice(0, 1800);
+    if (!normalized) return false;
+    return appHints.some(label => {
+        const clean = label.trim();
+        if (clean.length < 3) return false;
+        if (new RegExp(`(?:^|\\s|[·•|:/-])${escapeWidgetHint(clean)}(?:$|\\s|[·•|:/-])`, "i").test(normalized)) return true;
+        // Discord sometimes concatenates adjacent text nodes when a card is
+        // read through textContent (for example `ValRank: Diamond 3`). Keep
+        // the boundary requirement on the left, but accept an uppercase
+        // transition on the right so the known app label still identifies
+        // the correct card without matching an arbitrary substring.
+        const lowerText = normalized.toLocaleLowerCase();
+        const lowerLabel = clean.toLocaleLowerCase();
+        let offset = lowerText.indexOf(lowerLabel);
+        while (offset >= 0) {
+            const before = normalized[offset - 1];
+            const after = normalized[offset + clean.length];
+            const leftBoundary = offset === 0 || /[\s·•|:/-]/.test(before);
+            // Discord's Board decorates the display name with non-ASCII
+            // glyphs (for example `ValツDiggy`). Treat a non-ASCII character
+            // as a boundary too, while keeping ASCII letters/digits strict so
+            // labels such as `Valorant` cannot match the shorter `Val` hint.
+            const rightBoundary = !after
+                || /[\s·•|:/-]/.test(after)
+                || /[A-Z]/.test(after)
+                || !/[A-Za-z0-9]/.test(after);
+            if (leftBoundary && rightBoundary) return true;
+            offset = lowerText.indexOf(lowerLabel, offset + 1);
+        }
+        return false;
+    });
+}
+
+function nestedWidgetCardRoot(surface: HTMLElement, appHints: string[]): HTMLElement | null {
+    try {
+        // An app wrapper without a recovered label is ambiguous when several
+        // Board cards are present. Skip rather than skinning the first card.
+        if (!appHints.length) return null;
+        const candidates = Array.from(surface.querySelectorAll<HTMLElement>(WIDGET_CARD_SELECTOR)).slice(0, 180);
+        let best: { node: HTMLElement; score: number; } | null = null;
+        for (const candidate of candidates) {
+            if (discordSurfaceSkinTarget(candidate) || discordSurfaceSkinBlocked(candidate)) continue;
+            if (!widgetSkinCardCandidate(candidate, appHints)) continue;
+            const rect = candidate.getBoundingClientRect();
+            const className = typeof candidate.className === "string" ? candidate.className : "";
+            const role = candidate.getAttribute("role") ?? "";
+            const tagName = candidate.tagName.toUpperCase();
+            const isListContainer = widgetCardContainerLike(candidate);
+            let score = 100;
+            if (/card/i.test(className)) score += 32;
+            if (/widget|application/i.test(className)) score += 20;
+            if (/^(article|listitem)$/.test(role)) score += 8;
+            // A matching cardsList can contain the same label as its child,
+            // but it is not the surface users see. Prefer the actual card so
+            // the skin cannot bleed across the whole Board list.
+            if (isListContainer) score -= 64;
+            if (/^DIV$/i.test(tagName) && /(?:^|[_-])card(?:__|_)/i.test(className)) score += 20;
+            if (rect.width > 520 || rect.height > 420) score -= 12;
+            if (!best || score > best.score) best = { node: candidate, score };
+        }
+        return best?.node ?? null;
+    } catch {
+        return null;
+    }
+}
+
+function widgetCardRoot(element: HTMLElement, appId = "", hints?: Map<string, string[]>): HTMLElement | null {
+    const appHints = appId ? (hints?.get(appId) ?? []) : [];
+    // Keep the accidental-but-liked Discord chrome in the separate surface
+    // renderer. Returning this root lets the guarded app-id resolver hand it
+    // to the surface branch without ever granting it the full widget CSS.
+    if (discordSurfaceSkinTarget(element)) return element;
+    if (discordSurfaceSkinBlocked(element)) return null;
+    if (widgetSkinCardCandidate(element, appHints, appId)) return element;
+    const isCardContainer = widgetCardContainerLike(element);
+    if (!widgetCardLike(element) || isCardContainer) {
+        // React sometimes exposes the application id on the profile header or
+        // body instead of the card host. It can also expose it on the
+        // cardsList that contains several card wrappers. Resolve back down to
+        // the actual labeled Board card before styling; otherwise the entire
+        // profile surface or list gets the skin and the visible widget remains
+        // plain.
+        const nested = nestedWidgetCardRoot(element, appHints);
+        if (nested) return nested;
+    }
+    const candidates: Array<{ node: HTMLElement; score: number; }> = [];
+    let current: HTMLElement | null = element;
+    for (let depth = 0; current && depth < WIDGET_CARD_MAX_ANCESTOR_DEPTH; depth++, current = current.parentElement) {
+        try {
+            const rect = current.getBoundingClientRect();
+            if (rect.width < 120 || rect.height < 40) continue;
+            const className = typeof current.className === "string" ? current.className : "";
+            const role = current.getAttribute("role") ?? "";
+            const tagName = current.tagName.toUpperCase();
+            const isListContainer = widgetCardContainerLike(current);
+            if (discordSurfaceSkinTarget(current)) {
+                candidates.push({ node: current, score: 170 - depth });
+                continue;
+            }
+            if (discordSurfaceSkinBlocked(current)) continue;
+            const selectorMatch = widgetSkinCardCandidate(current, appHints, appId);
+            // Reading textContent is relatively expensive on the profile
+            // wrapper. Only do it for card-like ancestors, and cap the amount
+            // of text used for label matching.
+            const text = selectorMatch && appHints.length
+                ? String(current.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 1200)
+                : "";
+            const labelMatch = !!text && widgetTextMatchesHints(text, appHints);
+            // Discord's Board has several nested wrappers that all look like
+            // cards. Score the wrapper that owns the widget label and has a
+            // card-like role/class, instead of taking the first broad match.
+            let score = Math.max(0, 22 - depth);
+            if (selectorMatch) score += 28;
+            if (labelMatch) score += 100;
+            if (/card/i.test(className)) score += 32;
+            if (/widget|application/i.test(className)) score += 20;
+            if (/^(article|listitem)$/.test(role)) score += 8;
+            if (isListContainer) score -= 64;
+            if (/^DIV$/i.test(tagName) && /(?:^|[_-])card(?:__|_)/i.test(className)) score += 20;
+            if (!selectorMatch) continue;
+            if (widgetSurfaceLike(current)) continue;
+            if (text.length >= 1200) score -= 20;
+            if (rect.width > 520 || rect.height > 420) score -= 12;
+            candidates.push({ node: current, score });
+        } catch { /* ignore a tearing/partially-mounted node */ }
+    }
+    candidates.sort((left, right) => right.score - left.score);
+    return candidates[0]?.node ?? null;
+}
+
+function hintedWidgetApplicationId(element: HTMLElement, hints: Map<string, string[]>): string | null {
+    if (!hints.size) return null;
+    // Do not first promote the node to a generic profile/board wrapper. That
+    // wrapper often contains several widgets and makes the labels ambiguous.
+    // Walk from the discovery node outward instead, returning as soon as the
+    // smallest connected ancestor identifies exactly one attached app.
+    let current: HTMLElement | null = element;
+    for (let depth = 0; current && depth < WIDGET_CARD_MAX_ANCESTOR_DEPTH; depth++, current = current.parentElement) {
+        let text = "";
+        let html = "";
+        try {
+            const rect = current.getBoundingClientRect();
+            if (rect.width < 120 || rect.height < 40) continue;
+            text = String(current.textContent ?? "").replace(/\s+/g, " ").trim();
+            if (text.length > 2400) continue;
+            const serialized = current.outerHTML;
+            if (serialized.length > 24_000) continue;
+            html = serialized.toLowerCase();
+        } catch { continue; }
+        const matches: string[] = [];
+        for (const [appId, labels] of hints) {
+            const found = widgetTextMatchesHints(text, labels) || labels.some(label => {
+                const clean = label.trim().toLowerCase();
+                return clean.length >= 8 && html.includes(clean);
+            });
+            if (found) matches.push(appId);
+        }
+        if (matches.length === 1) return matches[0];
+    }
+    return null;
+}
+
+function widgetApplicationMatch(element: HTMLElement, known: Set<string>, hints: Map<string, string[]>): WidgetCardMatch | null {
+    const now = Date.now();
+    const cached = widgetApplicationCache.get(element);
+    // React props are expensive to walk. Keep successful lookups longer and
+    // negative lookups for the duration of the normal reconciliation window so
+    // unrelated Discord updates do not repeatedly inspect the same card tree.
+    const cacheTtl = cached?.match ? 5000 : 2600;
+    if (cached && cached.epoch === widgetApplicationCacheEpoch && now - cached.checkedAt < cacheTtl)
+        return cached.match && known.has(cached.match.appId) && cached.match.root.isConnected ? cached.match : null;
+    const remember = (appId: string | null, related?: HTMLElement): WidgetCardMatch | null => {
+        const root = appId ? widgetCardRoot(related ?? element, appId, hints) : null;
+        const match = appId && root ? { appId, root } : null;
+        const value = { match, checkedAt: now, epoch: widgetApplicationCacheEpoch };
+        widgetApplicationCache.set(element, value);
+        if (related && related !== element) widgetApplicationCache.set(related, value);
+        if (match && match.root !== element) widgetApplicationCache.set(match.root, value);
+        return match;
+    };
+    // Prefer the visible card. The DOM fallback covers the full Board's
+    // application wrapper, where Discord may not expose the id on the first
+    // React host node at all.
+    const directReactId = reactApplicationId(element, known);
+    if (directReactId) {
+        const match = remember(directReactId, element);
+        if (match) return match;
+    }
+    const directDomId = domApplicationId(element, known);
+    if (directDomId) {
+        const match = remember(directDomId, element);
+        if (match) return match;
+    }
+    let current: HTMLElement | null = element;
+    for (let depth = 0; current && depth < WIDGET_CARD_MAX_ANCESTOR_DEPTH; depth++, current = current.parentElement) {
+        const appId = reactApplicationId(current, known) ?? domApplicationId(current, known);
+        if (appId) {
+            const match = remember(appId, current);
+            if (match) return match;
+        }
+    }
+    const hintedId = hintedWidgetApplicationId(element, hints);
+    if (hintedId) {
+        const match = remember(hintedId, element);
+        if (match) return match;
+    }
+    return remember(null);
+}
+
+function restoreWidgetSkin(root: HTMLElement): void {
+    const snapshot = widgetSkinRoots.get(root);
+    if (!snapshot) return;
+    for (const attr of WIDGET_SKIN_ATTRS) {
+        const value = snapshot.attrs[attr];
+        if (value === null) root.removeAttribute(attr); else root.setAttribute(attr, value);
+    }
+    for (const name of WIDGET_SKIN_VARS) {
+        const value = snapshot.vars[name];
+        if (!value.value) root.style.removeProperty(name); else root.style.setProperty(name, value.value, value.priority);
+    }
+    widgetSkinRoots.delete(root);
+}
+
+function clearWidgetSkinRoot(root: HTMLElement): void {
+    // A stale renderer can leave private skin markers behind without a
+    // matching in-memory snapshot. Restore any snapshot we do have first,
+    // then remove every private marker so blocked Discord chrome (Friends,
+    // Shop, Quests, inactive DM rows, and Active Now) cannot remain skinned.
+    restoreWidgetSkin(root);
+    for (const attr of WIDGET_SKIN_ATTRS) root.removeAttribute(attr);
+    for (const name of WIDGET_SKIN_VARS) root.style.removeProperty(name);
+}
+
+function restoreSurfaceSkin(root: HTMLElement): void {
+    const snapshot = surfaceSkinRoots.get(root);
+    if (!snapshot) {
+        for (const attr of SURFACE_SKIN_ATTRS) root.removeAttribute(attr);
+        for (const name of SURFACE_SKIN_VARS) root.style.removeProperty(name);
+        return;
+    }
+    for (const attr of SURFACE_SKIN_ATTRS) {
+        const value = snapshot.attrs[attr];
+        if (value === null) root.removeAttribute(attr); else root.setAttribute(attr, value);
+    }
+    for (const name of SURFACE_SKIN_VARS) {
+        const value = snapshot.vars[name];
+        if (!value.value) root.style.removeProperty(name); else root.style.setProperty(name, value.value, value.priority);
+    }
+    surfaceSkinRoots.delete(root);
+}
+
+function applySurfaceSkin(root: HTMLElement, preset: WidgetStylePreset): void {
+    if (!surfaceSkinRoots.has(root)) {
+        const attrs: Record<string, string | null> = {};
+        const vars: Record<string, { value: string; priority: string; }> = {};
+        for (const attr of SURFACE_SKIN_ATTRS) attrs[attr] = root.getAttribute(attr);
+        for (const name of SURFACE_SKIN_VARS) vars[name] = { value: root.style.getPropertyValue(name), priority: root.style.getPropertyPriority(name) };
+        surfaceSkinRoots.set(root, { attrs, vars });
+    }
+    const motionPaused = isWidgetPreviewMotionPaused() ? "true" : "false";
+    root.dataset.dmWidgetSurfaceRoot = "true";
+    if (root.dataset.dmWidgetSurfaceSkin !== preset.id) root.dataset.dmWidgetSurfaceSkin = preset.id;
+    if (root.dataset.dmWidgetSurfaceMotion !== preset.motion) root.dataset.dmWidgetSurfaceMotion = preset.motion;
+    if (root.dataset.dmWidgetSurfaceMotionPaused !== motionPaused) root.dataset.dmWidgetSurfaceMotionPaused = motionPaused;
+    if (root.style.getPropertyValue("--dmw-surface-accent") !== preset.accent) root.style.setProperty("--dmw-surface-accent", preset.accent);
+    if (root.style.getPropertyValue("--dmw-surface-secondary") !== preset.secondary) root.style.setProperty("--dmw-surface-secondary", preset.secondary);
+    if (root.style.getPropertyValue("--dmw-surface-surface") !== preset.surface) root.style.setProperty("--dmw-surface-surface", preset.surface);
+}
+
+function scanWidgetSurfaceSkin(): number {
+    if (!document.body) return 0;
+    if (widgetSkinEditorOpen()) {
+        widgetSkinRescanAfterEditor = true;
+        return 0;
+    }
+    // A DM click can change the active route before Discord replaces the row
+    // subtree. Re-select the active row for every fast pass so an old row is
+    // restored as soon as the new route is visible.
+    activeDiscordConversationRowCache = null;
+    const active = knownWidgetStyles();
+    const surfacePreset = selectedSurfacePreset(active);
+    const surfaceSeen = new Set<HTMLElement>();
+    let applied = 0;
+    try {
+        if (surfacePreset) {
+            const candidates = Array.from(document.querySelectorAll<HTMLElement>(WIDGET_SURFACE_SKIN_SELECTOR)).slice(0, 140);
+            for (const candidate of candidates) {
+                if (surfaceSeen.size >= WIDGET_SURFACE_SKIN_MAX_ROOTS) break;
+                if (!discordSurfaceSkinTarget(candidate) || !visibleSurfaceSkinTarget(candidate)) continue;
+                if (hasHigherOrEqualSurfaceSkinAncestor(candidate)) continue;
+                surfaceSeen.add(candidate);
+                if (widgetSkinRoots.has(candidate)) restoreWidgetSkin(candidate);
+                // Clear a marker left by an older renderer before taking a
+                // fresh snapshot, otherwise restoration would preserve the
+                // stale cosmetic state instead of Discord's original state.
+                if (!surfaceSkinRoots.has(candidate) && candidate.dataset.dmWidgetSurfaceRoot === "true") restoreSurfaceSkin(candidate);
+                applySurfaceSkin(candidate, surfacePreset);
+                applied++;
+            }
+        }
+        for (const root of Array.from(surfaceSkinRoots.keys())) {
+            if (!surfaceSeen.has(root) || !root.isConnected || !surfacePreset || !discordSurfaceSkinTarget(root)) restoreSurfaceSkin(root);
+        }
+        // This also removes markers left by a previous hot reload when the
+        // in-memory snapshot map is empty. Only the narrow surface marker is
+        // touched here; widget-card roots are handled by the full pass.
+        for (const root of Array.from(document.querySelectorAll<HTMLElement>('[data-dm-widget-surface-root="true"]')).slice(0, 120)) {
+            if (!surfacePreset || !surfaceSeen.has(root) || !discordSurfaceSkinTarget(root) || !visibleSurfaceSkinTarget(root)) restoreSurfaceSkin(root);
+        }
+    } catch { /* ignore a profile subtree that is being replaced */ }
+    return applied;
+}
+
+function visibleWidgetSkinProfileSurface(element: HTMLElement): boolean {
+    try {
+        const rect = element.getBoundingClientRect();
+        if (rect.width < 80 || rect.height < 80 || rect.right <= 0 || rect.bottom <= 0 || rect.left >= window.innerWidth || rect.top >= window.innerHeight) return false;
+        const computed = window.getComputedStyle(element);
+        return computed.display !== "none" && computed.visibility !== "hidden" && Number(computed.opacity) > 0;
+    } catch {
+        return false;
+    }
+}
+
+function profileMountNodeLike(element: Element): boolean {
+    const className = typeof (element as HTMLElement).className === "string" ? (element as HTMLElement).className : "";
+    const role = element.getAttribute("role") ?? "";
+    const signal = `${className} ${role} ${element.getAttribute("aria-label") ?? ""}`;
+    return /profile|popout|dialog|accountPopout|userPopout|board/i.test(signal);
+}
+
+function profileMountMutationRelevant(records: MutationRecord[]): boolean {
+    for (const record of records.slice(0, 80)) {
+        if (record.type !== "childList") continue;
+        const target = record.target instanceof Element ? record.target : null;
+        if (target?.closest(WIDGET_SURFACE_SELECTOR)) return true;
+        for (const node of Array.from(record.addedNodes).slice(0, 12)) {
+            if (node instanceof Element && profileMountNodeLike(node)) return true;
+        }
+    }
+    return false;
+}
+
+// Profile cards can be committed after the avatar/banner shell and inside a
+// portal that was already mounted before the click. Keep this pass deliberately
+// narrower than scanWidgetSkinCards(): it only inspects visible profile-like
+// surfaces and only candidates that already carry an app id or a known widget
+// label. This lets the card receive its marker on the first relevant commit
+// without bringing the broad React-fiber scan back onto the click path.
+function scanVisibleProfileWidgetCards(): number {
+    if (!document.body || document.hidden || widgetSkinEditorOpen() || widgetSkinRendererSuspended) return 0;
+    const localActive = knownWidgetStyles();
+    const localHints = knownWidgetHints();
+    // The first pass can discover a profile card before its application
+    // metadata has been fetched. Start with the owner's local map for cards
+    // we own, then add only read-only markers fetched for foreign profiles.
+    const initialActive = visibleProfileWidgetStyles(localActive);
+    const initialHints = visibleProfileWidgetHints(localHints);
+    const initialHintLabels = Array.from(initialHints.values()).flat().filter(label => label.length >= 3);
+    const explicitSelector = WIDGET_APPLICATION_ID_ATTRIBUTES.map(attribute => `[${attribute}]`).join(",");
+    const candidates = new Set<HTMLElement>();
+    const explicitCandidates: HTMLElement[] = [];
+    const hintedCardCandidates: HTMLElement[] = [];
+    const playingCandidates: HTMLElement[] = [];
+    const addCandidate = (list: HTMLElement[], candidate: HTMLElement, limit: number) => {
+        if (list.length >= limit || candidates.has(candidate)) return;
+        candidates.add(candidate);
+        list.push(candidate);
+    };
+    try {
+        const surfaces: HTMLElement[] = [];
+        for (const candidate of Array.from(document.querySelectorAll<HTMLElement>(`${WIDGET_SURFACE_SELECTOR},${PLAYING_CARD_PROFILE_SURFACE_SELECTOR}`)).slice(0, 32)) {
+            if (!visibleWidgetSkinProfileSurface(candidate)) continue;
+            // Broad profile selectors often return every nested wrapper in a
+            // popout. Scan the outer visible surface once instead of repeating
+            // the same React/DOM walk for each wrapper.
+            if (surfaces.some(surface => surface.contains(candidate))) continue;
+            surfaces.push(candidate);
+            if (surfaces.length >= WIDGET_SKIN_PROFILE_SURFACE_MAX) break;
+        }
+        for (const surface of surfaces) {
+            if (surface.matches(explicitSelector)) addCandidate(explicitCandidates, surface, WIDGET_SKIN_PROFILE_EXPLICIT_CANDIDATE_MAX);
+            for (const node of Array.from(surface.querySelectorAll<HTMLElement>(explicitSelector)).slice(0, 32)) {
+                addCandidate(explicitCandidates, node, WIDGET_SKIN_PROFILE_EXPLICIT_CANDIDATE_MAX);
+            }
+            for (const candidate of Array.from(surface.querySelectorAll<HTMLElement>(WIDGET_CARD_SELECTOR)).slice(0, 64)) {
+                if (isDiscordmaxxerPlayingCard(candidate)) {
+                    addCandidate(playingCandidates, candidate, WIDGET_SKIN_PROFILE_CARD_CANDIDATE_MAX);
+                    continue;
+                }
+                if (!widgetSkinCardCandidate(candidate, initialHintLabels) && !widgetCardLike(candidate)) continue;
+                addCandidate(hintedCardCandidates, candidate, WIDGET_SKIN_PROFILE_CARD_CANDIDATE_MAX);
+            }
+        }
+    } catch { /* ignore a profile surface that is being replaced */ }
+    const discovered = new Set<string>();
+    for (const candidate of [...explicitCandidates, ...hintedCardCandidates].slice(0, WIDGET_SKIN_PROFILE_MATCH_MAX)) {
+        const appId = visibleWidgetApplicationId(candidate);
+        // A profile opened for another account can use the same application id
+        // as the viewer's own widget. The local map is only a startup fallback;
+        // it is not proof that this visible card belongs to the viewer. Always
+        // hydrate the read-only remote marker for visible profile cards so the
+        // owner's published skin can replace a same-id local entry.
+        if (appId) discovered.add(appId);
+    }
+    queueVisibleWidgetStyleHydration(discovered);
+    const active = visibleProfileWidgetStyles(localActive);
+    const known = new Set(active.keys());
+    const hints = visibleProfileWidgetHints(localHints);
+    const hintLabels = Array.from(hints.values()).flat().filter(label => label.length >= 3);
+    const ordered = [...explicitCandidates, ...hintedCardCandidates];
+    if (!active.size && !playingCandidates.length) return 0;
+    if (!ordered.length && !playingCandidates.length) return 0;
+    const seen = new Set<HTMLElement>();
+    let applied = 0;
+    for (const candidate of ordered.slice(0, WIDGET_SKIN_PROFILE_MATCH_MAX)) {
+        const match = widgetApplicationMatch(candidate, known, hints);
+        if (!match) continue;
+        const preset = active.get(match.appId);
+        const root = match.root;
+        if (!preset || seen.has(root) || !root.isConnected) continue;
+        if (discordSurfaceSkinBlocked(root)) {
+            clearWidgetSkinRoot(root);
+            continue;
+        }
+        try {
+            const rect = root.getBoundingClientRect();
+            if (rect.width < 20 || rect.height < 12 || rect.right <= 0 || rect.bottom <= 0) continue;
+        } catch { continue; }
+        if (discordSurfaceSkinTarget(root)) {
+            restoreWidgetSkin(root);
+            // Surface chrome belongs to the signed-in account. A viewed
+            // profile's remote marker must never change the open-DM/header
+            // preset or make DiggyT's local surface follow DiggyAI.
+            applySurfaceSkin(root, selectedSurfacePreset(localActive) ?? preset);
+        } else {
+            restoreSurfaceSkin(root);
+            applyWidgetSkin(root, preset, match.appId);
+        }
+        seen.add(root);
+        applied++;
+    }
+
+    const playingCard = selectPlayingCard(playingCandidates);
+    const playingScope = playingCard?.closest<HTMLElement>(WIDGET_SURFACE_SELECTOR) ?? null;
+    const playingPreset = playingCard ? playingCardPreset(active, seen, playingScope) : null;
+    if (playingCard && playingPreset && !seen.has(playingCard)) {
+        if (playingCard.dataset.dmWidgetSurfaceRoot === "true") restoreSurfaceSkin(playingCard);
+        applyWidgetSkin(playingCard, playingPreset, DISCORDMAXXER_PLAYING_APP_ID);
+        seen.add(playingCard);
+        applied++;
+    }
+    if (playingCard) {
+        syncWidgetSkinPlayingCardHosts(playingCard);
+        syncWidgetSkinPlayingCardObserver(playingCard);
+    }
+    return applied;
+}
+
+function clearUnmarkedWidgetSkinTargets(): void {
+    if (widgetSkinLegacyCleanupDone) return;
+    widgetSkinLegacyCleanupDone = true;
+    // v0.7.82 could leave a skin marker on a profile wrapper when Discord
+    // exposed the application id above the actual card. Clear that legacy
+    // marker on startup/reconciliation so the profile surface cannot remain
+    // styled after the renderer is repaired or hot-reloaded.
+    try {
+        // A previous renderer can leave the playing-card host marker behind
+        // even though the corresponding in-memory set no longer exists.
+        // Remove only this private marker; Discord does not use it.
+        for (const host of Array.from(document.querySelectorAll<HTMLElement>('[data-dm-widget-playing-card-host="true"]')).slice(0, 80)) {
+            host.removeAttribute("data-dm-widget-playing-card-host");
+        }
+        widgetSkinPlayingCardHosts.clear();
+        const stale = document.querySelectorAll<HTMLElement>('[data-dm-widget-skin]');
+        for (const root of Array.from(stale).slice(0, 80)) {
+            if (discordSurfaceSkinTarget(root) || discordSurfaceSkinBlocked(root)) {
+                clearWidgetSkinRoot(root);
+                continue;
+            }
+            // A previous pass could have incorrectly marked the Board's
+            // cardsList as a card root. It is still stale even though it has
+            // the root marker, because only the visible child card should be
+            // styled.
+            if (root.dataset.dmWidgetCardRoot === "true" && widgetCardLike(root) && !widgetCardContainerLike(root)) continue;
+            clearWidgetSkinRoot(root);
+        }
+        // A hot reload can leave the lightweight marker in the document even
+        // when the new scope no longer accepts that node. Remove only markers
+        // outside the explicit open-conversation/account allowlist.
+        const staleSurfaces = document.querySelectorAll<HTMLElement>('[data-dm-widget-surface-root="true"]');
+        for (const root of Array.from(staleSurfaces).slice(0, 80)) {
+            if (!discordSurfaceSkinTarget(root)) restoreSurfaceSkin(root);
+        }
+    } catch { /* ignore a profile subtree that is being replaced */ }
+}
+
+function applyWidgetSkin(root: HTMLElement, preset: WidgetStylePreset, appId: string): void {
+    const alreadyTracked = widgetSkinRoots.has(root);
+    const wasPlayingCard = root.dataset.dmWidgetPlayingCard === "true";
+    if (!alreadyTracked) {
+        const attrs: Record<string, string | null> = {};
+        const vars: Record<string, { value: string; priority: string; }> = {};
+        for (const attr of WIDGET_SKIN_ATTRS) attrs[attr] = root.getAttribute(attr);
+        for (const name of WIDGET_SKIN_VARS) vars[name] = { value: root.style.getPropertyValue(name), priority: root.style.getPropertyPriority(name) };
+        widgetSkinRoots.set(root, { attrs, vars });
+    }
+    // Avoid rewriting the same attributes/styles on every reconciliation.
+    // Discord's profile renderer can reconcile the same card several times a
+    // second; redundant writes invalidate the card's paint layers and make an
+    // otherwise continuous skin look like it is flashing.
+    const motionPaused = isWidgetPreviewMotionPaused() ? "true" : "false";
+    if (root.dataset.dmWidgetSkin !== preset.id) root.dataset.dmWidgetSkin = preset.id;
+    if (root.dataset.dmWidgetCardRoot !== "true") root.dataset.dmWidgetCardRoot = "true";
+    if (root.dataset.dmWidgetFrame !== preset.frame) root.dataset.dmWidgetFrame = preset.frame;
+    if (root.dataset.dmWidgetOrnament !== preset.ornament) root.dataset.dmWidgetOrnament = preset.ornament;
+    if (root.dataset.dmWidgetMotion !== preset.motion) root.dataset.dmWidgetMotion = preset.motion;
+    if (root.dataset.dmWidgetMotionPaused !== motionPaused) root.dataset.dmWidgetMotionPaused = motionPaused;
+    if (root.dataset.dmWidgetAppId !== appId) root.dataset.dmWidgetAppId = appId;
+    if (root.dataset.dmWidgetTopLayout !== preset.topLayout) root.dataset.dmWidgetTopLayout = preset.topLayout;
+    if (root.dataset.dmWidgetBottomLayout !== preset.bottomLayout) root.dataset.dmWidgetBottomLayout = preset.bottomLayout;
+    if (appId === DISCORDMAXXER_PLAYING_APP_ID) {
+        if (root.dataset.dmWidgetPlayingCard !== "true") root.dataset.dmWidgetPlayingCard = "true";
+        // The Rich Presence card is routinely replaced by Discord while its
+        // timer changes. A negative delay based on the renderer's monotonic
+        // clock makes every replacement enter the same continuous timeline.
+        if (!alreadyTracked || !wasPlayingCard || !root.style.getPropertyValue("--dmw-skin-animation-delay")) {
+            const now = typeof performance !== "undefined" && Number.isFinite(performance.now()) ? Math.max(0, performance.now()) : 0;
+            if (widgetSkinPlayingCardTimelineStartedAt < 0 || now < widgetSkinPlayingCardTimelineStartedAt) widgetSkinPlayingCardTimelineStartedAt = now;
+            const elapsed = Math.max(0, now - widgetSkinPlayingCardTimelineStartedAt);
+            const delay = `-${elapsed.toFixed(3)}ms`;
+            if (root.style.getPropertyValue("--dmw-skin-animation-delay") !== delay) root.style.setProperty("--dmw-skin-animation-delay", delay);
+        }
+    } else {
+        if (root.hasAttribute("data-dm-widget-playing-card")) root.removeAttribute("data-dm-widget-playing-card");
+        if (root.style.getPropertyValue("--dmw-skin-animation-delay")) root.style.removeProperty("--dmw-skin-animation-delay");
+    }
+    if (root.style.getPropertyValue("--dmw-skin-accent") !== preset.accent) root.style.setProperty("--dmw-skin-accent", preset.accent);
+    if (root.style.getPropertyValue("--dmw-skin-secondary") !== preset.secondary) root.style.setProperty("--dmw-skin-secondary", preset.secondary);
+    if (root.style.getPropertyValue("--dmw-skin-surface") !== preset.surface) root.style.setProperty("--dmw-skin-surface", preset.surface);
+}
+
+function isDiscordmaxxerPlayingCard(element: HTMLElement): boolean {
+    if (!widgetCardLike(element)) return false;
+    const className = typeof element.className === "string" ? element.className : "";
+    const role = element.getAttribute("role") ?? "";
+    const semanticCard = element.tagName.toUpperCase() === "ARTICLE" || role === "article" || role === "listitem";
+    if (!semanticCard && !/(?:^|[\s_-])card(?:(?:__|_)[A-Za-z0-9]+|[A-Z][A-Za-z0-9]*|$)/i.test(className)) return false;
+    const rect = element.getBoundingClientRect();
+    if (rect.width < 180 || rect.height < 70 || rect.width > 520 || rect.height > 260) return false;
+    const text = String(element.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 900);
+    // The branded Rich Presence has remained stable across the Discord
+    // layouts we support: a Playing label, the Discordmaxxer activity, and
+    // the maxxtopia link. Requiring all three keeps ordinary game cards out.
+    return /(?:^|\s)playing(?:\s|app|$)/i.test(text)
+        && /discordmaxxer|discmaxxer/i.test(text)
+        && /maxxtopia\.com/i.test(text);
+}
+
+function clearWidgetSkinPlayingCardHosts(): void {
+    for (const host of Array.from(widgetSkinPlayingCardHosts)) {
+        if (host.isConnected) host.removeAttribute("data-dm-widget-playing-card-host");
+    }
+    widgetSkinPlayingCardHosts.clear();
+    widgetSkinPlayingCardHostRoot = null;
+}
+
+function syncWidgetSkinPlayingCardHosts(root: HTMLElement | null): void {
+    if (root === widgetSkinPlayingCardHostRoot
+        && widgetSkinPlayingCardHosts.size > 0
+        && Array.from(widgetSkinPlayingCardHosts).every(host => host.isConnected && host.getAttribute("data-dm-widget-playing-card-host") === "true")) return;
+    clearWidgetSkinPlayingCardHosts();
+    if (!root?.isConnected) return;
+    let rootRect: DOMRect;
+    try {
+        rootRect = root.getBoundingClientRect();
+    } catch {
+        return;
+    }
+    if (rootRect.width < 1 || rootRect.height < 1) return;
+    // The selected root is intentionally the smallest branded card. Discord
+    // sometimes puts the actual hover paint on one or two card-like parents,
+    // so mark only nearby visual ancestors and stop before the profile shell.
+    let current = root.parentElement;
+    for (let depth = 0; current && depth < 5; depth++, current = current.parentElement) {
+        if (current === document.body || current === document.documentElement || discordSurfaceSkinTarget(current)) break;
+        const className = typeof current.className === "string" ? current.className : "";
+        const role = current.getAttribute("role") ?? "";
+        const semanticHost = current.tagName.toUpperCase() === "ARTICLE" || role === "article" || role === "listitem";
+        const visualHost = /card|activity|application|innercontainer|container|wrapper|body|overlay|interactive/i.test(className);
+        if (!semanticHost && !visualHost) continue;
+        let rect: DOMRect;
+        try { rect = current.getBoundingClientRect(); } catch { continue; }
+        const nearRoot = rect.width >= Math.max(1, rootRect.width - 12)
+            && rect.height >= Math.max(1, rootRect.height - 12)
+            && rect.width <= rootRect.width * 1.65 + 28
+            && rect.height <= rootRect.height * 1.8 + 28;
+        if (!nearRoot) continue;
+        current.setAttribute("data-dm-widget-playing-card-host", "true");
+        widgetSkinPlayingCardHosts.add(current);
+    }
+    widgetSkinPlayingCardHostRoot = root;
+}
+
+function visibleDiscordmaxxerPlayingCard(element: HTMLElement): boolean {
+    if (!element.isConnected || !isDiscordmaxxerPlayingCard(element)) return false;
+    try {
+        const rect = element.getBoundingClientRect();
+        if (rect.right <= 0 || rect.bottom <= 0 || rect.left >= window.innerWidth || rect.top >= window.innerHeight) return false;
+        // Discord mounts profile popouts inside an off-screen absolute click
+        // trap, then places the visible profile surface below a fixed layer.
+        // That fixed layer establishes the viewport paint boundary; checking
+        // the click trap's stale document-space rect would incorrectly mark a
+        // visibly rendered Playing card as clipped until hover.
+        let fixedLayer: HTMLElement | null = null;
+        for (let anchor: HTMLElement | null = element; anchor; anchor = anchor.parentElement) {
+            if (window.getComputedStyle(anchor).position === "fixed") {
+                fixedLayer = anchor;
+                break;
+            }
+            if (anchor === document.body) break;
+        }
+        for (let current: HTMLElement | null = element; current; current = current.parentElement) {
+            const computed = window.getComputedStyle(current);
+            // Discord keeps some profile activity cards in an idle paint state
+            // (opacity/visibility is flipped on hover). The branded Playing
+            // card still has a real on-screen rect in that state, so do not
+            // discard it before its scoped skin rules can normalize the paint.
+            // Keep display:none and non-card profile shells as hard filters so
+            // stale hidden popouts are not selected as the active card.
+            const className = typeof current.className === "string" ? current.className : "";
+            const cardPaintNode = current === element
+                || current.tagName.toUpperCase() === "ARTICLE"
+                || /(?:^|[\s_-])(?:card|activity|application|innercontainer)(?:(?:__|_)[A-Za-z0-9]+|[A-Z][A-Za-z0-9]*|$)/i.test(className);
+            if (computed.display === "none") return false;
+            if ((computed.visibility === "hidden" || computed.visibility === "collapse" || Number(computed.opacity) <= 0) && !cardPaintNode) return false;
+            if (current !== element && (!fixedLayer || current === fixedLayer)
+                && (/^(?:hidden|clip|scroll|auto)$/.test(computed.overflowX) || /^(?:hidden|clip|scroll|auto)$/.test(computed.overflowY))) {
+                const clip = current.getBoundingClientRect();
+                if ((/^(?:hidden|clip|scroll|auto)$/.test(computed.overflowX) && (rect.right <= clip.left || rect.left >= clip.right))
+                    || (/^(?:hidden|clip|scroll|auto)$/.test(computed.overflowY) && (rect.bottom <= clip.top || rect.top >= clip.bottom))) return false;
+            }
+            if (fixedLayer && current === fixedLayer) break;
+            if (current === document.body) break;
+        }
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+function selectPlayingCard(candidates: HTMLElement[]): HTMLElement | null {
+    // Discord can leave the previous profile card connected while it commits
+    // the next timer value. Prefer the already-rendered visible root so the
+    // skin is not moved between nested ARTICLE/DIV candidates on every pass.
+    const candidateSet = new Set(candidates);
+    if (widgetSkinPlayingCardRoot
+        && visibleDiscordmaxxerPlayingCard(widgetSkinPlayingCardRoot)
+        && (!candidates.length || candidateSet.has(widgetSkinPlayingCardRoot))) return widgetSkinPlayingCardRoot;
+    const visibleCandidates = candidates.filter(visibleDiscordmaxxerPlayingCard);
+    visibleCandidates.sort((left, right) => {
+        // Discord's Rich Presence markup normally contains a semantic
+        // ARTICLE wrapper plus an inner `card__*` paint root with the same
+        // bounds. Prefer the explicit card root so the skin lands on the
+        // element that actually owns the background/border. Keeping this
+        // preference stable also prevents the skin from jumping between
+        // nested nodes while the profile popout is recycled.
+        const cardRootScore = (element: HTMLElement): number => {
+            const className = typeof element.className === "string" ? element.className : "";
+            return /(?:^|[\s_-])card(?:(?:__|_)[A-Za-z0-9]+|[A-Z][A-Za-z0-9]*|$)/i.test(className) ? 0 : 1;
+        };
+        const scoreDifference = cardRootScore(left) - cardRootScore(right);
+        if (scoreDifference !== 0) return scoreDifference;
+        const a = left.getBoundingClientRect();
+        const b = right.getBoundingClientRect();
+        return (a.width * a.height) - (b.width * b.height);
+    });
+    widgetSkinPlayingCardRoot = visibleCandidates[0] ?? null;
+    return widgetSkinPlayingCardRoot;
+}
+
+function playingCardPreset(active: Map<string, WidgetStylePreset>, seen: Set<HTMLElement>, scope: HTMLElement | null = null): WidgetStylePreset | null {
+    if (!active.size) return null;
+    // A Playing card has no Social SDK application id of its own. It may only
+    // inherit from a widget card in the same visible profile surface. The old
+    // first-entry fallback made the viewer's own style bleed into another
+    // account's profile when that sibling card had not mounted yet.
+    const scopedSeen = scope
+        ? new Set(Array.from(seen).filter(root => scope.contains(root)))
+        : seen;
+    if (!scopedSeen.size) return null;
+    // If a per-slot style was just rendered in this pass, match the Playing
+    // card to the first visible widget rather than silently using a stale
+    // global gallery value. This preserves the original “same skin” look even
+    // when Val and Fortnite have different slot selections.
+    for (const root of Array.from(scopedSeen)) {
+        const appId = root.dataset.dmWidgetAppId ?? "";
+        const preset = appId ? active.get(appId) : undefined;
+        if (preset) return preset;
+    }
+    // If the Playing card survived a timer update, keep its current preset
+    // while the surrounding profile tree is settling. A different visible
+    // widget rendered above wins first, so an intentional style change still
+    // propagates to the Playing card in the same scan.
+    const currentPlayingStyle = widgetSkinPlayingCardRoot
+        && (!scope || scope.contains(widgetSkinPlayingCardRoot))
+        ? widgetSkinPlayingCardRoot.dataset.dmWidgetSkin ?? ""
+        : "";
+    const currentPlayingPreset = currentPlayingStyle
+        ? Array.from(active.values()).find(preset => preset.id === currentPlayingStyle)
+        : undefined;
+    if (currentPlayingPreset) return currentPlayingPreset;
+    for (const root of Array.from(widgetSkinRoots.keys()).reverse()) {
+        if (!root.isConnected || root.dataset.dmWidgetAppId === DISCORDMAXXER_PLAYING_APP_ID) continue;
+        if (scope && !scope.contains(root)) continue;
+        const rect = root.getBoundingClientRect();
+        const appId = root.dataset.dmWidgetAppId ?? "";
+        if (rect.width >= 20 && rect.height >= 12 && appId) {
+            const preset = active.get(appId);
+            if (preset) return preset;
+        }
+    }
+    return null;
+}
+
+function hasVisibleWidgetSkin(appId: string, styleId: string): boolean {
+    try {
+        for (const root of Array.from(document.querySelectorAll<HTMLElement>('[data-dm-widget-card-root="true"][data-dm-widget-skin]'))) {
+            if (!root.isConnected || root.dataset.dmWidgetAppId !== appId || root.dataset.dmWidgetSkin !== styleId) continue;
+            const rect = root.getBoundingClientRect();
+            if (rect.width < 20 || rect.height < 12 || rect.bottom <= 0 || rect.right <= 0 || rect.top >= window.innerHeight || rect.left >= window.innerWidth) continue;
+            let visible = true;
+            for (let ancestor: HTMLElement | null = root; ancestor; ancestor = ancestor.parentElement) {
+                const computed = window.getComputedStyle(ancestor);
+                if (computed.display === "none" || computed.visibility === "hidden" || computed.visibility === "collapse" || Number(computed.opacity) <= 0) {
+                    visible = false;
+                    break;
+                }
+                // A card can have an on-screen rect while one of its scroll
+                // containers clips it entirely. Check clipping ancestors so
+                // the success toast cannot count an off-panel card as visible.
+                const clipX = /^(?:hidden|clip|scroll|auto)$/.test(computed.overflowX);
+                const clipY = /^(?:hidden|clip|scroll|auto)$/.test(computed.overflowY);
+                if (ancestor !== root && (clipX || clipY)) {
+                    const clip = ancestor.getBoundingClientRect();
+                    if ((clipX && (rect.right <= clip.left || rect.left >= clip.right))
+                        || (clipY && (rect.bottom <= clip.top || rect.top >= clip.bottom))) {
+                        visible = false;
+                        break;
+                    }
+                }
+                if (ancestor === document.body) break;
+            }
+            if (!visible) continue;
+            return true;
+        }
+    } catch { /* the Board may be tearing down as Discord changes profiles */ }
+    return false;
+}
+
+function scanWidgetSkinCards(budgetMs = 120): number {
+    if (!document.body) {
+        return 0;
+    }
+    if (widgetSkinEditorOpen()) {
+        widgetSkinRescanAfterEditor = true;
+        return 0;
+    }
+    activeDiscordConversationRowCache = null;
+    clearUnmarkedWidgetSkinTargets();
+    const seen = new Set<HTMLElement>();
+    const surfaceSeen = new Set<HTMLElement>();
+    let applied = 0;
+    let complete = true;
+    const startedAt = Date.now();
+    // The v0.7.80 24 ms cap was too short for Discord's full Board: it often
+    // spent the whole pass enumerating generic profile nodes before reaching
+    // the actual cards. Keep a bounded pass for safety, but give the targeted
+    // Board scan enough time to finish and apply a real skin.
+    const withinBudget = () => Date.now() - startedAt < budgetMs;
+    const query = (selector: string, limit: number): HTMLElement[] => {
+        if (!withinBudget()) { complete = false; return []; }
+        try { return Array.from(document.querySelectorAll<HTMLElement>(selector)).slice(0, limit); }
+        catch { return []; }
+    };
+    const queryWithinSurfaces = (selector: string, limit: number): HTMLElement[] => {
+        if (!withinBudget()) { complete = false; return []; }
+        const surfaces = query(WIDGET_SURFACE_SELECTOR, 24);
+        const out: HTMLElement[] = [];
+        for (const surface of surfaces) {
+            if (out.length >= limit || !withinBudget()) { complete = false; break; }
+            try {
+                if (surface.matches(selector)) out.push(surface);
+                out.push(...Array.from(surface.querySelectorAll<HTMLElement>(selector)).slice(0, limit - out.length));
+            } catch { /* ignore a tearing/partially-mounted profile surface */ }
+        }
+        return out.slice(0, limit);
+    };
+    const queryPlayingCardProfileSurfaces = (limit: number): HTMLElement[] => {
+        if (!withinBudget()) { complete = false; return []; }
+        const out: HTMLElement[] = [];
+        const seenCandidates = new Set<HTMLElement>();
+        const surfaces = new Set<HTMLElement>(query(PLAYING_CARD_PROFILE_SURFACE_SELECTOR, 32));
+        for (const surface of surfaces) {
+            if (out.length >= limit || !withinBudget()) { complete = false; break; }
+            try {
+                const candidates = Array.from(surface.querySelectorAll<HTMLElement>(PLAYING_CARD_SELECTOR)).slice(0, 48);
+                for (const candidate of candidates) {
+                    if (seenCandidates.has(candidate)) continue;
+                    seenCandidates.add(candidate);
+                    out.push(candidate);
+                    if (out.length >= limit) break;
+                }
+            } catch { /* ignore a tearing/partially-mounted profile surface */ }
+        }
+        return out.slice(0, limit);
+    };
+
+    try {
+        const localActive = knownWidgetStyles();
+        const active = visibleProfileWidgetStyles(localActive);
+        const surfacePreset = selectedSurfacePreset(localActive);
+        if (localActive.size || active.size || surfacePreset) {
+            if (surfacePreset) {
+                // These are the deliberately supported Discord chrome targets:
+                // the open conversation name and the account panel. Keep the
+                // query narrow, visible-only, and bounded so message/activity
+                // nodes never become animated widget-card surfaces.
+                const surfaceCandidates = query(WIDGET_SURFACE_SKIN_SELECTOR, 140);
+                for (const candidate of surfaceCandidates) {
+                    if (surfaceSeen.size >= WIDGET_SURFACE_SKIN_MAX_ROOTS) break;
+                    if (!discordSurfaceSkinTarget(candidate) || !visibleSurfaceSkinTarget(candidate)) continue;
+                    if (hasHigherOrEqualSurfaceSkinAncestor(candidate)) continue;
+                    surfaceSeen.add(candidate);
+                    if (widgetSkinRoots.has(candidate)) restoreWidgetSkin(candidate);
+                    applySurfaceSkin(candidate, surfacePreset);
+                    applied++;
+                }
+            }
+        }
+        if (active.size) {
+            const known = new Set(active.keys());
+            const hints = visibleProfileWidgetHints(knownWidgetHints());
+            const hintLabels = Array.from(hints.values()).flat().filter(label => label.length >= 3);
+            // Put explicit application-id hosts first, then prioritize card
+            // nodes whose visible text names one of the user's attached apps.
+            // This reaches the full Board before unrelated Discord cards while
+            // retaining bounded limits for the main renderer.
+            const candidateSet = new Set<HTMLElement>();
+            const orderedCandidates: HTMLElement[] = [];
+            const addCandidates = (candidates: Iterable<HTMLElement>) => {
+                for (const candidate of candidates) {
+                    if (candidateSet.has(candidate)) continue;
+                    candidateSet.add(candidate);
+                    orderedCandidates.push(candidate);
+                }
+            };
+            // Probe the exact profile-owned Playing card before the broad
+            // Board query. The latter can legitimately consume the scan
+            // budget while enumerating ordinary profile cards, which used to
+            // leave the account-popout Rich Presence card skinless.
+            const shouldProbeDirectPlayingCard = !widgetSkinPlayingCardRoot
+                || !widgetSkinPlayingCardRoot.isConnected
+                || !visibleDiscordmaxxerPlayingCard(widgetSkinPlayingCardRoot);
+            let directPlayingCandidates: HTMLElement[] = [];
+            if (shouldProbeDirectPlayingCard && Date.now() - lastPlayingCardDirectProbeAt >= PLAYING_CARD_DIRECT_PROBE_INTERVAL_MS) {
+                lastPlayingCardDirectProbeAt = Date.now();
+                directPlayingCandidates = queryPlayingCardProfileSurfaces(180)
+                    .filter(candidate => isDiscordmaxxerPlayingCard(candidate));
+            }
+            const explicitSelector = WIDGET_APPLICATION_ID_ATTRIBUTES.map(attribute => `[${attribute}]`).join(",");
+            addCandidates(query(explicitSelector, 240));
+            const surfaceCards = queryWithinSurfaces(WIDGET_CARD_SELECTOR, 520);
+            // The current Discord profile layout can expose the Playing card
+            // as a plain ARTICLE/DIV outside the bounded surface query's
+            // first batch. Keep one cheap, exact fallback for this branded
+            // card only; do not restore the old document-wide card sweep that
+            // caused renderer stalls and false-positive Friends/Active Now
+            // skins.
+            if (!directPlayingCandidates.length && surfaceCards.length === 0) {
+                // Keep a bounded fallback for layouts that do not expose a
+                // profile container at all.
+                directPlayingCandidates = query(PLAYING_CARD_SELECTOR, 240)
+                    .filter(candidate => isDiscordmaxxerPlayingCard(candidate));
+            }
+            const hintedSurfaceCards = surfaceCards.filter(candidate => {
+                try { return widgetTextMatchesHints(String(candidate.textContent ?? ""), hintLabels); }
+                catch { return false; }
+            });
+            addCandidates(hintedSurfaceCards);
+            addCandidates(surfaceCards);
+            // A visible profile surface is the authoritative search scope.
+            // Avoid querying every article/listitem in the entire Discord DOM
+            // on normal reconciliation passes; the global fallback is only
+            // needed while the surface selector is still settling.
+            if (surfaceCards.length === 0) addCandidates(query(WIDGET_CARD_SELECTOR, 240));
+            const inspect = (candidates: Iterable<HTMLElement>, limit: number) => {
+                let inspected = 0;
+                for (const candidate of candidates) {
+                    if (inspected++ >= limit || !withinBudget()) { complete = false; break; }
+                    // The Rich Presence card has its own resolver below. Do
+                    // not let a React application-id/text hint claim a
+                    // nested Playing-card host first, because that bypasses
+                    // the shared timeline and replacement watcher.
+                    if (isDiscordmaxxerPlayingCard(candidate)) continue;
+                    const match = widgetApplicationMatch(candidate, known, hints);
+                    const preset = match ? active.get(match.appId) : undefined;
+                    if (!match || !preset || seen.has(match.root)) continue;
+                    const root = match.root;
+                    if (discordSurfaceSkinBlocked(root)) {
+                        clearWidgetSkinRoot(root);
+                        continue;
+                    }
+                    const rect = root.getBoundingClientRect();
+                    if (rect.width < 20 || rect.height < 12) continue;
+                    if (discordSurfaceSkinTarget(root)) {
+                        surfaceSeen.add(root);
+                        if (surfacePreset) applySurfaceSkin(root, surfacePreset); else restoreSurfaceSkin(root);
+                        restoreWidgetSkin(root);
+                        applied++;
+                        continue;
+                    }
+                    restoreSurfaceSkin(root);
+                    seen.add(root);
+                    applyWidgetSkin(root, preset, match.appId);
+                    applied++;
+                }
+            };
+            inspect(orderedCandidates, 620);
+            // The compact profile also contains Discordmaxxer's Rich Presence
+            // “Playing” card. It has no attached Social SDK app id, so handle
+            // that one branded card explicitly after the guarded app scan.
+            const playingCandidates = Array.from(new Set([
+                ...surfaceCards,
+                ...orderedCandidates,
+                ...directPlayingCandidates
+            ])).filter(candidate => isDiscordmaxxerPlayingCard(candidate));
+            const playingCard = selectPlayingCard(playingCandidates);
+            const playingScope = playingCard?.closest<HTMLElement>(WIDGET_SURFACE_SELECTOR) ?? null;
+            const playingPreset = playingCard ? playingCardPreset(active, seen, playingScope) : null;
+            if (playingCard && playingPreset && !seen.has(playingCard)) {
+                if (playingCard.dataset.dmWidgetSurfaceRoot === "true") restoreSurfaceSkin(playingCard);
+                seen.add(playingCard);
+                applyWidgetSkin(playingCard, playingPreset, DISCORDMAXXER_PLAYING_APP_ID);
+                applied++;
+            }
+            if (playingCard) {
+                syncWidgetSkinPlayingCardHosts(playingCard);
+                syncWidgetSkinPlayingCardObserver(playingCard);
+            } else {
+                widgetSkinPlayingCardRoot = null;
+                clearWidgetSkinPlayingCardHosts();
+                syncWidgetSkinPlayingCardObserver(null);
+            }
+            if (complete && seen.size < active.size) {
+                // Keep the final text fallback to semantic card nodes. The
+                // former div-wide query was the main source of renderer stalls
+                // when the editor or a profile modal mounted.
+                const textCandidates = queryWithinSurfaces(WIDGET_CARD_FALLBACK_SELECTOR, 160)
+                    .filter(candidate => {
+                        const text = String(candidate.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 900);
+                        return text.length >= 3 && widgetTextMatchesHints(text, hintLabels);
+                    });
+                inspect(textCandidates, textCandidates.length);
+            }
+        }
+    } catch (error) {
+        // A Discord subtree can disappear between querySelectorAll and the
+        // React/DOM fallback. Never let a renderer-only skin miss bring down
+        // the settings surface or the whole client.
+        complete = false;
+        console.warn("[DMWidget] widget skin scan skipped a transient DOM error:", error);
+    }
+
+    // If the time budget was exhausted, leave existing skins in place and let
+    // the normal scheduler finish the pass after Discord settles. Restoring
+    // only on a complete pass prevents a partial scan from flashing cards back
+    // to plain Discord styling.
+    if (complete) {
+        for (const root of Array.from(widgetSkinRoots.keys())) {
+            if (discordSurfaceSkinBlocked(root)) clearWidgetSkinRoot(root);
+            else if (!seen.has(root) || !root.isConnected) restoreWidgetSkin(root);
+        }
+        // Also clean markers left by an earlier renderer or a hot-reloaded
+        // pass that never entered widgetSkinRoots. This is intentionally
+        // limited to the private marker and runs only after a complete scan.
+        for (const root of Array.from(document.querySelectorAll<HTMLElement>('[data-dm-widget-card-root="true"]')).slice(0, 180)) {
+            if (discordSurfaceSkinBlocked(root)) clearWidgetSkinRoot(root);
+        }
+        for (const root of Array.from(document.querySelectorAll<HTMLElement>('[data-dm-widget-surface-root="true"]')).slice(0, 120)) {
+            if (!discordSurfaceSkinTarget(root)) restoreSurfaceSkin(root);
+        }
+        for (const root of Array.from(surfaceSkinRoots.keys())) {
+            if (!surfaceSeen.has(root) || !root.isConnected) restoreSurfaceSkin(root);
+        }
+    } else if (widgetSkinStyleElement && !document.hidden) {
+        scheduleWidgetSkinScan();
+    }
+    return applied;
+}
+
+function cancelWidgetSkinIdle(): void {
+    if (widgetSkinIdle === null) return;
+    if (typeof window.cancelIdleCallback === "function") window.cancelIdleCallback(widgetSkinIdle);
+    else window.clearTimeout(widgetSkinIdle);
+    widgetSkinIdle = null;
+}
+
+function scheduleWidgetSkinScan(immediate = false): void {
+    if (document.hidden || widgetSkinEditorOpen() || widgetSkinRendererSuspended) return;
+    // A normal scan may already be waiting from renderer startup when style
+    // hydration or a profile mount completes. Let the explicit/immediate path
+    // replace that stale schedule; otherwise it returns early and the queued
+    // pass can run with an empty style map, leaving the new cards plain.
+    if (immediate && widgetSkinTimer !== null) {
+        clearTimeout(widgetSkinTimer);
+        widgetSkinTimer = null;
+    }
+    if (immediate) cancelWidgetSkinIdle();
+    if (widgetSkinTimer !== null || widgetSkinIdle !== null) return;
+    // Profile popouts mount in several React commits. An explicit card-related
+    // mutation should get a coalesced idle pass, while ordinary background
+    // reconciliation stays short. The old 700 ms synchronous pass could block
+    // Discord's profile transition long enough to look like a slow message or
+    // profile load. If the bounded pass cannot finish, scanWidgetSkinCards()
+    // schedules a later reconciliation without holding the click path.
+    const scanBudgetMs = immediate ? 160 : 80;
+    const delay = immediate
+        ? Math.max(16, widgetSkinLastScanAt + 120 - Date.now())
+        : Math.max(120, widgetSkinLastScanAt + 500 - Date.now());
+    widgetSkinTimer = window.setTimeout(() => {
+        widgetSkinTimer = null;
+        if (document.hidden || widgetSkinEditorOpen() || widgetSkinRendererSuspended) return;
+        const runScan = () => {
+            widgetSkinIdle = null;
+            if (!document.hidden && !widgetSkinEditorOpen() && !widgetSkinRendererSuspended) {
+                widgetSkinLastScanAt = Date.now();
+                try { scanWidgetSkinCards(scanBudgetMs); } catch (error) { console.warn("[DMWidget] widget skin scan failed:", error); }
+            }
+        };
+        // Explicit profile/DM transitions have already yielded through a
+        // timeout, so waiting for another idle slot only adds visible latency
+        // while Discord is busy committing the profile. Keep idle scheduling
+        // for normal reconciliation, but run explicit passes on the next task.
+        if (!immediate && typeof window.requestIdleCallback === "function") {
+            widgetSkinIdle = window.requestIdleCallback(runScan, { timeout: 1800 });
+        } else {
+            widgetSkinIdle = window.setTimeout(runScan, 0);
+        }
+    }, delay);
+}
+
+function disconnectWidgetSkinPlayingCardObserver(): void {
+    if (widgetSkinPlayingCardObserverReleaseTimer !== null) {
+        window.clearTimeout(widgetSkinPlayingCardObserverReleaseTimer);
+        widgetSkinPlayingCardObserverReleaseTimer = null;
+    }
+    widgetSkinPlayingCardObserver?.disconnect();
+    widgetSkinPlayingCardObserver = null;
+    widgetSkinPlayingCardObserverHost = null;
+}
+
+function playingCardMutationRelevant(records: MutationRecord[]): boolean {
+    const tracked = widgetSkinPlayingCardRoot;
+    for (const record of records.slice(0, 64)) {
+        if (record.type !== "childList") continue;
+        const changedNodes = [...Array.from(record.addedNodes), ...Array.from(record.removedNodes)];
+        if (!tracked) return true;
+        for (const node of changedNodes) {
+            if (node === tracked) return true;
+            if (node instanceof Element) {
+                if (node.contains(tracked)) return true;
+                // React can add the replacement card before removing the old
+                // nested root. Detect that branded subtree immediately so the
+                // next frame selects the new card instead of waiting for the
+                // one-second reconciliation probe.
+                const text = String(node.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 1400);
+                if (/(?:^|\s)playing(?:\s|app|$)/i.test(text)
+                    && /discordmaxxer|discmaxxer/i.test(text)
+                    && /maxxtopia\.com/i.test(text)) return true;
+            }
+        }
+    }
+    return false;
+}
+
+function syncWidgetSkinPlayingCardObserver(root: HTMLElement | null): void {
+    if (root) {
+        const host = root.parentElement?.closest<HTMLElement>(WIDGET_SURFACE_SELECTOR) ?? root.parentElement;
+        if (!host) return;
+        if (widgetSkinPlayingCardObserverHost !== host) {
+            disconnectWidgetSkinPlayingCardObserver();
+            widgetSkinPlayingCardObserverHost = host;
+        }
+        if (!widgetSkinPlayingCardObserver) {
+            widgetSkinPlayingCardObserver = new MutationObserver(records => {
+                if (!playingCardMutationRelevant(records)) return;
+                // The observer is scoped to the current profile surface. It
+                // wakes only for a card replacement, not for timer text inside
+                // the tracked card, so normal-mode Discord stays responsive.
+                widgetSkinLastScanAt = 0;
+                scheduleWidgetSkinScan(true);
+            });
+            widgetSkinPlayingCardObserver.observe(host, { childList: true, subtree: true });
+        }
+        if (widgetSkinPlayingCardObserverReleaseTimer !== null) {
+            window.clearTimeout(widgetSkinPlayingCardObserverReleaseTimer);
+            widgetSkinPlayingCardObserverReleaseTimer = null;
+        }
+        return;
+    }
+    if (!widgetSkinPlayingCardObserver || !widgetSkinPlayingCardObserverHost?.isConnected) {
+        disconnectWidgetSkinPlayingCardObserver();
+        return;
+    }
+    if (widgetSkinPlayingCardObserverReleaseTimer !== null) return;
+    // Keep the host alive briefly through Discord's remove/add commit pair;
+    // release it if the profile was simply closed so this is never a global
+    // background observer.
+    widgetSkinPlayingCardObserverReleaseTimer = window.setTimeout(() => {
+        widgetSkinPlayingCardObserverReleaseTimer = null;
+        if (!widgetSkinPlayingCardRoot?.isConnected) disconnectWidgetSkinPlayingCardObserver();
+    }, 1500);
+}
+
+function widgetSkinMutationRelevant(records: MutationRecord[]): boolean {
+    if (widgetSkinEditorOpen()) return false;
+    // The observer covers Discord's body so it can notice a profile surface
+    // mounting, but its callback must stay cheap. In particular, do not call
+    // querySelector() on every added subtree: chat/activity updates can be
+    // frequent even when no profile is open. The low-frequency reconciliation
+    // timer below catches unusual class/visibility-only Board reuse.
+    let inspectedRecords = 0;
+    for (const record of records) {
+        if (++inspectedRecords > 64) break;
+        if (record.type !== "childList") continue;
+        const target = record.target instanceof Element ? record.target : null;
+        if (target?.closest(WIDGET_SURFACE_SELECTOR)) return true;
+        for (const node of Array.from(record.addedNodes).slice(0, 8)) {
+            if (!(node instanceof Element)) continue;
+            try {
+                if (node.matches(WIDGET_SURFACE_SELECTOR)) return true;
+            } catch { /* ignore a tearing/partially-mounted Discord subtree */ }
+        }
+    }
+    return false;
+}
+
+function widgetSkinSurfaceNeedsScan(): boolean {
+    if (document.hidden || widgetSkinEditorOpen()) return false;
+    try {
+        // Route changes and hot reloads can invalidate a previously tracked
+        // surface without changing the selected preset. Force one reconciliation
+        // so an inactive DM row, Shop/Quests entry, or old header marker is
+        // restored immediately instead of waiting for a later preset change.
+        for (const root of Array.from(surfaceSkinRoots.keys())) {
+            if (!root.isConnected || !discordSurfaceSkinTarget(root)) return true;
+        }
+        for (const root of Array.from(document.querySelectorAll<HTMLElement>('[data-dm-widget-surface-root="true"]')).slice(0, 80)) {
+            if (!discordSurfaceSkinTarget(root)) return true;
+        }
+        const active = knownWidgetStyles();
+        const surfacePreset = selectedSurfacePreset(active);
+        if (surfacePreset) {
+            const surfaces = Array.from(document.querySelectorAll<HTMLElement>(WIDGET_SURFACE_SKIN_SELECTOR)).slice(0, 140);
+            for (const candidate of surfaces) {
+                if (!discordSurfaceSkinTarget(candidate) || !visibleSurfaceSkinTarget(candidate)) continue;
+                if (hasHigherOrEqualSurfaceSkinAncestor(candidate)) continue;
+                if (candidate.dataset.dmWidgetSurfaceSkin !== surfacePreset.id
+                    || candidate.dataset.dmWidgetSurfaceMotionPaused !== (isWidgetPreviewMotionPaused() ? "true" : "false")) return true;
+            }
+        }
+        if (!active.size) return false;
+        const hintLabels = Array.from(knownWidgetHints().values()).flat().filter(label => label.length >= 3);
+        const surfaces = Array.from(document.querySelectorAll<HTMLElement>(WIDGET_SURFACE_SELECTOR)).slice(0, 24);
+        for (const surface of surfaces) {
+            const surfaceRect = surface.getBoundingClientRect();
+            if (surfaceRect.width < 80 || surfaceRect.height < 80 || surfaceRect.bottom <= 0 || surfaceRect.right <= 0) continue;
+            const candidates = Array.from(surface.querySelectorAll<HTMLElement>(WIDGET_CARD_SELECTOR)).slice(0, 240);
+            for (const candidate of candidates) {
+                // A marked root owns all of its nested wrappers. Do not let a
+                // child wrapper retrigger the low-frequency scan every cycle;
+                // that feedback loop was repeatedly reconciling the Playing
+                // card and made its animation appear to flash.
+                if (candidate.closest<HTMLElement>('[data-dm-widget-card-root="true"]')
+                    || !widgetCardLike(candidate) || widgetCardContainerLike(candidate)) continue;
+                const rect = candidate.getBoundingClientRect();
+                if (rect.width < 120 || rect.height < 40 || rect.bottom <= 0 || rect.right <= 0) continue;
+                if (isDiscordmaxxerPlayingCard(candidate)) return true;
+                const text = String(candidate.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 1200);
+                if (widgetTextMatchesHints(text, hintLabels)) return true;
+            }
+        }
+    } catch { /* ignore a profile subtree that is being replaced */ }
+    return false;
+}
+
+function updateWidgetSkinMotionPauseState(): void {
+    const paused = isWidgetPreviewMotionPaused() ? "true" : "false";
+    for (const root of Array.from(widgetSkinRoots.keys())) root.dataset.dmWidgetMotionPaused = paused;
+    for (const root of Array.from(surfaceSkinRoots.keys())) root.dataset.dmWidgetSurfaceMotionPaused = paused;
+}
+
+function detachWidgetSkinBackgroundWork(): void {
+    widgetSkinObserver?.disconnect();
+    widgetSkinObserver = null;
+    disconnectWidgetSkinProfileMountObserver();
+    disconnectWidgetSkinPlayingCardObserver();
+    clearWidgetSkinProfileScanTimers();
+    if (widgetSkinTimer !== null) { clearTimeout(widgetSkinTimer); widgetSkinTimer = null; }
+    cancelWidgetSkinIdle();
+    if (widgetSkinRescanTimer !== null) { clearInterval(widgetSkinRescanTimer); widgetSkinRescanTimer = null; }
+}
+
+function startWidgetSkinRenderer(): void {
+    if (widgetSkinStyleElement) return;
+    widgetSkinRun++;
+    const run = widgetSkinRun;
+    widgetSkinRendererSuspended = isWidgetPreviewMotionPaused();
+    widgetSkinStyleElement = document.createElement("style");
+    widgetSkinStyleElement.id = "dm-widget-client-skins";
+    // Keep the visual skin rules scoped to roots selected by the card
+    // resolver. This is a second guard against a future Discord DOM change
+    // ever causing a profile/banner wrapper to receive the skin marker.
+    widgetSkinStyleElement.textContent = WIDGET_CLIENT_SKIN_CSS
+        .replace(/\[data-dm-widget-skin/g, '[data-dm-widget-card-root="true"][data-dm-widget-skin')
+        .replace(/\[data-dm-widget-motion-paused/g, '[data-dm-widget-card-root="true"][data-dm-widget-motion-paused');
+    (document.head || document.documentElement).appendChild(widgetSkinStyleElement);
+    document.addEventListener("visibilitychange", onWidgetSkinVisibilityChange);
+    const onProfileTrigger = (event: Event) => {
+        const conversationTrigger = widgetSkinConversationTriggerLike(event.target);
+        if (conversationTrigger) activeDiscordConversationRowCache = null;
+        if (conversationTrigger || widgetSkinProfileTriggerLike(event.target)) queueWidgetSkinProfileScan();
+    };
+    // Discord commonly reuses the profile portal instead of mounting a new
+    // body child. These listeners provide an event-driven fast path for the
+    // actual profile/Board interaction; they do not scan ordinary chat clicks.
+    document.addEventListener("click", onProfileTrigger, true);
+    document.addEventListener("focusin", onProfileTrigger, true);
+    removeWidgetSkinProfileTriggerListeners = () => {
+        document.removeEventListener("click", onProfileTrigger, true);
+        document.removeEventListener("focusin", onProfileTrigger, true);
+        clearWidgetSkinProfileScanTimers();
+    };
+    const detach = () => detachWidgetSkinBackgroundWork();
+    const attach = () => {
+        if (run !== widgetSkinRun || widgetSkinRendererSuspended || !document.body || widgetSkinObserver) return;
+        widgetSkinObserver = new MutationObserver(records => {
+            if (widgetSkinMutationRelevant(records)) scheduleWidgetSkinScan(true);
+        });
+        // Observe only direct body mounts. A subtree observer receives a
+        // callback for ordinary chat/activity mutations across the whole
+        // Discord document, even when no profile surface is open. The bounded
+        // reconciliation probe below handles Board trees reused in place.
+        widgetSkinObserver.observe(document.body, { childList: true, subtree: false });
+        scheduleWidgetSkinScan();
+        // Discord sometimes reuses an already-mounted profile tree and only
+        // flips its visibility/class state; that path can produce no useful
+        // childList signal for the observer. A cheap surface-only check closes
+        // that gap without scanning React fibers or touching ordinary cards.
+        widgetSkinRescanTimer = window.setInterval(() => {
+            if (!widgetSkinSurfaceNeedsScan()) return;
+            widgetSkinLastScanAt = 0;
+            // Only reconcile when the cheap surface probe finds an unmarked
+            // visible candidate. Do not run a full scan every second while
+            // the user is simply chatting or browsing Discord.
+            scheduleWidgetSkinScan(true);
+        }, WIDGET_SKIN_RECONCILE_INTERVAL_MS);
+    };
+    const onTournamentModeChanged = () => {
+        updateWidgetSkinMotionPauseState();
+        widgetSkinRendererSuspended = isWidgetPreviewMotionPaused();
+        if (widgetSkinRendererSuspended) detach();
+        else attach();
+    };
+    window.addEventListener("discordmaxxer:tournament-mode-changed", onTournamentModeChanged);
+    removeTournamentModeListener = () => window.removeEventListener("discordmaxxer:tournament-mode-changed", onTournamentModeChanged);
+    const mount = () => {
+        if (widgetSkinRendererSuspended) {
+            try { scanWidgetSkinCards(700); } catch (error) { console.warn("[DMWidget] initial paused widget skin scan failed:", error); }
+        } else {
+            attach();
+        }
+    };
+    if (document.body) mount(); else window.setTimeout(mount, 0);
+}
+
+function stopWidgetSkinRenderer(): void {
+    widgetSkinRun++;
+    widgetSkinRendererSuspended = false;
+    document.removeEventListener("visibilitychange", onWidgetSkinVisibilityChange);
+    removeWidgetSkinProfileTriggerListeners?.();
+    removeWidgetSkinProfileTriggerListeners = null;
+    widgetSkinProfileScanQueuedAt = 0;
+    removeTournamentModeListener?.();
+    removeTournamentModeListener = null;
+    widgetSkinObserver?.disconnect();
+    widgetSkinObserver = null;
+    disconnectWidgetSkinProfileMountObserver();
+    disconnectWidgetSkinPlayingCardObserver();
+    widgetSkinPlayingCardRoot = null;
+    clearWidgetSkinPlayingCardHosts();
+    widgetSkinPlayingCardTimelineStartedAt = -1;
+    widgetSkinRescanAfterEditor = false;
+    if (widgetSkinTimer !== null) { clearTimeout(widgetSkinTimer); widgetSkinTimer = null; }
+    cancelWidgetSkinIdle();
+    if (widgetSkinRescanTimer !== null) { clearInterval(widgetSkinRescanTimer); widgetSkinRescanTimer = null; }
+    widgetSkinLegacyCleanupDone = false;
+    widgetSkinLastScanAt = 0;
+    widgetApplicationCacheEpoch++;
+    for (const root of Array.from(widgetSkinRoots.keys())) restoreWidgetSkin(root);
+    for (const root of Array.from(surfaceSkinRoots.keys())) restoreSurfaceSkin(root);
+    attachedWidgetStyles.clear();
+    attachedWidgetSlots.clear();
+    attachedWidgetHints.clear();
+    attachedWidgetProfileAccountId = "";
+    attachedWidgetProfileVerifiedAt = 0;
+    attachedWidgetRefreshAt = 0;
+    activeDiscordConversationRowCache = null;
+    widgetSkinStyleElement?.remove();
+    widgetSkinStyleElement = null;
+}
+
+function onWidgetSkinVisibilityChange(): void {
+    if (!document.hidden) scheduleWidgetSkinScan();
+}
+
+function widgetSkinProfileTriggerLike(target: EventTarget | null): boolean {
+    if (!(target instanceof Element)) return false;
+    let current: Element | null = target;
+    for (let depth = 0; current && depth < 8; depth++, current = current.parentElement) {
+        const className = typeof (current as HTMLElement).className === "string" ? (current as HTMLElement).className : "";
+        const role = current.getAttribute("role") ?? "";
+        const ariaLabel = current.getAttribute("aria-label") ?? "";
+        const title = current.getAttribute("title") ?? "";
+        const listItemId = current.getAttribute("data-list-item-id") ?? "";
+        const userId = current.getAttribute("data-user-id") ?? current.getAttribute("data-userid") ?? "";
+        const signal = `${className} ${role} ${ariaLabel} ${title} ${listItemId}`;
+        if (userId || /avatar|profile|popout|user[-_ ]?(?:panel|profile|info)|member[-_ ]?list/i.test(signal)) return true;
+        if (role === "tab" && /profile|board|activity|app|widget/i.test(`${ariaLabel} ${title} ${current.textContent?.slice(0, 80) ?? ""}`)) return true;
+    }
+    return false;
+}
+
+function widgetSkinConversationTriggerLike(target: EventTarget | null): boolean {
+    if (!(target instanceof Element)) return false;
+    const row = target.closest<HTMLElement>("li");
+    if (!row || !isDiscordChannelRow(row)) return false;
+    const className = typeof row.className === "string" ? row.className : "";
+    return /(?:^|[\s_-])dm(?:__|_)/i.test(className);
+}
+
+function disconnectWidgetSkinProfileMountObserver(): void {
+    widgetSkinProfileMountObserver?.disconnect();
+    widgetSkinProfileMountObserver = null;
+    if (widgetSkinProfileMountReleaseTimer !== null) {
+        window.clearTimeout(widgetSkinProfileMountReleaseTimer);
+        widgetSkinProfileMountReleaseTimer = null;
+    }
+}
+
+function scheduleWidgetSkinProfileFastScan(): void {
+    if (widgetSkinProfileFastScanTimer !== null) return;
+    widgetSkinProfileFastScanTimer = window.setTimeout(() => {
+        widgetSkinProfileFastScanTimer = null;
+        if (document.hidden || widgetSkinEditorOpen() || widgetSkinRendererSuspended) return;
+        try { scanVisibleProfileWidgetCards(); } catch (error) { console.warn("[DMWidget] profile widget fast scan failed:", error); }
+    }, 0);
+}
+
+function startWidgetSkinProfileMountObserver(): void {
+    if (!document.body || document.hidden || widgetSkinEditorOpen() || widgetSkinRendererSuspended) return;
+    if (!widgetSkinProfileMountObserver) {
+        widgetSkinProfileMountObserver = new MutationObserver(records => {
+            if (!profileMountMutationRelevant(records)) return;
+            // The card can arrive in a later React commit than the avatar and
+            // banner. Scan only the visible profile surface on that commit;
+            // the broad renderer remains on its normal bounded schedule.
+            scheduleWidgetSkinProfileFastScan();
+        });
+        widgetSkinProfileMountObserver.observe(document.body, { childList: true, subtree: true });
+    }
+    if (widgetSkinProfileMountReleaseTimer !== null) window.clearTimeout(widgetSkinProfileMountReleaseTimer);
+    widgetSkinProfileMountReleaseTimer = window.setTimeout(() => {
+        widgetSkinProfileMountReleaseTimer = null;
+        disconnectWidgetSkinProfileMountObserver();
+    }, WIDGET_SKIN_PROFILE_MOUNT_WATCH_MS);
+}
+
+function clearWidgetSkinProfileScanTimers(): void {
+    for (const timer of widgetSkinProfileScanTimers) window.clearTimeout(timer);
+    widgetSkinProfileScanTimers.clear();
+    if (widgetSkinProfileFastScanTimer !== null) {
+        window.clearTimeout(widgetSkinProfileFastScanTimer);
+        widgetSkinProfileFastScanTimer = null;
+    }
+}
+
+function queueWidgetSkinProfileScan(): void {
+    if (document.hidden || widgetSkinEditorOpen() || widgetSkinRendererSuspended) return;
+    startWidgetSkinProfileMountObserver();
+    scheduleWidgetSkinProfileFastScan();
+    const now = Date.now();
+    // A single profile click can emit focus + click events. Collapse them so
+    // the fast path remains a small burst rather than a new polling loop.
+    if (now - widgetSkinProfileScanQueuedAt < 250) return;
+    widgetSkinProfileScanQueuedAt = now;
+    for (const delay of [32, 180]) {
+        const timer = window.setTimeout(() => {
+            widgetSkinProfileScanTimers.delete(timer);
+            if (document.hidden || widgetSkinEditorOpen() || widgetSkinRendererSuspended) return;
+            activeDiscordConversationRowCache = null;
+            try { scanWidgetSurfaceSkin(); } catch (error) { console.warn("[DMWidget] surface skin fast pass failed:", error); }
+            try { scanVisibleProfileWidgetCards(); } catch (error) { console.warn("[DMWidget] profile widget fast scan failed:", error); }
+            // The targeted pass above owns first paint. Let the broad React
+            // resolver reconcile in the background instead of launching a
+            // second synchronous scan during the profile transition.
+            scheduleWidgetSkinScan();
+        }, delay);
+        widgetSkinProfileScanTimers.add(timer);
+    }
+}
+
+function isWidgetPreviewMotionPaused(): boolean {
+    const runtime = (globalThis as any).__dmTournamentModeActive;
+    if (typeof runtime === "boolean") return runtime;
+    return (globalThis as any).Vencord?.PlainSettings?.plugins?.TournamentMode?.manuallyActive === true;
+}
+
+function splitWidgetStat(raw: string): { label: string; value: string; } | null {
+    const clean = String(raw ?? "").trim();
+    if (!clean) return null;
+    const divider = clean.indexOf("|");
+    return divider < 0
+        ? { label: "", value: clean }
+        : { label: clean.slice(0, divider).trim(), value: clean.slice(divider + 1).trim() };
+}
+
+function WidgetStylePicker() {
+    const [, force] = React.useState(0);
+    const [previewSize, setPreviewSize] = React.useState<"compact" | "expanded">("compact");
+    const [localHero, setLocalHero] = React.useState<{ slotKey: string; url: string; name: string; } | null>(null);
+    const [imageError, setImageError] = React.useState("");
+    const imageInput = React.useRef<HTMLInputElement>(null);
+    const localHeroUrl = React.useRef("");
+    const live = settings.use([
+        "gameTemplate", "widgetStyle", "surfaceSkinMode", "surfaceSkinStyle", "topLayout", "bottomLayout", "appName", "widgetTitle", "heroImageUrl",
+        "fnHeroPreset", "fnIgn", "fnUnrealRank", "fnEarnings", "fnTopPlacement", "fnChapterSeason",
+        "valHeroPreset", "valRiotId", "stat1", "stat2", "stat3", "stat4", "stat5", "stat6",
+        "progressLabel", "progressPercent"
+    ]);
+    const template = String(live.gameTemplate ?? "none") || "none";
+    const initialSlotKey = React.useRef(template).current;
+    const initialStyle = React.useRef(String((settings.store as any).widgetStyle ?? "neonCircuit")).current;
+    const initialTopLayout = React.useRef(String((settings.store as any).topLayout ?? "hero")).current;
+    const initialBottomLayout = React.useRef(String((settings.store as any).bottomLayout ?? "stats")).current;
+    const [tournamentPaused, setTournamentPaused] = React.useState(isWidgetPreviewMotionPaused());
+    const [vanillaBusy, setVanillaBusy] = React.useState(false);
+    React.useEffect(() => {
+        const timer = setInterval(() => {
+            const next = isWidgetPreviewMotionPaused();
+            setTournamentPaused(current => current === next ? current : next);
+        }, 750);
+        return () => clearInterval(timer);
+    }, []);
+
+    React.useEffect(() => {
+        let active = true;
+        if (localHeroUrl.current) URL.revokeObjectURL(localHeroUrl.current);
+        localHeroUrl.current = "";
+        setLocalHero(null);
+        void ensureSlots().then(() => refreshAttachedWidgetStyles(true)).then(async () => {
+            const slot = getSlot(template);
+            const initial = template === initialSlotKey;
+            const preset = WIDGET_STYLE_PRESETS.find(item => item.id === slot.widgetStyle)
+                ?? (initial ? WIDGET_STYLE_PRESETS.find(item => item.id === initialStyle) : undefined)
+                ?? WIDGET_STYLE_PRESETS[0];
+            const topLayout = slot.topLayout ?? (initial && (initialTopLayout === "hero" || initialTopLayout === "contained") ? initialTopLayout : preset.topLayout);
+            const bottomLayout = slot.bottomLayout ?? (initial && (initialBottomLayout === "stats" || initialBottomLayout === "progress") ? initialBottomLayout : preset.bottomLayout);
+            const next = { ...slot, widgetStyle: preset.id, topLayout, bottomLayout };
+            if (slot.widgetStyle !== next.widgetStyle || slot.topLayout !== next.topLayout || slot.bottomLayout !== next.bottomLayout) setSlot(template, next);
+            const store = settings.store as any;
+            store.widgetStyle = preset.id;
+            store.topLayout = topLayout;
+            store.bottomLayout = bottomLayout;
+            const file = await getLocalWidgetImage(template);
+            if (!active) return;
+            if (file) {
+                const url = URL.createObjectURL(file);
+                localHeroUrl.current = url;
+                setLocalHero({ slotKey: template, url, name: file.name });
+            }
+            force(value => value + 1);
+        }).catch(e => console.warn("[DMWidget] could not restore this slot's style or image:", e));
+        return () => {
+            active = false;
+            if (localHeroUrl.current) URL.revokeObjectURL(localHeroUrl.current);
+            localHeroUrl.current = "";
+        };
+    }, [template]);
+
+    const slot = getSlot(template);
+    const fallbackStyle = template === initialSlotKey ? initialStyle : "neonCircuit";
+    const selected = WIDGET_STYLE_PRESETS.find(preset => preset.id === slot.widgetStyle)
+        ?? WIDGET_STYLE_PRESETS.find(preset => preset.id === fallbackStyle)
+        ?? WIDGET_STYLE_PRESETS[0];
+    const existingWidget = SNOWFLAKE.test(slot.appId)
+        || Array.from(attachedWidgetSlots.entries()).some(([appId, slotKey]) => slotKey === template && SNOWFLAKE.test(appId));
+    const topLayout = live.topLayout === "contained" ? "contained" : live.topLayout === "hero" ? "hero" : slot.topLayout ?? selected.topLayout;
+    const bottomLayout = live.bottomLayout === "progress" ? "progress" : live.bottomLayout === "stats" ? "stats" : slot.bottomLayout ?? selected.bottomLayout;
+    const previewHero = localHero?.slotKey === template ? localHero.url : heroUrlFor(template, slot);
+    const title = template === "fortnite"
+        ? (String(live.fnIgn ?? "").trim() || "Fortnite")
+        : template === "valorant"
+            ? (String(live.valRiotId ?? "").trim().split("#")[0] || "Valorant")
+            : (String(live.widgetTitle ?? "").trim() || "My Widget");
+    const header = template === "fortnite"
+        ? (String(live.fnChapterSeason ?? "").trim() ? `Fort · ${String(live.fnChapterSeason).trim()}` : "Fort")
+        : template === "valorant" ? "Val" : (String(live.appName ?? "").trim() || "My Widget");
+    const rawStats = template === "fortnite" ? fortniteStatLines()
+        : template === "valorant" ? valorantStatLines()
+            : [1, 2, 3, 4, 5, 6].map(i => String((live as any)[`stat${i}`] ?? ""));
+    const statRows = rawStats.map(splitWidgetStat).filter((row): row is { label: string; value: string; } => !!row).slice(0, 6);
+    const progressLabel = String(live.progressLabel ?? "Level 1").trim() || "Progress";
+    const progressPercent = Math.max(0, Math.min(100, Number(live.progressPercent ?? 50)));
+    const surfaceMode: SurfaceSkinMode = live.surfaceSkinMode === "independent" || live.surfaceSkinMode === "off" ? live.surfaceSkinMode : "follow";
+    const surfaceStyleId = String(live.surfaceSkinStyle ?? "emberProtocol");
+    const surfaceSelected = surfaceMode === "independent"
+        ? WIDGET_STYLE_PRESETS.find(preset => preset.id === surfaceStyleId) ?? WIDGET_STYLE_PRESETS.find(preset => preset.id === "emberProtocol") ?? selected
+        : surfaceMode === "follow" ? selected : null;
+
+    const selectStyleTarget = (slotKey: string) => {
+        const targetSlot = getSlot(slotKey);
+        const targetPreset = WIDGET_STYLE_PRESETS.find(item => item.id === targetSlot.widgetStyle) ?? WIDGET_STYLE_PRESETS[0];
+        const store = settings.store as any;
+        // Game template remains the canonical editor target. Mirroring the
+        // target's saved style here also makes the preview and Create/Update
+        // respond in the same click, without waiting for the restore effect.
+        store.gameTemplate = slotKey;
+        store.widgetStyle = targetPreset.id;
+        store.topLayout = targetSlot.topLayout ?? targetPreset.topLayout;
+        store.bottomLayout = targetSlot.bottomLayout ?? targetPreset.bottomLayout;
+        force(value => value + 1);
+    };
+
+    const choose = (preset: WidgetStylePreset) => {
+        const store = settings.store as any;
+        const current = getSlot(template);
+        const updatedAt = Math.max(Date.now(), Number(current.widgetStyleUpdatedAt ?? 0) + 1);
+        // A skin choice must not rewrite the content geometry of an existing
+        // widget. Preserve the saved/published layout for this slot; a new
+        // widget may still start with the preset's default layout.
+        const cachedPublished = publishedWidgetSnapshots.get(template);
+        const nextTopLayout = current.topLayout ?? cachedPublished?.topLayout ?? preset.topLayout;
+        const nextBottomLayout = current.bottomLayout ?? cachedPublished?.bottomLayout ?? preset.bottomLayout;
+        const selectedPreset = presetWithLayouts(preset, nextTopLayout, nextBottomLayout);
+        setSlot(template, { ...current, widgetStyle: preset.id, widgetStyleSource: "local", widgetStyleUpdatedAt: updatedAt, topLayout: nextTopLayout, bottomLayout: nextBottomLayout });
+        store.widgetStyle = preset.id;
+        store.topLayout = nextTopLayout;
+        store.bottomLayout = nextBottomLayout;
+        force(value => value + 1);
+        updateAttachedWidgetStylesForSlot(template, selectedPreset);
+        // Gallery selection should be visible immediately when a Board card is
+        // already open; the scheduled pass remains for Discord's async remount.
+        scanWidgetSkinCards();
+        scheduleWidgetSkinScan();
+        void republishSelectedWidgetStyle(template).finally(() => force(value => value + 1));
+    };
+
+    const requestSurfaceSkinRescan = () => {
+        widgetApplicationCacheEpoch++;
+        widgetSkinLastScanAt = 0;
+        // The picker lives inside the settings editor, so the renderer is
+        // intentionally suspended while this panel is open. Mark a rescan
+        // for the moment the panel closes instead of competing with Discord's
+        // settings tree right now.
+        widgetSkinRescanAfterEditor = true;
+        scheduleWidgetSkinScan(true);
+    };
+
+    const chooseSurfaceMode = (mode: SurfaceSkinMode) => {
+        const store = settings.store as any;
+        store.surfaceSkinMode = mode;
+        requestSurfaceSkinRescan();
+        force(value => value + 1);
+    };
+
+    const chooseSurfaceStyle = (preset: WidgetStylePreset) => {
+        const store = settings.store as any;
+        store.surfaceSkinStyle = preset.id;
+        store.surfaceSkinMode = "independent";
+        requestSurfaceSkinRescan();
+        force(value => value + 1);
+    };
+
+    const publishVanillaFallback = async () => {
+        setVanillaBusy(true);
+        try {
+            await publishVanillaSkin(template, selected);
+            force(value => value + 1);
+        } catch (error) {
+            const message = error instanceof Error ? error.message : "Couldn't publish the static vanilla skin.";
+            toast(message, Toasts.Type.FAILURE, 8000);
+        } finally {
+            setVanillaBusy(false);
+        }
+    };
+
+    const installLocalPreview = (file: File) => {
+        if (localHeroUrl.current) URL.revokeObjectURL(localHeroUrl.current);
+        const url = URL.createObjectURL(file);
+        localHeroUrl.current = url;
+        setLocalHero({ slotKey: template, url, name: file.name });
+    };
+
+    const chooseLocalImage = async (file?: File) => {
+        if (!file) return;
+        setImageError("");
+        try {
+            await saveLocalWidgetImage(template, file);
+            installLocalPreview(file);
+            toast("Image saved on this PC. Press Create/Update to upload it to your widget app; choosing a file does not publish anything.", Toasts.Type.SUCCESS, 6500);
+        } catch (e) {
+            const message = e instanceof Error ? e.message : "Couldn't save that image file.";
+            setImageError(message);
+            toast(message, Toasts.Type.FAILURE, 5000);
+        }
+    };
+
+    const clearLocalImage = async () => {
+        setImageError("");
+        try {
+            await removeLocalWidgetImage(template);
+            if (localHeroUrl.current) URL.revokeObjectURL(localHeroUrl.current);
+            localHeroUrl.current = "";
+            setLocalHero(null);
+            force(value => value + 1);
+        } catch (e) {
+            const message = e instanceof Error ? e.message : "Couldn't remove the saved local image.";
+            setImageError(message);
+        }
+    };
+
+    const themeVars = {
+        "--dmw-accent": selected.accent,
+        "--dmw-secondary": selected.secondary,
+        "--dmw-surface": selected.surface,
+        "--dmw-glow": `${selected.accent}42`
+    } as any;
+
+    return (
+        <div style={{ margin: "8px 0 12px", padding: 14, border: "1px solid rgba(255,255,255,.12)", borderRadius: 12, background: "linear-gradient(145deg, rgba(255,255,255,.045), rgba(255,255,255,.015))", color: "#f2f3f5" }}>
+            <style>{WIDGET_PREVIEW_MOTION_CSS}</style>
+            <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+                <div style={{ fontSize: 14, fontWeight: 800, letterSpacing: ".01em" }}>✦ Choose a widget skin</div>
+                <span style={{ fontSize: 11, color: selected.accent }}>{SLOT_LABEL[template] ?? template} · {selected.name}</span>
+            </div>
+            <div style={{ marginTop: 8, padding: "8px 10px", borderRadius: 8, border: `1px solid ${existingWidget ? "rgba(35,165,90,.55)" : "rgba(255,255,255,.12)"}`, background: existingWidget ? "rgba(35,165,90,.10)" : "rgba(0,0,0,.14)", fontSize: 11.5, lineHeight: 1.45, color: "#c9ced9" }}>
+                {existingWidget ? <><b style={{ color: "#7ee2a8" }}>Existing widget found.</b> Choose a skin and it applies to this widget in Discordmaxxer immediately — no Riot ID, Name#Tag, or HenrikDev key is needed. Updating the published card's stats/content is a separate action below.</> : <>For a widget already on your profile, skin selection is local to Discordmaxxer and does not need game credentials. New game cards only need credentials when you want live stats.</>}
+            </div>
+            <div style={{ margin: "10px 0 12px", padding: 10, borderRadius: 9, border: "1px solid rgba(255,255,255,.12)", background: "rgba(0,0,0,.14)" }}>
+                <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+                    <span style={{ fontSize: 11.5, fontWeight: 800, color: "#f2f3f5" }}>Style each widget independently</span>
+                    <span style={{ fontSize: 10, color: "#aeb5c5" }}>Styling: {SLOT_LABEL[template] ?? template}</span>
+                </div>
+                <div style={{ marginTop: 3, fontSize: 10.5, lineHeight: 1.35, color: "#aeb5c5" }}>
+                    Pick a widget here, then choose a skin below. Valorant, Fortnite, and Custom keep separate choices, so changing one will not restyle the others.
+                </div>
+                <div role="group" aria-label="Choose which widget to style" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(132px, 1fr))", gap: 6, marginTop: 8 }}>
+                    {WIDGET_STYLE_SLOT_KEYS.map(slotKey => {
+                        const targetSlot = getSlot(slotKey);
+                        const targetPreset = WIDGET_STYLE_PRESETS.find(item => item.id === targetSlot.widgetStyle) ?? WIDGET_STYLE_PRESETS[0];
+                        const isTarget = template === slotKey;
+                        const isPublished = SNOWFLAKE.test(targetSlot.appId);
+                        return (
+                            <button
+                                key={slotKey}
+                                type="button"
+                                aria-pressed={isTarget}
+                                aria-label={`Style ${SLOT_LABEL[slotKey] ?? slotKey} widget`}
+                                onClick={() => selectStyleTarget(slotKey)}
+                                style={{
+                                    minWidth: 0, padding: "7px 8px", display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 3,
+                                    textAlign: "left", borderRadius: 7, border: `1px solid ${isTarget ? targetPreset.accent : "rgba(255,255,255,.13)"}`,
+                                    background: isTarget ? `linear-gradient(135deg, ${targetPreset.accent}20, rgba(255,255,255,.035))` : "rgba(255,255,255,.025)",
+                                    color: "#f2f3f5", cursor: "pointer", boxShadow: isTarget ? `0 0 0 1px ${targetPreset.accent}33` : "none"
+                                }}
+                            >
+                                <span style={{ width: "100%", display: "flex", justifyContent: "space-between", gap: 5, alignItems: "center" }}>
+                                    <span style={{ fontSize: 10.5, fontWeight: 800, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{isTarget ? "✓ " : ""}{SLOT_LABEL[slotKey] ?? slotKey}</span>
+                                    <span style={{ flex: "0 0 auto", width: 7, height: 7, borderRadius: "50%", background: targetPreset.accent, boxShadow: `0 0 8px ${targetPreset.accent}99` }} aria-hidden="true" />
+                                </span>
+                                <span style={{ maxWidth: "100%", fontSize: 9.5, color: targetPreset.accent, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{targetPreset.name}</span>
+                                <span style={{ fontSize: 9, color: "#aeb5c5" }}>{isPublished ? "Published widget" : "Ready to create"}</span>
+                            </button>
+                        );
+                    })}
+                </div>
+            </div>
+            <div style={{ margin: "0 0 12px", padding: 10, borderRadius: 9, border: `1px solid ${surfaceSelected ? `${surfaceSelected.accent}42` : "rgba(255,255,255,.12)"}`, background: surfaceSelected ? `${surfaceSelected.surface}99` : "rgba(0,0,0,.14)" }}>
+                <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+                    <span style={{ fontSize: 11.5, fontWeight: 800, color: "#f2f3f5" }}>Discord chrome skin</span>
+                    <span style={{ fontSize: 10, color: surfaceSelected?.accent ?? "#aeb5c5" }}>Lightweight layer · separate from widget cards</span>
+                </div>
+                <div style={{ marginTop: 3, fontSize: 10.5, lineHeight: 1.4, color: "#aeb5c5" }}>
+                    Controls the optional look on Friends/DM rows, online people, Active Now, and profile/popout shells. The actual profile widget cards keep their own per-widget choices, so this accidental-but-liked look can be changed independently without making the card renderer heavier.
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginTop: 8 }}>
+                    <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10.5, color: "#c5c9d4" }}>
+                        <span>Surface mode</span>
+                        <select value={surfaceMode} onChange={event => chooseSurfaceMode(event.currentTarget.value as SurfaceSkinMode)} style={{ minWidth: 150, border: "1px solid rgba(255,255,255,.18)", borderRadius: 6, background: "#1d1f27", color: "#f2f3f5", padding: "5px 7px", fontSize: 10.5 }}>
+                            <option value="follow">Follow widget skin</option>
+                            <option value="independent">Use separate skin</option>
+                            <option value="off">Off</option>
+                        </select>
+                    </label>
+                    {surfaceMode === "independent" && <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10.5, color: "#c5c9d4" }}>
+                        <span>Surface style</span>
+                        <select value={surfaceSelected?.id ?? surfaceStyleId} onChange={event => { const preset = WIDGET_STYLE_PRESETS.find(item => item.id === event.currentTarget.value); if (preset) chooseSurfaceStyle(preset); }} style={{ minWidth: 150, border: "1px solid rgba(255,255,255,.18)", borderRadius: 6, background: "#1d1f27", color: "#f2f3f5", padding: "5px 7px", fontSize: 10.5 }}>
+                            {WIDGET_STYLE_PRESETS.map(preset => <option key={preset.id} value={preset.id}>{preset.name}</option>)}
+                        </select>
+                    </label>}
+                    <span style={{ fontSize: 10, color: surfaceSelected?.accent ?? "#aeb5c5" }}>
+                        {surfaceMode === "off" ? "Surface decoration disabled." : `Using ${surfaceSelected?.name ?? "the selected surface skin"}.`}
+                    </span>
+                </div>
+            </div>
+            {existingWidget && <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 12, padding: "8px 10px", borderRadius: 8, border: `1px solid ${selected.accent}42`, background: `${selected.surface}cc` }}>
+                <button type="button" disabled={vanillaBusy} onClick={() => void publishVanillaFallback()} style={{ border: `1px solid ${selected.accent}88`, background: `${selected.accent}20`, color: "#f2f3f5", borderRadius: 7, padding: "7px 10px", cursor: vanillaBusy ? "wait" : "pointer", fontWeight: 750, fontSize: 11 }}>
+                    {vanillaBusy ? "Publishing static skin…" : slot.vanillaSkinAssetKey ? "Republish static skin for vanilla Discord" : "Publish static skin for vanilla Discord"}
+                </button>
+                <span style={{ flex: "1 1 260px", fontSize: 10.5, lineHeight: 1.4, color: "#c5c9d4" }}>
+                    This is the cross-client bridge: it replaces the public hero image with a still, themed composite while preserving the published title/stats. Vanilla Discord can see the image; it cannot receive the live CSS glow or animation. Discord's widget rollout still controls whether a viewer sees the card.
+                </span>
+            </div>}
+            <div style={{ margin: "5px 0 12px", fontSize: 11.5, lineHeight: 1.45, color: "#c5c9d4" }}>
+                Nine art-directed skins bring their own geometry, frame, ornament, palette, and motion. Select one and the real Discordmaxxer widget card updates immediately; Create/Update republishes the supported Discord layout and image fields. Use the explicit static-skin button above when you want the selected look represented for vanilla Discord viewers too.
+            </div>
+            <div role="group" aria-label="Choose a profile widget style" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(145px, 1fr))", gap: 8, marginBottom: 12 }}>
+                {WIDGET_STYLE_PRESETS.map(preset => {
+                    const isActive = selected.id === preset.id;
+                    const displayedBottomLayout = preset.bottomLayout;
+                    return (
+                        <button
+                            key={preset.id}
+                            className="dm-widget-style-choice"
+                            type="button"
+                            aria-pressed={isActive}
+                            title={`${preset.name}: ${preset.mood}`}
+                            onClick={() => choose(preset)}
+                            style={{
+                                minHeight: 120, padding: "8px 9px", display: "flex", flexDirection: "column", alignItems: "stretch", justifyContent: "space-between", gap: 6,
+                                textAlign: "left", borderRadius: 9, border: `1px solid ${isActive ? preset.accent : "rgba(255,255,255,.13)"}`,
+                                background: preset.surface,
+                                color: "#f2f3f5", cursor: "pointer",
+                                boxShadow: isActive ? `0 0 0 1px ${preset.accent}55, 0 8px 24px ${preset.accent}28` : "none",
+                                transition: "border-color 140ms ease, box-shadow 140ms ease, transform 140ms ease"
+                            }}
+                        >
+                            <span style={{ position: "relative", zIndex: 1, display: "flex", justifyContent: "space-between", gap: 6, alignItems: "center" }}>
+                                <span style={{ fontSize: 16, color: preset.accent }}>{preset.glyph}</span>
+                                <span style={{ fontSize: 9, color: preset.accent }}>{preset.topLayout.toUpperCase()} · {displayedBottomLayout.toUpperCase()}</span>
+                            </span>
+                            <div className="dm-widget-style-swatch" data-style={preset.id} data-motion={preset.motion} data-motion-paused={tournamentPaused ? "true" : "false"} data-frame={preset.frame} data-ornament={preset.ornament} aria-hidden="true" style={{ height: 42, overflow: "hidden", padding: 5, borderRadius: 6, border: `1px solid ${preset.accent}4c`, background: preset.surface }}>
+                                <div style={{ position: "relative", zIndex: 1, display: "flex", alignItems: "center", gap: 5, height: 19 }}>
+                                    {preset.topLayout === "contained" && <span style={{ width: 16, height: 16, borderRadius: 3, background: `linear-gradient(145deg, ${preset.accent}b0, ${preset.secondary}8c)` }} />}
+                                    <span style={{ flex: 1, minWidth: 0 }}><span style={{ display: "block", height: 3, width: "48%", borderRadius: 4, background: preset.accent }} /><span style={{ display: "block", height: 3, width: "72%", marginTop: 4, borderRadius: 4, background: "rgba(255,255,255,.24)" }} /></span>
+                                    {preset.topLayout === "hero" && <span style={{ width: 22, height: 18, borderRadius: 3, background: `linear-gradient(135deg, ${preset.accent}b0, ${preset.secondary}8c)` }} />}
+                                </div>
+                                {displayedBottomLayout === "progress" ? <div style={{ position: "relative", zIndex: 1, height: 3, marginTop: 4, borderRadius: 5, background: `linear-gradient(90deg, ${preset.accent} 65%, rgba(255,255,255,.16) 65%)` }} /> : <div style={{ position: "relative", zIndex: 1, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 3, marginTop: 3 }}><span style={{ height: 3, background: `${preset.accent}99`, borderRadius: 4 }} /><span style={{ height: 3, background: "rgba(255,255,255,.24)", borderRadius: 4 }} /><span style={{ height: 3, background: "rgba(255,255,255,.24)", borderRadius: 4 }} /><span style={{ height: 3, background: `${preset.secondary}99`, borderRadius: 4 }} /></div>}
+                            </div>
+                            <span style={{ position: "relative", zIndex: 1, fontSize: 11.5, fontWeight: 800, lineHeight: 1.2 }}>{isActive ? "✓ " : ""}{preset.name}</span>
+                            <span style={{ position: "relative", zIndex: 1, fontSize: 9.5, lineHeight: 1.2, color: "#c5c9d4" }}>{preset.mood}</span>
+                        </button>
+                    );
+                })}
+            </div>
+
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 6, flexWrap: "wrap" }}>
+                <span style={{ fontSize: 11, fontWeight: 750, letterSpacing: ".08em", textTransform: "uppercase", color: "#c5c9d4" }}>Live preview</span>
+                <span style={{ display: "flex", gap: 5, alignItems: "center" }}>
+                    <span style={{ fontSize: 10, color: "#a8adba", marginRight: 3 }}>Preview size</span>
+                    {(["compact", "expanded"] as const).map(size => <button key={size} type="button" aria-pressed={previewSize === size} onClick={() => setPreviewSize(size)} style={{ padding: "4px 8px", borderRadius: 6, border: `1px solid ${previewSize === size ? selected.accent : "rgba(255,255,255,.18)"}`, background: previewSize === size ? `${selected.accent}20` : "transparent", color: previewSize === size ? selected.accent : "#c5c9d4", cursor: "pointer", fontSize: 10 }}>{size === "compact" ? "Compact" : "Expanded"}</button>)}
+                </span>
+            </div>
+            <div
+                className="dm-widget-style-preview"
+                data-style={selected.id}
+                data-motion={selected.motion}
+                data-motion-paused={tournamentPaused ? "true" : "false"}
+                data-frame={selected.frame}
+                data-ornament={selected.ornament}
+                style={{
+                    ...themeVars,
+                    position: "relative", overflow: "hidden", width: "100%", maxWidth: previewSize === "compact" ? 340 : 520, minHeight: previewSize === "compact" ? 132 : 174, boxSizing: "border-box", padding: previewSize === "compact" ? 10 : 13,
+                    borderRadius: 10, border: `1px solid ${selected.accent}72`,
+                    background: `radial-gradient(ellipse at 92% 0%, ${selected.secondary}38, transparent 48%), linear-gradient(135deg, ${selected.surface}, #171922 78%)`,
+                    boxShadow: `0 0 0 1px ${selected.accent}20, 0 10px 34px ${selected.accent}28, inset 0 0 28px ${selected.accent}12`, isolation: "isolate"
+                }}
+                aria-label={`${selected.name} widget preview`}
+            >
+                <div style={{ position: "relative", zIndex: 1, fontSize: 10, fontWeight: 750, letterSpacing: ".09em", textTransform: "uppercase", color: selected.accent, marginBottom: 9 }}>{header}</div>
+                {topLayout === "hero" ? (
+                    <div style={{ position: "relative", zIndex: 1, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, minHeight: 66 }}>
+                        <div style={{ minWidth: 0, flex: 1 }}>
+                            <div style={{ fontSize: 18, fontWeight: 850, lineHeight: 1.1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "#f4f6fb" }}>{title}</div>
+                            <div style={{ marginTop: 5, fontSize: 10, color: "#aeb5c5" }}>PROFILE WIDGET <span style={{ color: selected.accent }}> / {template === "none" ? "CUSTOM" : template.toUpperCase()}</span></div>
+                        </div>
+                        {previewHero ? <PreviewImage url={previewHero} alt="Widget hero art preview" fallbackLabel="Hero unavailable" style={{ width: 82, height: 68, objectFit: "contain", objectPosition: "center", flex: "0 0 auto", filter: `drop-shadow(0 4px 12px ${selected.accent}66)` }} /> : <div aria-hidden="true" style={{ width: 72, height: 54, display: "grid", placeItems: "center", borderRadius: 8, border: `1px dashed ${selected.accent}70`, color: selected.accent, fontSize: 22 }}>✧</div>}
+                    </div>
+                ) : (
+                    <div style={{ position: "relative", zIndex: 1, display: "flex", alignItems: "center", gap: 11, minHeight: 66 }}>
+                        {previewHero ? <PreviewImage url={previewHero} alt="Widget hero art preview" fallbackLabel="Hero unavailable" style={{ width: 88, height: 58, objectFit: "cover", flex: "0 0 auto", borderRadius: 7, border: `1px solid ${selected.accent}68`, background: `${selected.accent}10` }} /> : <div aria-hidden="true" style={{ width: 88, height: 58, display: "grid", placeItems: "center", borderRadius: 7, border: `1px dashed ${selected.accent}70`, color: selected.accent, fontSize: 22 }}>◇</div>}
+                        <div style={{ minWidth: 0 }}><div style={{ fontSize: 18, fontWeight: 850, lineHeight: 1.1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "#f4f6fb" }}>{title}</div><div style={{ marginTop: 5, fontSize: 10, color: "#aeb5c5" }}>PROFILE WIDGET <span style={{ color: selected.accent }}> / {template === "none" ? "CUSTOM" : template.toUpperCase()}</span></div></div>
+                    </div>
+                )}
+                <div style={{ position: "relative", zIndex: 1, borderTop: `1px solid ${selected.accent}35`, marginTop: 10, paddingTop: 9 }}>
+                    {bottomLayout === "progress" && template === "none" ? (
+                        <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+                            {previewHero && <PreviewImage url={previewHero} alt="" fallbackLabel="◇" style={{ width: 30, height: 30, objectFit: "cover", borderRadius: 6 }} />}
+                            <div style={{ flex: 1, minWidth: 0 }}><div style={{ fontSize: 11, fontWeight: 700, marginBottom: 6 }}>{progressLabel}<span style={{ float: "right", color: selected.accent }}>{progressPercent}%</span></div><div style={{ height: 6, borderRadius: 99, background: "rgba(255,255,255,.12)", overflow: "hidden" }}><div style={{ width: `${progressPercent}%`, height: "100%", borderRadius: 99, background: `linear-gradient(90deg, ${selected.accent}, ${selected.secondary})` }} /></div></div>
+                        </div>
+                    ) : statRows.length ? (
+                        <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "7px 12px" }}>
+                            {statRows.slice(0, 4).map((row, index) => <div key={`${row.label}-${index}`} style={{ minWidth: 0, borderLeft: `2px solid ${selected.accent}88`, paddingLeft: 7 }}><div style={{ fontSize: 9, color: "#aeb5c5", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.label || "DETAIL"}</div><div style={{ fontSize: 11, fontWeight: 750, color: "#f1f3f8", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.value}</div></div>)}
+                        </div>
+                ) : <div style={{ fontSize: 11, color: "#aeb5c5" }}>Your stats will preview here as you fill them in.</div>}
+                </div>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: 7, marginTop: 8 }}>
+                <div style={{ padding: "7px 9px", borderRadius: 7, border: "1px solid rgba(125,230,180,.24)", background: "rgba(35,160,100,.07)", fontSize: 10.5, lineHeight: 1.45, color: "#c5d8cc" }}><b style={{ color: "#8ee0b2" }}>Discord widget fields:</b> supported layout, title, stats, and uploaded image art. Create/Update is the separate publish step.</div>
+                <div style={{ padding: "7px 9px", borderRadius: 7, border: "1px solid rgba(180,160,255,.24)", background: "rgba(120,80,200,.08)", fontSize: 10.5, lineHeight: 1.45, color: "#d2c9ea" }}><b style={{ color: "#bea8ff" }}>Discordmaxxer skin:</b> colors, glow, outlines, motifs, and motion are applied to the real card in this client. Tournament Mode pauses both the motion and background skin scans. Publish the static-skin fallback above when vanilla viewers should see a themed hero image too.</div>
+            </div>
+
+            <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 8, marginTop: 10, paddingTop: 9, borderTop: "1px solid rgba(255,255,255,.1)" }}>
+                <button type="button" onClick={() => imageInput.current?.click()} style={{ border: `1px solid ${selected.accent}70`, background: `${selected.accent}18`, color: "#f2f3f5", borderRadius: 7, padding: "7px 10px", cursor: "pointer", fontWeight: 700, fontSize: 11 }}>Choose image file</button>
+                <input ref={imageInput} type="file" accept="image/png,image/jpeg,image/webp,image/gif" style={{ display: "none" }} onChange={event => { const file = event.currentTarget.files?.[0]; void chooseLocalImage(file); event.currentTarget.value = ""; }} />
+                {localHero?.slotKey === template ? <>
+                    <span style={{ fontSize: 10.5, color: "#c5c9d4" }}>Using {localHero.name} · saved on this PC</span>
+                    <button type="button" onClick={() => void clearLocalImage()} style={{ border: "1px solid rgba(255,255,255,.18)", background: "transparent", color: "#c5c9d4", borderRadius: 6, padding: "5px 8px", cursor: "pointer", fontSize: 10 }}>Use link/preset instead</button>
+                </> : <span style={{ fontSize: 10.5, color: "#aeb5c5" }}>PNG, JPG, WebP, or GIF · up to 8 MB · stays local until you publish.</span>}
+                {imageError && <span role="alert" style={{ width: "100%", fontSize: 10.5, color: "#ff969b" }}>{imageError}</span>}
+            </div>
+            <div style={{ marginTop: 5, fontSize: 10.5, lineHeight: 1.4, color: "#aeb5c5" }}>
+                The selected image is uploaded to your Discord widget app only when you press Create/Update. Local files do not travel in Copy this widget codes. GIF upload is accepted, but animation in Discord and visibility to vanilla viewers still need a real recipient test. {tournamentPaused ? "Tournament Mode is pausing this skin's motion." : selected.motion === "none" ? "This preset has a still design." : "Tournament Mode pauses this skin's motion."}
+            </div>
+        </div>
+    );
+}
 
 function WidgetEditor() {
     const [busy, setBusy] = React.useState(false);
+    const [recoveryNote, setRecoveryNote] = React.useState("");
+    const [showPrivateCredentials, setShowPrivateCredentials] = React.useState(false);
     const [, force] = React.useState(0);
-    const live = settings.use(["appIconUrl", "heroImageUrl", "gameTemplate", "valHeroPreset", "fnHeroPreset"]);
-    React.useEffect(() => { ensureSlots().then(() => force(x => x + 1)); }, []);
+    const live = settings.use([
+        "appIconUrl", "heroImageUrl", "gameTemplate", "valHeroPreset", "fnHeroPreset",
+        "valRiotId", "valApiKey", "fnIgn", "fnApiKey"
+    ]);
     const slotKey = String(live.gameTemplate ?? "none") || "none";
     const id = getSlot(slotKey);
-    const created = !!id.appId;
-    const previewHero = heroUrlFor(slotKey, id);
-    // Switching to an already-deployed slot loads ITS saved hero/icon into the
-    // editing buffer, so each widget shows its own image (guarded to not loop:
-    // only writes when the value actually differs). New/empty slots keep the
-    // current draft untouched.
+    const created = SNOWFLAKE.test(id.appId);
+    const isGameWidget = slotKey === "valorant" || slotKey === "fortnite";
     React.useEffect(() => {
-        ensureSlots().then(() => {
-            const s = getSlot(slotKey);
-            if (!s.appId) return;
-            if (s.heroImageUrl && s.heroImageUrl !== (settings.store as any).heroImageUrl) (settings.store as any).heroImageUrl = s.heroImageUrl;
-            if (s.appIconUrl !== (settings.store as any).appIconUrl) (settings.store as any).appIconUrl = s.appIconUrl;
+        // The editor can contain dozens of card-like settings nodes. Suspend
+        // Board discovery for its lifetime so opening/reopening this panel
+        // cannot make the renderer compete with the settings mount.
+        widgetSkinEditorMounts++;
+        widgetApplicationCacheEpoch++;
+        if (widgetSkinTimer !== null) { clearTimeout(widgetSkinTimer); widgetSkinTimer = null; }
+        cancelWidgetSkinIdle();
+        return () => {
+            widgetSkinEditorMounts = Math.max(0, widgetSkinEditorMounts - 1);
+            widgetApplicationCacheEpoch++;
+            if (!widgetSkinEditorOpen()) {
+                if (widgetSkinRescanAfterEditor) {
+                    widgetSkinRescanAfterEditor = false;
+                    widgetSkinLastScanAt = 0;
+                }
+                scheduleWidgetSkinScan(true);
+            }
+        };
+    }, []);
+    React.useEffect(() => {
+        let active = true;
+        setRecoveryNote("");
+        void (async () => {
+            await ensureSlots();
+            await refreshAttachedWidgetStyles(true);
+            const store = settings.store as any;
+            const current = getSlot(slotKey);
+            // A fresh install often opens on Custom even though the account has
+            // a Valorant/Fortnite card. Make the recovered card the editor
+            // target so the user does not have to guess which picker restores
+            // the remote fields.
+            if (!SNOWFLAKE.test(current.appId)) {
+                const recoveredTarget = ["valorant", "fortnite", "none"].find(key => SNOWFLAKE.test(getSlot(key).appId));
+                if (active && recoveredTarget && recoveredTarget !== slotKey) {
+                    store.gameTemplate = recoveredTarget;
+                    setRecoveryNote(`Found your existing ${SLOT_LABEL[recoveredTarget] ?? recoveredTarget} widget — opening its recovered editor.`);
+                    force(x => x + 1);
+                    return;
+                }
+            }
+            const snapshot = await hydratePublishedWidgetContent(slotKey);
+            if (snapshot) {
+                applyPublishedWidgetSnapshot(slotKey, snapshot);
+                if (active) {
+                    const credentialHint = slotKey === "valorant" || slotKey === "fortnite"
+                        ? " Private game credentials remain local and are only needed for live stat refresh/update."
+                        : "";
+                    setRecoveryNote(`Published ${SLOT_LABEL[slotKey] ?? slotKey} content recovered from Discord.${credentialHint}`);
+                }
+            }
+            if (!active) return;
+            const recovered = getSlot(slotKey);
+            if (SNOWFLAKE.test(recovered.appId)) {
+                if (recovered.heroImageUrl && recovered.heroImageUrl !== store.heroImageUrl) store.heroImageUrl = recovered.heroImageUrl;
+                if (recovered.appIconUrl && recovered.appIconUrl !== store.appIconUrl) store.appIconUrl = recovered.appIconUrl;
+            }
+            force(x => x + 1);
+        })().catch(error => {
+            console.warn("[DMWidget] widget editor recovery failed:", error);
+            if (active) setRecoveryNote("Discord kept the widget attached, but its published fields could not be read right now. Try Refresh after the client reconnects.");
         });
+        return () => { active = false; };
     }, [slotKey]);
+    React.useEffect(() => {
+        // A recovered widget starts in skin-only mode. A new game widget starts
+        // with its live-stat fields visible so the first publish is obvious.
+        setShowPrivateCredentials(!created);
+    }, [slotKey, created]);
+    const privateCredentialsMissing = created && privateCredentialsMissingForSlot(slotKey);
+    const privateCredentialLabel = slotKey === "valorant"
+        ? "Riot ID (Name#Tag) and HenrikDev key"
+        : slotKey === "fortnite"
+            ? "Epic IGN and Fortnite API key"
+            : "private game credentials";
+    const previewHero = heroUrlFor(slotKey, id);
+    const selectedFortniteHero = String(live.fnHeroPreset ?? "auto");
+    const fortniteHeroChoices = [
+        { value: "auto", label: "Automatic", note: "Remembered / default", url: heroUrlFor("fortnite", id, "auto") },
+        ...FORTNITE_HERO_PRESET_OPTIONS.map(option => ({
+            value: option.value,
+            label: option.label,
+            note: "Curated cutout",
+            url: FORTNITE_HERO_PRESETS[option.value]
+        })),
+        { value: "custom", label: "Custom URL", note: "Use your own link", url: String(live.heroImageUrl ?? "").trim() }
+    ];
+    const selectFortniteHero = (value: string) => {
+        (settings.store as any).fnHeroPreset = value;
+        force(value => value + 1);
+    };
+    const credentialInputStyle: React.CSSProperties = {
+        width: "100%", boxSizing: "border-box", border: "1px solid var(--background-modifier-accent)",
+        borderRadius: 6, background: "var(--background-secondary)", color: "var(--text-normal)", padding: "7px 9px", fontSize: 13
+    };
     // Summary of every deployed widget (so multi-widget is legible).
-    const allSlots = Object.entries(slots.get()).filter(([, v]) => !!v.appId).map(([k]) => SLOT_LABEL[k] ?? k);
+    const allSlots = Object.entries(slots.get()).filter(([, v]) => SNOWFLAKE.test(v.appId)).map(([k]) => SLOT_LABEL[k] ?? k);
 
     const run = async (fn: () => Promise<void>) => {
         setBusy(true);
-        try { await fn(); } finally { setBusy(false); force(x => x + 1); }
+        try {
+            await fn();
+        } catch (error) {
+            console.warn("[DMWidget] editor action failed safely:", error);
+            setLastResult("DMWidget could not complete that action. Your existing widget was left unchanged where possible; try again after the client finishes loading.", "failure");
+            toast("DMWidget action failed safely. Your existing widget was left unchanged where possible.", Toasts.Type.FAILURE, 8000);
+        } finally {
+            setBusy(false);
+            force(x => x + 1);
+        }
     };
+    const resultAccent = lastResultKind === "failure" ? "#f23f43" : lastResultKind === "success" ? "#23a55a" : "#00b0f4";
 
     return (
         <div style={{ padding: "12px 0", display: "flex", flexDirection: "column", gap: 10 }}>
@@ -957,10 +5219,25 @@ function WidgetEditor() {
 
             <div style={{ fontSize: 13, color: "var(--text-muted)" }}>
                 Editing the <b style={{ color: "var(--text-normal)" }}>{SLOT_LABEL[slotKey] ?? slotKey}</b> widget:{" "}
-                {created ? <b style={{ color: "var(--text-normal)" }}>created ✓</b> : "not created yet"}
+                {created ? <b style={{ color: "var(--text-positive, #23a55a)" }}>existing widget recovered ✓</b> : "not linked to this Discord account yet"}
                 {created && <span> — app id <code>{id.appId}</code></span>}
                 {allSlots.length > 0 && <div style={{ marginTop: 3 }}>On your board: {allSlots.join(" · ")} — switch the <i>Game template</i> above to add/edit another.</div>}
+                {created && <div style={{ marginTop: 3 }}>Live skin/layout effects are Discordmaxxer-only. Apply skin syncs a small marker to this owned widget app so your other Discordmaxxer installs can recover it; the native published card stays unchanged unless you explicitly publish the static-skin fallback from the gallery.</div>}
             </div>
+
+            {recoveryNote && (
+                <div style={{ border: "1px solid var(--status-positive, #23a55a)", borderRadius: 8, padding: "8px 12px", fontSize: 12.5, lineHeight: 1.45, color: "var(--text-muted)" }}>
+                    <b style={{ color: "var(--text-positive, #23a55a)" }}>✓ Published widget recovery</b> {recoveryNote}
+                </div>
+            )}
+
+            {privateCredentialsMissing && (
+                <div style={{ border: "1px solid var(--status-warning, #e6a817)", borderRadius: 8, padding: "8px 12px", fontSize: 12.5, lineHeight: 1.45, color: "var(--text-muted)" }}>
+                    <b style={{ color: "var(--text-normal)" }}>This widget was recovered from your profile.</b> Discord stores the published card,
+                    not your private {privateCredentialLabel}, so those fields cannot be reconstructed after a reinstall or account switch.
+                    You do not need to re-enter them just to apply a skin in Discordmaxxer. Re-enter them only for live stat refreshes or a remote card-content update.
+                </div>
+            )}
 
             {(live.appIconUrl?.trim() || previewHero) && (
                 <div style={{ display: "flex", gap: 14, alignItems: "flex-end", flexWrap: "wrap" }}>
@@ -969,8 +5246,48 @@ function WidgetEditor() {
                 </div>
             )}
 
+            {slotKey === "fortnite" && (
+                <div style={{ border: "1px solid var(--background-modifier-accent)", borderRadius: 9, padding: "10px 12px", background: "var(--background-secondary-alt, rgba(0,0,0,.12))" }}>
+                    <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+                        <div>
+                            <b style={{ color: "var(--text-normal)", fontSize: 13 }}>Preview Fortnite heroes</b>
+                            <div style={{ marginTop: 3, color: "var(--text-muted)", fontSize: 11.5, lineHeight: 1.4 }}>See the cutout first, then click one to select it. Your choice stays local until you press Create/Update.</div>
+                        </div>
+                        <span style={{ color: "var(--text-muted)", fontSize: 11 }}>Selected: {fortniteHeroChoices.find(choice => choice.value === selectedFortniteHero)?.label ?? "Automatic"}</span>
+                    </div>
+                    <div role="group" aria-label="Choose Fortnite hero preset" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(108px, 1fr))", gap: 8, marginTop: 10 }}>
+                        {fortniteHeroChoices.map(choice => {
+                            const isSelected = choice.value === selectedFortniteHero;
+                            return (
+                                <button
+                                    key={choice.value}
+                                    type="button"
+                                    aria-pressed={isSelected}
+                                    aria-label={`Use ${choice.label} Fortnite hero`}
+                                    title={`Use ${choice.label}`}
+                                    onClick={() => selectFortniteHero(choice.value)}
+                                    style={{
+                                        minWidth: 0, padding: 6, display: "flex", flexDirection: "column", gap: 5, textAlign: "left",
+                                        borderRadius: 8, border: `1px solid ${isSelected ? "#5865f2" : "var(--background-modifier-accent)"}`,
+                                        background: isSelected ? "rgba(88,101,242,.18)" : "rgba(255,255,255,.035)",
+                                        color: "var(--text-normal)", cursor: "pointer", boxShadow: isSelected ? "0 0 0 1px rgba(88,101,242,.28)" : "none"
+                                    }}
+                                >
+                                    <span style={{ height: 86, display: "grid", placeItems: "center", overflow: "hidden", borderRadius: 6, background: "linear-gradient(145deg, rgba(88,101,242,.18), rgba(0,0,0,.2))" }}>
+                                        {choice.url ? <PreviewImage url={choice.url} alt="" fallbackLabel="Preview unavailable" style={{ width: "100%", height: "100%", objectFit: "contain", objectPosition: "center", filter: "drop-shadow(0 4px 8px rgba(0,0,0,.42))" }} /> : <span style={{ color: "var(--text-muted)", fontSize: 20 }} aria-hidden="true">◇</span>}
+                                    </span>
+                                    <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 11, fontWeight: 700 }}>{isSelected ? "✓ " : ""}{choice.label}</span>
+                                    <span style={{ color: "var(--text-muted)", fontSize: 9.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{choice.note}</span>
+                                </button>
+                            );
+                        })}
+                    </div>
+                    <div style={{ marginTop: 8, color: "var(--text-muted)", fontSize: 10.5, lineHeight: 1.4 }}>Automatic keeps this account's remembered/default hero. Custom URL uses the direct image link field above; neither option changes the published widget until you explicitly update it.</div>
+                </div>
+            )}
+
             {lastResult && (
-                <div style={{ fontSize: 13, lineHeight: 1.4, color: lastResult.startsWith("⚠") ? "var(--text-danger, #f23f43)" : "var(--text-positive, #23a55a)", wordBreak: "break-word" }}>
+                <div role="status" aria-live="polite" style={{ border: `1px solid ${resultAccent}`, borderLeft: `4px solid ${resultAccent}`, borderRadius: 8, padding: "9px 11px", background: "var(--background-secondary-alt, #2b2d31)", color: "var(--text-normal, #f2f3f5)", fontSize: 13, fontWeight: 600, lineHeight: 1.45, wordBreak: "break-word", boxShadow: `0 0 0 1px ${resultAccent}22` }}>
                     {lastResult}
                 </div>
             )}
@@ -989,10 +5306,52 @@ function WidgetEditor() {
                 </div>
             )}
 
+            {isGameWidget && created && !showPrivateCredentials && (
+                <div style={{ border: "1px solid var(--background-modifier-accent)", borderRadius: 8, padding: "8px 12px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap", fontSize: 12.5, lineHeight: 1.45, color: "var(--text-muted)" }}>
+                    <span><b style={{ color: "var(--text-normal)" }}>Skin-only mode is active.</b> Your existing card can be styled without private game credentials.</span>
+                    <Button size={Button.Sizes.SMALL} color={Button.Colors.PRIMARY} disabled={busy} onClick={() => setShowPrivateCredentials(true)}>Edit live stats/content</Button>
+                </div>
+            )}
+
+            {isGameWidget && (!created || showPrivateCredentials) && (
+                <div style={{ border: "1px solid var(--background-modifier-accent)", borderRadius: 8, padding: "10px 12px", display: "flex", flexDirection: "column", gap: 8 }}>
+                    <div style={{ fontSize: 12.5, lineHeight: 1.45, color: "var(--text-muted)" }}>
+                        <b style={{ color: "var(--text-normal)" }}>{slotKey === "valorant" ? "Valorant live-stat credentials" : "Fortnite live-stat credentials"}</b> — optional for skin-only styling; needed only to fetch live stats or publish a card-content update. These values stay on this PC.
+                    </div>
+                    {slotKey === "valorant" ? <>
+                        <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12, color: "var(--text-muted)" }}>
+                            Riot ID (Name#Tag)
+                            <input aria-label="Riot ID Name Tag" value={String(live.valRiotId ?? "")} placeholder="Diggy#NA1" style={credentialInputStyle} onChange={event => { (settings.store as any).valRiotId = event.currentTarget.value; force(value => value + 1); }} />
+                        </label>
+                        <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12, color: "var(--text-muted)" }}>
+                            HenrikDev API key
+                            <input aria-label="HenrikDev API key" type="password" autoComplete="off" value={String(live.valApiKey ?? "")} placeholder="Paste your HenrikDev key" style={credentialInputStyle} onChange={event => { (settings.store as any).valApiKey = event.currentTarget.value; force(value => value + 1); }} />
+                        </label>
+                    </> : <>
+                        <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12, color: "var(--text-muted)" }}>
+                            Epic display name
+                            <input aria-label="Epic display name" value={String(live.fnIgn ?? "")} placeholder="Your exact Epic username" style={credentialInputStyle} onChange={event => { (settings.store as any).fnIgn = event.currentTarget.value; force(value => value + 1); }} />
+                        </label>
+                        <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12, color: "var(--text-muted)" }}>
+                            Fortnite API key
+                            <input aria-label="Fortnite API key" type="password" autoComplete="off" value={String(live.fnApiKey ?? "")} placeholder="Paste your fortnite-api.com key" style={credentialInputStyle} onChange={event => { (settings.store as any).fnApiKey = event.currentTarget.value; force(value => value + 1); }} />
+                        </label>
+                    </>}
+                    {created && <Button size={Button.Sizes.SMALL} color={Button.Colors.PRIMARY} disabled={busy} onClick={() => setShowPrivateCredentials(false)}>Hide private fields</Button>}
+                </div>
+            )}
+
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                <Button disabled={busy} onClick={() => run(deployWidget)}>{created ? "Update my widget" : "Create my widget"}</Button>
+                {created ? <>
+                    <Button disabled={busy} color={Button.Colors.BRAND} onClick={() => run(() => republishSelectedWidgetStyle(slotKey))}>
+                        Apply skin to existing widget
+                    </Button>
+                    <Button disabled={busy || (isGameWidget && privateCredentialsMissing)} onClick={() => run(deployWidget)}>
+                        {isGameWidget && privateCredentialsMissing ? "Update card content (credentials needed)" : "Update widget content"}
+                    </Button>
+                </> : <Button disabled={busy} onClick={() => run(deployWidget)}>Create my widget</Button>}
                 {created && (live.gameTemplate === "fortnite" || live.gameTemplate === "valorant") && (
-                    <Button disabled={busy} color={Button.Colors.BRAND} onClick={() => run(() => refreshGame(true))}>Refresh {live.gameTemplate === "valorant" ? "Valorant" : "Fortnite"} stats now</Button>
+                    <Button disabled={busy || privateCredentialsMissing} color={Button.Colors.BRAND} onClick={() => run(() => refreshGame(true))}>{privateCredentialsMissing ? "Refresh stats (credentials needed)" : `Refresh ${live.gameTemplate === "valorant" ? "Valorant" : "Fortnite"} stats now`}</Button>
                 )}
                 {created && <Button disabled={busy} onClick={() => run(moveToTop)}>Move to top</Button>}
                 {created && <Button disabled={busy} color={Button.Colors.RED} onClick={() => run(removeFromProfile)}>Remove from profile</Button>}
@@ -1001,16 +5360,16 @@ function WidgetEditor() {
             <div style={{ borderTop: "1px solid var(--background-modifier-accent)", paddingTop: 10, display: "flex", flexDirection: "column", gap: 6 }}>
                 <div style={{ fontSize: 12.5, color: "var(--text-muted)", lineHeight: 1.45 }}>
                     <b style={{ color: "var(--text-normal)" }}>Move this widget to another account.</b> Copy the code here, paste it into the
-                    “Import code” box on your other account, and hit Import. The code carries your card’s content <i>and images</i> — never your app,
-                    bot token, or API keys, so on the other account you just re-enter your game API key and hit Create.
+                    “Import code” box on your other account, and hit Import. The code carries your card’s content, style choice, and linked images — never your app,
+                    bot token, or API keys. A local file stays on this PC and is not packed into the code.
                 </div>
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                     <Button disabled={busy} color={Button.Colors.PRIMARY} onClick={() => run(async () => {
                         await ensureSlots();
-                        const code = exportConfig();
+                        const code = await exportConfig();
                         const ok = await copyText(code);
-                        toast(ok ? "Widget code copied to clipboard — paste it into the Import box on your other account." : "Clipboard blocked — the code is shown below, select and copy it manually.", ok ? Toasts.Type.SUCCESS : Toasts.Type.MESSAGE, 8000);
-                        lastResult = (ok ? "✅ Copied widget code:\n" : "⚠ Copy this widget code:\n") + code;
+                        toast(ok ? "Widget code copied — local image files stay on this PC and are not included." : "Clipboard blocked — the code is shown below. Local image files are not included.", ok ? Toasts.Type.SUCCESS : Toasts.Type.MESSAGE, 8000);
+                        setLastResult((ok ? "Copied widget code:\n" : "Copy this widget code:\n") + code, ok ? "success" : "message");
                     })}>Copy this widget</Button>
                     <Button disabled={busy} color={Button.Colors.PRIMARY} onClick={() => run(async () => {
                         await ensureSlots();
@@ -1034,8 +5393,39 @@ const settings = definePluginSettings({
             { label: "Valorant (auto live stats)", value: "valorant" }
         ]
     },
-    fnIgn: { type: OptionType.STRING, description: "Your exact Fortnite (Epic) username - capitals, spaces and symbols must match. Your Fortnite career stats must be set to Public in-game.", default: "", hidden() { return (this.store as any).gameTemplate !== "fortnite"; } },
-    fnApiKey: { type: OptionType.STRING, description: "Your free Fortnite stats key from fortnite-api.com (sign in with Discord at dash.fortnite-api.com). Stays on your PC; treat it like a password.", default: "", hidden() { return (this.store as any).gameTemplate !== "fortnite"; } },
+    stylePicker: { type: OptionType.COMPONENT, description: "", component: WidgetStylePicker },
+    // The visual gallery owns this value; keep it in plugin settings so the
+    // selected preview survives restarts and travels in Copy/Import codes.
+    widgetStyle: {
+        type: OptionType.SELECT,
+        description: "Selected gallery style (managed by the style cards above).",
+        default: "neonCircuit",
+        hidden() { return true; },
+        options: WIDGET_STYLE_PRESETS.map((preset, index) => ({ label: preset.name, value: preset.id, default: index === 0 }))
+    },
+    surfaceSkinMode: {
+        type: OptionType.SELECT,
+        description: "Whether the lightweight skin is also applied to supported Discord navigation/activity/profile surfaces.",
+        default: "follow",
+        hidden() { return true; },
+        options: [
+            { label: "Follow widget skin", value: "follow", default: true },
+            { label: "Use separate skin", value: "independent" },
+            { label: "Off", value: "off" }
+        ]
+    },
+    surfaceSkinStyle: {
+        type: OptionType.SELECT,
+        description: "Independent lightweight skin for supported Discord surfaces (managed by the style gallery).",
+        default: "emberProtocol",
+        hidden() { return true; },
+        options: WIDGET_STYLE_PRESETS.map((preset, index) => ({ label: preset.name, value: preset.id, default: index === 1 }))
+    },
+    // These are rendered in WidgetEditor so a recovered widget opens in
+    // credential-free skin mode. The fields remain in settings.store for live
+    // stats and content updates, but are never required to apply a skin.
+    fnIgn: { type: OptionType.STRING, description: "Optional for an existing widget; only used for Fortnite live stats/content updates.", default: "", hidden() { return true; } },
+    fnApiKey: { type: OptionType.STRING, description: "Optional for an existing widget; only used for Fortnite live stats/content updates. Stays on this PC.", default: "", hidden() { return true; } },
     fnAccountType: {
         type: OptionType.SELECT,
         description: "Which platform your Epic account mainly signs in through.",
@@ -1048,11 +5438,11 @@ const settings = definePluginSettings({
     },
     fnHeroPreset: {
         type: OptionType.SELECT,
-        description: "Quick-pick the cutout on your Fortnite card. Automatic keeps the current/remembered image; Custom image uses the URL below. The starter preset is Catwoman, not a full cosmetics catalog.",
+        description: "Quick-pick the cutout on your Fortnite card. Automatic keeps this account's remembered hero or the normal game default. Custom image uses the URL below.",
         hidden() { return (this.store as any).gameTemplate !== "fortnite"; },
         options: [
-            { label: "Automatic (keep current / Catwoman for a new card)", value: "auto", default: true },
-            { label: "Catwoman", value: "catwoman" },
+            { label: "Automatic (remembered/default)", value: "auto", default: true },
+            ...FORTNITE_HERO_PRESET_OPTIONS,
             { label: "Custom image URL", value: "custom" }
         ]
     },
@@ -1060,8 +5450,8 @@ const settings = definePluginSettings({
     fnEarnings: { type: OptionType.STRING, description: "Your total earnings to show, e.g. '$8,500'. Leave '$0' if none. (Typed in.)", default: "$0", hidden() { return (this.store as any).gameTemplate !== "fortnite"; } },
     fnChapterSeason: { type: OptionType.STRING, description: "Chapter/season shown in the small header, e.g. 'Ch 6 S3'. Leave blank for just 'Fn'.", default: "", hidden() { return (this.store as any).gameTemplate !== "fortnite"; } },
     fnTopPlacement: { type: OptionType.STRING, description: "Best tournament finish to show, e.g. '15th LCQ'. Leave blank to skip.", default: "", hidden() { return (this.store as any).gameTemplate !== "fortnite"; } },
-    valRiotId: { type: OptionType.STRING, description: "Your Valorant Riot ID as Name#Tag, e.g. 'Diggy#NA1'.", default: "", hidden() { return (this.store as any).gameTemplate !== "valorant"; } },
-    valApiKey: { type: OptionType.STRING, description: "Your free HenrikDev Valorant key (get it in the HenrikDev Discord). Stays on your PC; treat it like a password.", default: "", hidden() { return (this.store as any).gameTemplate !== "valorant"; } },
+    valRiotId: { type: OptionType.STRING, description: "Optional for an existing widget; only used for Valorant live stats/content updates.", default: "", hidden() { return true; } },
+    valApiKey: { type: OptionType.STRING, description: "Optional for an existing widget; only used for Valorant live stats/content updates. Stays on this PC.", default: "", hidden() { return true; } },
     valRegion: {
         type: OptionType.SELECT,
         description: "Your Valorant account region.",
@@ -1097,7 +5487,7 @@ const settings = definePluginSettings({
         hidden() { return (this.store as any).gameTemplate !== "none"; }
     },
     widgetTitle: { type: OptionType.STRING, description: "The big title on the card. Keep it short - one line (Discord cuts off long titles).", default: "My Widget", hidden() { return (this.store as any).gameTemplate !== "none"; } },
-    heroImageUrl: { type: OptionType.STRING, description: "Custom image URL for the card. Paste a DIRECT image link ending in .png or .jpg (not a webpage); choose Custom image URL above to use it. Presets upload the cutout for you.", default: "" },
+    heroImageUrl: { type: OptionType.STRING, description: "Optional direct HTTPS image link (PNG, JPG, WebP, or GIF; not a webpage). You can also choose a local file in the style gallery above. A local file stays on this PC and is uploaded only when you press Create/Update. GIF data is sent as a GIF, but Discord playback is not verified.", default: "" },
     appIconUrl: { type: OptionType.STRING, description: "Small logo in the top-left corner. Paste a direct SQUARE image link, or leave blank. (Fortnite & Valorant fill this in with their game logo automatically.)", default: "", hidden() { return (this.store as any).gameTemplate !== "none"; } },
     topLayout: {
         type: OptionType.SELECT,
@@ -1146,24 +5536,61 @@ export default definePlugin({
     // 30 min while running. Guards inside refreshFortnite make it a no-op unless
     // the Fortnite template is on and a widget exists.
     start() {
-        setTimeout(() => { refreshAllGames(); }, 20_000);
-        fnRefreshTimer = setInterval(() => { refreshAllGames(); }, 30 * 60_000);
+        startWidgetSkinRenderer();
+        void ensureSlots().then(async () => {
+            await refreshAttachedWidgetStyles(true);
+            // Style hydration can finish after the first renderer pass. Reset
+            // the cache timestamp and request a fresh scan so a just-mounted
+            // Board receives the recovered per-app styles without requiring a
+            // manual reskin click.
+            widgetApplicationCacheEpoch++;
+            widgetSkinLastScanAt = 0;
+            // Cover a profile that was already mounted before the observer
+            // attached, then keep the coalesced observer pass for later React
+            // commits that add the cards themselves.
+            try { scanWidgetSkinCards(220); } catch (error) { console.warn("[DMWidget] startup widget skin scan failed:", error); }
+            scheduleWidgetSkinScan(true);
+        }).catch(error => console.warn("[DMWidget] startup recovery failed:", error));
+        widgetStyleRefreshTimer = window.setInterval(() => { void refreshAttachedWidgetStyles(); }, ATTACHED_WIDGET_REFRESH_INTERVAL_MS);
+        setTimeout(scheduleStatsRefresh, 20_000);
+        fnRefreshTimer = setInterval(scheduleStatsRefresh, 30 * 60_000);
         // Let DMHub (or any surface) trigger a manual stats refresh — mirrors the
         // __dmReopenWelcome hook DMWelcome exposes for the hub's "Open Tour" row.
         (globalThis as any).__dmWidgetRefresh = async () => {
-            await ensureSlots();
-            if (deployedGameSlots().length === 0) { toast("No game widget deployed yet — Create one first (Fortnite / Valorant).", Toasts.Type.MESSAGE, 6000); return; }
-            toast("Refreshing your widget stats…", Toasts.Type.MESSAGE, 3000);
-            const result = await refreshAllGames();
-            if (result.failed > 0) {
-                toast(`${result.updated} widget${result.updated === 1 ? "" : "s"} updated; ${result.failed} could not be refreshed. Check the DMWidget status for the error.`, Toasts.Type.FAILURE, 8000);
-            } else {
-                toast(`${result.updated} widget${result.updated === 1 ? "" : "s"} refreshed and published. An already-open profile may take a moment to redraw.`, Toasts.Type.SUCCESS, 6000);
+            try {
+                await ensureSlots();
+                if (deployedGameSlots().length === 0) { toast("No game widget deployed yet — Create one first (Fortnite / Valorant).", Toasts.Type.MESSAGE, 6000); return; }
+                toast("Refreshing your widget stats…", Toasts.Type.MESSAGE, 3000);
+                const result = await refreshAllGames();
+                if (result.failed > 0) {
+                    toast(`${result.updated} widget${result.updated === 1 ? "" : "s"} updated; ${result.failed} could not be refreshed. Check the DMWidget status for the error.`, Toasts.Type.FAILURE, 8000);
+                } else {
+                    toast(`${result.updated} widget${result.updated === 1 ? "" : "s"} refreshed and published. An already-open profile may take a moment to redraw.`, Toasts.Type.SUCCESS, 6000);
+                }
+            } catch (error) {
+                console.warn("[DMWidget] manual stats refresh failed:", error);
+                toast("Widget refresh failed safely. Your existing published widget was left unchanged; try again after checking DMWidget status.", Toasts.Type.FAILURE, 8000);
             }
+        };
+        (globalThis as any).__dmWidgetReskin = async () => {
+            await ensureSlots();
+            await refreshAttachedWidgetStyles(true);
+            widgetApplicationCacheEpoch++;
+            widgetSkinLastScanAt = 0;
+            // A manual reskin is an explicit user/dev action. Run one
+            // complete, slightly longer pass immediately so a just-mounted
+            // profile does not have to wait for the scheduler or lose to the
+            // short background budget while Discord is still settling.
+            const applied = scanWidgetSkinCards(220);
+            scheduleWidgetSkinScan();
+            return applied;
         };
     },
     stop() {
+        stopWidgetSkinRenderer();
+        if (widgetStyleRefreshTimer !== null) { clearInterval(widgetStyleRefreshTimer); widgetStyleRefreshTimer = null; }
         if (fnRefreshTimer) { clearInterval(fnRefreshTimer); fnRefreshTimer = null; }
         delete (globalThis as any).__dmWidgetRefresh;
+        delete (globalThis as any).__dmWidgetReskin;
     }
 });

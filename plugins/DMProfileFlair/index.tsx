@@ -5,16 +5,21 @@
  *
  * User-set custom profile flair, visible only to other Discordmaxxer clients
  * (same architecture as DiscordmaxxerBadge Channel A — fetched from the public
- * tier roster, rendered client-side, vanilla Discord never sees it).
+ * tier roster, rendered client-side, vanilla Discord never sees it). The
+ * settings panel also exposes an explicit vanilla share bridge: it copies a
+ * normal Discord message card or a PNG still frame, because stock Discord
+ * cannot render roster-only fields in a profile.
  *
  *   E) Custom banner — image or short MP4 URL, replaces Discord's banner
- *      in profile popouts. Requires MAXXER.
- *   F) Animated avatar — GIF/MP4 URL, replaces the avatar in popouts (P2)
- *      and member list + chat (P5). Requires MAXXER+. Suppressed when
+ *      in profile popouts. Free for every roster-claimed user.
+ *   F) Animated avatar — GIF/image URL, replaces the avatar in popouts (P2);
+ *      video avatars stay a native-Discord-only action
+ *      and member list + chat (P5). Free for every roster-claimed user.
+ *      Suppressed when
  *      TournamentMode is active (animated content tanks FPS).
  *   G) Theme colors — primary + secondary hex, patched into Discord's
- *      --profile-gradient-*-color CSS vars on the popout root. Requires
- *      MAXXER++.
+ *      --profile-gradient-*-color CSS vars on the popout root. Free for every
+ *      roster-claimed user.
  *
  * Phasing:
  *   - This file ships the plumbing: settings UI, worker write call, viewer
@@ -25,8 +30,8 @@
  *   - URLs validated client- AND worker-side (https://, ≤250 chars).
  *   - Viewer toggle defaults ON; per-user "hide flair" right-click action
  *     populates a local block list (P5).
- *   - Worker enforces per-field tier gating so client gating can't be
- *     bypassed by editing this plugin's JS.
+ *   - Worker authenticates the user-bound claim and validates each field, so
+ *     client-side settings cannot bypass roster ownership or media limits.
  */
 
 import { definePluginSettings } from "@api/Settings";
@@ -36,22 +41,94 @@ import definePlugin, { OptionType } from "@utils/types";
 import { Button, React, RestAPI, Toasts, UserStore } from "@webpack/common";
 
 import { makePersistentValue } from "../_dm-shared/persist";
-import { getRosterProfileFlair, ProfileFlair, rosterHasAnyAvatarFlair } from "../_dm-shared/roster";
-import { Tier } from "../_dm-shared/vip";
+import { getRosterProfileFlair, onRosterChange, ProfileFlair, refreshRoster, rosterHasAnyAvatarFlair } from "../_dm-shared/roster";
+import { getMyTier, Tier } from "../_dm-shared/vip";
 import { normalizeCode, readBinding } from "../_dm-shared/vipClaim";
 
 const WORKER_PROFILE_URL = "https://optmaxxing-vip.maxxtopia.workers.dev/profile";
+const VANILLA_SHARE_URL = "https://maxxtopia.com/discordmaxxer";
 
 const PROFILE_FIELD_MIN_TIER: Record<keyof ProfileFlair, Tier> = {
-    bannerUrl: Tier.MAXXER,
-    avatarAnimatedUrl: Tier.MAXXER_PLUS,
-    themeColorPrimary: Tier.MAXXER_PLUS_PLUS,
-    themeColorSecondary: Tier.MAXXER_PLUS_PLUS
+    bannerUrl: Tier.FREE,
+    avatarAnimatedUrl: Tier.FREE,
+    themeColorPrimary: Tier.FREE,
+    themeColorSecondary: Tier.FREE,
+    bannerPosition: Tier.MAXXER,
+    avatarPosition: Tier.MAXXER,
+    bannerFit: Tier.MAXXER_PLUS,
+    avatarFit: Tier.MAXXER_PLUS,
+    avatarScale: Tier.MAXXER_PLUS,
+    mediaEffect: Tier.MAXXER_PLUS_PLUS
 };
 
 const URL_RE = /^https:\/\/[^\s]{1,250}$/;
 const COLOR_RE = /^#[0-9a-fA-F]{6}$/;
+const PROFILE_POSITION_VALUES = new Set<NonNullable<ProfileFlair["bannerPosition"]>>(["center", "top", "bottom"]);
+const PROFILE_FIT_VALUES = new Set<NonNullable<ProfileFlair["bannerFit"]>>(["cover", "contain"]);
+const PROFILE_SCALE_VALUES = new Set<NonNullable<ProfileFlair["avatarScale"]>>(["0.9", "1", "1.1"]);
+const PROFILE_EFFECT_VALUES = new Set<NonNullable<ProfileFlair["mediaEffect"]>>(["none", "glow", "scanline"]);
 
+const POSITION_OPTIONS: Array<{ value: NonNullable<ProfileFlair["bannerPosition"]>; label: string }> = [
+    { value: "center", label: "Center" },
+    { value: "top", label: "Top" },
+    { value: "bottom", label: "Bottom" }
+];
+const FIT_OPTIONS: Array<{ value: NonNullable<ProfileFlair["bannerFit"]>; label: string }> = [
+    { value: "cover", label: "Fill / crop" },
+    { value: "contain", label: "Show whole image" }
+];
+const SCALE_OPTIONS: Array<{ value: NonNullable<ProfileFlair["avatarScale"]>; label: string }> = [
+    { value: "0.9", label: "90%" },
+    { value: "1", label: "100%" },
+    { value: "1.1", label: "110%" }
+];
+const EFFECT_OPTIONS: Array<{ value: NonNullable<ProfileFlair["mediaEffect"]>; label: string }> = [
+    { value: "none", label: "Clean" },
+    { value: "glow", label: "Soft glow" },
+    { value: "scanline", label: "Scanline" }
+];
+
+/** Merge self-preview settings without letting a stale local value bypass the
+ * current tier. The worker applies the same rule to the shared roster, but
+ * this client-side guard keeps a downgraded account honest before its next
+ * roster refresh too. Free users retain the base media and colors; only the
+ * optional presentation controls are removed when they are not entitled. */
+function mergeLocalPresentationFields(merged: ProfileFlair, s: any): ProfileFlair {
+    const tier = getMyTier();
+    if (tier >= Tier.MAXXER) {
+        const bannerPosition = s.myBannerPosition.trim(); if (bannerPosition) merged.bannerPosition = bannerPosition as ProfileFlair["bannerPosition"];
+        const avatarPosition = s.myAvatarPosition.trim(); if (avatarPosition) merged.avatarPosition = avatarPosition as ProfileFlair["avatarPosition"];
+    } else {
+        delete merged.bannerPosition;
+        delete merged.avatarPosition;
+    }
+    if (tier >= Tier.MAXXER_PLUS) {
+        const bannerFit = s.myBannerFit.trim(); if (bannerFit) merged.bannerFit = bannerFit as ProfileFlair["bannerFit"];
+        const avatarFit = s.myAvatarFit.trim(); if (avatarFit) merged.avatarFit = avatarFit as ProfileFlair["avatarFit"];
+        const avatarScale = s.myAvatarScale.trim(); if (avatarScale) merged.avatarScale = avatarScale as ProfileFlair["avatarScale"];
+    } else {
+        delete merged.bannerFit;
+        delete merged.avatarFit;
+        delete merged.avatarScale;
+    }
+    if (tier >= Tier.MAXXER_PLUS_PLUS) {
+        const mediaEffect = s.myMediaEffect.trim(); if (mediaEffect) merged.mediaEffect = mediaEffect as ProfileFlair["mediaEffect"];
+    } else {
+        delete merged.mediaEffect;
+    }
+    return merged;
+}
+
+function tierLabel(tier: Tier): string {
+    return tier === Tier.MAXXER ? "MAXXER" : tier === Tier.MAXXER_PLUS ? "MAXXER+" : "MAXXER++";
+}
+
+// The native Discord banner field is deliberately narrower than the
+// Discordmaxxer-only banner renderer. Keep the one-click native path
+// predictable: animated media goes through the still-frame action instead of
+// sending video/GIF bytes to `/users/@me/profile`.
+const NATIVE_BANNER_IMAGE_MIMES = new Set(["image/png", "image/jpeg", "image/webp"]);
+const MAX_NATIVE_BANNER_BYTES = 10 * 1024 * 1024;
 // Hosts that serve HTML pages, not direct media bytes. Pasting one of these
 // URLs into a banner/avatar field saves "successfully" but the <img>/<video>
 // load gets HTML and renders blank. Catch it early with a friendly hint.
@@ -104,6 +181,31 @@ function toast(msg: string, type: any = Toasts.Type.SUCCESS, durationMs = 3000) 
         id: Toasts.genId(),
         options: { duration: durationMs, position: Toasts.Position.TOP }
     });
+}
+
+async function copyText(text: string): Promise<boolean> {
+    try {
+        await navigator.clipboard.writeText(text);
+        return true;
+    } catch (e) {
+        console.warn("[DMProfileFlair] clipboard text write failed:", e);
+        return false;
+    }
+}
+
+function getCurrentDisplayName(): string {
+    const me = UserStore.getCurrentUser?.() as any;
+    return me?.globalName || me?.username || me?.tag || "A Discordmaxxer user";
+}
+
+function buildVanillaShareText(bannerUrl: string, stillFrameUrl: string): string {
+    const lines = [
+        `✨ ${getCurrentDisplayName()} is using Discordmaxxer`,
+        bannerUrl ? `Animated banner preview: ${bannerUrl}` : "",
+        stillFrameUrl ? `Vanilla-safe still preview: ${stillFrameUrl}` : "",
+        `See how: ${VANILLA_SHARE_URL}`
+    ];
+    return lines.filter(Boolean).join("\n");
 }
 
 /** TournamentMode integration: read the plugin's manuallyActive flag through
@@ -177,6 +279,7 @@ export function getEffectiveFlairForUser(
         const a = s.myAvatarAnimatedUrl.trim(); if (a) merged.avatarAnimatedUrl = a;
         const p = s.myThemeColorPrimary.trim(); if (p) merged.themeColorPrimary = p;
         const sc = s.myThemeColorSecondary.trim(); if (sc) merged.themeColorSecondary = sc;
+        mergeLocalPresentationFields(merged, s);
         if (Object.keys(merged).length) flair = merged;
     }
     if (!flair) flair = getRosterProfileFlair(userId) ?? null;
@@ -185,7 +288,7 @@ export function getEffectiveFlairForUser(
     if ((kind === "banner" || kind === "avatar") && isTournamentModeActive()) {
         // Animated content is the whole point of TM suppression — even a
         // banner image is technically a network fetch + decode we don't
-        // want during a match. Theme colors are free, so they stay.
+        // want during a match. Theme colors are not animated media, so they stay.
         return null;
     }
     return flair;
@@ -214,7 +317,7 @@ async function postFlairUpdate(profile: Partial<ProfileFlair>, replace: boolean)
     }
     if (!claimCode) {
         toast(
-            "Need your VIP claim code — paste it into 'manualClaimCode' in this plugin's settings, or claim one via DiscordmaxxerVipClaim first.",
+            "Free profile flair is ready, but cross-PC saving needs activation. Open DMHub → Activate free profile, or paste a paid code into 'manualClaimCode'.",
             Toasts.Type.FAILURE, 6000
         );
         return false;
@@ -270,6 +373,18 @@ function validateLocal(profile: Partial<ProfileFlair>): string | null {
                 return `${k} must be a 6-char hex color (e.g. ff0034 or #ff0034 — the # is optional)`;
             }
         }
+        if ((k === "bannerPosition" || k === "avatarPosition") && !PROFILE_POSITION_VALUES.has(v as any)) {
+            return `${k} must be center, top, or bottom`;
+        }
+        if ((k === "bannerFit" || k === "avatarFit") && !PROFILE_FIT_VALUES.has(v as any)) {
+            return `${k} must be cover or contain`;
+        }
+        if (k === "avatarScale" && !PROFILE_SCALE_VALUES.has(v as any)) {
+            return `${k} must be 0.9, 1, or 1.1`;
+        }
+        if (k === "mediaEffect" && !PROFILE_EFFECT_VALUES.has(v as any)) {
+            return `${k} must be clean, glow, or scanline`;
+        }
     }
     return null;
 }
@@ -307,31 +422,62 @@ function hexToInt(hex: string): number | null {
     return parseInt(m[1], 16);
 }
 
-/** Fetch a remote URL's bytes and return as a base64 data URI suitable for
- *  Discord's `avatar` / `banner` PATCH fields. Routed through the dm-media://
- *  proxy because Chromium ORB blocks cross-origin no-CORS fetches in the
- *  renderer for arbitrary HTTPS hosts (same reason banner-video uses it). */
-async function urlToDataUri(httpsUrl: string): Promise<string | null> {
+interface FetchedDataUri {
+    dataUri: string;
+    mime: string;
+    bytes: number;
+}
+
+/** Fetch a remote URL's bytes and return a base64 data URI plus response
+ * metadata. Routed through the dm-media:// proxy because Chromium ORB blocks
+ * cross-origin no-CORS fetches in the renderer for arbitrary HTTPS hosts (same
+ * reason banner-video uses it). */
+async function fetchDataUri(httpsUrl: string): Promise<FetchedDataUri | null> {
     try {
         const proxied = httpsUrl.startsWith("https://")
             ? `dm-media://proxy/${encodeURIComponent(httpsUrl)}`
             : httpsUrl;
         const res = await fetch(proxied);
         if (!res.ok) {
-            console.warn(`[DMProfileFlair] urlToDataUri ${httpsUrl} → ${res.status}`);
+            console.warn(`[DMProfileFlair] fetchDataUri ${httpsUrl} → ${res.status}`);
             return null;
         }
         const blob = await res.blob();
-        return await new Promise<string>((resolve, reject) => {
+        const dataUri = await new Promise<string>((resolve, reject) => {
             const reader = new FileReader();
             reader.onloadend = () => resolve(reader.result as string);
             reader.onerror = () => reject(reader.error);
             reader.readAsDataURL(blob);
         });
+        return { dataUri, mime: blob.type.trim().toLowerCase(), bytes: blob.size };
     } catch (e) {
-        console.warn("[DMProfileFlair] urlToDataUri failed:", e);
+        console.warn("[DMProfileFlair] fetchDataUri failed:", e);
         return null;
     }
+}
+
+async function urlToDataUri(httpsUrl: string): Promise<string | null> {
+    return (await fetchDataUri(httpsUrl))?.dataUri ?? null;
+}
+
+function estimateDataUriBytes(dataUri: string): number | null {
+    const comma = dataUri.indexOf(",");
+    const header = comma >= 0 ? dataUri.slice(0, comma) : "";
+    if (comma < 0 || !/;base64$/i.test(header)) return null;
+    const encoded = dataUri.slice(comma + 1);
+    const padding = encoded.endsWith("==") ? 2 : encoded.endsWith("=") ? 1 : 0;
+    return Math.max(0, Math.floor(encoded.length * 3 / 4) - padding);
+}
+
+function nativeBannerMediaError(media: FetchedDataUri): string | null {
+    if (!NATIVE_BANNER_IMAGE_MIMES.has(media.mime)) {
+        const resolvedAs = media.mime || "an unknown media type";
+        return `Native Discord banners need a confirmed static PNG, JPEG, or WebP; this URL resolved as ${resolvedAs}. Use the still-frame action for video or GIF sources.`;
+    }
+    if (media.bytes > MAX_NATIVE_BANNER_BYTES) {
+        return `This banner is ${(media.bytes / (1024 * 1024)).toFixed(1)} MB. Keep the native banner under 10 MB, or use a smaller source.`;
+    }
+    return null;
 }
 
 /** Extract a usable error label from a Discord 4xx response. Specifically
@@ -373,6 +519,119 @@ async function broadcastThemeColors(primaryHex: string, secondaryHex: string): P
     }
 }
 
+interface SampledColor {
+    r: number;
+    g: number;
+    b: number;
+    count: number;
+}
+
+function colorDistance(a: SampledColor, b: SampledColor): number {
+    return Math.sqrt(
+        Math.pow(a.r - b.r, 2) +
+        Math.pow(a.g - b.g, 2) +
+        Math.pow(a.b - b.b, 2)
+    );
+}
+
+function colorToHex(color: SampledColor): string {
+    return `#${[color.r, color.g, color.b]
+        .map(channel => channel.toString(16).padStart(2, "0"))
+        .join("")}`;
+}
+
+/**
+ * Reduce a rendered banner frame to the two most useful representative
+ * colors for Discord's native theme_colors field. This is an approximation:
+ * stock Discord can show a gradient, not the original image or animation.
+ */
+function samplePaletteFromDataUri(dataUri: string): Promise<[string, string] | null> {
+    return new Promise(resolve => {
+        const image = new Image();
+        image.onload = () => {
+            try {
+                const canvas = document.createElement("canvas");
+                canvas.width = 32;
+                canvas.height = 16;
+                const context = canvas.getContext("2d", { willReadFrequently: true });
+                if (!context) {
+                    resolve(null);
+                    return;
+                }
+                context.drawImage(image, 0, 0, canvas.width, canvas.height);
+                const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+                const buckets = new Map<string, SampledColor>();
+
+                for (let i = 0; i < pixels.length; i += 4) {
+                    if (pixels[i + 3] < 48) continue;
+                    // Quantize to 16 levels per channel so nearby pixels form
+                    // stable buckets instead of producing hundreds of noise
+                    // colors from compression or animation artifacts.
+                    const color: SampledColor = {
+                        r: (pixels[i] >> 4) * 17,
+                        g: (pixels[i + 1] >> 4) * 17,
+                        b: (pixels[i + 2] >> 4) * 17,
+                        count: 1
+                    };
+                    const key = `${color.r},${color.g},${color.b}`;
+                    const existing = buckets.get(key);
+                    if (existing) existing.count += 1;
+                    else buckets.set(key, color);
+                }
+
+                const candidates = [...buckets.values()].sort((a, b) => b.count - a.count);
+                const primary = candidates[0];
+                if (!primary) {
+                    resolve(null);
+                    return;
+                }
+                const secondary = candidates.find(color => colorDistance(color, primary) >= 48) ?? primary;
+                resolve([colorToHex(primary), colorToHex(secondary)]);
+            } catch (error) {
+                console.warn("[DMProfileFlair] banner palette sampling failed:", error);
+                resolve(null);
+            }
+        };
+        image.onerror = () => resolve(null);
+        image.src = dataUri;
+    });
+}
+
+async function sampleBannerPalette(sourceUrl: string): Promise<[string, string] | null> {
+    const stillFrame = await extractStillFrameFromUrl(sourceUrl);
+    return stillFrame ? samplePaletteFromDataUri(stillFrame) : null;
+}
+
+async function broadcastBannerPalette(sourceUrl: string): Promise<boolean> {
+    if (!URL_RE.test(sourceUrl)) {
+        toast("Set a valid direct banner or still-frame URL first.", Toasts.Type.FAILURE, 5000);
+        return false;
+    }
+    const pageHint = detectPageHostMistake(sourceUrl);
+    if (pageHint) {
+        toast(pageHint, Toasts.Type.FAILURE, 8000);
+        return false;
+    }
+
+    toast("Sampling a representative color pair from your banner…", Toasts.Type.MESSAGE, 3000);
+    const palette = await sampleBannerPalette(sourceUrl);
+    if (!palette) {
+        toast("Couldn't sample the banner. Verify it is a direct image, GIF, or video URL.", Toasts.Type.FAILURE, 6000);
+        return false;
+    }
+
+    const [primary, secondary] = palette;
+    const ok = await broadcastThemeColors(primary, secondary);
+    if (ok) {
+        toast(
+            `Native color test sent: ${primary} → ${secondary}. This is only a color approximation; vanilla visibility still needs a second-account check.`,
+            Toasts.Type.MESSAGE,
+            8000
+        );
+    }
+    return ok;
+}
+
 // Extract a still PNG frame from an animated banner source (MP4/WEBM video,
 // animated GIF, or static image). Pulls the source through the dm-media://
 // proxy (Chromium ORB blocks arbitrary HTTPS in renderer fetch), then routes
@@ -396,17 +655,67 @@ async function extractStillFrameFromUrl(httpsUrl: string): Promise<string | null
         }
         const blob = await res.blob();
         const blobUrl = URL.createObjectURL(blob);
-        const mime = blob.type || "";
+        const mime = blob.type.trim().toLowerCase();
         try {
-            return mime.startsWith("video/")
-                ? await drawVideoFirstFrame(blobUrl)
-                : await drawImageFirstFrame(blobUrl);
+            if (mime.startsWith("video/")) return await drawVideoFirstFrame(blobUrl);
+            if (mime.startsWith("image/")) return await drawImageFirstFrame(blobUrl);
+            console.warn(`[DMProfileFlair] extractStillFrame unsupported MIME: ${mime || "unknown"}`);
+            return null;
         } finally {
             URL.revokeObjectURL(blobUrl);
         }
     } catch (e) {
         console.warn("[DMProfileFlair] extractStillFrameFromUrl failed:", e);
         return null;
+    }
+}
+
+/**
+ * Copy a rendered still frame to the system clipboard so the user can paste
+ * it into an ordinary Discord message. This is the no-Nitro, vanilla-visible
+ * path: the pasted attachment is a normal Discord message, not a profile
+ * mutation and not a Discordmaxxer-only field.
+ */
+async function copyVanillaStillFrame(sourceUrl: string): Promise<boolean> {
+    if (!URL_RE.test(sourceUrl)) {
+        toast("Set a valid direct banner or still-frame URL first.", Toasts.Type.FAILURE, 5000);
+        return false;
+    }
+    const pageHint = detectPageHostMistake(sourceUrl);
+    if (pageHint) {
+        toast(pageHint, Toasts.Type.FAILURE, 8000);
+        return false;
+    }
+
+    toast("Extracting a PNG still frame for vanilla Discord…", Toasts.Type.MESSAGE, 3000);
+    const dataUri = await extractStillFrameFromUrl(sourceUrl);
+    if (!dataUri) {
+        toast("Couldn't extract a still frame — use a direct image/video URL.", Toasts.Type.FAILURE, 6000);
+        return false;
+    }
+
+    try {
+        // ClipboardItem is deliberately accessed through globalThis so this
+        // stays compatible with older Electron type definitions. Chromium's
+        // normal permission prompt, if any, is still respected.
+        const clipboard = navigator.clipboard as Clipboard & { write?: (items: ClipboardItem[]) => Promise<void> };
+        const ClipboardItemCtor = (globalThis as any).ClipboardItem;
+        if (!clipboard?.write || !ClipboardItemCtor) throw new Error("image clipboard API unavailable");
+        const blob = await (await fetch(dataUri)).blob();
+        await clipboard.write([new ClipboardItemCtor({ "image/png": blob })]);
+        toast("✅ Still frame copied — paste it into a normal Discord message for vanilla users to see.", Toasts.Type.SUCCESS, 6000);
+        return true;
+    } catch (e) {
+        console.warn("[DMProfileFlair] clipboard image write failed:", e);
+        const fallback = await copyText(buildVanillaShareText("", sourceUrl));
+        toast(
+            fallback
+                ? "Image clipboard is unavailable here, so the still-frame link was copied instead."
+                : "Clipboard access was blocked. Save the still frame through the browser or copy the URL manually.",
+            fallback ? Toasts.Type.MESSAGE : Toasts.Type.FAILURE,
+            7000
+        );
+        return fallback;
     }
 }
 
@@ -515,6 +824,11 @@ async function broadcastStillBanner(animatedUrl: string): Promise<boolean> {
         toast("Couldn't extract a still frame — verify the banner URL is a direct image/video link.", Toasts.Type.FAILURE, 6000);
         return false;
     }
+    const frameBytes = estimateDataUriBytes(dataUri);
+    if (frameBytes === null || frameBytes > MAX_NATIVE_BANNER_BYTES) {
+        toast("The extracted PNG is over the 10 MB native-banner safety limit. Use a smaller or lower-resolution source.", Toasts.Type.FAILURE, 7000);
+        return false;
+    }
     try {
         await RestAPI.patch({
             url: "/users/@me/profile",
@@ -580,15 +894,20 @@ async function broadcastBanner(url: string): Promise<boolean> {
     const pageHint = detectPageHostMistake(url);
     if (pageHint) { toast(pageHint, Toasts.Type.FAILURE, 8000); return false; }
     toast("Downloading banner bytes…", Toasts.Type.MESSAGE, 3000);
-    const dataUri = await urlToDataUri(url);
-    if (!dataUri) {
+    const media = await fetchDataUri(url);
+    if (!media) {
         toast("Couldn't download the banner URL. Verify it's a direct image link (not a webpage).", Toasts.Type.FAILURE, 6000);
+        return false;
+    }
+    const mediaError = nativeBannerMediaError(media);
+    if (mediaError) {
+        toast(mediaError, Toasts.Type.FAILURE, 8000);
         return false;
     }
     try {
         await RestAPI.patch({
             url: "/users/@me/profile",
-            body: { banner: dataUri }
+            body: { banner: media.dataUri }
         });
         toast("✅ Banner broadcast to your real Discord profile.", Toasts.Type.SUCCESS, 5000);
         return true;
@@ -607,9 +926,316 @@ async function broadcastBanner(url: string): Promise<boolean> {
     }
 }
 
+type FlairMediaKind = "banner" | "avatar";
+
+interface DirectMediaPreviewProps {
+    kind: FlairMediaKind;
+    url: string;
+    profile?: Pick<ProfileFlair, "bannerPosition" | "avatarPosition" | "bannerFit" | "avatarFit" | "avatarScale" | "mediaEffect">;
+}
+
+/**
+ * Field-local full-source preview for the editor. Keeping this beside the URL
+ * input makes it obvious which source is being previewed, while the existing
+ * dm-media proxy keeps cross-origin video previews usable in Chromium.
+ */
+function DirectMediaPreview({ kind, url, profile }: DirectMediaPreviewProps) {
+    const [state, setState] = React.useState<"empty" | "loading" | "ready" | "error">("empty");
+    const validSource = /^(?:https:\/\/|blob:|data:)/i.test(url);
+    const isVideo = isVideoUrl(url);
+    const source = isVideo && validSource ? proxyVideoUrl(url) : url;
+    const objectPosition = kind === "banner"
+        ? profile?.bannerPosition ?? "center"
+        : profile?.avatarPosition ?? "center";
+    const objectFit = kind === "banner"
+        ? profile?.bannerFit ?? "cover"
+        : profile?.avatarFit ?? "cover";
+    const avatarScale = kind === "avatar" ? Number(profile?.avatarScale ?? "1") : 1;
+    const mediaEffect = profile?.mediaEffect ?? "none";
+
+    React.useEffect(() => {
+        setState(url && validSource ? "loading" : "empty");
+    }, [url, validSource]);
+
+    const frameStyle: React.CSSProperties = {
+        position: "relative",
+        width: kind === "banner" ? "100%" : 220,
+        height: kind === "banner" ? "auto" : 220,
+        aspectRatio: kind === "banner" ? "2.83 / 1" : "1 / 1",
+        minHeight: kind === "banner" ? 160 : 180,
+        maxHeight: kind === "banner" ? 260 : 260,
+        maxWidth: "100%",
+        overflow: "hidden",
+        borderRadius: 6,
+        background: "rgba(0, 0, 0, 0.28)",
+        border: "1px solid rgba(255, 255, 255, 0.12)",
+        margin: "8px auto 0",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center"
+    };
+    const mediaStyle: React.CSSProperties = {
+        display: state === "error" ? "none" : "block",
+        width: "100%",
+        height: "100%",
+        objectFit,
+        objectPosition,
+        background: "#17131d",
+        transform: kind === "avatar" ? `scale(${avatarScale})` : undefined,
+        filter: mediaEffect === "glow"
+            ? "drop-shadow(0 0 10px rgba(226, 91, 255, 0.75))"
+            : undefined
+    };
+    const messageStyle: React.CSSProperties = {
+        position: "absolute",
+        inset: 0,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: "0 12px",
+        textAlign: "center",
+        color: state === "error" ? "#ffcfda" : "#cbd0e0",
+        fontSize: 11,
+        lineHeight: 1.35
+    };
+
+    if (!url) {
+        return <div style={frameStyle} aria-label={`${kind} live preview`}>
+            <div style={messageStyle}>Paste a direct HTTPS {kind} image, GIF, or video URL to preview it here.</div>
+        </div>;
+    }
+    if (!validSource) {
+        return <div style={frameStyle} aria-label={`${kind} live preview`}>
+            <div style={messageStyle}>Preview needs a direct HTTPS media URL, not a webpage link.</div>
+        </div>;
+    }
+
+    const onReady = () => setState("ready");
+    const onError = () => setState("error");
+
+    return (
+        <div style={frameStyle} aria-label={`${kind} live preview`}>
+            {isVideo ? (
+                <video
+                    src={source}
+                    muted
+                    loop
+                    autoPlay
+                    playsInline
+                    preload="metadata"
+                    style={mediaStyle}
+                    onLoadedData={onReady}
+                    onError={onError}
+                />
+            ) : (
+                <img
+                    src={source}
+                    alt={`${kind} live preview`}
+                    referrerPolicy="no-referrer"
+                    style={mediaStyle}
+                    onLoad={onReady}
+                    onError={onError}
+                />
+            )}
+            {mediaEffect === "scanline" && (
+                <div
+                    aria-hidden="true"
+                    style={{
+                        position: "absolute",
+                        inset: 0,
+                        pointerEvents: "none",
+                        background: "repeating-linear-gradient(180deg, rgba(255,255,255,0.12) 0, rgba(255,255,255,0.12) 1px, transparent 1px, transparent 4px)",
+                        mixBlendMode: "screen",
+                        opacity: 0.55
+                    }}
+                />
+            )}
+            {state === "loading" && <div style={messageStyle}>Loading preview…</div>}
+            {state === "error" && <div style={messageStyle}>Could not load this URL. Use the direct media file link, not a webpage.</div>}
+        </div>
+    );
+}
+
+const settingLabelStyle: React.CSSProperties = {
+    color: "#b5b9c9",
+    fontSize: 13,
+    fontWeight: 600,
+    marginBottom: 4
+};
+const settingDescriptionStyle: React.CSSProperties = {
+    color: "#cbd0e0",
+    fontSize: 11.5,
+    lineHeight: 1.45,
+    opacity: 0.85,
+    marginBottom: 8
+};
+const settingInputStyle: React.CSSProperties = {
+    width: "100%",
+    boxSizing: "border-box",
+    padding: "10px 12px",
+    borderRadius: 6,
+    border: "1px solid rgba(255, 255, 255, 0.1)",
+    background: "#1d2029",
+    color: "#dbdee1",
+    fontSize: 13,
+    outline: "none"
+};
+
+interface FlairMediaSettingProps {
+    kind: FlairMediaKind;
+    value: string;
+    profile?: Pick<ProfileFlair, "bannerPosition" | "avatarPosition" | "bannerFit" | "avatarFit" | "avatarScale" | "mediaEffect">;
+    onChange(value: string): void;
+}
+
+function FlairMediaSetting({ kind, value, profile, onChange }: FlairMediaSettingProps) {
+    const label = kind === "banner" ? "My Banner URL" : "My Avatar Animated URL";
+    const description = kind === "banner"
+        ? "[Channel E · FREE] Paste a DIRECT image, GIF, or short MP4/WebM URL — not a webpage. The preview below updates as you type."
+        : "[Channel F · FREE] Paste a DIRECT image or GIF URL — not a webpage. Shared avatars accept GIF/image media; video avatars are native-Discord-only. The preview below updates as you type.";
+
+    return (
+        <div style={{ margin: "14px 0 16px" }}>
+            <div style={settingLabelStyle}>{label}</div>
+            <div style={settingDescriptionStyle}>{description}</div>
+            <input
+                type="text"
+                aria-label={label}
+                placeholder="https://..."
+                value={value}
+                style={settingInputStyle}
+                onChange={event => onChange(event.currentTarget.value)}
+            />
+            <DirectMediaPreview kind={kind} url={value.trim()} profile={profile} />
+        </div>
+    );
+}
+
+type ThemeColorKind = "primary" | "secondary";
+
+interface ThemeColorSettingProps {
+    kind: ThemeColorKind;
+    value: string;
+    primary: string;
+    secondary: string;
+    onChange(value: string): void;
+}
+
+function ThemeColorSetting({ kind, value, primary, secondary, onChange }: ThemeColorSettingProps) {
+    const color = normalizeColor(value);
+    const label = kind === "primary" ? "My Theme Color Primary" : "My Theme Color Secondary";
+    const description = kind === "primary"
+        ? "[Channel G · FREE] Primary theme color — TOP of the profile gradient. Type #RRGGBB, RRGGBB, or 0xRRGGBB."
+        : "[Channel G · FREE] Secondary theme color — BOTTOM of the profile gradient. It pairs with the primary once both are set.";
+    const inputColor = color ?? "#cbd0e0";
+
+    return (
+        <div style={{ margin: "14px 0 16px" }}>
+            <div style={settingLabelStyle}>{label}</div>
+            <div style={settingDescriptionStyle}>{description}</div>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <input
+                    type="text"
+                    aria-label={label}
+                    placeholder="#ff00aa"
+                    value={value}
+                    style={{ ...settingInputStyle, color: inputColor, fontWeight: 700, caretColor: inputColor }}
+                    onChange={event => onChange(event.currentTarget.value)}
+                />
+                <input
+                    type="color"
+                    aria-label={`${label} color picker`}
+                    value={color ?? "#666666"}
+                    title="Choose a color"
+                    style={{ width: 38, height: 38, padding: 2, border: "1px solid rgba(255,255,255,0.18)", borderRadius: 6, background: "#1d2029", cursor: "pointer" }}
+                    onChange={event => onChange(event.currentTarget.value)}
+                />
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8 }}>
+                <span style={{ width: 22, height: 22, borderRadius: 5, background: color ?? "#343744", border: "1px solid rgba(255,255,255,0.18)" }} />
+                <span style={{ color: inputColor, fontWeight: 700, fontSize: 12 }}>{color ?? "Enter a valid 6-digit hex color"}</span>
+            </div>
+            {kind === "secondary" && (primary || secondary) && (
+                <div style={{ marginTop: 10, padding: 10, borderRadius: 6, background: `linear-gradient(180deg, ${primary ?? "#29223a"} 0%, ${secondary ?? "#17131d"} 100%)`, border: "1px solid rgba(255,255,255,0.16)" }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: "#fff", textShadow: "0 1px 3px rgba(0,0,0,0.7)" }}>Live profile gradient</div>
+                    <div style={{ marginTop: 3, fontSize: 10.5, color: "rgba(255,255,255,0.9)", textShadow: "0 1px 3px rgba(0,0,0,0.7)" }}>
+                        {primary ?? "primary not set"} → {secondary ?? "secondary not set"}
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+}
+
+interface ProfileEnhancementControlProps {
+    label: string;
+    description: string;
+    value: string;
+    minTier: Tier;
+    options: Array<{ value: string; label: string }>;
+    onChange(value: string): void;
+}
+
+/**
+ * Paid profile controls intentionally modify presentation only. The media
+ * URL and its animation remain identical at FREE; this component just makes
+ * the paid upgrade obvious and prevents a lower-tier client from attempting
+ * to write fields the worker will reject.
+ */
+function ProfileEnhancementControl({ label, description, value, minTier, options, onChange }: ProfileEnhancementControlProps) {
+    const locked = getMyTier() < minTier;
+    return (
+        <div style={{ margin: "10px 0 12px", padding: "10px 11px", borderRadius: 7, background: locked ? "rgba(0, 0, 0, 0.16)" : "rgba(88, 101, 242, 0.08)", border: `1px solid ${locked ? "rgba(255,255,255,0.08)" : "rgba(88,101,242,0.3)"}` }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 3 }}>
+                <div style={{ color: "#fbefff", fontSize: 12, fontWeight: 700 }}>{label}</div>
+                <span style={{ color: locked ? "#a6abbc" : "#8feaff", fontSize: 10.5, fontFamily: "monospace", whiteSpace: "nowrap" }}>
+                    {locked ? `🔒 ${tierLabel(minTier)}` : "Included"}
+                </span>
+            </div>
+            <div style={{ color: "#cbd0e0", fontSize: 10.5, lineHeight: 1.4, opacity: 0.82, marginBottom: 7 }}>{description}</div>
+            <select
+                aria-label={label}
+                value={locked ? "" : value}
+                disabled={locked}
+                onChange={event => onChange(event.currentTarget.value)}
+                style={{ ...settingInputStyle, cursor: locked ? "not-allowed" : "pointer", opacity: locked ? 0.58 : 1 }}
+            >
+                <option value="">Default</option>
+                {options.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+            </select>
+            {locked && <div style={{ color: "#a6abbc", fontSize: 10, marginTop: 5 }}>Your free banner/avatar stays full-quality; this only adds a presentation control in {tierLabel(minTier)}.</div>}
+        </div>
+    );
+}
+
+type FlairActionFeedback = {
+    kind: "success" | "error" | "info";
+    text: string;
+};
+
 function FlairEditor() {
-    const s = settings.store;
+    // Use Vencord's reactive settings hook while the editor is mounted inside
+    // the plugin-settings page. The generic ComponentSetting host invokes this
+    // function during render, so reading the hook-backed proxy also guarantees
+    // defaults are materialized before the editor dereferences URL/color fields.
+    const s = settings.use([
+        "myBannerUrl",
+        "myVanillaStillFrameUrl",
+        "myAvatarAnimatedUrl",
+        "myThemeColorPrimary",
+        "myThemeColorSecondary",
+        "myBannerPosition",
+        "myAvatarPosition",
+        "myBannerFit",
+        "myAvatarFit",
+        "myAvatarScale",
+        "myMediaEffect",
+        "manualClaimCode",
+        "recentPicksJson"
+    ]);
     const [busy, setBusy] = React.useState(false);
+    const [actionFeedback, setActionFeedback] = React.useState<FlairActionFeedback | null>(null);
+    const announce = (kind: FlairActionFeedback["kind"], text: string) => setActionFeedback({ kind, text });
     // Track TM state live so the warning notice flips on/off without a panel
     // reopen. Cheap interval — every 2s is plenty, TM toggles are user-driven.
     const [tmActive, setTmActive] = React.useState(isTournamentModeActive());
@@ -633,15 +1259,37 @@ function FlairEditor() {
             const n = normalizeColor(trimmed);
             return n ?? trimmed;       // pass through unchanged so validation catches it
         };
+        const myTier = getMyTier();
         const proposed: Partial<ProfileFlair> = {
             bannerUrl: s.myBannerUrl.trim() || "",
             avatarAnimatedUrl: s.myAvatarAnimatedUrl.trim() || "",
             themeColorPrimary: normalizeForSave(s.myThemeColorPrimary),
             themeColorSecondary: normalizeForSave(s.myThemeColorSecondary)
         };
+        // Never send a locked control. This keeps a stale local setting from
+        // making a free save fail after a tier downgrade, while an empty
+        // control on an eligible tier intentionally clears that presentation
+        // choice in replace mode.
+        if (myTier >= Tier.MAXXER) {
+            proposed.bannerPosition = s.myBannerPosition.trim() || undefined;
+            proposed.avatarPosition = s.myAvatarPosition.trim() || undefined;
+        }
+        if (myTier >= Tier.MAXXER_PLUS) {
+            proposed.bannerFit = s.myBannerFit.trim() || undefined;
+            proposed.avatarFit = s.myAvatarFit.trim() || undefined;
+            proposed.avatarScale = s.myAvatarScale.trim() || undefined;
+        }
+        if (myTier >= Tier.MAXXER_PLUS_PLUS) {
+            proposed.mediaEffect = s.myMediaEffect.trim() || undefined;
+        }
         const err = validateLocal(proposed);
-        if (err) { toast(err, Toasts.Type.FAILURE, 5000); return; }
+        if (err) {
+            toast(err, Toasts.Type.FAILURE, 5000);
+            announce("error", err);
+            return;
+        }
         setBusy(true);
+        announce("info", "Saving to the shared Discordmaxxer roster…");
         // Replace mode: the editor reflects the user's full intended state,
         // so we replace rather than merge — empty fields clear server-side.
         const ok = await postFlairUpdate(proposed, true);
@@ -654,19 +1302,32 @@ function FlairEditor() {
                 proposed.themeColorPrimary || "",
                 proposed.themeColorSecondary || ""
             );
+            announce("success", "Saved to the shared Discordmaxxer roster. Other updated Discordmaxxer clients will see it after their roster refresh.");
+        } else {
+            announce("error", "The shared save failed. The error toast above contains the server reason.");
         }
         setBusy(false);
     };
 
     const onClearAll = async () => {
-        if (!confirm("Clear all your custom profile flair (banner, avatar, colors)?")) return;
+        if (!confirm("Clear all your custom profile flair (banner, avatar, colors, and presentation choices)?")) return;
         setBusy(true);
+        announce("info", "Clearing your shared Discordmaxxer flair…");
         const ok = await postFlairUpdate({}, true);
         if (ok) {
             s.myBannerUrl = "";
             s.myAvatarAnimatedUrl = "";
             s.myThemeColorPrimary = "";
             s.myThemeColorSecondary = "";
+            s.myBannerPosition = "";
+            s.myAvatarPosition = "";
+            s.myBannerFit = "";
+            s.myAvatarFit = "";
+            s.myAvatarScale = "";
+            s.myMediaEffect = "";
+            announce("success", "Cleared from the shared Discordmaxxer roster.");
+        } else {
+            announce("error", "The shared clear failed. The error toast above contains the server reason.");
         }
         setBusy(false);
     };
@@ -693,7 +1354,30 @@ function FlairEditor() {
         }
         if (!confirm(broadcastConfirmCopy("theme colors", "⚠ Discord only RENDERS profile gradients for Nitro accounts. Without Nitro the write may go through, but vanilla / non-Nitro viewers still see your default — they will NOT see this gradient. Other Discordmaxxer users always see it in-app (no Nitro needed)."))) return;
         setBusy(true);
-        await broadcastThemeColors(p, sec);
+        announce("info", "Sending the one-time native Discord color update…");
+        const ok = await broadcastThemeColors(p, sec);
+        announce(ok ? "success" : "error", ok
+            ? "Discord accepted the native color update. This did not change your Discordmaxxer roster."
+            : "Discord did not accept the native color update. The error toast above contains the reason.");
+        setBusy(false);
+    };
+
+    const onBroadcastBannerPalette = async () => {
+        const source = s.myVanillaStillFrameUrl.trim() || s.myBannerUrl.trim();
+        if (!source) {
+            toast("Set your banner URL above before trying the native color test.", Toasts.Type.FAILURE, 5000);
+            return;
+        }
+        if (!confirm(broadcastConfirmCopy(
+            "theme colors",
+            "We'll sample the selected banner (or your chosen still-frame URL) and write only two native Discord profile colors. This does not upload the banner, change your avatar, or send a message. Discord may still restrict the render to Nitro accounts, so a vanilla second-account check is required."
+        ))) return;
+        setBusy(true);
+        announce("info", "Sampling the banner and sending the one-time native color update…");
+        const ok = await broadcastBannerPalette(source);
+        announce(ok ? "success" : "error", ok
+            ? "Native color test accepted. This changed the real Discord profile colors only; it did not change the Discordmaxxer roster."
+            : "Native color test failed. The error toast above contains the reason.");
         setBusy(false);
     };
 
@@ -711,7 +1395,11 @@ function FlairEditor() {
             "fails server-side and we'll surface a clear error."
         ))) return;
         setBusy(true);
-        await broadcastStillBanner(u);
+        announce("info", "Extracting the first frame and sending the one-time native banner update…");
+        const ok = await broadcastStillBanner(u);
+        announce(ok ? "success" : "error", ok
+            ? "Native still-frame banner accepted by Discord. This did not change your Discordmaxxer roster."
+            : "Native still-frame banner failed. The error toast above contains the reason.");
         setBusy(false);
     };
 
@@ -723,7 +1411,11 @@ function FlairEditor() {
         }
         if (!confirm(broadcastConfirmCopy("avatar", "ℹ Static PNG/JPG works on free Discord. Animated GIF requires Nitro — Discord will reject the upload otherwise (we'll surface the error)."))) return;
         setBusy(true);
-        await broadcastAvatar(u);
+        announce("info", "Sending the one-time native Discord avatar update…");
+        const ok = await broadcastAvatar(u);
+        announce(ok ? "success" : "error", ok
+            ? "Native Discord avatar accepted. This does not update the Discordmaxxer roster, so other Discordmaxxer clients will not inherit it."
+            : "Native Discord avatar failed. The error toast above contains the reason.");
         setBusy(false);
     };
 
@@ -733,9 +1425,50 @@ function FlairEditor() {
             toast("Set a banner URL above before broadcasting.", Toasts.Type.FAILURE, 5000);
             return;
         }
-        if (!confirm(broadcastConfirmCopy("banner", "⚠ Discord banners require Nitro for any user. Without Nitro this PATCH will fail (we'll show a clear error). For a no-Nitro identity, set your flair in Discordmaxxer instead — other Discordmaxxer users see your banner + gradient in-app."))) return;
+        if (!confirm(broadcastConfirmCopy("banner", "⚠ Discord banners require Nitro for any user. This one-click path accepts confirmed static PNG/JPEG/WebP bytes only; use the still-frame action for video or GIF sources. Without Nitro this PATCH will fail (we'll show a clear error). For a no-Nitro identity, set your flair in Discordmaxxer instead — other Discordmaxxer users see your banner + gradient in-app."))) return;
         setBusy(true);
-        await broadcastBanner(u);
+        announce("info", "Sending the one-time native Discord banner update…");
+        const ok = await broadcastBanner(u);
+        announce(ok ? "success" : "error", ok
+            ? "Native Discord banner accepted. This did not change your Discordmaxxer roster."
+            : "Native Discord banner failed. The error toast above contains the reason.");
+        setBusy(false);
+    };
+
+    // ── Vanilla compatibility bridge ─────────────────────────────────────
+    // These actions never write to the Discord account. They only place user-
+    // chosen media/text on the local clipboard for an explicit paste into a
+    // normal Discord message or DM. That is the only reliable no-Nitro route
+    // for a stock client to see a roster-only banner.
+    const onCopyVanillaCard = async () => {
+        const banner = s.myBannerUrl.trim();
+        const still = s.myVanillaStillFrameUrl.trim();
+        if (!banner && !still) {
+            toast("Set a banner URL or a vanilla still-frame URL first.", Toasts.Type.FAILURE, 5000);
+            return;
+        }
+        const ok = await copyText(buildVanillaShareText(banner, still));
+        toast(
+            ok
+                ? "✅ Vanilla share card copied — paste it into a Discord chat."
+                : "Clipboard access was blocked; copy the banner link manually from the settings field.",
+            ok ? Toasts.Type.SUCCESS : Toasts.Type.FAILURE,
+            6000
+        );
+    };
+
+    const onCopyVanillaStill = async () => {
+        const source = s.myVanillaStillFrameUrl.trim() || s.myBannerUrl.trim();
+        if (!source) {
+            toast("Set a banner URL or a vanilla still-frame URL first.", Toasts.Type.FAILURE, 5000);
+            return;
+        }
+        setBusy(true);
+        announce("info", "Extracting a still frame for the vanilla share path…");
+        const ok = await copyVanillaStillFrame(source);
+        announce(ok ? "success" : "error", ok
+            ? "Vanilla still frame copied. Paste it into a normal Discord chat."
+            : "Could not copy the vanilla still frame. The error toast above contains the reason.");
         setBusy(false);
     };
 
@@ -770,10 +1503,21 @@ function FlairEditor() {
     const broadcastBtnRow: React.CSSProperties = {
         display: "flex", flexDirection: "column", gap: 6, marginTop: 8
     };
+    const vanillaBridgeStyle: React.CSSProperties = {
+        marginTop: 14, padding: "12px 0 0", borderTop: "1px dashed rgba(226, 91, 255, 0.35)"
+    };
 
     // ── Recent picks UI — Discord-style quick-pick history ─────────────────
     const recents = readRecentPicks();
     const hasAnyRecents = recents.banners.length > 0 || recents.avatars.length > 0 || recents.colors.length > 0;
+    const liveProfile: Pick<ProfileFlair, "bannerPosition" | "avatarPosition" | "bannerFit" | "avatarFit" | "avatarScale" | "mediaEffect"> = {
+        bannerPosition: (s.myBannerPosition || undefined) as ProfileFlair["bannerPosition"],
+        avatarPosition: (s.myAvatarPosition || undefined) as ProfileFlair["avatarPosition"],
+        bannerFit: (s.myBannerFit || undefined) as ProfileFlair["bannerFit"],
+        avatarFit: (s.myAvatarFit || undefined) as ProfileFlair["avatarFit"],
+        avatarScale: (s.myAvatarScale || undefined) as ProfileFlair["avatarScale"],
+        mediaEffect: (s.myMediaEffect || undefined) as ProfileFlair["mediaEffect"]
+    };
 
     const recentsWrap: React.CSSProperties = {
         marginBottom: 12, paddingBottom: 10,
@@ -805,6 +1549,95 @@ function FlairEditor() {
     return (
         <div style={wrapStyle}>
             <div style={titleStyle}>🎨 Save your custom flair</div>
+
+            <div style={{ marginBottom: 12, paddingBottom: 10, borderBottom: "1px dashed rgba(226, 91, 255, 0.35)" }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: "#fbefff", marginBottom: 2 }}>
+                    Live appearance preview
+                </div>
+                <div style={{ fontSize: 10.5, color: "#cbd0e0", opacity: 0.8, lineHeight: 1.4, marginBottom: 8 }}>
+                    These are the same values used by the Save button. The preview updates while you type; Save to Discordmaxxer pushes the finished look to the roster.
+                </div>
+                <FlairMediaSetting
+                    kind="banner"
+                    value={s.myBannerUrl}
+                    profile={liveProfile}
+                    onChange={value => { s.myBannerUrl = value; }}
+                />
+                <FlairMediaSetting
+                    kind="avatar"
+                    value={s.myAvatarAnimatedUrl}
+                    profile={liveProfile}
+                    onChange={value => { s.myAvatarAnimatedUrl = value; }}
+                />
+                <div style={{ margin: "4px 0 8px", padding: "10px 11px", borderRadius: 7, background: "rgba(0, 212, 255, 0.05)", border: "1px solid rgba(0, 212, 255, 0.2)" }}>
+                    <div style={{ color: "#fbefff", fontSize: 12, fontWeight: 700, marginBottom: 3 }}>Paid presentation enhancements</div>
+                    <div style={{ color: "#cbd0e0", fontSize: 10.5, lineHeight: 1.4, opacity: 0.85 }}>
+                        Free users keep the exact same animated banner/avatar quality. Paid tiers only add optional framing, scale, and visual-finish controls, and the selected controls travel with your profile to other Discordmaxxer clients.
+                    </div>
+                </div>
+                <ProfileEnhancementControl
+                    label="Banner crop anchor"
+                    description="Choose which part of a tall or wide banner stays visible when it is cropped."
+                    value={s.myBannerPosition}
+                    minTier={Tier.MAXXER}
+                    options={POSITION_OPTIONS}
+                    onChange={value => { s.myBannerPosition = value; }}
+                />
+                <ProfileEnhancementControl
+                    label="Banner fit"
+                    description="Fill the banner area or show the whole source with letterboxing."
+                    value={s.myBannerFit}
+                    minTier={Tier.MAXXER_PLUS}
+                    options={FIT_OPTIONS}
+                    onChange={value => { s.myBannerFit = value; }}
+                />
+                <ProfileEnhancementControl
+                    label="Avatar crop anchor"
+                    description="Choose the top, center, or bottom of an animated avatar source."
+                    value={s.myAvatarPosition}
+                    minTier={Tier.MAXXER}
+                    options={POSITION_OPTIONS}
+                    onChange={value => { s.myAvatarPosition = value; }}
+                />
+                <ProfileEnhancementControl
+                    label="Avatar fit + scale"
+                    description="Show the whole avatar and adjust its size inside the avatar frame."
+                    value={s.myAvatarFit}
+                    minTier={Tier.MAXXER_PLUS}
+                    options={FIT_OPTIONS}
+                    onChange={value => { s.myAvatarFit = value; }}
+                />
+                <ProfileEnhancementControl
+                    label="Avatar scale"
+                    description="Fine-tune the animated avatar size without changing the source media."
+                    value={s.myAvatarScale}
+                    minTier={Tier.MAXXER_PLUS}
+                    options={SCALE_OPTIONS}
+                    onChange={value => { s.myAvatarScale = value; }}
+                />
+                <ProfileEnhancementControl
+                    label="Media finish"
+                    description="Add a subtle glow or scanline finish to your shared banner and avatar."
+                    value={s.myMediaEffect}
+                    minTier={Tier.MAXXER_PLUS_PLUS}
+                    options={EFFECT_OPTIONS}
+                    onChange={value => { s.myMediaEffect = value; }}
+                />
+                <ThemeColorSetting
+                    kind="primary"
+                    value={s.myThemeColorPrimary}
+                    primary={normalizeColor(s.myThemeColorPrimary) ?? ""}
+                    secondary={normalizeColor(s.myThemeColorSecondary) ?? ""}
+                    onChange={value => { s.myThemeColorPrimary = value; }}
+                />
+                <ThemeColorSetting
+                    kind="secondary"
+                    value={s.myThemeColorSecondary}
+                    primary={normalizeColor(s.myThemeColorPrimary) ?? ""}
+                    secondary={normalizeColor(s.myThemeColorSecondary) ?? ""}
+                    onChange={value => { s.myThemeColorSecondary = value; }}
+                />
+            </div>
 
             {hasAnyRecents && (
                 <div style={recentsWrap}>
@@ -876,8 +1709,10 @@ function FlairEditor() {
             <div style={noteStyle}>
                 These values are sent to the Discordmaxxer roster and rendered for other
                 Discordmaxxer users. Vanilla Discord users see your stock profile.
-                Worker validates each field server-side — banner needs MAXXER, animated
-                avatar needs MAXXER+, theme colors need MAXXER++.
+                Worker validates the roster claim and media safety server-side. Profile
+                flair is free for every claimed Discordmaxxer user: one active banner,
+                one active animated avatar, and the two theme colors. TournamentMode
+                pauses animated media while it is active.
             </div>
             <div style={btnRow}>
                 <Button size={Button.Sizes.SMALL} color={Button.Colors.BRAND} onClick={onSave} disabled={busy}>
@@ -887,6 +1722,37 @@ function FlairEditor() {
                     ✕ Clear all my flair
                 </Button>
             </div>
+            {actionFeedback && (
+                <div
+                    role="status"
+                    aria-live="polite"
+                    style={{
+                        marginTop: 9,
+                        padding: "8px 10px",
+                        borderRadius: 6,
+                        background: actionFeedback.kind === "success"
+                            ? "rgba(67, 211, 123, 0.12)"
+                            : actionFeedback.kind === "error"
+                                ? "rgba(237, 66, 69, 0.12)"
+                                : "rgba(88, 101, 242, 0.12)",
+                        border: `1px solid ${actionFeedback.kind === "success"
+                            ? "rgba(67, 211, 123, 0.45)"
+                            : actionFeedback.kind === "error"
+                                ? "rgba(237, 66, 69, 0.45)"
+                                : "rgba(88, 101, 242, 0.45)"}`,
+                        color: actionFeedback.kind === "success"
+                            ? "#9ff0bb"
+                            : actionFeedback.kind === "error"
+                                ? "#ffb4b5"
+                                : "#c9d0ff",
+                        fontSize: 11.5,
+                        lineHeight: 1.45
+                    }}
+                >
+                    {actionFeedback.kind === "success" ? "✅ " : actionFeedback.kind === "error" ? "⚠️ " : "ℹ️ "}
+                    {actionFeedback.text}
+                </div>
+            )}
 
             <div style={broadcastWrapStyle}>
                 <div style={broadcastTitleStyle}>📡 Broadcast to vanilla Discord (one-time)</div>
@@ -895,20 +1761,44 @@ function FlairEditor() {
                     These buttons below PATCH your <b>real Discord profile</b> so <b>everyone</b> sees it —
                     Nitro friends, normies, mobile-only users, the works. Fires once per click; never re-asserts.
                     <br /><br />
-                    <b>Theme gradient:</b> PATCH succeeds on free accounts but Discord silently <b>Nitro-gates the render</b> — vanilla viewers see default unless you have Nitro. <b>Static avatar:</b> free. <b>Animated avatar + any banner (incl. still-frame):</b> Nitro required server-side.
+                    <b>Theme gradient:</b> PATCH succeeds on free accounts but Discord silently <b>Nitro-gates the render</b> — vanilla viewers see default unless you have Nitro. <b>Static avatar:</b> free. <b>Any banner (static or still-frame):</b> Nitro required server-side. The new palette button samples your banner into two native colors as a best-effort test; it does not upload the banner or change your avatar.
+                    <br /><br />
+                    Native broadcast buttons affect the real Discord profile only. They do not update the shared Discordmaxxer roster; use <b>Save to Discordmaxxer</b> when you want other Discordmaxxer clients to see your flair.
                 </div>
                 <div style={broadcastBtnRow}>
                     <Button size={Button.Sizes.SMALL} color={Button.Colors.PRIMARY} onClick={onBroadcastColors} disabled={busy}>
                         📡 Broadcast theme gradient (Nitro-gated render)
                     </Button>
+                    <Button size={Button.Sizes.SMALL} color={Button.Colors.BRAND} onClick={onBroadcastBannerPalette} disabled={busy}>
+                        🎨 Try banner as native colors (best effort)
+                    </Button>
                     <Button size={Button.Sizes.SMALL} color={Button.Colors.PRIMARY} onClick={onBroadcastAvatar} disabled={busy}>
-                        📡 Broadcast avatar (static = free, animated = Nitro)
+                        📡 Broadcast avatar to native Discord (not shared roster)
                     </Button>
                     <Button size={Button.Sizes.SMALL} color={Button.Colors.PRIMARY} onClick={onBroadcastBanner} disabled={busy}>
                         📡 Broadcast banner as-is (Nitro required)
                     </Button>
                     <Button size={Button.Sizes.SMALL} color={Button.Colors.PRIMARY} onClick={onBroadcastStillBanner} disabled={busy}>
                         📡 Broadcast banner as still-frame (extract first frame from video/GIF, Nitro required)
+                    </Button>
+                </div>
+            </div>
+
+            <div style={vanillaBridgeStyle}>
+                <div style={broadcastTitleStyle}>🌉 Vanilla compatibility bridge (normal Discord message)</div>
+                <div style={broadcastNoteStyle}>
+                    Stock Discord cannot render Discordmaxxer-only profile flair, and Nitro is required for a real
+                    Discord profile banner. These buttons do not touch your account: they copy a share card or a
+                    PNG still frame so you can paste it into a normal Discord channel or DM. That is what vanilla
+                    users can actually see. Use the optional still-frame URL below when you want to choose a
+                    specific fallback; otherwise the first frame of your banner is used.
+                </div>
+                <div style={broadcastBtnRow}>
+                    <Button size={Button.Sizes.SMALL} color={Button.Colors.BRAND} onClick={onCopyVanillaCard} disabled={busy}>
+                        📋 Copy vanilla share card (animated link + install link)
+                    </Button>
+                    <Button size={Button.Sizes.SMALL} color={Button.Colors.BRAND} onClick={onCopyVanillaStill} disabled={busy}>
+                        🖼 Copy vanilla still frame (paste into chat)
                     </Button>
                 </div>
             </div>
@@ -920,45 +1810,75 @@ const settings = definePluginSettings({
     // ─── Setter side (your own flair) ─────────────────────────────────────
     myBannerUrl: {
         type: OptionType.STRING,
+        description: "(Shown in the Live appearance preview below.)",
+        default: "",
+        hidden: true
+    },
+    myVanillaStillFrameUrl: {
+        type: OptionType.STRING,
         description:
-            "[Channel E · MAXXER+] DIRECT image URL (not a webpage). " +
-            "✅ Good: https://i.imgur.com/abc123.png  ❌ Bad: https://imgur.com/gallery/abc123 (HTML page, won't render). " +
-            "On imgur: right-click the image → 'Copy image address' to get the direct URL. " +
-            "Recommended size: 600×240 (or any 5:2 ratio — Discord's banner slot is 300×120 in popouts, 680×272 in full profile; 2× pixel density looks crispest). " +
-            "Supports png/jpg/webp/gif images OR short mp4/webm videos. ≤5MB image / ≤15MB video recommended. " +
-            "⚠ Suppressed while TournamentMode is active (any banner — image OR video — is paused; TM exists to free up GPU during matches).",
+            "Optional vanilla fallback: a direct static PNG/JPG/WebP URL you want to show to stock Discord users. " +
+            "The bridge uses this instead of extracting the first frame from myBannerUrl. This stays local and is " +
+            "never sent to the Discordmaxxer roster.",
         default: ""
     },
     myAvatarAnimatedUrl: {
         type: OptionType.STRING,
-        description:
-            "[Channel F · MAXXER+] DIRECT image/GIF URL (not a webpage). " +
-            "Same rules as banner — right-click → Copy image address to get the right URL. " +
-            "Recommended size: 160×160 square (1:1 aspect — Discord renders 80×80 in popouts, 120×120 in full profile; 2× density for crisp). " +
-            "Renders in profile popouts, full profile, AND member list + chat + voice + DM headers. " +
-            "⚠ IMPORTANT — you must have a CUSTOM Discord avatar set on your account (Discord Settings → My Account → upload anything) " +
-            "for the swap to work on member list / chat / voice surfaces. " +
-            "Discord's DEFAULT avatars (the colored wordmark) aren't on the per-user CDN path we match against, " +
-            "so users on default avatars only get the swap on the profile popout + full-profile view. " +
-            "Suppressed when TournamentMode is on.",
-        default: ""
+        description: "(Shown in the Live appearance preview below.)",
+        default: "",
+        hidden: true
     },
     myThemeColorPrimary: {
         type: OptionType.STRING,
-        description:
-            "[Channel G · MAXXER++] Primary theme color — TOP of the profile gradient. " +
-            "Accepts #RRGGBB, RRGGBB (no #), or 0xRRGGBB — auto-normalized. " +
-            "Empty by default (no gradient) — pick a preset in the welcome screen or set your own here. " +
-            "Clear to remove your gradient.",
-        default: ""
+        description: "(Shown in the Live appearance preview below.)",
+        default: "",
+        hidden: true
     },
     myThemeColorSecondary: {
         type: OptionType.STRING,
-        description:
-            "[Channel G · MAXXER++] Secondary theme color — BOTTOM of the profile gradient. " +
-            "Accepts #RRGGBB, RRGGBB (no #), or 0xRRGGBB — auto-normalized. " +
-            "Empty by default (no gradient) — paired with the primary above once both are set.",
-        default: ""
+        description: "(Shown in the Live appearance preview below.)",
+        default: "",
+        hidden: true
+    },
+    // Presentation-only controls. The media URLs remain identical for every
+    // tier; these values are optional paid enhancements stored alongside the
+    // owner's profile so other Discordmaxxer clients can render the same
+    // framing/effect instead of falling back to the viewer's settings.
+    myBannerPosition: {
+        type: OptionType.STRING,
+        description: "(Managed by the profile editor.)",
+        default: "",
+        hidden: true
+    },
+    myAvatarPosition: {
+        type: OptionType.STRING,
+        description: "(Managed by the profile editor.)",
+        default: "",
+        hidden: true
+    },
+    myBannerFit: {
+        type: OptionType.STRING,
+        description: "(Managed by the profile editor.)",
+        default: "",
+        hidden: true
+    },
+    myAvatarFit: {
+        type: OptionType.STRING,
+        description: "(Managed by the profile editor.)",
+        default: "",
+        hidden: true
+    },
+    myAvatarScale: {
+        type: OptionType.STRING,
+        description: "(Managed by the profile editor.)",
+        default: "",
+        hidden: true
+    },
+    myMediaEffect: {
+        type: OptionType.STRING,
+        description: "(Managed by the profile editor.)",
+        default: "",
+        hidden: true
     },
     manualClaimCode: {
         type: OptionType.STRING,
@@ -1021,14 +1941,31 @@ let style: HTMLStyleElement | null = null;
 let observer: MutationObserver | null = null;
 let rescanTimer: number | null = null;
 let defaultAvatarWarned = false;
+let removeRosterListener: (() => void) | null = null;
+let lastRosterRefreshAt = 0;
+const ROSTER_FOCUS_REFRESH_INTERVAL_MS = 30_000;
+
+function refreshRosterForVisibleSurface(): void {
+    if (document.hidden) return;
+    scheduleScan();
+    const now = Date.now();
+    if (now - lastRosterRefreshAt < ROSTER_FOCUS_REFRESH_INTERVAL_MS) return;
+    lastRosterRefreshAt = now;
+    refreshRoster().catch(e => console.warn("[DMProfileFlair] focused roster refresh failed:", e));
+}
+
+const onVisibilityChange = () => {
+    if (!document.hidden) refreshRosterForVisibleSurface();
+};
+const onRosterFocus = () => refreshRosterForVisibleSurface();
 
 
-/** True if a URL ends in a typical video extension. Used to decide whether to
- *  render as background-image (image) or as a <video> overlay (video). Pure
- *  string heuristic — Content-Type would be more reliable but needs a HEAD
- *  request before render which we'd rather avoid for popout-open latency. */
+/** True if a URL is explicitly marked or named as a video. Shared profile
+ *  media URLs are extensionless, so they must not be assumed to be videos:
+ *  the existing Diggyai banner is an animated GIF served from that route. */
 function isVideoUrl(url: string): boolean {
-    return /\.(mp4|webm|mov)(\?|#|$)/i.test(url);
+    return /^data:video\//i.test(url) ||
+        /(?:[?&]dmx-media=video(?:&|#|$)|\.(mp4|webm|mov)(\?|#|$))/i.test(url);
 }
 
 /** Wrap an HTTPS video URL through the dm-media:// proxy (registered in
@@ -1049,7 +1986,11 @@ function proxyVideoUrl(url: string): string {
  *  TournamentMode suppression — we want all decode/compositing-cost banners
  *  paused during gaming, not just videos. */
 function isAnimatedUrl(url: string): boolean {
-    return /\.(mp4|webm|mov|gif|apng)(\?|#|$)/i.test(url);
+    return /^data:image\/(?:gif|apng)/i.test(url) ||
+        isVideoUrl(url) ||
+        /\.(gif|apng)(\?|#|$)/i.test(url) ||
+        /\/profile-media\/[^/?#]+\/(?:banner|avatar)(?:\/|[?#]|$)/i.test(url) ||
+        /\/avatars\/\d{17,20}\/a_[^/?#]+\.(?:gif|webp|png)(?:[?#]|$)/i.test(url);
 }
 
 function buildCss(): string {
@@ -1069,7 +2010,100 @@ function buildCss(): string {
             object-fit: cover;
             object-position: center;
             pointer-events: none;
+            z-index: 0;
+            opacity: 0;
+            transition: opacity 120ms ease;
+        }
+        /* Image overlays are used for static and animated images, including
+           extensionless profile-media GIFs. Keeping the overlay transparent
+           until its load event prevents a blank banner while the replacement
+           is still fetching. */
+        .dm-flair-banner-image {
+            position: absolute;
+            inset: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            object-position: center;
+            pointer-events: none;
+            z-index: 0;
+            opacity: 0;
+            transition: opacity 120ms ease;
+        }
+
+        /* Owner-selected presentation controls. These are layered on top of
+           the same full-quality media for every tier; FREE keeps the native
+           cover/center defaults and never receives a lower-quality asset. */
+        [data-dm-flair-banner-fit="contain"] .dm-flair-banner-video,
+        [data-dm-flair-banner-fit="contain"] .dm-flair-banner-image {
+            object-fit: contain !important;
+        }
+        [data-dm-flair-banner-position="top"] .dm-flair-banner-video,
+        [data-dm-flair-banner-position="top"] .dm-flair-banner-image {
+            object-position: center top !important;
+        }
+        [data-dm-flair-banner-position="bottom"] .dm-flair-banner-video,
+        [data-dm-flair-banner-position="bottom"] .dm-flair-banner-image {
+            object-position: center bottom !important;
+        }
+        [data-dm-flair-media-effect="glow"] .dm-flair-banner-video,
+        [data-dm-flair-media-effect="glow"] .dm-flair-banner-image {
+            filter: drop-shadow(0 0 12px rgba(226, 91, 255, 0.75));
+        }
+        [data-dm-flair-media-effect="scanline"]::after {
+            content: "";
+            position: absolute;
+            inset: 0;
+            pointer-events: none;
             z-index: 1;
+            background: repeating-linear-gradient(180deg, rgba(255,255,255,0.12) 0, rgba(255,255,255,0.12) 1px, transparent 1px, transparent 4px);
+            mix-blend-mode: screen;
+            opacity: 0.42;
+        }
+
+        img[data-dm-flair-avatar-applied] {
+            object-fit: cover !important;
+            object-position: center !important;
+            transform-origin: center center;
+        }
+        img[data-dm-flair-avatar-fit="contain"] {
+            object-fit: contain !important;
+        }
+        img[data-dm-flair-avatar-position="top"] {
+            object-position: center top !important;
+        }
+        img[data-dm-flair-avatar-position="bottom"] {
+            object-position: center bottom !important;
+        }
+        img[data-dm-flair-avatar-scale="0.9"] {
+            transform: scale(0.9);
+        }
+        img[data-dm-flair-avatar-scale="1.1"] {
+            transform: scale(1.1);
+        }
+        img[data-dm-flair-avatar-effect="glow"] {
+            filter: drop-shadow(0 0 8px rgba(226, 91, 255, 0.75));
+        }
+        img[data-dm-flair-avatar-effect="scanline"] {
+            filter: saturate(1.2) contrast(1.08);
+        }
+        [data-dm-flair-bg-avatar-applied][data-dm-flair-avatar-fit="contain"] {
+            background-size: contain !important;
+        }
+        [data-dm-flair-bg-avatar-applied][data-dm-flair-avatar-fit="cover"] {
+            background-size: cover !important;
+        }
+        [data-dm-flair-bg-avatar-applied][data-dm-flair-avatar-position="top"] {
+            background-position: center top !important;
+        }
+        [data-dm-flair-bg-avatar-applied][data-dm-flair-avatar-position="bottom"] {
+            background-position: center bottom !important;
+        }
+
+        [class*="user-profile"] img[data-dm-flair-avatar-applied],
+        [role="dialog"] img[data-dm-flair-avatar-applied] {
+            position: relative !important;
+            z-index: 2 !important;
         }
 
     `;
@@ -1079,10 +2113,42 @@ function buildCss(): string {
  *  `banner__<hash>` (verified `banner__68edb` for both the small popout
  *  banner and the full-profile-view banner). Filter by size to skip small
  *  decorative banner SVGs. */
+const PROFILE_FAST_SCAN_ROOT_SELECTOR = [
+    '[class*="user-profile-popout"]',
+    '[class*="user-profile-sidebar"]',
+    '[class*="userProfileSidebar"]',
+    '[class*="userProfileModal"]',
+    '[class*="user-profile-modal"]',
+    '[class*="userPopout"]',
+    '[class*="user-popout"]',
+    '[class*="profileModal"]',
+    '[class*="profile-modal"]'
+].join(", ");
+
+const PROFILE_BANNER_SELECTOR = '[class*="banner_"], [class*="profileBanner"], [class*="userProfileBanner"]';
+
+function isProfileBannerWrapper(element: Element): boolean {
+    return Array.from(element.classList).some(token => /^banner_[a-z0-9]+$/i.test(token));
+}
+
+const PROFILE_VIEW_AVATAR_SELECTOR = [
+    ...PROFILE_FAST_SCAN_ROOT_SELECTOR.split(", ").map(selector => `${selector} img[class*="avatar__"]`),
+    '[role="dialog"] img[class*="avatar__"]'
+].join(", ");
+
+function profileFastRootFor(element: Element): HTMLElement | null {
+    const semanticRoot = element.closest<HTMLElement>(PROFILE_FAST_SCAN_ROOT_SELECTOR);
+    if (semanticRoot) return semanticRoot;
+    const dialog = element.closest<HTMLElement>('[role="dialog"]');
+    return dialog?.querySelector(PROFILE_BANNER_SELECTOR) ? dialog : null;
+}
+
 function findAllProfileBanners(): HTMLElement[] {
     const out: HTMLElement[] = [];
-    document.querySelectorAll('[class*="banner__"]').forEach(c => {
+    document.querySelectorAll(PROFILE_BANNER_SELECTOR).forEach(c => {
         const el = c as HTMLElement;
+        const wrapper = el.parentElement?.closest<HTMLElement>('[class*="banner_"]');
+        if (!isProfileBannerWrapper(el) && wrapper && isProfileBannerWrapper(wrapper)) return;
         const r = el.getBoundingClientRect();
         // Real profile banners are ≥200px wide and ≥50px tall. Smaller hits
         // are typically status icons or decorative graphics.
@@ -1116,12 +2182,12 @@ function findAvatarImgsForUser(userId: string): HTMLImageElement[] {
 
 /** Profile-view-only avatars (popout 80px, full profile 120px). Used as a
  *  fallback when we couldn't read currentUser?.id yet (very early startup). */
-function findProfileViewAvatars(): HTMLImageElement[] {
+function findProfileViewAvatars(root: ParentNode = document): HTMLImageElement[] {
     const out: HTMLImageElement[] = [];
-    document.querySelectorAll('img[class*="avatar__"]').forEach(c => {
+    root.querySelectorAll(PROFILE_VIEW_AVATAR_SELECTOR).forEach(c => {
         const el = c as HTMLImageElement;
         const r = el.getBoundingClientRect();
-        if (r.width >= 60 && r.height >= 60) out.push(el);
+        if (r.width >= 60 && r.height >= 60 && profileFastRootFor(el)) out.push(el);
     });
     return out;
 }
@@ -1177,7 +2243,7 @@ function findProfileContainerFromBanner(banner: HTMLElement): HTMLElement | null
     // guarantee we never escape the popout (escaping is how we ended up painting
     // the whole DM chat container in the first place).
     const popoutRoot = banner.closest<HTMLElement>(
-        '[class*="user-profile-popout"], [class*="userProfileModal"], [class*="userPopout"], [role="dialog"]'
+        PROFILE_FAST_SCAN_ROOT_SELECTOR + ', [role="dialog"]'
     );
 
     let el: HTMLElement | null = banner.parentElement;
@@ -1201,14 +2267,123 @@ function findProfileContainerFromBanner(banner: HTMLElement): HTMLElement | null
  *  `cdn.discordapp.com/avatars/<userId>/<hash>.<ext>`. Returns null when the
  *  user has Discord's default avatar (no per-user CDN URL — those use
  *  `/assets/<hash>.png` instead). */
-function getUserIdFromContainer(container: Element): string | null {
-    const imgs = container.querySelectorAll('img[class*="avatar__"]');
+function getUserIdFromContainerLegacy(container: Element): string | null {
+    // Discord has changed the avatar class token across profile-sidebar and
+    // popout layouts. The CDN path is the stable identity signal, so inspect
+    // every image in this already-bounded profile container instead of
+    // requiring the current `avatar__` class name.
+    const imgs = container.querySelectorAll("img");
     for (const img of imgs) {
         const src = (img as HTMLImageElement).currentSrc || (img as HTMLImageElement).src || "";
         const m = src.match(/\/avatars\/(\d{17,20})\//);
         if (m) return m[1];
     }
     return null;
+}
+
+function validSnowflake(value: unknown): string | null {
+    const text = typeof value === "string" || typeof value === "number" ? String(value) : "";
+    return /^\d{17,20}$/.test(text) ? text : null;
+}
+
+function findUserIdInReactValue(value: unknown, depth = 0, seen = new Set<object>(), budget = { left: 500 }): string | null {
+    if (depth > 5 || budget.left-- <= 0 || value == null) return null;
+    const direct = validSnowflake(value);
+    if (direct) return direct;
+    if (typeof value !== "object" || seen.has(value)) return null;
+    seen.add(value);
+    if (Array.isArray(value)) {
+        for (const item of value) {
+            const found = findUserIdInReactValue(item, depth + 1, seen, budget);
+            if (found) return found;
+        }
+        return null;
+    }
+    const record = value as Record<string, unknown>;
+    for (const key of ["userId", "user_id", "profileUserId", "profile_user_id"]) {
+        const found = validSnowflake(record[key]);
+        if (found) return found;
+    }
+    for (const key of ["user", "author", "recipient", "profile", "userData", "props", "memoizedProps", "pendingProps", "children"]) {
+        const nested = record[key];
+        if (!nested || typeof nested !== "object") continue;
+        const nestedRecord = nested as Record<string, unknown>;
+        const nestedId = validSnowflake(nestedRecord.id) ?? validSnowflake(nestedRecord.userId);
+        if (nestedId) return nestedId;
+        const found = findUserIdInReactValue(nested, depth + 1, seen, budget);
+        if (found) return found;
+    }
+    return null;
+}
+
+function findUserIdFromContainerUncached(container: Element): string | null {
+    let ancestor: Element | null = container;
+    for (let depth = 0; ancestor && depth < 6; depth++, ancestor = ancestor.parentElement) {
+        for (const attr of ["data-user-id", "data-userid", "data-profile-user-id", "data-profile-userid"]) {
+            const found = validSnowflake(ancestor.getAttribute(attr));
+            if (found) return found;
+        }
+        const ancestorMatch = (ancestor.getAttribute("id") ?? "").match(/(?:user|profile)[-_](\d{17,20})/i);
+        if (ancestorMatch) return ancestorMatch[1];
+    }
+
+    const elements = [container, ...Array.from(container.querySelectorAll("*"))].slice(0, 600);
+    for (const el of elements) {
+        for (const attr of ["data-user-id", "data-userid", "data-profile-user-id", "data-profile-userid"]) {
+            const found = validSnowflake(el.getAttribute(attr));
+            if (found) return found;
+        }
+        const flairAvatarId = validSnowflake(el.getAttribute("data-dm-flair-avatar-user-id"));
+        if (flairAvatarId) return flairAvatarId;
+        const hrefMatch = (el.getAttribute("href") ?? "").match(/\/(?:users?|profile)\/(\d{17,20})(?:\/|$)/i);
+        if (hrefMatch) return hrefMatch[1];
+        const domMatch = (el.getAttribute("id") ?? "").match(/(?:user|profile)[-_](\d{17,20})/i);
+        if (domMatch) return domMatch[1];
+    }
+
+    for (const img of container.querySelectorAll("img")) {
+        const src = (img as HTMLImageElement).currentSrc || (img as HTMLImageElement).src || "";
+        const match = src.match(/\/avatars\/(\d{17,20})\//);
+        if (match) return match[1];
+    }
+    for (const el of elements) {
+        for (const key of Object.keys(el)) {
+            if (!key.startsWith("__reactProps$") && !key.startsWith("__reactFiber$")) continue;
+            const found = findUserIdInReactValue((el as any)[key]);
+            if (found) return found;
+        }
+    }
+    return null;
+}
+
+const profileIdentityCache = new WeakMap<Element, { signature: string; userId: string | null; checkedAt: number }>();
+
+function profileIdentitySignature(container: Element): string {
+    const attrs = ["data-user-id", "data-userid", "data-profile-user-id", "data-profile-userid", "id"]
+        .map(key => container.getAttribute(key) ?? "")
+        .join("|");
+    const avatar = container.querySelector("img") as HTMLImageElement | null;
+    return `${attrs}|${avatar?.currentSrc || avatar?.src || ""}|${avatar?.getAttribute("data-dm-flair-avatar-user-id") || ""}|${container.childElementCount}`;
+}
+
+function getUserIdFromContainer(container: Element): string | null {
+    // Discord sometimes places the banner in a paint-only inner wrapper while
+    // the identity-bearing avatar lives on the semantic profile root. Search
+    // that bounded root as a fallback; never widen this to the whole document,
+    // which is how a banner in a DM used to inherit the wrong user's flair.
+    const roots: Element[] = [container];
+    const profileRoot = profileFastRootFor(container);
+    if (profileRoot && profileRoot !== container) roots.push(profileRoot);
+    const signature = roots.map(profileIdentitySignature).join("||");
+    const cached = profileIdentityCache.get(container);
+    if (cached?.signature === signature && Date.now() - cached.checkedAt < 1500) return cached.userId;
+    let userId: string | null = null;
+    for (const root of roots) {
+        userId = findUserIdFromContainerUncached(root);
+        if (userId) break;
+    }
+    profileIdentityCache.set(container, { signature, userId, checkedAt: Date.now() });
+    return userId;
 }
 
 /** Single point that decides what flair (if any) to render for a given user.
@@ -1253,6 +2428,7 @@ function resolveFlairForUserId(userId: string | null, kind: "banner" | "avatar" 
         const a = s.myAvatarAnimatedUrl.trim(); if (a) merged.avatarAnimatedUrl = a;
         const p = s.myThemeColorPrimary.trim(); if (p) merged.themeColorPrimary = p;
         const sc = s.myThemeColorSecondary.trim(); if (sc) merged.themeColorSecondary = sc;
+        mergeLocalPresentationFields(merged, s);
         if (Object.keys(merged).length) flair = merged;
     } else if (userId) {
         flair = getRosterProfileFlair(userId) ?? null;
@@ -1263,44 +2439,143 @@ function resolveFlairForUserId(userId: string | null, kind: "banner" | "avatar" 
     return flair;
 }
 
-function applyBanner(banner: HTMLElement, url: string) {
-    if (isVideoUrl(url)) {
-        // Route through dm-media:// proxy so arbitrary HTTPS MP4 URLs work
-        // (Chromium ORB blocks direct cross-origin video; main-process fetch
-        // bypasses ORB and serves through a same-origin custom scheme).
-        const proxiedUrl = proxyVideoUrl(url);
-        const existing = banner.querySelector(".dm-flair-banner-video") as HTMLVideoElement | null;
-        if (existing) {
-            // Already a video here — update src if URL changed, otherwise no-op.
-            if (existing.src !== proxiedUrl) {
-                existing.src = proxiedUrl;
-                existing.load();
-                existing.play().catch(() => {});
-            }
-        } else {
-            if (!banner.style.position) banner.style.position = "relative";
-            const v = document.createElement("video");
-            v.className = "dm-flair-banner-video";
-            v.src = proxiedUrl;
-            v.autoplay = true;
-            v.loop = true;
-            v.muted = true;
-            v.playsInline = true;
-            banner.appendChild(v);
-            v.play().catch(() => {});
-        }
-    } else {
-        // Image URL — clean up any leftover <video> element from a previous
-        // video URL, then the inline background-image below takes over.
-        banner.querySelectorAll(".dm-flair-banner-video").forEach(v => v.remove());
-        // Inline styles with `important` priority beat every stylesheet rule
-        // (theme, Discord's own, anything) — no specificity war.
-        banner.style.setProperty("background-image", `url("${url}")`, "important");
-        banner.style.setProperty("background-size", "cover", "important");
-        banner.style.setProperty("background-position", "center", "important");
-        banner.style.setProperty("background-repeat", "no-repeat", "important");
-        banner.setAttribute("data-dm-flair-banner-applied", "1");
+/** Remove our banner overlay and put the native Discord banner back. A failed
+ * remote media load must not leave the stock banner hidden behind a blank
+ * overlay. */
+function clearBanner(banner: HTMLElement, failedUrl?: string) {
+    const hadOverlay = banner.hasAttribute("data-dm-flair-banner-applied")
+        || banner.hasAttribute("data-dm-flair-banner-loading-url")
+        || Boolean(banner.querySelector(".dm-flair-banner-video, .dm-flair-banner-image"));
+    banner.removeAttribute("data-dm-flair-banner-applied");
+    delete banner.dataset.dmFlairBannerPosition;
+    delete banner.dataset.dmFlairBannerFit;
+    delete banner.dataset.dmFlairMediaEffect;
+    delete banner.dataset.dmFlairBannerAppliedUrl;
+    delete banner.dataset.dmFlairBannerLoadingUrl;
+    banner.querySelectorAll(".dm-flair-banner-video, .dm-flair-banner-image").forEach(v => v.remove());
+    // Do not erase Discord's own inline banner styles when this container was
+    // never ours. Only undo properties after we actually painted an overlay.
+    if (hadOverlay) {
+        banner.style.removeProperty("background-image");
+        banner.style.removeProperty("background-size");
+        banner.style.removeProperty("background-position");
+        banner.style.removeProperty("background-repeat");
     }
+    if (banner.hasAttribute("data-dm-flair-original-position")) {
+        const originalPosition = banner.dataset.dmFlairOriginalPosition ?? "";
+        if (originalPosition) banner.style.position = originalPosition;
+        else banner.style.removeProperty("position");
+        delete banner.dataset.dmFlairOriginalPosition;
+    }
+    if (failedUrl) {
+        banner.dataset.dmFlairBannerFailedUrl = failedUrl;
+        banner.dataset.dmFlairBannerFailedAt = String(Date.now());
+    } else {
+        delete banner.dataset.dmFlairBannerFailedUrl;
+        delete banner.dataset.dmFlairBannerFailedAt;
+    }
+}
+
+type ProfilePresentation = Pick<ProfileFlair,
+    "bannerPosition" | "avatarPosition" | "bannerFit" | "avatarFit" | "avatarScale" | "mediaEffect"
+>;
+
+function applyBannerPresentation(banner: HTMLElement, flair?: ProfilePresentation) {
+    if (flair?.bannerPosition) banner.dataset.dmFlairBannerPosition = flair.bannerPosition;
+    else delete banner.dataset.dmFlairBannerPosition;
+    if (flair?.bannerFit) banner.dataset.dmFlairBannerFit = flair.bannerFit;
+    else delete banner.dataset.dmFlairBannerFit;
+    if (flair?.mediaEffect && flair.mediaEffect !== "none") banner.dataset.dmFlairMediaEffect = flair.mediaEffect;
+    else delete banner.dataset.dmFlairMediaEffect;
+}
+
+function applyBanner(banner: HTMLElement, url: string, flair?: ProfilePresentation) {
+    // Presentation is updated before the idempotency check so a tier upgrade or
+    // a changed owner preference repaints the current media without refetching
+    // the same GIF/video. Defaults remain Discordmaxxer's existing cover/center
+    // rendering, so FREE media is never downgraded.
+    applyBannerPresentation(banner, flair);
+    const failedUrl = banner.dataset.dmFlairBannerFailedUrl;
+    const failedAt = Number(banner.dataset.dmFlairBannerFailedAt ?? 0);
+    const isVideo = isVideoUrl(url);
+    const selector = isVideo ? ".dm-flair-banner-video" : ".dm-flair-banner-image";
+    const appliedOverlay = banner.querySelector(selector);
+    // Do not recreate a media element that is already visible or currently
+    // loading. The observer runs frequently while a popout is opening.
+    if (banner.dataset.dmFlairBannerAppliedUrl === url && appliedOverlay) return;
+    if (banner.dataset.dmFlairBannerLoadingUrl === url) return;
+    // Avoid recreating a known-dead media URL every 2s. Retry after a short
+    // cooldown so a repaired remote asset can recover without a client restart.
+    if (failedUrl === url && Date.now() - failedAt < 30_000) return;
+    if (failedUrl && failedUrl !== url) {
+        delete banner.dataset.dmFlairBannerFailedUrl;
+        delete banner.dataset.dmFlairBannerFailedAt;
+    }
+    // If the source changed, keep the native banner visible until the new
+    // media has loaded. This also removes an old overlay without touching
+    // Discord's native <img>.
+    if (banner.hasAttribute("data-dm-flair-banner-applied")
+        || banner.hasAttribute("data-dm-flair-banner-loading-url")
+        || banner.querySelector(".dm-flair-banner-video, .dm-flair-banner-image")) {
+        clearBanner(banner);
+    }
+    if (!banner.hasAttribute("data-dm-flair-original-position")) {
+        banner.dataset.dmFlairOriginalPosition = banner.style.position || "";
+        if (!banner.style.position) banner.style.position = "relative";
+    }
+
+    banner.dataset.dmFlairBannerLoadingUrl = url;
+    const finish = (media: HTMLVideoElement | HTMLImageElement) => {
+        // A newer scan may have replaced or cleared this request. Never let a
+        // late load from an old profile paint over the current native banner.
+        if (banner.dataset.dmFlairBannerLoadingUrl !== url) {
+            media.remove();
+            return;
+        }
+        delete banner.dataset.dmFlairBannerLoadingUrl;
+        delete banner.dataset.dmFlairBannerFailedUrl;
+        delete banner.dataset.dmFlairBannerFailedAt;
+        media.style.opacity = "1";
+        banner.dataset.dmFlairBannerAppliedUrl = url;
+        banner.setAttribute("data-dm-flair-banner-applied", "1");
+        if (media instanceof HTMLVideoElement) media.play().catch(() => {});
+    };
+    const fail = () => {
+        console.warn("[DMProfileFlair] Remote banner could not be loaded; restored the native banner.", url);
+        clearBanner(banner, url);
+    };
+
+    if (isVideo) {
+        // Route videos through dm-media:// to bypass Chromium ORB for
+        // arbitrary HTTPS MP4/WebM URLs. The native banner stays visible until
+        // loadeddata proves that the replacement can actually render.
+        const v = document.createElement("video");
+        v.className = "dm-flair-banner-video";
+        v.autoplay = true;
+        v.loop = true;
+        v.muted = true;
+        v.playsInline = true;
+        v.onloadeddata = () => finish(v);
+        v.onerror = fail;
+        banner.appendChild(v);
+        v.src = proxyVideoUrl(url);
+        v.play().catch(() => {});
+        return;
+    }
+
+    // Use an actual <img> instead of a CSS background. This gives extensionless
+    // worker-hosted GIFs a real load/error lifecycle and preserves animation;
+    // the old background-image path hid the native banner without knowing
+    // whether the GIF had loaded.
+    const image = document.createElement("img");
+    image.className = "dm-flair-banner-image";
+    image.alt = "";
+    image.setAttribute("aria-hidden", "true");
+    image.decoding = "async";
+    image.onload = () => finish(image);
+    image.onerror = fail;
+    banner.appendChild(image);
+    image.src = url;
 }
 
 /** Accept `RRGGBB`, `#RRGGBB`, or `0xRRGGBB` and emit canonical `#RRGGBB`.
@@ -1351,7 +2626,49 @@ function applyTheme(container: HTMLElement, primary?: string, secondary?: string
     container.setAttribute("data-dm-flair-theme-applied", "1");
 }
 
-function applyAvatar(avatar: HTMLImageElement, url: string) {
+function clearTheme(container: HTMLElement) {
+    if (!container.hasAttribute("data-dm-flair-theme-applied")) return;
+    container.style.removeProperty("background-image");
+    container.style.removeProperty("background-color");
+    container.style.removeProperty("--profile-gradient-primary-color");
+    container.style.removeProperty("--profile-gradient-secondary-color");
+    container.style.removeProperty("--profile-body-background-color");
+    container.removeAttribute("data-dm-flair-theme-applied");
+}
+
+function applyAvatarPresentation(avatar: HTMLImageElement, flair?: ProfilePresentation) {
+    if (flair?.avatarPosition) avatar.dataset.dmFlairAvatarPosition = flair.avatarPosition;
+    else delete avatar.dataset.dmFlairAvatarPosition;
+    if (flair?.avatarFit) avatar.dataset.dmFlairAvatarFit = flair.avatarFit;
+    else delete avatar.dataset.dmFlairAvatarFit;
+    if (flair?.avatarScale) avatar.dataset.dmFlairAvatarScale = flair.avatarScale;
+    else delete avatar.dataset.dmFlairAvatarScale;
+    if (flair?.mediaEffect && flair.mediaEffect !== "none") avatar.dataset.dmFlairAvatarEffect = flair.mediaEffect;
+    else delete avatar.dataset.dmFlairAvatarEffect;
+}
+
+function clearAvatar(avatar: HTMLImageElement) {
+    const hadState = avatar.hasAttribute("data-dm-flair-avatar-applied")
+        || Boolean(avatar.dataset.dmFlairLoadingUrl)
+        || Boolean(avatar.dataset.dmFlairOriginalSrc);
+    if (!hadState) return;
+    delete avatar.dataset.dmFlairLoadingUrl;
+    delete avatar.dataset.dmFlairAppliedUrl;
+    delete avatar.dataset.dmFlairFailedUrl;
+    delete avatar.dataset.dmFlairAvatarUserId;
+    delete avatar.dataset.dmFlairAvatarPosition;
+    delete avatar.dataset.dmFlairAvatarFit;
+    delete avatar.dataset.dmFlairAvatarScale;
+    delete avatar.dataset.dmFlairAvatarEffect;
+    avatar.removeAttribute("data-dm-flair-avatar-applied");
+    avatar.onerror = null;
+    const original = avatar.dataset.dmFlairOriginalSrc;
+    delete avatar.dataset.dmFlairOriginalSrc;
+    if (original && avatar.src !== original) avatar.src = original;
+}
+
+function applyAvatar(avatar: HTMLImageElement, url: string, userId?: string, flair?: ProfilePresentation) {
+    applyAvatarPresentation(avatar, flair);
     // Idempotency MUST compare against the URL we last applied (stashed on the
     // element), NOT against `avatar.src`. The browser normalizes/encodes the
     // src it reads back (dm-media:// scheme, percent-encoding, trailing
@@ -1359,7 +2676,9 @@ function applyAvatar(avatar: HTMLImageElement, url: string) {
     // the very next scan — which re-assigns src → triggers an image reload →
     // emits a mutation → wakes the observer → re-scans → re-assigns... a
     // self-sustaining CPU/network loop for as long as the avatar is on screen.
-    if (avatar.dataset.dmFlairAppliedUrl === url) return;
+    const nativeSourceReturned = /\/avatars\/\d{17,20}\//.test(avatar.currentSrc || avatar.src || "");
+    if (avatar.dataset.dmFlairAppliedUrl === url && !nativeSourceReturned) return;
+    if (avatar.dataset.dmFlairLoadingUrl === url) return;
     // Already proven dead this session — don't reapply a URL that 404s / serves
     // a host's "removed" stub (e.g. a deleted imgur link returns a 503-byte
     // image/png egg). Reapplying would just flash the broken icon every scan.
@@ -1368,31 +2687,81 @@ function applyAvatar(avatar: HTMLImageElement, url: string) {
     if (!avatar.dataset.dmFlairOriginalSrc) {
         avatar.dataset.dmFlairOriginalSrc = avatar.src;
     }
-    // If the flair URL fails to load, restore the real Discord avatar instead
-    // of leaving a broken-image icon. Marks the URL failed so the page-wide
-    // scan won't re-apply it on the next mutation/interval pass.
-    avatar.onerror = () => {
-        avatar.onerror = null;
-        avatar.dataset.dmFlairFailedUrl = url;
-        const orig = avatar.dataset.dmFlairOriginalSrc;
-        if (orig && avatar.src !== orig) avatar.src = orig;
+    // Probe off-DOM first. Swapping the real <img> only after onload keeps the
+    // native avatar visible while the GIF is fetching and removes the normal-
+    // avatar flicker reported when opening another user's profile.
+    avatar.dataset.dmFlairLoadingUrl = url;
+    const probe = document.createElement("img");
+    probe.decoding = "async";
+    probe.onload = () => {
+        if (avatar.dataset.dmFlairLoadingUrl !== url) return;
+        delete avatar.dataset.dmFlairLoadingUrl;
+        avatar.onerror = () => {
+            avatar.onerror = null;
+            avatar.dataset.dmFlairFailedUrl = url;
+            delete avatar.dataset.dmFlairAppliedUrl;
+            const orig = avatar.dataset.dmFlairOriginalSrc;
+            if (orig && avatar.src !== orig) avatar.src = orig;
+        };
+        avatar.src = url;
+        avatar.dataset.dmFlairAppliedUrl = url;
+        if (userId) avatar.dataset.dmFlairAvatarUserId = userId;
+        avatar.setAttribute("data-dm-flair-avatar-applied", "1");
     };
-    avatar.src = url;
-    avatar.dataset.dmFlairAppliedUrl = url;
-    avatar.setAttribute("data-dm-flair-avatar-applied", "1");
+    probe.onerror = () => {
+        if (avatar.dataset.dmFlairLoadingUrl !== url) return;
+        delete avatar.dataset.dmFlairLoadingUrl;
+        avatar.dataset.dmFlairFailedUrl = url;
+        console.warn("[DMProfileFlair] Remote avatar could not be loaded; kept the native avatar.", url);
+    };
+    probe.src = url;
 }
 
-/** Background-image variant for call surfaces / Stage tiles that render the
- *  avatar as a <div style="background-image: ..."> instead of <img>. Stash
- *  the original inline backgroundImage so stop() can restore it. */
-function applyBackgroundAvatar(el: HTMLElement, url: string) {
+function clearBackgroundAvatar(el: HTMLElement) {
+    if (!el.hasAttribute("data-dm-flair-bg-avatar-applied") && !el.dataset.dmFlairOriginalBg) return;
+    const original = el.dataset.dmFlairOriginalBg ?? "";
+    if (original) el.style.setProperty("background-image", original, "important");
+    else el.style.removeProperty("background-image");
+    delete el.dataset.dmFlairOriginalBg;
+    delete el.dataset.dmFlairAppliedUrl;
+    delete el.dataset.dmFlairAvatarUserId;
+    delete el.dataset.dmFlairAvatarPosition;
+    delete el.dataset.dmFlairAvatarFit;
+    delete el.dataset.dmFlairAvatarScale;
+    delete el.dataset.dmFlairAvatarEffect;
+    el.removeAttribute("data-dm-flair-bg-avatar-applied");
+}
+
+function applyBackgroundAvatarPresentation(el: HTMLElement, flair?: ProfilePresentation) {
+    if (flair?.avatarPosition) el.dataset.dmFlairAvatarPosition = flair.avatarPosition;
+    else delete el.dataset.dmFlairAvatarPosition;
+    if (flair?.avatarFit) el.dataset.dmFlairAvatarFit = flair.avatarFit;
+    else delete el.dataset.dmFlairAvatarFit;
+    if (flair?.avatarScale) el.dataset.dmFlairAvatarScale = flair.avatarScale;
+    else delete el.dataset.dmFlairAvatarScale;
+    if (flair?.mediaEffect && flair.mediaEffect !== "none") el.dataset.dmFlairAvatarEffect = flair.mediaEffect;
+    else delete el.dataset.dmFlairAvatarEffect;
+}
+
+function applyBackgroundAvatar(el: HTMLElement, url: string, userId?: string, flair?: ProfilePresentation) {
+    applyBackgroundAvatarPresentation(el, flair);
     const newBg = `url("${url}")`;
-    if (el.style.backgroundImage === newBg) return;
+    if (el.dataset.dmFlairAppliedUrl === url) {
+        if (userId) el.dataset.dmFlairAvatarUserId = userId;
+        return;
+    }
     if (!el.dataset.dmFlairOriginalBg) {
         el.dataset.dmFlairOriginalBg = el.style.backgroundImage || "";
     }
+    if (userId) el.dataset.dmFlairAvatarUserId = userId;
+    el.dataset.dmFlairAppliedUrl = url;
     el.style.setProperty("background-image", newBg, "important");
     el.setAttribute("data-dm-flair-bg-avatar-applied", "1");
+}
+
+function clearAppliedAvatars() {
+    document.querySelectorAll<HTMLImageElement>("[data-dm-flair-avatar-applied], [data-dm-flair-loading-url]").forEach(clearAvatar);
+    document.querySelectorAll<HTMLElement>("[data-dm-flair-bg-avatar-applied]").forEach(clearBackgroundAvatar);
 }
 
 function scanForPopouts(_root: ParentNode = document) {
@@ -1404,7 +2773,10 @@ function scanForPopouts(_root: ParentNode = document) {
 
     for (const banner of banners) {
         const container = findProfileContainerFromBanner(banner);
-        if (!container) continue;
+        if (!container) {
+            clearBanner(banner);
+            continue;
+        }
         // Identify whose popout this is by extracting userId from an avatar
         // img inside (CDN `/avatars/<id>/` URL). We deliberately do NOT fall
         // back to the current user's id when that fails: a target on a DEFAULT
@@ -1415,20 +2787,27 @@ function scanForPopouts(_root: ParentNode = document) {
         // (the member-list/chat swap requires one anyway), so the lookup
         // returns their real id.
         const userId = getUserIdFromContainer(container);
-        if (!userId) continue;
+        if (!userId) {
+            clearBanner(banner);
+            clearTheme(container);
+            continue;
+        }
 
         const bannerFlair = resolveFlairForUserId(userId, "banner");
         if (bannerFlair?.bannerUrl) {
             const suppressForTM = tmActive && isAnimatedUrl(bannerFlair.bannerUrl);
-            if (!suppressForTM) {
-                applyBanner(banner, bannerFlair.bannerUrl);
+            if (!suppressForTM) applyBanner(banner, bannerFlair.bannerUrl, bannerFlair);
+            else {
+                clearBanner(banner);
             }
+        } else {
+            clearBanner(banner);
         }
 
         const themeFlair = resolveFlairForUserId(userId, "theme");
         if (themeFlair?.themeColorPrimary || themeFlair?.themeColorSecondary) {
             applyTheme(container, themeFlair.themeColorPrimary, themeFlair.themeColorSecondary);
-        }
+        } else clearTheme(container);
     }
 
     // ── Avatar swaps page-wide (member list, chat, voice, calls, DM headers, popout) ──
@@ -1461,11 +2840,17 @@ function scanForPopouts(_root: ParentNode = document) {
             const el = img as HTMLImageElement;
             const src = el.currentSrc || el.src || "";
             const m = src.match(/\/avatars\/(\d{17,20})\//);
-            if (!m) return;
-            const userId = m[1];
+            // Once a flair URL has replaced the native Discord source, keep
+            // using the owner id stashed on the element. Without this, the
+            // next scan cannot identify the image and a viewer's own flair
+            // can be mistaken for the profile being viewed.
+            const userId = m?.[1] ?? el.dataset.dmFlairAvatarUserId;
+            if (!userId) return;
             const avatarFlair = resolveFlairForUserId(userId, "avatar");
             if (avatarFlair?.avatarAnimatedUrl) {
-                applyAvatar(el, avatarFlair.avatarAnimatedUrl);
+                applyAvatar(el, avatarFlair.avatarAnimatedUrl, userId, avatarFlair);
+            } else {
+                clearAvatar(el);
             }
         });
         // Background-image avatar tiles — some call surfaces (notably the
@@ -1474,26 +2859,29 @@ function scanForPopouts(_root: ParentNode = document) {
         // <div style="background-image: url(...avatars/<userId>/...)"> rather
         // than as an <img>. Scan every element with an inline backgroundImage
         // that matches the avatar CDN pattern and override the URL.
-        document.querySelectorAll<HTMLElement>('[style*="/avatars/"]').forEach(el => {
+        document.querySelectorAll<HTMLElement>('[style*="/avatars/"], [data-dm-flair-bg-avatar-applied]').forEach(el => {
             const bg = el.style.backgroundImage;
             if (!bg) return;
             const m = bg.match(/\/avatars\/(\d{17,20})\//);
-            if (!m) return;
-            const userId = m[1];
+            const userId = m?.[1] ?? el.dataset.dmFlairAvatarUserId;
+            if (!userId) return;
             const avatarFlair = resolveFlairForUserId(userId, "avatar");
-            if (!avatarFlair?.avatarAnimatedUrl) return;
-            applyBackgroundAvatar(el, avatarFlair.avatarAnimatedUrl);
+            if (avatarFlair?.avatarAnimatedUrl) {
+                applyBackgroundAvatar(el, avatarFlair.avatarAnimatedUrl, userId, avatarFlair);
+            } else {
+                clearBackgroundAvatar(el);
+            }
         });
         // Profile-view fallback: large avatars (≥60px) that don't have a CDN
         // URL we could match (default-avatar users). If we're viewing our own
         // popout in self-preview, swap those too.
         const fallback = findProfileViewAvatars();
         for (const a of fallback) {
-            if (a.dataset.dmFlairAvatarApplied) continue;
             const container = findProfileContainerFromBanner(a as any) ?? a.closest('[class*="user-profile-popout"]') ?? a.parentElement;
             const userId = container ? getUserIdFromContainer(container) : null;
             const flair = resolveFlairForUserId(userId, "avatar");
-            if (flair?.avatarAnimatedUrl) applyAvatar(a, flair.avatarAnimatedUrl);
+            if (flair?.avatarAnimatedUrl) applyAvatar(a, flair.avatarAnimatedUrl, userId ?? undefined, flair);
+            else clearAvatar(a);
         }
         // Warn once if the current user has a default avatar.
         if (me && !me.avatar && settings.store.myAvatarAnimatedUrl.trim() && !defaultAvatarWarned) {
@@ -1504,6 +2892,11 @@ function scanForPopouts(_root: ParentNode = document) {
                 10000
             );
         }
+    } else {
+        // Clear swaps when TournamentMode is active or the roster/viewer
+        // toggle no longer exposes any avatar flair. This also prevents an
+        // old remote avatar from remaining visible after a profile change.
+        clearAppliedAvatars();
     }
 }
 
@@ -1515,7 +2908,7 @@ let scanScheduled = false;
 // applyAvatar/applyBanner are now idempotent, the scan's own mutations don't
 // re-trigger an endless rescan loop.
 function scheduleScan() {
-    if (scanScheduled) return;
+    if (document.hidden || scanScheduled) return;
     scanScheduled = true;
     requestAnimationFrame(() => {
         scanScheduled = false;
@@ -1525,6 +2918,9 @@ function scheduleScan() {
 
 function startObserver() {
     if (observer) return;
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    window.addEventListener("focus", onRosterFocus);
+    removeRosterListener = onRosterChange(scheduleScan);
     observer = new MutationObserver(scheduleScan);
     observer.observe(document.body, { childList: true, subtree: true });
     scanForPopouts(document);
@@ -1532,9 +2928,15 @@ function startObserver() {
     // (e.g. an <img src> swapped in place). 2s is plenty for animated-avatar
     // surfaces and halves the steady-state polling cost vs the old 1s.
     rescanTimer = window.setInterval(() => scanForPopouts(document), 2000);
+    refreshRosterForVisibleSurface();
 }
 
 function stopObserver() {
+    removeRosterListener?.();
+    removeRosterListener = null;
+    document.removeEventListener("visibilitychange", onVisibilityChange);
+    window.removeEventListener("focus", onRosterFocus);
+    lastRosterRefreshAt = 0;
     observer?.disconnect();
     observer = null;
     if (rescanTimer !== null) { clearInterval(rescanTimer); rescanTimer = null; }
@@ -1545,6 +2947,33 @@ function stopObserver() {
         e.style.removeProperty("background-position");
         e.style.removeProperty("background-repeat");
         e.removeAttribute("data-dm-flair-banner-applied");
+        delete e.dataset.dmFlairBannerAppliedUrl;
+        delete e.dataset.dmFlairBannerLoadingUrl;
+        delete e.dataset.dmFlairBannerPosition;
+        delete e.dataset.dmFlairBannerFit;
+        delete e.dataset.dmFlairMediaEffect;
+        if (e.hasAttribute("data-dm-flair-original-position")) {
+            const originalPosition = e.dataset.dmFlairOriginalPosition ?? "";
+            if (originalPosition) e.style.position = originalPosition;
+            else e.style.removeProperty("position");
+            delete e.dataset.dmFlairOriginalPosition;
+        }
+    });
+    // A pending load may not have set the applied marker yet. Clear its
+    // marker before removing the overlay so a late image/video callback cannot
+    // paint after the plugin has been stopped.
+    document.querySelectorAll<HTMLElement>("[data-dm-flair-banner-loading-url]").forEach(el => {
+        delete el.dataset.dmFlairBannerLoadingUrl;
+        delete el.dataset.dmFlairBannerAppliedUrl;
+        delete el.dataset.dmFlairBannerPosition;
+        delete el.dataset.dmFlairBannerFit;
+        delete el.dataset.dmFlairMediaEffect;
+        if (el.hasAttribute("data-dm-flair-original-position")) {
+            const originalPosition = el.dataset.dmFlairOriginalPosition ?? "";
+            if (originalPosition) el.style.position = originalPosition;
+            else el.style.removeProperty("position");
+            delete el.dataset.dmFlairOriginalPosition;
+        }
     });
     document.querySelectorAll("[data-dm-flair-theme-applied]").forEach(el => {
         const e = el as HTMLElement;
@@ -1555,34 +2984,21 @@ function stopObserver() {
         e.style.removeProperty("--profile-body-background-color");
         e.removeAttribute("data-dm-flair-theme-applied");
     });
-    // Restore original avatar srcs so toggling the plugin off + on doesn't
-    // leave broken images sitting around.
-    document.querySelectorAll("[data-dm-flair-avatar-applied]").forEach(el => {
-        const img = el as HTMLImageElement;
-        img.onerror = null;
-        const orig = img.dataset.dmFlairOriginalSrc;
-        if (orig) img.src = orig;
-        delete img.dataset.dmFlairOriginalSrc;
-        delete img.dataset.dmFlairAppliedUrl;
-        delete img.dataset.dmFlairFailedUrl;
-        img.removeAttribute("data-dm-flair-avatar-applied");
+    // Restore original avatar src/backgrounds and remove owner presentation
+    // attributes so toggling the plugin off + on cannot leave stale media or
+    // a previous user's crop/effect on the next profile.
+    clearAppliedAvatars();
+    document.querySelectorAll(".dm-flair-banner-video, .dm-flair-banner-image").forEach(v => v.remove());
+    document.querySelectorAll<HTMLElement>("[data-dm-flair-loading-url]").forEach(el => {
+        delete el.dataset.dmFlairLoadingUrl;
     });
-    // Same restore path for background-image call/Stage avatar tiles.
-    document.querySelectorAll<HTMLElement>("[data-dm-flair-bg-avatar-applied]").forEach(el => {
-        const orig = el.dataset.dmFlairOriginalBg;
-        if (orig) el.style.setProperty("background-image", orig);
-        else el.style.removeProperty("background-image");
-        delete el.dataset.dmFlairOriginalBg;
-        el.removeAttribute("data-dm-flair-bg-avatar-applied");
-    });
-    document.querySelectorAll(".dm-flair-banner-video").forEach(v => v.remove());
 }
 
 export default definePlugin({
     name: "DMProfileFlair",
     description:
         "Custom profile banner / animated avatar / theme colors, visible only to other Discordmaxxer users. " +
-        "Tier-gated server-side. Animated content auto-suppresses when TournamentMode is on.",
+        "Free showcase fields with server-side roster validation. Animated content auto-suppresses when TournamentMode is on.",
     authors: [{ name: "Diggy", id: 0n }],
     settings,
 
