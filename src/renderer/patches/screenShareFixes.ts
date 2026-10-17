@@ -11,8 +11,8 @@ import { State } from "renderer/settings";
 import { isLinux } from "renderer/utils";
 import { startWinAudioExcludeSelfSession } from "renderer/winaudioBridge";
 
-import { applyScreenShareVideoQuality } from "./videoQuality";
 import { registerScreenShareVideoTracks } from "./screenShareTrackRegistry";
+import { applyScreenShareVideoQuality } from "./videoQuality";
 
 const logger = new Logger("VesktopStreamFixes");
 

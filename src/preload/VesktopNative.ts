@@ -9,7 +9,7 @@ import type { IpcMessage, IpcResponse } from "main/ipcCommands";
 import type { Settings } from "shared/settings";
 import type { Node } from "shared/venmicTypes";
 
-import { IpcEvents, type ChromeWindowOcclusionStatus, type UpdaterCheckResult } from "../shared/IpcEvents";
+import { type ChromeWindowOcclusionStatus, IpcEvents, type UpdaterCheckResult } from "../shared/IpcEvents";
 import { invoke, sendSync } from "./typedIpc";
 
 type SpellCheckerResultCallback = (word: string, suggestions: string[]) => void;

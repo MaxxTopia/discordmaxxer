@@ -78,9 +78,7 @@ handle(IpcEvents.SET_SETTINGS, (_, settings: typeof Settings.store, path?: strin
 });
 
 handle(IpcEvents.DM_CHROME_WINDOW_OCCLUSION_GET, getChromeWindowOcclusionStatus);
-handle(IpcEvents.DM_CHROME_WINDOW_OCCLUSION_SET, (_, enabled: boolean) =>
-    setChromeWindowOcclusionEnabled(enabled)
-);
+handle(IpcEvents.DM_CHROME_WINDOW_OCCLUSION_SET, (_, enabled: boolean) => setChromeWindowOcclusionEnabled(enabled));
 
 handle(IpcEvents.RELAUNCH, async () => {
     const options: RelaunchOptions = {

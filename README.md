@@ -6,11 +6,11 @@
 
 > Discord, optimized.
 
-A standalone Discord client with 30+ client-side enhancements pre-enabled, custom branding, and original plugins for tournament low-latency mode, mass-delete with safeguards, and GIF picker upgrades.
+A standalone Discord client with 50+ client-side enhancements pre-enabled, custom branding, and original plugins for tournament low-latency mode, mass-delete with safeguards, profile flair, and GIF picker upgrades.
 
 Part of the [Maxxtopia](https://maxxtopia.com) suite — native gaming utilities for the players who count frame times. Product page: **[maxxtopia.com/discordmaxxer](https://maxxtopia.com/discordmaxxer)** · Community: [discord.gg/S78eecbWdx](https://discord.gg/S78eecbWdx).
 
-**Status:** v0.1 — in development (P0 bootstrap complete).
+**Status:** v0.7.x — active development. See [RESUME.md](RESUME.md) for the current live release and unpublished candidates.
 
 ---
 
@@ -20,13 +20,13 @@ A standalone Discord-optimized client built on a forked plugin engine. Single do
 
 ## Headline features
 
-- **30+ third-party plugins enabled by default** — FakeNitro, MessageLogger (see deleted), ClearURLs, ClientTheme, FriendsSince, ImageZoom, TypingTweaks, RelationshipNotifier, SilentTyping, GifPaste, VolumeBooster, BetterFolders, BetterSettings, MentionAvatars, PinDMs, ReadAllNotificationsButton, TextReplace, ThemeLibrary, WebKeybinds, WebScreenShareFix, and more.
-- **TournamentMode** (custom) — global hotkey kills animations, RPC, badge polling, and voice noise-suppression for low-input-delay competitive sessions.
+- **50+ third-party plugins enabled by default** — FakeNitro, MessageLogger (see deleted), ClearURLs, ClientTheme, ImageZoom, TypingTweaks, RelationshipNotifier, SilentTyping, GifPaste, VolumeBooster, BetterFolders, BetterSettings, MentionAvatars, MoreQuickReactions, PinDMs, ReadAllNotificationsButton, TextReplace, WebKeybinds, WebScreenShareFixes, and more.
+- **TournamentMode** (custom) — global hotkey lowers Discord's process priority, pauses costly background work, and disables rich-presence polling for low-input-delay competitive sessions. Its renderer frame-rate request is best-effort and may be ignored in normal windowed mode.
 - **CompactView** (custom) — hotkey to hide server list, channels, and member sidebar. Optional auto-hide on screenshare. For vertical-monitor users.
 - **MassDelete** (custom, opt-in) — bulk-delete your own messages with rate-limiting and ban-risk warnings.
 - **GIF picker upgrades** (custom) — opens favorites by default, search bar over favorites.
 - **DiscordmaxxerBadge** (custom) — viral identity layer with supporter-unlock removal.
-- **~30% less RAM** than official Discord (telemetry stripped, bundle trimmed).
+- **Performance claims stay evidence-based** — Discordmaxxer does not promise a fixed RAM percentage. Tournament Mode is designed to reduce scheduling and background work; voice, screenshare, and real-device measurements remain the acceptance test.
 
 ## Building from source
 

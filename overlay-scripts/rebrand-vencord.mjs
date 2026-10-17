@@ -697,6 +697,118 @@ const PATCHES = [
             '    // getDonorBadges() flow intact but harmless.\n' +
             '    DonorBadges = {};\n' +
             '}'
+    },
+    // Discordmaxxer: Vencord's current PluginModal uses the @webpack/common
+    // Modal resolver. On the Discord build we support, that resolver can be
+    // null at render time, which crashes the renderer before a plugin editor
+    // mounts. The legacy modal primitives remain available and are verified
+    // in the same client, so keep the editor on that stable API.
+    {
+        file: "src/components/settings/tabs/plugins/PluginModal.tsx",
+        marker: "Discordmaxxer: PluginModal legacy modal compatibility",
+        find:
+            'import { RenderModalProps, User } from "@vencord/discord-types";\n' +
+            'import { findCssClassesLazy } from "@webpack";\n' +
+            'import { Clickable, FluxDispatcher, Forms, Modal, openModal, React, Text, Tooltip, useEffect, useMemo, UserStore, UserSummaryItem, UserUtils, useState } from "@webpack/common";',
+        replace:
+            'import { RenderModalProps, User } from "@vencord/discord-types";\n' +
+            'import { findCssClassesLazy } from "@webpack";\n' +
+            '// Discordmaxxer: PluginModal legacy modal compatibility\n' +
+            'import { ModalCloseButton, ModalContent, ModalHeader, ModalRoot, ModalSize, openModal } from "@utils/modal";\n' +
+            'import { Clickable, FluxDispatcher, Forms, React, Text, Tooltip, useEffect, useMemo, UserStore, UserSummaryItem, UserUtils, useState } from "@webpack/common";'
+    },
+    {
+        file: "src/components/settings/tabs/plugins/PluginModal.tsx",
+        marker: "Discordmaxxer: PluginModal legacy component aliases",
+        find:
+            'const UserRecord: Constructor<Partial<User>> = proxyLazy(() => UserStore.getCurrentUser().constructor) as any;',
+        replace:
+            'const UserRecord: Constructor<Partial<User>> = proxyLazy(() => UserStore.getCurrentUser().constructor) as any;\n\n' +
+            '// Discordmaxxer: PluginModal legacy component aliases\n' +
+            '// @utils/modal exports these as `never` in newer Vencord typings even\n' +
+            '// though the runtime components are still present and stable.\n' +
+            'const LegacyModalRoot: any = ModalRoot;\n' +
+            'const LegacyModalHeader: any = ModalHeader;\n' +
+            'const LegacyModalContent: any = ModalContent;\n' +
+            'const LegacyModalCloseButton: any = ModalCloseButton;'
+    },
+    {
+        file: "src/components/settings/tabs/plugins/PluginModal.tsx",
+        marker: "Discordmaxxer: PluginModal stable legacy modal wrapper",
+        find:
+            '    return (\n' +
+            '        <Modal\n' +
+            '            transitionState={transitionState}\n' +
+            '            onClose={onClose}\n' +
+            '            size="lg"\n' +
+            '            title={\n' +
+            '                <div className={cl("header")}>\n' +
+            '                    <BaseText tag="h1" weight="semibold" size="lg">{plugin.name}</BaseText>\n' +
+            '                    {!pluginMeta.userPlugin && (\n' +
+            '                        <div className="vc-settings-modal-links">\n' +
+            '                            <FavoriteButton\n' +
+            '                                isFavorite={pluginSettings.isFavorite ?? false}\n' +
+            '                                onClick={() => pluginSettings.isFavorite = !pluginSettings.isFavorite}\n' +
+            '                            />\n' +
+            '                            <WebsiteButton\n' +
+            '                                text="View more info"\n' +
+            '                                href={`https://github.com/MaxxTopia/discordmaxxer/blob/main/vencord-src/src/plugins/${plugin.name}`}\n' +
+            '                            />\n' +
+            '                            <GithubButton\n' +
+            '                                text="View source code"\n' +
+            '                                href={`https://github.com/${gitRemote}/tree/main/src/plugins/${pluginMeta.folderName}`}\n' +
+            '                            />\n' +
+            '                        </div>\n' +
+            '                    )}\n' +
+            '                </div>\n' +
+            '            }\n' +
+            '            subtitle={\n' +
+            '                <div className={cl("info")}>\n' +
+            '                    <div>\n' +
+            '                        <Forms.FormText>{plugin.description}</Forms.FormText>\n' +
+            '                        {!!plugin.tags?.length && <PluginTags tags={plugin.tags} />}\n' +
+            '                    </div>\n' +
+            '                </div>\n' +
+            '            }\n' +
+            '        >\n' +
+            '            <div className={"vc-settings-modal-content"}>',
+        replace:
+            '    return (\n' +
+            '        <LegacyModalRoot transitionState={transitionState} size={ModalSize.MEDIUM}>\n' +
+            '            {/* Discordmaxxer: PluginModal stable legacy modal wrapper */}\n' +
+            '            <LegacyModalHeader separator={false} className={Margins.bottom8}>\n' +
+            '                <div className={cl("header")}>\n' +
+            '                    <BaseText tag="h1" weight="semibold" size="lg">{plugin.name}</BaseText>\n' +
+            '                    <LegacyModalCloseButton onClick={onClose} />\n' +
+            '                </div>\n' +
+            '            </LegacyModalHeader>\n' +
+            '            <LegacyModalContent className={"vc-settings-modal-content"}>\n' +
+            '                <div className={cl("info")}>\n' +
+            '                    <Forms.FormText>{plugin.description}</Forms.FormText>\n' +
+            '                    {!!plugin.tags?.length && <PluginTags tags={plugin.tags} />}\n' +
+            '                    {!pluginMeta.userPlugin && (\n' +
+            '                        <div className="vc-settings-modal-links">\n' +
+            '                            <FavoriteButton\n' +
+            '                                isFavorite={pluginSettings.isFavorite ?? false}\n' +
+            '                                onClick={() => pluginSettings.isFavorite = !pluginSettings.isFavorite}\n' +
+            '                            />\n' +
+            '                            <WebsiteButton\n' +
+            '                                text="View more info"\n' +
+            '                                href={`https://github.com/MaxxTopia/discordmaxxer/blob/main/vencord-src/src/plugins/${plugin.name}`}\n' +
+            '                            />\n' +
+            '                            <GithubButton\n' +
+            '                                text="View source code"\n' +
+            '                                href={`https://github.com/${gitRemote}/tree/main/src/plugins/${pluginMeta.folderName}`}\n' +
+            '                            />\n' +
+            '                        </div>\n' +
+            '                    )}\n' +
+            '                </div>\n' +
+            '                <div className={Margins.top8} />'
+    },
+    {
+        file: "src/components/settings/tabs/plugins/PluginModal.tsx",
+        find: '            </div>\n        </Modal>\n    );',
+        replace: '            </LegacyModalContent>\n        </LegacyModalRoot>\n    );'
     }
 ];
 

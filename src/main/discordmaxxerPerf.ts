@@ -65,11 +65,25 @@ const PROTECTED_UTILITY_RE = /audio|network/i;
 interface PerfState {
     priorArRpc: boolean | null;
     on: boolean;
+    options: PerfModeOptions;
 }
+
+interface PerfModeOptions {
+    lowerProcessPriority: boolean;
+    capFrameRate: boolean;
+    disableArRpc: boolean;
+}
+
+const DEFAULT_OPTIONS: PerfModeOptions = {
+    lowerProcessPriority: true,
+    capFrameRate: true,
+    disableArRpc: true
+};
 
 const state: PerfState = {
     priorArRpc: null,
-    on: false
+    on: false,
+    options: { ...DEFAULT_OPTIONS }
 };
 
 // Whether the user is currently in a voice channel (and therefore possibly
@@ -92,7 +106,7 @@ function setAllRendererFrameRates(fps: number) {
 
 // The target priority for a single process given the current perf + voice state.
 function priorityTargetFor(type: string, name: string, serviceName: string): number {
-    if (!state.on) return PRIORITY_NORMAL;
+    if (!state.on || !state.options.lowerProcessPriority) return PRIORITY_NORMAL;
     // Audio + network utility: never throttle (local audio I/O + RTC transport).
     if (type === "Utility" && PROTECTED_UTILITY_RE.test(`${name} ${serviceName}`)) {
         return PRIORITY_NORMAL;
@@ -134,7 +148,10 @@ function applyProcessPriorities(): boolean {
     // Fallback: ensure our own (main) process is set even if metrics was empty.
     if (!sawMain) {
         try {
-            setPriority(process.pid, state.on ? PRIORITY_BELOW_NORMAL : PRIORITY_NORMAL);
+            setPriority(
+                process.pid,
+                state.on && state.options.lowerProcessPriority ? PRIORITY_BELOW_NORMAL : PRIORITY_NORMAL
+            );
             count++;
         } catch {
             // ignore
@@ -144,23 +161,53 @@ function applyProcessPriorities(): boolean {
     return count > 0;
 }
 
-handle(IpcEvents.DM_SET_PERFORMANCE_MODE, (_e, on: boolean) => {
-    if (on === state.on) {
-        return { priorityChanged: false, frameRateLimited: false, arRpcDisabled: false };
+function normalizeOptions(raw?: Partial<PerfModeOptions>): PerfModeOptions {
+    return {
+        lowerProcessPriority: raw?.lowerProcessPriority !== false,
+        capFrameRate: raw?.capFrameRate !== false,
+        disableArRpc: raw?.disableArRpc !== false
+    };
+}
+
+function sameOptions(a: PerfModeOptions, b: PerfModeOptions): boolean {
+    return (
+        a.lowerProcessPriority === b.lowerProcessPriority &&
+        a.capFrameRate === b.capFrameRate &&
+        a.disableArRpc === b.disableArRpc
+    );
+}
+
+handle(IpcEvents.DM_SET_PERFORMANCE_MODE, (_e, on: boolean, requested?: Partial<PerfModeOptions>) => {
+    const nextOn = !!on;
+    const options = normalizeOptions(requested);
+    if (nextOn === state.on && (!nextOn || sameOptions(options, state.options))) {
+        return {
+            priorityChanged: false,
+            frameRateLimited: false,
+            arRpcDisabled: false,
+            lowerPriorityRequested: nextOn && options.lowerProcessPriority,
+            frameRateCapRequested: nextOn && options.capFrameRate,
+            arRpcRequested: nextOn && options.disableArRpc
+        };
     }
 
-    state.on = on;
+    state.on = nextOn;
+    state.options = options;
     const priorityChanged = applyProcessPriorities();
-    setAllRendererFrameRates(on ? FRAME_RATE_PERF : FRAME_RATE_NORMAL);
+    setAllRendererFrameRates(nextOn && options.capFrameRate ? FRAME_RATE_PERF : FRAME_RATE_NORMAL);
 
     let arRpcDisabled = false;
-    if (on) {
-        if (Settings.store.arRPC === true) {
-            state.priorArRpc = true;
-            Settings.store.arRPC = false; // change-listener in arrpc/index.ts handles teardown
+    if (nextOn) {
+        if (options.disableArRpc) {
+            if (state.priorArRpc === null) state.priorArRpc = Settings.store.arRPC === true;
+            if (Settings.store.arRPC === true) {
+                Settings.store.arRPC = false; // change-listener in arrpc/index.ts handles teardown
+                arRpcDisabled = true;
+            }
+        } else if (state.priorArRpc === true) {
+            // The user turned the arRPC knob back on while TM stayed active.
+            Settings.store.arRPC = true;
             arRpcDisabled = true;
-        } else {
-            state.priorArRpc = false;
         }
     } else {
         if (state.priorArRpc === true) {
@@ -176,7 +223,14 @@ handle(IpcEvents.DM_SET_PERFORMANCE_MODE, (_e, on: boolean) => {
 
     // frameRateLimited is intentionally always false: the cap is a no-op on
     // windowed mode, so we don't claim a GPU saving we aren't delivering.
-    return { priorityChanged, frameRateLimited: false, arRpcDisabled };
+    return {
+        priorityChanged,
+        frameRateLimited: false,
+        arRpcDisabled,
+        lowerPriorityRequested: nextOn && options.lowerProcessPriority,
+        frameRateCapRequested: nextOn && options.capFrameRate,
+        arRpcRequested: nextOn && options.disableArRpc
+    };
 });
 
 // Renderer reports voice-channel join/leave. While perf mode is on, joining a
@@ -196,5 +250,6 @@ handle(IpcEvents.DM_SET_VOICE_ACTIVE, (_e, active: boolean) => {
 // if the child isn't in getAppMetrics yet, the next perf/voice event catches it.
 app.on("browser-window-created", (_e, _win: BrowserWindow) => {
     if (!state.on) return;
+    setAllRendererFrameRates(state.options.capFrameRate ? FRAME_RATE_PERF : FRAME_RATE_NORMAL);
     applyProcessPriorities();
 });

@@ -40,22 +40,18 @@ const PLUGINS_DEFAULT_ON: string[] = [
     "BetterFolders",
     "BetterSettings",
     "MentionAvatars",
-    "MoreQuickReact",
+    "MoreQuickReactions",
     "NewGuildSettings",
     "NoF1",
     "PinDMs",
     "ReadAllNotificationsButton",
-    "SelfForward",
     "TextReplace",
     "ThemeAttributes",
-    "ThemeLibrary",
     "WebKeybinds",
-    "WebScreenShareFix",
+    "WebScreenShareFixes",
     "BetterGifPicker",
-    "FavoriteGifSearch",
     // Privacy / telemetry kill
     "NoTrack", // disables /science + /tracking analytics endpoints
-    "BlockKrispWeb", // blocks Discord-funded Krisp noise-cancel from loading (privacy + CPU)
     "DisableCallIdle", // stops auto-voice-disconnect after 5 min (saves a heartbeat round-trip on idle)
     // Discordmaxxer custom plugins
     "TournamentMode",

@@ -32,6 +32,12 @@ import { isDeckGameMode } from "./utils/steamOS";
 
 console.log("Discordmaxxer v" + app.getVersion());
 
+// Set the Windows identity before Electron creates or associates any windows.
+// If this happens after app.whenReady(), Windows can keep the generic Electron
+// taskbar identity even when the BrowserWindow and executable have the Clyde
+// icon. This is especially visible for an existing Discordmaxxer taskbar slot.
+if (process.platform === "win32") app.setAppUserModelId("com.maxxtopia.discordmaxxer");
+
 // Make the Vencord files use our DATA_DIR
 process.env.VENCORD_USER_DATA_DIR = DATA_DIR;
 
@@ -41,6 +47,13 @@ export let enableHardwareAcceleration = true;
 
 function init() {
     setAsDefaultProtocolClient("discord");
+
+    // Discord's CDN can negotiate QUIC in packaged Electron builds even when
+    // the renderer cannot complete the resulting asset requests. That leaves
+    // the app mount empty while the startup splash waits for navigation. Keep
+    // the transport on the HTTP/2/TCP path until the packaged runtime proves
+    // QUIC-safe again.
+    app.commandLine.appendSwitch("disable-quic");
 
     const { disableSmoothScroll, hardwareAcceleration, hardwareVideoAcceleration } = Settings.store;
 
@@ -180,8 +193,6 @@ function init() {
     });
 
     app.whenReady().then(async () => {
-        if (process.platform === "win32") app.setAppUserModelId("dev.diggy.discordmaxxer");
-
         registerScreenShareHandler();
         registerMediaPermissionsHandler();
 

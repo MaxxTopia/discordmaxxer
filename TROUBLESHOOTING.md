@@ -81,9 +81,12 @@ out of the box. When you take an Electron bump:
 1. Update `electron` in `package.json` (keep it in step with upstream Vesktop
    where practical — see their `package.json`).
 2. `pnpm install && pnpm overlay:vencord && pnpm build`.
-3. **Test a real voice call** before releasing. If voice works on the new
-   Electron, the `ZstdContentEncoding` / `SharedZstd` disables in
-   `src/main/index.ts` may no longer be needed — but they're harmless to leave.
+3. Review the `ZstdContentEncoding` / `SharedZstd` workaround in
+   `src/main/index.ts`. A real voice call can provide useful evidence after an
+   Electron change, but it is optional and does not block publication. If no
+   call was tested, report voice as unverified; do not infer success from build
+   checks. The flags may no longer be needed on a newer Electron, but are
+   harmless to leave.
 
 The `upstream-watch` GitHub Action opens an issue when upstream Vesktop or its
 Electron pin moves ahead of ours, so this never goes unnoticed.
@@ -142,14 +145,15 @@ no-op (nothing breaks). What each DM means and what to do:
 | DM you receive | What happened | Your move |
 |---|---|---|
 | "RELEASE FAILED for vX.Y.Z" | A tag-push release hit a gate/build/publish error; nothing shipped | Open the linked run, read the failing step. Stale-rebrand → fix find-strings (see "stay current"). Integrity → the overlay produced a bad bundle, re-run. |
-| "upstream drift detected" | A dependency (Electron/Vencord) fell behind upstream | Review the tracking issue; decide if an Electron/Vencord bump is needed. Bump → test voice → release. |
-| "auto-rebump shipped CANARY ...-beta.1" | The ShowHiddenChannels fix landed; a **prerelease** auto-shipped to beta users only | Update on a beta-opted client, test a voice call, then promote: bump `package.json` to the base version, tag it, push. |
+| "upstream drift detected" | A dependency (Electron/Vencord) fell behind upstream | Review the tracking issue; decide if an Electron/Vencord bump is needed. Run required automated checks; a real voice session is optional, non-blocking evidence. |
+| "auto-rebump shipped CANARY ...-beta.1" | The ShowHiddenChannels fix landed; a **prerelease** auto-shipped to beta users only | Review the beta and automated release checks before promotion. A real voice call is optional and does not block promotion. |
 | "auto-rebump FAILED to verify" | The auto re-pin didn't verify clean; nothing shipped | A rebrand patch needs updating vs new Vencord (see the manual-review issue). |
 
 **Canary auto-rebump:** `vencord-shc-autobump.yml` watches Vencord bug #4256; when
 it closes, it re-pins Vencord and ships a **`-beta.1` prerelease** (only DMBeta /
-`allowPrerelease` users auto-update) — never straight to everyone. Promote to
-stable manually after a voice test. This is the audit-2026-06-26 H1 safeguard.
+`allowPrerelease` users auto-update) — never straight to everyone. Review the
+beta and automated checks before promoting to stable; a real voice test is
+optional, non-blocking evidence. This is the audit-2026-06-26 H1 safeguard.
 
 **Drift detection:** `upstream-watch.yml` (weekly) opens a tracking issue **and**
 DMs when Electron/Vencord move ahead of our pins.

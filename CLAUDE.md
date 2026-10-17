@@ -65,7 +65,6 @@ Each maps to a feature Diggy specifically asked for:
 | Remove untrusted-domain / sus-file popup | AlwaysTrust |
 | Crash recovery | CrashHandler |
 | Custom Nitro-style themes / bg color | ClientTheme + custom CSS |
-| Friends-since on user popout | FriendsSince |
 | Image zoom + image quality | ImageZoom |
 | Avatars + role colors in typing indicator | TypingTweaks |
 | Notify when friend/server removes you | RelationshipNotifier |
@@ -80,21 +79,19 @@ Each maps to a feature Diggy specifically asked for:
 | Server folders on dedicated sidebar | BetterFolders |
 | Enhanced settings menu | BetterSettings |
 | Avatars + role icons in @ mentions | MentionAvatars |
-| More quick-react buttons | MoreQuickReact |
+| More quick-react buttons | MoreQuickReactions |
 | Auto-mute new servers + tweak settings on join | NewGuildSettings |
 | Disable F1 keybind | NoF1 |
 | Pin DMs to top | PinDMs |
 | One-click read-all notifications | ReadAllNotificationsButton |
-| Add current channel to forward popup | SelfForward |
 | Text replacement / autocorrect | TextReplace |
 | Theming data attributes | ThemeAttributes |
-| Bundled community theme library | ThemeLibrary |
 | Re-add web-only keybinds | WebKeybinds |
-| Fix screenshare | WebScreenShareFix |
+| Fix screenshare | WebScreenShareFixes |
 
 ### Custom plugins (we build)
 
-1. **TournamentMode** — toggle button + global hotkey. **Performance-only, always-on-friendly.** When on: lowers Discord's process priority to BELOW_NORMAL (game gets CPU scheduling), caps renderer at 30 fps (halves compositor GPU load), terminates the arRPC Rich Presence worker, and pauses real-cost CSS animations (animated emoji decoding loop, animated avatars, typing-dots, voice-activity ring). Does NOT strip cosmetic stuff (transitions, badges, hover effects) — those don't add lag, so they stay on. v3 — 2026-05-06.
+1. **TournamentMode** — toggle button + global hotkey. **Performance-only, always-on-friendly.** When on: lowers Discord's process priority to BELOW_NORMAL (game gets CPU scheduling), pauses real-cost CSS animations, and terminates the arRPC Rich Presence worker. It requests a 30 FPS renderer cap where Chromium honors it; normal windowed BrowserWindows may ignore that request. Does NOT strip cosmetic stuff (transitions, badges, hover effects) — those don't add lag, so they stay on. v3 — 2026-05-06.
 
 2. **CompactView** — hotkey-toggle hide of server list, channels, and member list. Auto-hide-on-screenshare option. Targets vertical-monitor screenshare users. ~120 LoC, 0.5 day.
 
@@ -148,19 +145,24 @@ Each maps to a feature Diggy specifically asked for:
 5. **No read receipts.** Discord doesn't expose them; any tool that claims to is lying.
 6. **No closed-source.** GPL-3 means source on GitHub from day 1.
 
-## Verification (v0.1 release gate)
+## Historical verification plan (v0.1; not the current release gate)
+
+The following was the original v0.1 beta checklist. It is historical planning
+material; current release requirements are documented in `AGENTS.md` and the
+operational sections below. Voice/screenshare tests are not universal release
+gates.
 
 End-to-end on Diggy's daily Windows machine:
 1. Build installer, install, sign in
 2. Voice call (verify WebRTC)
 3. Send fake-Nitro animated emoji to non-modded friend → fallback link
-4. Toggle TournamentMode → animations gone, FPS throttled
+4. Toggle TournamentMode → costly animations pause; verify the best-effort frame-rate request, process priority, and voice/screenshare behavior
 5. MassDelete a test channel's last 10 messages → rate-limit visible
 6. Theme switch → 3 bundled themes apply cleanly
 7. CompactView hotkey → server list, channels, members each toggle independently
 8. DiscordmaxxerBadge → install on a 2nd test account, verify badge appears in user popouts on both; toggle "Hide" works for supporter, gates non-supporter; opt-in custom status sets correctly and is editable in Discord normally
 9. Restart → defaults persist
-10. Compare RAM idle vs official Discord (target: ≥30% reduction) → real number for landing page
+10. Compare RAM and frame-time behavior idle vs official Discord with an apples-to-apples benchmark before publishing any percentage claim
 
 Pass = ship to private beta of ~3 trusted testers before public release.
 
@@ -186,10 +188,12 @@ Vesktop fork (Electron + bundled Vencord) using **pnpm**. Vencord is pinned to a
 ## Verify (self-check before handing back)
 - Automated: `pnpm test` = `pnpm lint && pnpm testTypes` (ESLint + `tsc --noEmit`). No runtime/unit suite.
 - Winaudio changes: re-run `packages/winaudio/test-loopback.js` (measures PEAK/RMS, not just chunk count) — silent capture = the native `IAgileObject` QueryInterface got dropped again.
-- **Human-only — don't claim it works without Diggy:** live voice + screenshare-with-audio (needs a real friend / 2nd PC); confirm no Discord-voice bleed + the encoder verdict in the Stream & Voice Health panel.
+- **Human-only evidence:** only claim live voice or screenshare-with-audio as
+  verified after an actual session with a recipient. These checks are optional
+  and non-blocking for publication; note them as unverified when not run.
 
 ## Top gotchas (durable)
-- **zstd voice break:** Discord's mandatory DAVE (E2EE voice) wasm is served `Content-Encoding: zstd`, which Electron 41 can't decode through the CSP hook → RTC 4017 loop → voice dead for everyone. Fixed via `--disable-features ZstdContentEncoding,SharedZstd` in `src/main/index.ts`. **Re-test voice after ANY Electron bump** (drop the flag once Electron handles zstd).
+- **zstd voice break:** Discord's mandatory DAVE (E2EE voice) wasm is served `Content-Encoding: zstd`, which Electron 41 can't decode through the CSP hook → RTC 4017 loop → voice dead for everyone. Fixed via `--disable-features ZstdContentEncoding,SharedZstd` in `src/main/index.ts`. Review the workaround after an Electron bump. A real call can provide additional evidence, but missing that session test does not block a release; never report voice as verified unless it was tested.
 - **winaudio = graveyard** (built+reverted 5x; Win10 lacks PROCESS_LOOPBACK, Win11 22H2+ only). Re-test via test-loopback.js after any `winaudio.cc` change.
 - **Vencord pin is a COMMIT not a tag** — tags lag months and patches go stale ("Patch had no effect"). Before shipping, `pnpm overlay:vencord` must show 0 patch-skip warnings; `upstream-watch.yml` flags >30 days behind.
 - **`--frozen-lockfile` CI:** adding any dep needs `pnpm install --lockfile-only` committed first, or CI fails.

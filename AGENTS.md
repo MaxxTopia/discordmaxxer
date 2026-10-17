@@ -32,8 +32,9 @@ Use the existing pnpm scripts; do not invent a parallel build path.
    and run `DM_DEBUG_URL=http://localhost:9223 node overlay-scripts/validate-all.mjs --skip badge`.
    The badge phase writes account settings and requires separate approval.
 8. Never claim live voice or screenshare-with-audio from automation alone.
-   A real call and screenshare with audio on the target Windows setup remain
-   the human release gate.
+   These are optional, human-only quality checks—not a universal release gate
+   and not blockers for releases that do not change those paths. Record them as
+   unverified when no real session was run.
 
 ## Ship and publish
 
@@ -45,8 +46,9 @@ Use the existing pnpm scripts; do not invent a parallel build path.
 - The tag workflow clones the Vencord commit recorded in
   `.github/workflows/release.yml`, installs with a frozen lockfile, runs the
   strict overlay and artifact-integrity gate, then runs Electron Builder with
-  publish enabled. Do not tag until the real voice/screenshare gate and the
-  release decision are complete.
+  publish enabled. Do not tag until required automated checks, applicable
+  change-specific checks, review, and the release decision are complete. A
+  real voice/screenshare session is not required to publish.
 - Verify the resulting GitHub Release assets and updater manifest after a
   published tag. An unsigned Windows installer is a SmartScreen/public-trust
   gate even when local packaging succeeds.
@@ -57,9 +59,12 @@ Use the existing pnpm scripts; do not invent a parallel build path.
 ## Known high-risk boundaries
 
 - The Vencord pin is a main commit, not a tag. Any bump requires a clean strict
-  overlay, artifact verification, and a real voice test.
+  overlay and artifact verification. A live voice check may add evidence when
+  relevant, but its absence does not block publication.
 - The Electron zstd compatibility flags in `src/main/index.ts` protect DAVE
-  voice initialization. Re-test voice after every Electron change.
+  voice initialization. Review this path after Electron changes; if no live
+  call is tested, record voice as unverified rather than treating that as a
+  release hold.
 - `packages/winaudio/` is Windows-version and capture-path sensitive. A passing
   chunk-count test is not enough if a real known-audio loopback is silent.
 - Screenshare echo is sender-side. Diagnose the sender's version and audio

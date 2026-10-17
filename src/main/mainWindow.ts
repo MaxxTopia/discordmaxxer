@@ -16,6 +16,7 @@ import {
     screen,
     session
 } from "electron";
+import { existsSync } from "fs";
 import { join } from "path";
 import { IpcCommands, IpcEvents } from "shared/IpcEvents";
 import { STATIC_DIR } from "shared/paths";
@@ -313,6 +314,26 @@ function getWindowBoundsOptions(): BrowserWindowConstructorOptions {
     return options;
 }
 
+/**
+ * Resolve the icon before BrowserWindow is constructed. Windows associates an
+ * active window with its AppUserModelId during construction; setting the icon
+ * afterwards changes the thumbnail but can leave the taskbar button using
+ * Electron's default atom icon. Keep the packaged .ico first so the shell can
+ * use the full multi-size icon, with the PNG as a development fallback.
+ */
+function getWindowsIconPath(): string | undefined {
+    if (process.platform !== "win32") return undefined;
+
+    const candidates = app.isPackaged
+        ? [join(process.resourcesPath, "shortcut-icon.ico"), join(STATIC_DIR, "taskbar", "taskbar.png")]
+        : [
+              join(app.getAppPath(), "build", "shortcut-icon.ico"),
+              join(app.getAppPath(), "build", "icon.ico"),
+              join(STATIC_DIR, "taskbar", "taskbar.png")
+          ];
+    return candidates.find(candidate => existsSync(candidate));
+}
+
 function buildBrowserWindowOptions(): BrowserWindowConstructorOptions {
     const { staticTitle, transparencyOption, enableMenu, customTitleBar, splashTheming, splashBackground } =
         Settings.store;
@@ -326,6 +347,7 @@ function buildBrowserWindowOptions(): BrowserWindowConstructorOptions {
     const options: BrowserWindowConstructorOptions = {
         show: Settings.store.enableSplashScreen === false && !CommandLine.values["start-minimized"],
         backgroundColor,
+        icon: getWindowsIconPath(),
         webPreferences: {
             nodeIntegration: false,
             sandbox: vencordSupportsSandboxing(),
@@ -379,13 +401,25 @@ function createMainWindow() {
 
     const win = (mainWin = new BrowserWindow(buildBrowserWindowOptions()));
 
-    // Override the runtime taskbar icon on Windows with the no-bullet-holes
-    // horror-Clyde so the taskbar/Alt-Tab thumbnail doesn't show bullet-hole
-    // noise at small render sizes. The shortcut/.exe icon stays as the
-    // bullet-holes version (embedded in build/icon.ico via electron-builder),
-    // so the Start menu / Explorer icon keeps its full character.
+    // Tell Windows which icon belongs to this taskbar identity. BrowserWindow's
+    // `icon` option and setIcon() update the window icon, but Windows can keep a
+    // stale Electron icon for an existing AppUserModelId unless the taskbar
+    // button details include the app icon explicitly.
     if (process.platform === "win32") {
         try {
+            const iconPath = getWindowsIconPath();
+            if (iconPath) {
+                win.setAppDetails({
+                    appId: "com.maxxtopia.discordmaxxer",
+                    appIconPath: iconPath,
+                    appIconIndex: 0,
+                    relaunchCommand: process.execPath,
+                    relaunchDisplayName: "Discordmaxxer"
+                });
+            }
+
+            // Use the no-bullet-holes Clyde for the small runtime/taskbar
+            // thumbnail while keeping the full character in the shortcut/.exe.
             const taskbarIcon = nativeImage.createFromPath(join(STATIC_DIR, "taskbar", "taskbar.png"));
             if (!taskbarIcon.isEmpty()) win.setIcon(taskbarIcon);
         } catch (e) {
@@ -436,21 +470,48 @@ function createMainWindow() {
 const runVencordMain = once(() => require(join(VENCORD_FILES_DIR, "vencordDesktopMain.js")));
 
 export function loadUrl(uri: string | undefined) {
+    if (retryTimer !== null) {
+        clearTimeout(retryTimer);
+        retryTimer = null;
+    }
     const branch = Settings.store.discordBranch;
     const subdomain = branch === "canary" || branch === "ptb" ? `${branch}.` : "";
+    const targetUrl = `https://${subdomain}discord.com/${uri ? new URL(uri).pathname.slice(1) || "app" : "app"}`;
 
     // we do not rely on 'did-finish-load' because it fires even if loadURL fails which triggers early detruction of the splash
     mainWin
-        .loadURL(`https://${subdomain}discord.com/${uri ? new URL(uri).pathname.slice(1) || "app" : "app"}`)
-        .then(() => AppEvents.emit("appLoaded"))
-        .catch(error => retryUrl(error.url, error.code));
+        .loadURL(targetUrl)
+        .then(() => {
+            if (retryTimer !== null) {
+                clearTimeout(retryTimer);
+                retryTimer = null;
+            }
+            AppEvents.emit("appLoaded");
+        })
+        .catch(error => {
+            const failure = error as { url?: string; code?: string };
+            retryUrl(failure.url || targetUrl, failure.code || "ERR_UNKNOWN", error);
+        });
 }
 
 const retryDelay = 1000;
-function retryUrl(url: string, description: string) {
+let retryTimer: ReturnType<typeof setTimeout> | null = null;
+function retryUrl(url: string, description: string, error: any) {
     console.log(`retrying in ${retryDelay}ms`);
-    updateSplashMessage(`Failed to load Discord: ${description}`);
-    setTimeout(() => loadUrl(url), retryDelay);
+    // Electron reports ERR_ABORTED when a navigation is superseded by a
+    // legitimate redirect (for example /app -> /login) or by another loadURL
+    // call. Showing that as a fatal splash error makes a healthy sign-in path
+    // look like an infinite loading failure.
+    if (description !== "ERR_ABORTED") {
+        updateSplashMessage(`Failed to load Discord: ${description}`);
+        console.warn("[mainWindow] Discord navigation failed:", error);
+    }
+    if (retryTimer !== null) return;
+    retryTimer = setTimeout(() => {
+        retryTimer = null;
+        if (!mainWin || mainWin.isDestroyed()) return;
+        loadUrl(url);
+    }, retryDelay);
 }
 
 export async function createWindows() {
@@ -466,8 +527,6 @@ export async function createWindows() {
 
     await ensureVencordFiles();
     runVencordMain();
-
-    mainWin = createMainWindow();
 
     AppEvents.on("appLoaded", () => {
         splash?.destroy();
@@ -491,11 +550,27 @@ export async function createWindows() {
         });
     });
 
+    // Register before createMainWindow() starts loadURL(). A cached or very
+    // fast packaged load can otherwise emit appLoaded before the splash
+    // handler exists, leaving the splash window permanently on top of a fully
+    // loaded Discord renderer.
+    mainWin = createMainWindow();
+
     mainWin.webContents.on("did-navigate", (_, url: string, responseCode: number) => {
         updateSplashMessage(""); // clear the splash message
 
-        // check url to ensure app doesn't loop
-        if (responseCode >= 300 && new URL(url).pathname !== `/app`) {
+        // Discord intentionally redirects /app to /login, /register, or other
+        // first-party routes. Treating every non-/app response as broken
+        // starts a second loadURL, aborts the first navigation, and leaves the
+        // splash stuck on "ERR_ABORTED". Only recover if navigation escaped
+        // Discord's own origin.
+        let isDiscordOrigin = false;
+        try {
+            isDiscordOrigin = /^(([^.]+)\.)*discord\.com$/i.test(new URL(url).hostname);
+        } catch {
+            isDiscordOrigin = false;
+        }
+        if (responseCode >= 300 && !isDiscordOrigin) {
             loadUrl(undefined);
             console.warn(`'did-navigate': Caught bad page response: ${responseCode}, redirecting to main app`);
         }

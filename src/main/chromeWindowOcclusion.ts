@@ -33,13 +33,12 @@ function runReg(args: string[]) {
 
 async function readPolicyValue(key: string): Promise<number | undefined> {
     const output = await runReg(["query", key, "/v", POLICY_NAME]);
-    const line = output
-        .split(/\r?\n/)
-        .find(value => value.trim().toLowerCase().startsWith(POLICY_NAME.toLowerCase()));
+    const line = output.split(/\r?\n/).find(value => value.trim().toLowerCase().startsWith(POLICY_NAME.toLowerCase()));
     if (!line) return undefined;
 
     const match = line.match(/\s+REG_DWORD\s+(?:0x([\da-f]+)|(\d+))\s*$/i);
-    if (!match) throw new Error(`Chrome policy ${POLICY_NAME} exists but is not a REG_DWORD; Discordmaxxer left it unchanged.`);
+    if (!match)
+        throw new Error(`Chrome policy ${POLICY_NAME} exists but is not a REG_DWORD; Discordmaxxer left it unchanged.`);
 
     return Number.parseInt(match[1] ?? match[2], match[1] ? 16 : 10);
 }
@@ -83,10 +82,7 @@ function makeStatus(
 }
 
 function readPolicyValues() {
-    return Promise.all([
-        Promise.all(MACHINE_POLICY_KEYS.map(readPolicyValue)),
-        readPolicyValue(USER_POLICY_KEY)
-    ]);
+    return Promise.all([Promise.all(MACHINE_POLICY_KEYS.map(readPolicyValue)), readPolicyValue(USER_POLICY_KEY)]);
 }
 
 export async function getChromeWindowOcclusionStatus(): Promise<ChromeWindowOcclusionStatus> {
@@ -120,17 +116,7 @@ export async function setChromeWindowOcclusionEnabled(enabled: boolean): Promise
         }
 
         if (!managedByDiscordmaxxer) {
-            await runReg([
-                "add",
-                USER_POLICY_KEY,
-                "/v",
-                POLICY_NAME,
-                "/t",
-                "REG_DWORD",
-                "/d",
-                "0",
-                "/f"
-            ]);
+            await runReg(["add", USER_POLICY_KEY, "/v", POLICY_NAME, "/t", "REG_DWORD", "/d", "0", "/f"]);
             State.store.chromeWindowOcclusionPolicyManaged = true;
         }
     } else {

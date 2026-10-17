@@ -22,7 +22,16 @@ export const DATA_DIR =
 
 mkdirSync(DATA_DIR, { recursive: true });
 
-export const SESSION_DATA_DIR = join(DATA_DIR, "sessionData");
+// A portable build keeps user-facing Vencord settings and assets beside the
+// executable, but its Chromium session/cache is a hot I/O path.  When the
+// package lives on a removable drive, putting that hot path on the USB volume
+// causes cache open failures and can leave Discord's renderer on its loading
+// shell.  Keep the dev profile separate and give portable builds a stable
+// local runtime directory instead.  An explicit override remains available
+// for diagnostics and managed deployments.
+export const SESSION_DATA_DIR =
+    process.env.DISCORDMAXXER_SESSION_DATA_DIR ||
+    (PORTABLE ? join(app.getPath("appData"), "DiscordmaxxerPortable", "sessionData") : join(DATA_DIR, "sessionData"));
 app.setPath("sessionData", SESSION_DATA_DIR);
 
 export const VENCORD_SETTINGS_DIR = join(DATA_DIR, "settings");

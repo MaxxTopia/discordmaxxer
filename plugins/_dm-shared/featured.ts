@@ -37,17 +37,23 @@ export const FEATURED_PLUGINS: FeaturedPlugin[] = [
     },
     {
         id: "DMProfileFlair",
-        title: "Animated PFPs + Custom Banners",
-        oneLiner: "Set any image, GIF, or MP4 as your animated avatar — plus a custom profile banner and a theme-tinted gradient. Cross-user: other Discordmaxxer friends see it too.",
-        where: "Configure in Discordmaxxer settings → Profile Flair.",
+        title: "Custom banners, animated PFPs + profile themes",
+        oneLiner: "Choose a free local gradient or media, share eligible media with other Discordmaxxer installs, or use the separate one-time controls for Discord's own profile fields.",
+        where: "Open Appearance Center to copy/import one field, publish shared media, or reach Discord's native profile editor.",
         emoji: "✨",
-        tier: Tier.MAXXER_PLUS,
         gif: "featured/dmprofileflair.gif"
+    },
+    {
+        id: "DMDisplayNameStyle",
+        title: "Style your display name",
+        oneLiner: "Browse 30 local looks with script, blackletter, comic fonts, flame tips, swashes, sparks, color, glow, and motion. For account-wide styles in standard Discord, use its separate native editor; your real name is unchanged here.",
+        where: "Use Browse local looks for this client's visual grid, or Native name styles for Discord's account editor.",
+        emoji: "✦"
     },
     {
         id: "FakeNitro",
         title: "Send any emoji, sticker, stream HD",
-        oneLiner: "Use any server's emojis and stickers from anywhere — and stream at higher quality — without paying Nitro. Falls back to a clean image link for non-modded friends.",
+        oneLiner: "Adds client-side emoji and sticker conveniences where Discord allows them. It cannot unlock server-enforced Nitro limits; non-modded friends receive a clean fallback link when needed.",
         where: "Just send normally — auto-handled.",
         emoji: "🎉"
     },
@@ -61,7 +67,7 @@ export const FEATURED_PLUGINS: FeaturedPlugin[] = [
     {
         id: "TournamentMode",
         title: "Gaming Mode",
-        oneLiner: "One toggle drops Discord's process priority, caps the renderer at 30fps, and pauses background animations — gives the GPU back to your game.",
+        oneLiner: "One toggle lowers Discord's process priority, pauses costly background work, and disables rich-presence polling. A 30 FPS request is best-effort and may be ignored in normal windowed mode.",
         where: "Ctrl+Alt+T, or the DM Hub button.",
         emoji: "🎮"
     },
@@ -86,13 +92,6 @@ export const FEATURED_PLUGINS: FeaturedPlugin[] = [
         where: "Silent — works in the background.",
         emoji: "🛡️"
     },
-    {
-        id: "BlockKrispWeb",
-        title: "Block Krisp noise-cancel",
-        oneLiner: "Discord auto-loads Krisp.ai's noise-cancellation model (it's a third-party blob that costs CPU + sends audio fingerprints). Blocked. Use Windows or your headset's built-in noise gate instead.",
-        where: "Silent — works in the background.",
-        emoji: "🔇"
-    }
 ];
 
 export function getFeatured(id: string): FeaturedPlugin | undefined {

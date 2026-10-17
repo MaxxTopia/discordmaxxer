@@ -50,9 +50,12 @@ git push origin v0.1.X
 2. Installs Node 20 + pnpm + project deps
 3. Runs `pnpm build`
 4. Runs `pnpm electron-builder --windows --publish always`
-5. `--publish always` uploads the installer + `latest.yml` (auto-updater feed) to the GitHub release with the matching tag
+5. Uploads the installer + `latest.yml` (auto-updater feed) to the GitHub release with the matching tag
+6. Attaches `docs/releases/vX.Y.Z.md` to that release and fails if the file is
+   missing, empty, or lacks a `## Highlights` section
 
-GitHub creates a draft release; mark it published when ready.
+The release workflow publishes the release after the build and notes checks
+pass. The notes file is the human-readable source for the in-app updater.
 
 ## Auto-updater
 

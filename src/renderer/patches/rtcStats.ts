@@ -180,7 +180,7 @@ export async function getOutboundVideoStats(): Promise<OutboundVideoStat | null>
         }
 
         for (const sender of senders) {
-            const track = sender.track;
+            const { track } = sender;
             if (!track || track.kind !== "video" || track.readyState !== "live" || !isScreenShareVideoTrack(track))
                 continue;
 

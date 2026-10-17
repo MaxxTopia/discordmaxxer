@@ -16,6 +16,7 @@
  * Discord login and is the user's runtime test, not a CI gate.
  */
 
+import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -59,14 +60,27 @@ const rendererPath = join(VDIST, "vencordDesktopRenderer.js");
 if (existsSync(rendererPath)) {
     const renderer = readFileSync(rendererPath, "utf8");
     // Critical custom plugins — if any of these is absent, the overlay is broken.
-    const REQUIRED_PLUGINS = ["TournamentMode", "DMVoiceKeybinds", "DMVoiceGuard", "DMHub", "DMTierFlair"];
+    const REQUIRED_PLUGINS = ["TournamentMode", "DMVoiceKeybinds", "DMVoiceGuard", "DMHub", "DMTierFlair", "DMDisplayNameStyle"];
     for (const name of REQUIRED_PLUGINS) {
         if (renderer.includes(name)) ok(`plugin "${name}" compiled into renderer`);
         else fail(`plugin "${name}" NOT found in renderer bundle — overlay failed to include custom plugins`);
     }
 }
 
-// 3) The Vesktop shell build output (what electron-builder packages).
+// 3) Defaults, bundles, and the tour must all resolve to actual plugin
+// definitions in the pinned Vencord source or our custom overlay. This catches
+// renamed/deleted upstream plugins before they become dead user-facing toggles.
+try {
+    execFileSync(process.execPath, [join(ROOT, "scripts", "verify-plugin-registry.mjs")], {
+        cwd: ROOT,
+        stdio: "inherit"
+    });
+    ok("plugin defaults, bundles, and featured IDs resolve to registered plugins");
+} catch {
+    fail("plugin registry verification failed — stale or missing plugin IDs detected");
+}
+
+// 4) The Vesktop shell build output (what electron-builder packages).
 const shellRenderer = join(ROOT, "dist", "js", "renderer.js");
 if (!existsSync(shellRenderer)) fail("dist/js/renderer.js missing — `pnpm build` did not produce the shell bundle");
 else if (sizeKB(shellRenderer) < 50) fail(`dist/js/renderer.js is only ${sizeKB(shellRenderer).toFixed(1)}KB — likely a failed build`);
