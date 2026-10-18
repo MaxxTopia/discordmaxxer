@@ -1,10 +1,23 @@
 # Discordmaxxer — RESUME
 
-## 2026-10-18 v0.7.98 candidate — first-render and owner widget state
+## 2026-10-18 v0.7.98 published — first-render and owner widget state
 
-The v0.7.98 candidate is prepared from the v0.7.97 release worktree. It adds
-the follow-up fixes below and is authorized for publication, but it is not yet
-committed, tagged, pushed, or live.
+v0.7.98 is published from source commit `b32bbca94c761cf0401f231004e5b801f08ce0b8`,
+with tag `v0.7.98`. The public release is
+`https://github.com/MaxxTopia/discordmaxxer/releases/tag/v0.7.98`; the x64 and
+ARM64 ZIPs, installer, blockmap, and `latest.yml` are uploaded and the public
+updater manifest reports version `0.7.98`.
+
+The release workflow built and uploaded the artifacts successfully but initially
+stopped at its readable-notes check because the notes file did not yet contain
+the required `## Highlights` heading. The heading was added, the existing
+release body was corrected, and the notes-format fix was pushed as `d0406f8`.
+The site sync workflow `39146762999` then completed successfully and the
+Cloudflare Pages deploy `39146779202` completed successfully. The live
+Discordmaxxer product page points to the v0.7.98 installer/release notes and
+the live updates page contains the release entry.
+
+User-visible changes:
 
 - `DMProfileFlair` keeps the last good roster snapshot during refresh and avoids
   destructive cleanup while Discord is still mounting a profile, so banners,
@@ -14,16 +27,24 @@ committed, tagged, pushed, or live.
   published skin when available.
 - `DMWidget` migrates older locally-selected attached widget skins into the
   shared owner marker, at most four applications per refresh with a 15-minute
-  retry window and confirmation after each write.
+  retry window and confirmation after each write. This avoids repeated Discord
+  writes and extra media/roster quota pressure.
 
-The candidate passes the existing test, build, strict overlay, artifact
-verification, package-directory, and diff checks. After publication, install
-it on both PCs and verify DiggyT -> DiggyAI and DiggyAI -> DiggyT: each profile
-keeps its own gradient/banner/avatar, each Fortnite/Valorant widget keeps its
-owner's skin, and reopening a profile never shows a native/default flash.
+The release passes `pnpm test`, `pnpm build`, strict
+`DM_STRICT_REBRAND=1 pnpm overlay:vencord`,
+`node overlay-scripts/verify-build.mjs`, package-directory and full Windows
+package generation, artifact/version/hash checks, ASCII-safe script validation,
+and `git diff --check`. The canonical dirty checkout and the profile-media
+Worker remain separate and were not reset or broadly staged. No Worker change
+is part of this release.
 
-The canonical dirty checkout and the profile-media Worker remain separate and
-were not reset or broadly staged. No Worker change is part of this candidate.
+Remaining proof is the user's signed-in two-PC recipient test, not a source or
+release gate. After installing v0.7.98 on both PCs, verify DiggyT -> DiggyAI and
+DiggyAI -> DiggyT: each profile keeps its own gradient/banner/avatar, each
+Fortnite/Valorant widget keeps its owner's skin, and reopening a profile never
+shows a native/default flash. If an owner marker is still missing, the first
+owner-side launch should migrate it; the viewer should use the temporary
+fallback only until that owner marker is readable.
 
 ## 2026-10-18 v0.7.97 published — follow-up for first-render and owner widget state
 
