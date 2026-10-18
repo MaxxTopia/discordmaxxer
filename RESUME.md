@@ -1,5 +1,58 @@
 # Discordmaxxer — RESUME
 
+## 2026-10-18 v0.7.99 published — cross-account renderer and DM Hub follow-up
+
+v0.7.99 is published from source commit `8d80deb2f25385cb5667d0435f543c643688d427`,
+with tag `v0.7.99`. The release workflow `39151530654` passed all build,
+overlay, artifact, Electron Builder, readable-notes, and Maxxtopia notification
+steps. The companion test workflow `39151528293` also passed. GitHub Release
+assets include the x64 installer, x64/ARM64 ZIPs, blockmap, and `latest.yml`;
+the updater manifest reports `0.7.99`.
+
+User-visible changes carried into this public build:
+
+- `DMDisplayNameStyle` restores styling across visible message author labels,
+  profile popouts, member rows, and DM headers, with separate surface toggles.
+- `DMWidget` no longer uses the viewer's local widget skin for another user's
+  profile while the owner's marker is loading. Unknown owner state stays native
+  until the exact owner skin is available, preventing cross-account skin bleed.
+- `DMWelcome` now has a real badge preview and a small scroll cue so the
+  gradient, profile media, plugin health, and featured-plugin sections are
+  discoverable without removing the existing gradient choices.
+- The v0.7.98 last-good roster/media state and visibility-aware animated
+  banner/avatar renderer remain included, preventing refresh/default flashes
+  and keeping animated media running while it is in view.
+- The preceding profile-media work remains included: free full-quality
+  animated banner/avatar/colors, paid presentation controls and capacity,
+  owner-specific widgets, R2-backed roster snapshots, Playlistmaxxing live
+  presence with direct artwork, and the readable release-alert guard.
+
+Independent live checks on 2026-10-18:
+
+- The live profile-media Worker `/roster` returned HTTP 200 with version 2 and
+  DiggyAI's saved banner URL, external animated avatar URL, and maroon/red
+  colors (`#4d1c12` / `#ff0034`). The DiggyAI banner route returned HTTP 200,
+  `image/gif`, and `public, max-age=300`.
+- The live VIP page already contained the current free-media tier copy and
+  one-time Founder pass copy; its isolated source build passed the site's
+  release-truth and sitemap checks plus Astro production build.
+- These are source/build/backend checks, not proof of a signed-in recipient's
+  two-PC rendering. That final proof remains Diggy's test after installing the
+  same `0.7.99` build on both PCs.
+
+Known configuration boundary: the Worker has the universal VIP role secret
+configured, but the per-tier Discord role IDs are still blank in its deployment
+configuration. Per-tier role granting cannot be claimed complete until the
+real Discord role IDs are configured and tested; no role IDs were invented.
+
+Diggy-owed v0.7.99 test: install the public installer on both PCs, confirm
+About says `v0.7.99`, then test DiggyT -> DiggyAI and DiggyAI -> DiggyT. Verify
+each account keeps its own gradient, banner/avatar, and Fortnite/Valorant skin;
+the profile never flashes native/default state; animated media plays while in
+view; DM Hub badge/scroll cue and display-name surfaces work; and
+Playlistmaxxing presence updates with the song artwork. Vanilla Discord still
+cannot render Discordmaxxer-only banners, widgets, flair, or colors.
+
 ## 2026-10-18 release-alert safeguard — pushed to origin/main
 
 The v0.7.98 incident exposed a workflow-ordering bug: Electron Builder
