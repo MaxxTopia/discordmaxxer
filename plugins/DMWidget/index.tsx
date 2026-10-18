@@ -814,6 +814,8 @@ async function republishConfig(slotKey: string): Promise<string | null> {
 
 const widgetStylePublishSerial = new Map<string, number>();
 let widgetStyleSyncQueue: Promise<void> = Promise.resolve();
+const ownerWidgetStyleBootstrapAt = new Map<string, number>();
+const OWNER_WIDGET_STYLE_BOOTSTRAP_RETRY_MS = 15 * 60 * 1000;
 
 function nextWidgetStylePublishRequest(slotKey: string): number {
     const request = (widgetStylePublishSerial.get(slotKey) ?? 0) + 1;
@@ -858,6 +860,69 @@ async function syncRemoteWidgetStyle(appId: string, slotKey: string, accountId: 
         console.warn("[DMWidget] cross-install widget skin sync failed:", error);
         return false;
     }
+}
+
+type OwnerWidgetStyleBootstrap = {
+    appId: string;
+    slotKey: string;
+    accountId: string;
+    preset: WidgetStylePreset;
+    updatedAt: number;
+};
+
+/**
+ * Migrate older locally-selected skins into the cross-install marker without
+ * making the owner click Apply again. This is deliberately best-effort and
+ * rate-limited: it only reads/patches an attached application when its marker
+ * is missing or older than the current local choice, and it never overwrites a
+ * marker that is at least as new as the local selection.
+ */
+async function syncMissingOwnerWidgetStyleMarker(candidate: OwnerWidgetStyleBootstrap): Promise<void> {
+    const { appId, slotKey, accountId, preset, updatedAt } = candidate;
+    if (!SNOWFLAKE.test(appId) || !accountId) return;
+    if (String(UserStore.getCurrentUser()?.id ?? "") !== accountId || activeSlotsAccountId !== accountId) return;
+    const key = `${accountId}:${appId}`;
+    const lastAttempt = ownerWidgetStyleBootstrapAt.get(key) ?? 0;
+    if (lastAttempt && Date.now() - lastAttempt < OWNER_WIDGET_STYLE_BOOTSTRAP_RETRY_MS) return;
+    ownerWidgetStyleBootstrapAt.set(key, Date.now());
+    try {
+        const application = await apiGet(`/applications/${appId}`);
+        if (String(UserStore.getCurrentUser()?.id ?? "") !== accountId || activeSlotsAccountId !== accountId) return;
+        const remoteStyle = remoteWidgetStyleFromApplication(application);
+        if (remoteStyle && remoteStyle.updatedAt > updatedAt) return;
+        const current = getSlot(slotKey);
+        if (current.appId !== appId || current.widgetStyle !== preset.id || current.widgetStyleSource === "remote") return;
+        const localIsAuthoritative = current.widgetStyleSource === "local";
+        if (remoteStyle && (remoteStyle.updatedAt > updatedAt || (remoteStyle.updatedAt === updatedAt && !localIsAuthoritative))) return;
+        const currentDescription = applicationDescription(application);
+        if (currentDescription === null) return;
+        const description = remoteWidgetDescriptionFor(currentDescription, preset, updatedAt);
+        if (!description || description === currentDescription) return;
+        await apiPatch(`/applications/${appId}`, { description });
+        const confirmedApplication = await apiGet(`/applications/${appId}`);
+        const confirmed = remoteWidgetStyleFromApplication(confirmedApplication);
+        if (!confirmed || confirmed.style !== preset.id || confirmed.updatedAt !== updatedAt) {
+            ownerWidgetStyleBootstrapAt.set(key, Date.now() - OWNER_WIDGET_STYLE_BOOTSTRAP_RETRY_MS + 30_000);
+            console.warn("[DMWidget] owner widget skin marker was not confirmed:", appId);
+        }
+    } catch (error) {
+        // Do not make an otherwise cosmetic migration noisy for the user. A
+        // later 30-second reconciliation can retry after a transient Discord
+        // response, while the local skin remains usable on this install.
+        ownerWidgetStyleBootstrapAt.set(key, Date.now() - OWNER_WIDGET_STYLE_BOOTSTRAP_RETRY_MS + 30_000);
+        console.warn("[DMWidget] owner widget skin marker migration failed:", error);
+    }
+}
+
+function queueOwnerWidgetStyleMarkerSync(candidates: OwnerWidgetStyleBootstrap[]): void {
+    const unique = Array.from(new Map(candidates.map(candidate => [`${candidate.accountId}:${candidate.appId}`, candidate])).values()).slice(0, 4);
+    if (!unique.length) return;
+    const result = widgetStyleSyncQueue.then(async () => {
+        for (const candidate of unique) await syncMissingOwnerWidgetStyleMarker(candidate);
+    }, async () => {
+        for (const candidate of unique) await syncMissingOwnerWidgetStyleMarker(candidate);
+    });
+    widgetStyleSyncQueue = result.then(() => undefined, () => undefined);
 }
 
 interface WidgetStyleSyncResult {
@@ -2565,6 +2630,7 @@ async function refreshAttachedWidgetStyles(force = false): Promise<void> {
         const nextStyles = new Map<string, WidgetStylePreset>();
         const nextSlots = new Map<string, string>();
         const nextHints = new Map<string, string[]>();
+        const ownerStyleBootstrapCandidates: OwnerWidgetStyleBootstrap[] = [];
         for (const appId of ids) {
             if (String(UserStore.getCurrentUser()?.id ?? "") !== accountId || activeSlotsAccountId !== accountId) return;
             const hasStoredSlot = stored.has(appId);
@@ -2593,6 +2659,23 @@ async function refreshAttachedWidgetStyles(force = false): Promise<void> {
             const current = getSlot(slotKey);
             const sameLocalApp = current.appId === appId;
             const localUpdatedAt = Number(current.widgetStyleUpdatedAt ?? 0);
+            const localPreset = presetForSlot(slotKey);
+            const ownerLocalStyleIsCandidate = sameLocalApp
+                && current.widgetStyleSource !== "remote"
+                && (!remoteStyle
+                    || remoteStyle.updatedAt < localUpdatedAt
+                    || (remoteStyle.updatedAt === localUpdatedAt
+                        && current.widgetStyleSource === "local"
+                        && remoteStyle.style !== localPreset.id));
+            if (ownerLocalStyleIsCandidate) {
+                ownerStyleBootstrapCandidates.push({
+                    appId,
+                    slotKey,
+                    accountId,
+                    preset: localPreset,
+                    updatedAt: localUpdatedAt
+                });
+            }
             const remoteWins = !!remoteStyle && (!sameLocalApp
                 || (remoteStyle.updatedAt > 0 && remoteStyle.updatedAt >= localUpdatedAt)
                 || (remoteStyle.updatedAt === 0 && sameLocalApp && current.widgetStyleSource !== "local"));
@@ -2637,6 +2720,7 @@ async function refreshAttachedWidgetStyles(force = false): Promise<void> {
         for (const [appId, labels] of nextHints) attachedWidgetHints.set(appId, labels);
         attachedWidgetProfileAccountId = accountId;
         attachedWidgetProfileVerifiedAt = Date.now();
+        queueOwnerWidgetStyleMarkerSync(ownerStyleBootstrapCandidates);
     })();
     attachedWidgetRefreshPromise = task;
     try {
@@ -2717,15 +2801,33 @@ const WIDGET_APPLICATION_ID_ATTRIBUTES = [
     "application_id"
 ];
 
-function visibleProfileWidgetStyles(): Map<string, WidgetStylePreset> {
-    const out = new Map<string, WidgetStylePreset>();
+function visibleProfileWidgetStyles(
+    local: Map<string, WidgetStylePreset> = new Map(),
+    pendingAppIds: Iterable<string> = []
+): Map<string, WidgetStylePreset> {
+    // The owner marker is authoritative whenever it is readable. Until an
+    // older widget has been migrated (or Discord returns its description),
+    // keep the established viewer fallback so a profile card does not become
+    // inexplicably skinless. This is only a cosmetic fallback; it never
+    // overwrites a published owner marker.
+    const out = new Map<string, WidgetStylePreset>(local);
+    const fallbackPreset = selectedWidgetPreset();
     const now = Date.now();
+    // Keep the profile card styled during the short owner-marker lookup
+    // window. A fresh owner marker below always replaces this fallback.
+    for (const appId of pendingAppIds) {
+        if (!SNOWFLAKE.test(appId)) continue;
+        const record = visibleWidgetStyles.get(appId);
+        if (!record || now - record.checkedAt > VISIBLE_WIDGET_STYLE_CACHE_MS) out.set(appId, fallbackPreset);
+    }
+    for (const [appId, miss] of visibleWidgetStyleMisses) {
+        if (!SNOWFLAKE.test(appId) || now - miss.checkedAt > VISIBLE_WIDGET_STYLE_MISS_RETRY_MS) continue;
+        out.set(appId, fallbackPreset);
+    }
     for (const [appId, record] of visibleWidgetStyles) {
         if (!SNOWFLAKE.test(appId) || now - record.checkedAt > VISIBLE_WIDGET_STYLE_CACHE_MS) continue;
-        // This map is deliberately remote-only. A profile card belongs to the
-        // account being viewed, so a viewer's local selection is never an
-        // acceptable fallback while the owner's published marker is loading,
-        // missing, or unreadable. Missing markers leave the card native.
+        // A readable owner marker always wins over the viewer fallback/local
+        // map, including when both accounts happen to use the same app ID.
         out.set(appId, record.preset);
     }
     return out;
@@ -2806,7 +2908,7 @@ function queueVisibleWidgetStyleHydration(appIds: Iterable<string>): void {
                 });
             } else {
                 // A missing marker is an availability error. Remove stale
-                // metadata, keep the profile visibly native, and retry so a
+                // metadata, keep the viewer fallback active, and retry so a
                 // repaired owner marker takes over.
                 const appName = String(application?.name ?? application?.application?.name ?? "").trim();
                 rememberVisibleWidgetStyleMiss(appId, appName ? [appName] : []);
@@ -2815,9 +2917,8 @@ function queueVisibleWidgetStyleHydration(appIds: Iterable<string>): void {
             scheduleWidgetSkinProfileFastScan();
             scheduleWidgetSkinScan(true);
         }).catch(() => {
-            // An unreadable marker is retried later; keep the foreign profile
-            // native instead of borrowing the viewer's skin. A fresh owner
-            // marker takes over on the next successful retry.
+            // An unreadable marker is retried later; keep the temporary viewer
+            // fallback active until a fresh owner marker takes over.
             rememberVisibleWidgetStyleMiss(appId);
             widgetApplicationCacheEpoch++;
             scheduleWidgetSkinProfileFastScan();
@@ -3575,9 +3676,9 @@ function scanVisibleProfileWidgetCards(): number {
     const localActive = knownWidgetStyles();
     const localHints = knownWidgetHints();
     // The first pass can discover a profile card before its application
-    // metadata has been fetched. Only a published owner marker may style a
-    // profile card; the viewer's local map is never a fallback here.
-    const initialActive = visibleProfileWidgetStyles();
+    // metadata has been fetched. Keep the viewer fallback only until a
+    // readable owner marker replaces it; the owner marker always wins.
+    const initialActive = visibleProfileWidgetStyles(localActive);
     const initialHints = visibleProfileWidgetHints(localHints);
     const initialHintLabels = Array.from(initialHints.values()).flat().filter(label => label.length >= 3);
     const explicitSelector = WIDGET_APPLICATION_ID_ATTRIBUTES.map(attribute => `[${attribute}]`).join(",");
@@ -3627,7 +3728,7 @@ function scanVisibleProfileWidgetCards(): number {
         if (appId) discovered.add(appId);
     }
     queueVisibleWidgetStyleHydration(discovered);
-    const active = visibleProfileWidgetStyles();
+    const active = visibleProfileWidgetStyles(localActive, discovered);
     const known = new Set(active.keys());
     const hints = visibleProfileWidgetHints(localHints);
     const hintLabels = Array.from(hints.values()).flat().filter(label => label.length >= 3);
@@ -4041,9 +4142,11 @@ function scanWidgetSkinCards(budgetMs = 120): number {
 
     try {
         const localActive = knownWidgetStyles();
-        // Profile cards use only the owner-published remote marker. Keep the
-        // viewer's local map for Discord surface chrome below.
-        const active = visibleProfileWidgetStyles();
+        // Profile cards use the owner's published marker when available and
+        // the established viewer fallback while an older/missing marker is
+        // being repaired. Keep the viewer's local map for Discord surface
+        // chrome below.
+        const active = visibleProfileWidgetStyles(localActive);
         const surfacePreset = selectedSurfacePreset(localActive);
         if (localActive.size || active.size || surfacePreset) {
             if (surfacePreset) {

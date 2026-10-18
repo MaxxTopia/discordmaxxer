@@ -3,8 +3,8 @@
  * Copyright (c) 2026 Diggy
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * Fetches the project-wide tier roster on app startup and caches it for 1
- * hour. The roster is a JSON file at a stable URL — see docs/v0.2-tier-
+ * Fetches the project-wide tier roster on app startup and caches it for 5
+ * minutes. The roster is a JSON file at a stable URL — see docs/v0.2-tier-
  * roster.md for the design and the migration path to the hub-site domain.
  *
  * NOT a Vencord plugin — just a shared utility imported by vip.ts. Lives
@@ -200,12 +200,16 @@ async function doFetch(): Promise<void> {
             return;
         }
         cache = { fetchedAt: Date.now(), users: sanitizeUsers(payload.users) };
-        notifyRosterListeners();
     } catch (e) {
         // Network error / abort / parse fail — keep prior cache if any, just
         // refresh the timestamp so we don't hammer the URL on every read.
         console.warn("[Discordmaxxer roster] fetch failed:", (e as any)?.message ?? e);
         cache = { fetchedAt: Date.now(), users: cache?.users ?? {} };
+    } finally {
+        // A refresh is also a render event. Notify on failures and unsupported
+        // payloads as well as success so consumers can leave their pending
+        // state without clearing the last known profile decoration first.
+        notifyRosterListeners();
     }
 }
 
@@ -234,9 +238,20 @@ export function getRosterTier(userId: string): Tier {
 
 /** Force-refresh on demand (e.g., from a "Refresh roster" Hub button). */
 export function refreshRoster(): Promise<void> {
-    cache = null;
+    // Keep the last good snapshot visible while the replacement is fetched.
+    // Clearing this synchronously made DMProfileFlair interpret an in-flight
+    // refresh as "the owner has no flair", briefly removing banners, avatars,
+    // and gradient colors every time a profile was opened or focused.
+    if (cache) cache = { ...cache, fetchedAt: 0 };
     ensureFresh();
     return inFlight ?? Promise.resolve();
+}
+
+/** True once at least one roster response (including a safe empty/failure
+ * response) has completed. Consumers use this to distinguish "still loading"
+ * from "the owner has no published flair" without destructive cleanup. */
+export function isRosterReady(): boolean {
+    return cache !== null;
 }
 
 /** Diagnostic — used by the VIP card / Hub to show "Last synced: 12 min ago". */

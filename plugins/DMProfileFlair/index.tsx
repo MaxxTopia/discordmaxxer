@@ -41,7 +41,7 @@ import definePlugin, { OptionType } from "@utils/types";
 import { Button, React, RestAPI, Toasts, UserStore } from "@webpack/common";
 
 import { makePersistentValue } from "../_dm-shared/persist";
-import { getRosterProfileFlair, onRosterChange, ProfileFlair, refreshRoster, rosterHasAnyAvatarFlair } from "../_dm-shared/roster";
+import { getRosterProfileFlair, isRosterReady, onRosterChange, ProfileFlair, refreshRoster, rosterHasAnyAvatarFlair } from "../_dm-shared/roster";
 import { getMyTier, Tier } from "../_dm-shared/vip";
 import { normalizeCode, readBinding } from "../_dm-shared/vipClaim";
 
@@ -2941,6 +2941,7 @@ function clearAppliedAvatars() {
 function scanForPopouts(_root: ParentNode = document) {
     const me = UserStore.getCurrentUser?.();
     const tmActive = isTournamentModeActive();
+    const rosterReady = isRosterReady();
 
     // ── Banner + theme (per-popout: identify whose popout, look up their flair) ──
     const banners = findAllProfileBanners();
@@ -2948,7 +2949,9 @@ function scanForPopouts(_root: ParentNode = document) {
     for (const banner of banners) {
         const container = findProfileContainerFromBanner(banner);
         if (!container) {
-            clearBanner(banner);
+            // Discord can mount the banner shell before its profile container.
+            // Leave any already-applied owner decoration in place until the
+            // next observer pass can identify the new surface.
             continue;
         }
         // Identify whose popout this is by extracting userId from an avatar
@@ -2962,10 +2965,18 @@ function scanForPopouts(_root: ParentNode = document) {
         // returns their real id.
         const userId = getUserIdFromContainer(container);
         if (!userId) {
-            clearBanner(banner);
-            clearTheme(container);
+            // Identity is briefly unavailable while Discord commits the avatar
+            // and profile data. Clearing here caused the native banner and
+            // default gradient to flash before the same scan could recover.
+            // Once identity is available, the normal owner lookup below will
+            // clear decorations that do not belong to the new profile.
             continue;
         }
+
+        // A remote roster refresh is asynchronous. Keep the last known
+        // decoration for other users until the replacement response arrives;
+        // self-preview can still use its local fields immediately.
+        if (!rosterReady && String(me?.id ?? "") !== userId) continue;
 
         const bannerFlair = resolveFlairForUserId(userId, "banner");
         if (bannerFlair?.bannerUrl) {
@@ -3006,7 +3017,7 @@ function scanForPopouts(_root: ParentNode = document) {
     const sa = settings.store;
     const selfHasAvatarFlair = !!sa.myAvatarAnimatedUrl.trim();
     const othersAvatarFlair =
-        sa.showOthersFlair && sa.showOthersAvatar && rosterHasAnyAvatarFlair();
+        rosterReady && sa.showOthersFlair && sa.showOthersAvatar && rosterHasAnyAvatarFlair();
     const anyAvatarFlair = selfHasAvatarFlair || othersAvatarFlair;
 
     if (!tmActive && anyAvatarFlair) {
@@ -3020,6 +3031,7 @@ function scanForPopouts(_root: ParentNode = document) {
             // can be mistaken for the profile being viewed.
             const userId = m?.[1] ?? el.dataset.dmFlairAvatarUserId;
             if (!userId) return;
+            if (!rosterReady && String(me?.id ?? "") !== userId) return;
             const avatarFlair = resolveFlairForUserId(userId, "avatar");
             if (avatarFlair?.avatarAnimatedUrl) {
                 applyAvatar(el, avatarFlair.avatarAnimatedUrl, userId, avatarFlair);
@@ -3039,6 +3051,7 @@ function scanForPopouts(_root: ParentNode = document) {
             const m = bg.match(/\/avatars\/(\d{17,20})\//);
             const userId = m?.[1] ?? el.dataset.dmFlairAvatarUserId;
             if (!userId) return;
+            if (!rosterReady && String(me?.id ?? "") !== userId) return;
             const avatarFlair = resolveFlairForUserId(userId, "avatar");
             if (avatarFlair?.avatarAnimatedUrl) {
                 applyBackgroundAvatar(el, avatarFlair.avatarAnimatedUrl, userId, avatarFlair);
@@ -3053,6 +3066,7 @@ function scanForPopouts(_root: ParentNode = document) {
         for (const a of fallback) {
             const container = findProfileContainerFromBanner(a as any) ?? a.closest('[class*="user-profile-popout"]') ?? a.parentElement;
             const userId = container ? getUserIdFromContainer(container) : null;
+            if (!rosterReady && String(me?.id ?? "") !== String(userId ?? "")) continue;
             const flair = resolveFlairForUserId(userId, "avatar");
             if (flair?.avatarAnimatedUrl) applyAvatar(a, flair.avatarAnimatedUrl, userId ?? undefined, flair);
             else clearAvatar(a);
@@ -3066,7 +3080,7 @@ function scanForPopouts(_root: ParentNode = document) {
                 10000
             );
         }
-    } else {
+    } else if (rosterReady || tmActive) {
         // Clear swaps when TournamentMode is active or the roster/viewer
         // toggle no longer exposes any avatar flair. This also prevents an
         // old remote avatar from remaining visible after a profile change.
