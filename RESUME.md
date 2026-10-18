@@ -1,5 +1,21 @@
 # Discordmaxxer — RESUME
 
+## 2026-10-18 release-alert safeguard — local, not yet pushed
+
+The v0.7.98 incident exposed a workflow-ordering bug: Electron Builder
+published the release before the readable-notes check, and the generic failure
+DM then claimed "nothing published" even though all five assets were live.
+The release workflow now validates `docs/releases/vX.Y.Z.md` and its `##
+Highlights` heading before `electron-builder --publish always`. Its failure
+alert also queries the GitHub Release, with retries, and distinguishes a live
+release with a later failed step from a partial or absent release. The
+releasing and troubleshooting runbooks now document the three alert meanings.
+
+Local verification still pending: inspect the diff, run the project's required
+checks that apply to workflow/docs-only changes, and commit/push only after
+Diggy authorizes publication. The existing v0.7.98 release remains public and
+unchanged; this guard affects future release runs.
+
 ## 2026-10-18 v0.7.98 published — first-render and owner widget state
 
 v0.7.98 is published from source commit `b32bbca94c761cf0401f231004e5b801f08ce0b8`,

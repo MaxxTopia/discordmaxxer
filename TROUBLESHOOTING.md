@@ -144,7 +144,9 @@ no-op (nothing breaks). What each DM means and what to do:
 
 | DM you receive | What happened | Your move |
 |---|---|---|
-| "RELEASE FAILED for vX.Y.Z" | A tag-push release hit a gate/build/publish error; nothing shipped | Open the linked run, read the failing step. Stale-rebrand → fix find-strings (see "stay current"). Integrity → the overlay produced a bad bundle, re-run. |
+| "RELEASE FAILED for vX.Y.Z" | The failed run found no GitHub Release after its retry check; nothing is available to download | Open the linked run and read the failing step. Stale-rebrand → fix find-strings (see "stay current"). Integrity → the overlay produced a bad bundle, re-run. |
+| "RELEASE RUN FAILED after publishing vX.Y.Z" | The GitHub Release is live, but a later workflow step failed, such as attaching notes or notifying the site | Open the release link and run link. Users can download the published artifacts; repair the failed follow-up step separately. |
+| "RELEASE PARTIAL for vX.Y.Z" | A GitHub Release record exists but is draft or has no uploaded assets | Treat it as not ready for users. Open the run, confirm which publish step stopped, and finish or recreate the release safely. |
 | "upstream drift detected" | A dependency (Electron/Vencord) fell behind upstream | Review the tracking issue; decide if an Electron/Vencord bump is needed. Run required automated checks; a real voice session is optional, non-blocking evidence. |
 | "auto-rebump shipped CANARY ...-beta.1" | The ShowHiddenChannels fix landed; a **prerelease** auto-shipped to beta users only | Review the beta and automated release checks before promotion. A real voice call is optional and does not block promotion. |
 | "auto-rebump FAILED to verify" | The auto re-pin didn't verify clean; nothing shipped | A rebrand patch needs updating vs new Vencord (see the manual-review issue). |

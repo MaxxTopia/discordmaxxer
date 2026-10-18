@@ -43,6 +43,27 @@ jobs:
                   node-version: 22
                   cache: "pnpm"
 
+            # Validate the human-readable notes before installing large build
+            # dependencies or allowing Electron Builder to create a public
+            # release. A post-publish notes failure must not turn into a
+            # misleading "nothing published" alert.
+            - name: Validate readable release notes
+              shell: pwsh
+              run: |
+                  $tag = $env:GITHUB_REF_NAME
+                  $version = $tag.TrimStart('v')
+                  $notes = "docs/releases/v$version.md"
+                  if (-not (Test-Path -LiteralPath $notes)) {
+                    throw "Missing release notes file: $notes"
+                  }
+                  $body = Get-Content -LiteralPath $notes -Raw
+                  if ([string]::IsNullOrWhiteSpace($body)) {
+                    throw "Release notes file is empty: $notes"
+                  }
+                  if ($body -notmatch '(?m)^## Highlights\s*$') {
+                    throw "Release notes must include a Highlights section: $notes"
+                  }
+
             - name: Install dependencies
               run: pnpm install --frozen-lockfile
 
@@ -110,8 +131,10 @@ jobs:
 
             # electron-builder creates the GitHub Release and uploads the
             # artifacts, but it does not consume docs/releases/*.md. Attach
-            # the curated notes explicitly so the in-app updater never falls
-            # back to "This release did not include readable release notes".
+            # the already-validated curated notes explicitly so the in-app
+            # updater never falls back to "This release did not include
+            # readable release notes". If GitHub rejects this post-publish
+            # edit, the failure alert checks the release before describing it.
             - name: Attach readable release notes
               shell: pwsh
               env:
@@ -120,16 +143,6 @@ jobs:
                   $tag = $env:GITHUB_REF_NAME
                   $version = $tag.TrimStart('v')
                   $notes = "docs/releases/v$version.md"
-                  if (-not (Test-Path -LiteralPath $notes)) {
-                    throw "Missing release notes file: $notes"
-                  }
-                  $body = Get-Content -LiteralPath $notes -Raw
-                  if ([string]::IsNullOrWhiteSpace($body)) {
-                    throw "Release notes file is empty: $notes"
-                  }
-                  if ($body -notmatch '(?m)^## Highlights\s*$') {
-                    throw "Release notes must include a Highlights section: $notes"
-                  }
                   gh release edit $tag --repo $env:GITHUB_REPOSITORY --notes-file $notes
 
             # ── Cross-repo: notify maxxtopia.com so the Download CTA on the
@@ -166,8 +179,10 @@ jobs:
                            '{event_type: "discordmaxxer-released", client_payload: {version: $version, installerUrl: $installerUrl, releasePageUrl: $releasePageUrl}}')"
 
     # Maxx-bot alert (audit 2026-06-26): if a release run fails for ANY reason
-    # (stale-rebrand gate, integrity gate, build, publish), DM Diggy so a broken
-    # or missing release is never silent. No-op if MAXX_BOT_TOKEN isn't set.
+    # (stale-rebrand gate, integrity gate, build, publish, or a post-publish
+    # edit), DM Diggy so the problem is never silent. The alert checks the
+    # GitHub Release first so it never claims "nothing published" when a later
+    # step failed after the artifacts were already uploaded.
     notify-failure:
         needs: release
         if: failure()
@@ -178,5 +193,30 @@ jobs:
               shell: bash
               env:
                   MAXX_BOT_TOKEN: ${{ secrets.MAXX_BOT_TOKEN }}
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
               run: |
-                  bash scripts/notify-maxx.sh "[Discordmaxxer] RELEASE FAILED for ${GITHUB_REF_NAME} -- nothing published. Check the run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+                  set -u
+                  RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+                  RELEASE_JSON=""
+                  for attempt in 1 2 3; do
+                    if RELEASE_JSON="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${GITHUB_REF_NAME}" 2>/dev/null)"; then
+                      break
+                    fi
+                    RELEASE_JSON=""
+                    sleep 5
+                  done
+
+                  if [ -n "$RELEASE_JSON" ]; then
+                    DRAFT="$(printf '%s' "$RELEASE_JSON" | jq -r '.draft // true')"
+                    ASSET_COUNT="$(printf '%s' "$RELEASE_JSON" | jq -r '.assets | length')"
+                    RELEASE_URL="$(printf '%s' "$RELEASE_JSON" | jq -r '.html_url // empty')"
+                    if [ "$DRAFT" = "false" ] && [ "$ASSET_COUNT" -gt 0 ]; then
+                      MESSAGE="[Discordmaxxer] RELEASE RUN FAILED after publishing ${GITHUB_REF_NAME}. The GitHub Release is live with ${ASSET_COUNT} asset(s); a later post-publish step failed. Release: ${RELEASE_URL} Run: ${RUN_URL}"
+                    else
+                      MESSAGE="[Discordmaxxer] RELEASE PARTIAL for ${GITHUB_REF_NAME}. A GitHub Release record exists, but it is still draft or has no uploaded assets. Check the release and run: ${RELEASE_URL} ${RUN_URL}"
+                    fi
+                  else
+                    MESSAGE="[Discordmaxxer] RELEASE FAILED for ${GITHUB_REF_NAME}. No GitHub Release was found after the failed run, so nothing is available to download. Check the run: ${RUN_URL}"
+                  fi
+
+                  bash scripts/notify-maxx.sh "$MESSAGE"

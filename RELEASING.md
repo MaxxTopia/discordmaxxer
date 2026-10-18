@@ -48,14 +48,19 @@ git push origin v0.1.X
 `.github/workflows/release.yml` triggers on `v*` tags:
 1. Spins up `windows-latest`
 2. Installs Node 20 + pnpm + project deps
-3. Runs `pnpm build`
-4. Runs `pnpm electron-builder --windows --publish always`
-5. Uploads the installer + `latest.yml` (auto-updater feed) to the GitHub release with the matching tag
-6. Attaches `docs/releases/vX.Y.Z.md` to that release and fails if the file is
-   missing, empty, or lacks a `## Highlights` section
+3. Validates `docs/releases/vX.Y.Z.md` before the publish command. The
+   workflow fails if the file is missing, empty, or lacks a `## Highlights`
+   section.
+4. Runs `pnpm build` plus the strict overlay and artifact gates
+5. Runs `pnpm electron-builder --windows --publish always`, which uploads the
+   installer + `latest.yml` (auto-updater feed) to the GitHub release
+6. Attaches the already-validated notes to that release
 
 The release workflow publishes the release after the build and notes checks
 pass. The notes file is the human-readable source for the in-app updater.
+If a later post-publish step fails, the Maxx-bot alert checks the GitHub
+Release first and reports whether the release is live, partial, or absent
+instead of claiming that nothing was published when artifacts already exist.
 
 ## Auto-updater
 
