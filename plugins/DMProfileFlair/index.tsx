@@ -1939,11 +1939,33 @@ const settings = definePluginSettings({
 
 let style: HTMLStyleElement | null = null;
 let observer: MutationObserver | null = null;
+let mediaPlaybackObserver: IntersectionObserver | null = null;
 let rescanTimer: number | null = null;
 let defaultAvatarWarned = false;
 let removeRosterListener: (() => void) | null = null;
 let lastRosterRefreshAt = 0;
 const ROSTER_FOCUS_REFRESH_INTERVAL_MS = 30_000;
+
+function resumeVisibleBannerVideos(): void {
+    if (document.hidden) return;
+    document.querySelectorAll<HTMLVideoElement>(".dm-flair-banner-video").forEach(video => {
+        const rect = video.getBoundingClientRect();
+        const inViewport = rect.bottom > 0 && rect.right > 0
+            && rect.top < window.innerHeight && rect.left < window.innerWidth;
+        if (inViewport) video.play().catch(() => {});
+    });
+}
+
+function observeBannerMedia(media: HTMLVideoElement | HTMLImageElement): void {
+    // Chromium resumes animated images on its own when they become visible;
+    // only videos need an explicit play() nudge after background throttling.
+    if (!(media instanceof HTMLVideoElement) || !mediaPlaybackObserver) return;
+    mediaPlaybackObserver.observe(media);
+}
+
+function unobserveBannerMedia(media: Element): void {
+    mediaPlaybackObserver?.unobserve(media);
+}
 
 function refreshRosterForVisibleSurface(): void {
     if (document.hidden) return;
@@ -1955,9 +1977,15 @@ function refreshRosterForVisibleSurface(): void {
 }
 
 const onVisibilityChange = () => {
-    if (!document.hidden) refreshRosterForVisibleSurface();
+    if (!document.hidden) {
+        resumeVisibleBannerVideos();
+        refreshRosterForVisibleSurface();
+    }
 };
-const onRosterFocus = () => refreshRosterForVisibleSurface();
+const onRosterFocus = () => {
+    resumeVisibleBannerVideos();
+    refreshRosterForVisibleSurface();
+};
 
 
 /** True if a URL is explicitly marked or named as a video. Shared profile
@@ -2452,7 +2480,10 @@ function clearBanner(banner: HTMLElement, failedUrl?: string) {
     delete banner.dataset.dmFlairMediaEffect;
     delete banner.dataset.dmFlairBannerAppliedUrl;
     delete banner.dataset.dmFlairBannerLoadingUrl;
-    banner.querySelectorAll(".dm-flair-banner-video, .dm-flair-banner-image").forEach(v => v.remove());
+    banner.querySelectorAll(".dm-flair-banner-video, .dm-flair-banner-image").forEach(v => {
+        unobserveBannerMedia(v);
+        v.remove();
+    });
     // Do not erase Discord's own inline banner styles when this container was
     // never ours. Only undo properties after we actually painted an overlay.
     if (hadOverlay) {
@@ -2538,7 +2569,10 @@ function applyBanner(banner: HTMLElement, url: string, flair?: ProfilePresentati
         media.style.opacity = "1";
         banner.dataset.dmFlairBannerAppliedUrl = url;
         banner.setAttribute("data-dm-flair-banner-applied", "1");
-        if (media instanceof HTMLVideoElement) media.play().catch(() => {});
+        if (media instanceof HTMLVideoElement) {
+            observeBannerMedia(media);
+            media.play().catch(() => {});
+        }
     };
     const fail = () => {
         console.warn("[DMProfileFlair] Remote banner could not be loaded; restored the native banner.", url);
@@ -2558,6 +2592,7 @@ function applyBanner(banner: HTMLElement, url: string, flair?: ProfilePresentati
         v.onloadeddata = () => finish(v);
         v.onerror = fail;
         banner.appendChild(v);
+        observeBannerMedia(v);
         v.src = proxyVideoUrl(url);
         v.play().catch(() => {});
         return;
@@ -2918,6 +2953,16 @@ function scheduleScan() {
 
 function startObserver() {
     if (observer) return;
+    if (typeof IntersectionObserver !== "undefined") {
+        mediaPlaybackObserver = new IntersectionObserver(entries => {
+            if (document.hidden) return;
+            for (const entry of entries) {
+                if (!entry.isIntersecting) continue;
+                const video = entry.target as HTMLVideoElement;
+                if (video instanceof HTMLVideoElement) video.play().catch(() => {});
+            }
+        }, { threshold: 0.01 });
+    }
     document.addEventListener("visibilitychange", onVisibilityChange);
     window.addEventListener("focus", onRosterFocus);
     removeRosterListener = onRosterChange(scheduleScan);
@@ -2939,6 +2984,8 @@ function stopObserver() {
     lastRosterRefreshAt = 0;
     observer?.disconnect();
     observer = null;
+    mediaPlaybackObserver?.disconnect();
+    mediaPlaybackObserver = null;
     if (rescanTimer !== null) { clearInterval(rescanTimer); rescanTimer = null; }
     document.querySelectorAll("[data-dm-flair-banner-applied]").forEach(el => {
         const e = el as HTMLElement;

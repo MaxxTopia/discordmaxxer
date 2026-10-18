@@ -1,5 +1,29 @@
 # Discordmaxxer — RESUME
 
+## 2026-10-17 in-view media resilience audit — local candidate only
+
+The published baseline remains v0.7.95. A local, unpublished candidate adds an
+IntersectionObserver-backed resume hook for loaded video banner overlays: when
+an overlay enters the viewport, or the app returns from background/focus, the
+renderer calls `play()` again. It does not change the roster contract, media
+URLs, owner lookup, GIF/image handling, crop/effect settings, or the deliberate
+Tournament Mode pause. Animated GIFs remain real `<img>` elements; Chromium's
+image decoder controls their animation and they are not reloaded, avoiding
+flicker.
+
+Verification passed in the candidate worktree: `pnpm test`, strict
+`DM_STRICT_REBRAND=1 pnpm overlay:vencord`, `node overlay-scripts/verify-build.mjs`,
+and `git diff --check`. The source change is intentionally not committed,
+pushed, tagged, or published. A real signed-in DiggyT -> DiggyAI recipient test
+is still required before claiming the visual behavior is verified.
+
+The live profile-media Worker is already serving the v2 R2 roster snapshot
+successfully (`/roster` HTTP 200, no retry header). The legacy KV-list migration
+fallback remains only for a missing snapshot; no Worker change was made in this
+audit. The Maxxtopia site is live, but `npm audit --omit=dev` reports dependency
+advisories (including a critical Astro advisory); dependency remediation is a
+separate upgrade-and-test task, not an emergency page outage fix.
+
 ## 2026-10-16 v0.7.94 published — two-style Catwoman preset restored
 
 Patch release `v0.7.94` restores the original two-pose Catwoman Featured render
