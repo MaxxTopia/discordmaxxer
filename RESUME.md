@@ -40,13 +40,14 @@ start the hub, click Broadcast, start a track, confirm the live title and
 track artwork, then stop the track and verify that `showWhenIdle` only affects
 the idle fallback.
 
-The companion's desired `/nowplaying` snapshot/priority patch is present in the
-dirty Streammaxxing v0.1.67 source and has a clean, isolated 7-test proof in a
-0.1.60-origin staging worktree, but it was not published because the exact
-clean source that produced the live v0.1.67 installer could not be recovered.
-Publishing from the dirty tree would bundle unrelated WIP or risk downgrading
-existing features. Do not claim the companion updater is changed until that
-source-base gate is resolved.
+The companion-side `/nowplaying` snapshot/priority bridge is already present in
+the live Streammaxxing v0.1.67 installer. The public updater manifest reports
+v0.1.67, and the local installer matches its published SHA-256 exactly. A
+read-only shipped-binary inspection also found the `/nowplaying`,
+Playlistmaxxing, hosted-origin, snapshot, and private-network bridge markers.
+No duplicate Streammaxxing publish is needed; the remaining proof is the real
+runtime test with the hub running, Playlistmaxxing Broadcast enabled, a track
+playing, and the artwork/title observed in Discord.
 
 ## 2026-10-17 in-view media resilience audit — local candidate only
 
