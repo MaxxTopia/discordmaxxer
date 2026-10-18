@@ -6,9 +6,9 @@ import { ApplicationAssetUtils, FluxDispatcher } from "@webpack/common";
    Shows "Listening to Playlistmaxxing" on your Discord profile (green LISTENING
    status, like Spotify). Static by default; if the streammaxxing hub is running
    and you've hit Broadcast in the web app, it live-upgrades to the current song
-   (title / artist / album art / progress). The live path is best-effort — Discord
-   runs over https, so a plain http://127.0.0.1 feed can be blocked; when it is,
-   the static "Listening to Playlistmaxxing" badge still shows. */
+   (title / artist / album art / progress). The client listens for live SSE events
+   and also polls a tiny current-track snapshot so starting the plugin after a
+   song is already playing still catches up. */
 
 const SOCKET_ID = "Playlistmaxxing";
 const APP_ID = "1502451778426372116"; // Maxxtopia / discordmaxxer Discord application
@@ -16,13 +16,16 @@ const NAME = "Playlistmaxxing";
 const BUTTON_LABEL = "Listen along";
 const BUTTON_URL = "https://music.maxxtopia.com";
 const HUB_EVENTS = "http://127.0.0.1:4747/events";
+const HUB_NOWPLAYING = "http://127.0.0.1:4747/nowplaying";
 const REFRESH_MS = 60_000;
+const SNAPSHOT_REFRESH_MS = 10_000;
 const ACTIVITY_TYPE_LISTENING = 2;
 
 type Song = { title?: string; artist?: string; art?: string; durationMs?: number; progressMs?: number; playing?: boolean; };
 
 let current: Song | null = null;
 let timer: ReturnType<typeof setInterval> | null = null;
+let snapshotTimer: ReturnType<typeof setInterval> | null = null;
 let es: EventSource | null = null;
 const assetCache = new Map<string, string>();
 
@@ -41,7 +44,7 @@ const settings = definePluginSettings({
     },
     showWhenIdle: {
         type: OptionType.BOOLEAN,
-        description: "Keep showing \"Listening to Playlistmaxxing\" even when no song is detected.",
+        description: "Keep the static \"Listening to Playlistmaxxing\" card visible when no song is detected. It does not hide a live track.",
         default: true,
         onChange: () => refresh()
     }
@@ -72,8 +75,17 @@ async function buildActivity(): Promise<any | null> {
 
     const assets: Record<string, string> = {};
     if (song?.art) {
-        const id = await resolveAsset(song.art);
-        if (id) { assets.large_image = id; assets.large_text = song.title || NAME; }
+        // Playlistmaxxing already provides the exact public artwork shown in
+        // its popout. Discord Rich Presence accepts public HTTP(S) artwork and
+        // media-proxies it for viewers; treating the URL as an application
+        // asset key made every track silently fall back to the app icon.
+        if (/^https?:\/\//i.test(song.art)) {
+            assets.large_image = song.art;
+            assets.large_text = song.title || NAME;
+        } else {
+            const id = await resolveAsset(song.art);
+            if (id) { assets.large_image = id; assets.large_text = song.title || NAME; }
+        }
     }
 
     let timestamps: { start: number; end?: number; } | undefined;
@@ -104,33 +116,72 @@ function disconnect() {
     if (es) { try { es.close(); } catch { /* ignore */ } es = null; }
 }
 
+function applyNowPlaying(d: any) {
+    if (!d || d.t !== "nowplaying") return;
+    if (d.kind === "idle") {
+        current = null;
+        void refresh();
+        return;
+    }
+    if (d.kind !== "track") return;
+    current = {
+        title: typeof d.title === "string" ? d.title : undefined,
+        artist: typeof d.artist === "string" ? d.artist : undefined,
+        art: typeof d.art_url === "string" ? d.art_url : undefined,
+        durationMs: Number(d.duration_ms) || 0,
+        progressMs: Number(d.progress_ms) || 0,
+        playing: d.is_playing !== false
+    };
+    void refresh();
+}
+
+async function syncNowPlayingSnapshot() {
+    if (!settings.store.liveSync) return;
+    try {
+        const response = await fetch(`${HUB_NOWPLAYING}?_=${Date.now()}`, { cache: "no-store" });
+        if (!response.ok) return;
+        applyNowPlaying(await response.json());
+    } catch {
+        // The companion hub may not be running yet. Keep the static activity
+        // behavior and let the next poll/EventSource reconnect recover it.
+    }
+}
+
+function stopSnapshotPolling() {
+    if (snapshotTimer) clearInterval(snapshotTimer);
+    snapshotTimer = null;
+}
+
+function startSnapshotPolling() {
+    stopSnapshotPolling();
+    if (!settings.store.liveSync) return;
+    void syncNowPlayingSnapshot();
+    snapshotTimer = setInterval(() => { void syncNowPlayingSnapshot(); }, SNAPSHOT_REFRESH_MS);
+}
+
 function connect() {
     disconnect();
     if (!settings.store.liveSync) return;
     try {
         es = new EventSource(HUB_EVENTS);
+        es.onopen = () => { void syncNowPlayingSnapshot(); };
         es.onmessage = (e: MessageEvent) => {
             let d: any;
             try { d = JSON.parse(e.data); } catch { return; }
-            if (!d || d.t !== "nowplaying") return;
-            if (d.kind === "idle") { current = null; refresh(); return; }
-            if (d.kind === "track") {
-                current = {
-                    title: d.title,
-                    artist: d.artist,
-                    art: d.art_url,
-                    durationMs: Number(d.duration_ms) || 0,
-                    progressMs: Number(d.progress_ms) || 0,
-                    playing: d.is_playing !== false
-                };
-                refresh();
-            }
+            applyNowPlaying(d);
         };
-        es.onerror = () => { /* hub unreachable / blocked — keep the static badge */ };
+        es.onerror = () => { void syncNowPlayingSnapshot(); };
     } catch { /* EventSource unavailable — static only */ }
 }
 
-function reconnect() { connect(); refresh(); }
+function reconnect() {
+    connect();
+    startSnapshotPolling();
+    if (!settings.store.liveSync) {
+        current = null;
+    }
+    void refresh();
+}
 
 export default definePlugin({
     name: "PlaylistmaxxingPresence",
@@ -143,12 +194,15 @@ export default definePlugin({
         refresh();
         timer = setInterval(refresh, REFRESH_MS);
         connect();
+        startSnapshotPolling();
     },
 
     stop() {
         if (timer) clearInterval(timer);
         timer = null;
+        stopSnapshotPolling();
         disconnect();
+        current = null;
         setActivity(null);
     }
 });

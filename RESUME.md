@@ -1,5 +1,40 @@
 # Discordmaxxer — RESUME
 
+## 2026-10-17 local candidate — cross-PC profile media and Playlistmaxxing presence
+
+The published baseline is still v0.7.95. This worktree has two intentional,
+unpublished source changes:
+
+- `plugins/DMProfileFlair/index.tsx` now identifies profile owners from more
+  Discord media forms, protects against recycled profile nodes and late media
+  callbacks painting the previous user's banner, keeps Discord's native
+  background styles intact, and raises the replacement media above the native
+  layer. The live Worker roster and DiggyAI banner were checked separately:
+  `/roster` returned HTTP 200 and the banner route returned HTTP 200 with
+  `image/gif`.
+- `plugins/PlaylistmaxxingPresence/index.ts` now reads the current track from
+  `http://127.0.0.1:4747/nowplaying` on startup and every 10 seconds, while
+  retaining the live SSE stream. `showWhenIdle` controls only the static
+  fallback card; it does not hide a live track. Public song artwork URLs are
+  passed through as the Rich Presence large image instead of being forced
+  through the application-asset resolver and falling back to the app logo.
+
+Verification passed locally: `pnpm test`, `pnpm build`, strict
+`DM_STRICT_REBRAND=1 pnpm overlay:vencord`,
+`node overlay-scripts/verify-build.mjs`, and `git diff --check`. The full
+Streammaxxing Tauri suite also passed with 57 tests. `pnpm package:dir` then
+produced a local `dist/win-unpacked` executable whose packaged renderer was
+checked for the new profile-media owner guard and Playlistmaxxing snapshot
+path. No client commit, push, tag, deployment, or publication was performed.
+The second-PC DiggyT to DiggyAI visual test is still pending because the
+public v0.7.95 build cannot contain these local fixes.
+
+For the presence path, the user must still run Streammaxxing and click
+Broadcast in Playlistmaxxing. Merely playing music on the site does not send
+the cross-app event. The next release test is: start the hub, click Broadcast,
+start a track, confirm the live title and track artwork, then stop the track
+and verify that `showWhenIdle` only affects the idle fallback.
+
 ## 2026-10-17 in-view media resilience audit — local candidate only
 
 The published baseline remains v0.7.95. A local, unpublished candidate adds an

@@ -2023,10 +2023,17 @@ function isAnimatedUrl(url: string): boolean {
 
 function buildCss(): string {
     return `
-        /* Hide Discord's stock banner <img> when we've painted ours over the
-           container. The data-attr is set inline by tagPopout. */
-        [data-dm-flair-banner-applied] > img:first-child {
+        /* Keep the native media hidden only while our replacement has loaded.
+           Discord has used <img>, <picture>, and <video> for this surface over
+           time; do not blanket-hide descendants because the avatar may live in
+           the same profile root. */
+        [data-dm-flair-banner-applied] > img:not(.dm-flair-banner-image),
+        [data-dm-flair-banner-applied] > picture,
+        [data-dm-flair-banner-applied] > video:not(.dm-flair-banner-video) {
             visibility: hidden !important;
+        }
+        [data-dm-flair-banner-applied] {
+            isolation: isolate;
         }
         /* Video banner overlay — covers the banner area, click-through, low
            paint cost (one composited surface). */
@@ -2038,7 +2045,7 @@ function buildCss(): string {
             object-fit: cover;
             object-position: center;
             pointer-events: none;
-            z-index: 0;
+            z-index: 2;
             opacity: 0;
             transition: opacity 120ms ease;
         }
@@ -2054,7 +2061,7 @@ function buildCss(): string {
             object-fit: cover;
             object-position: center;
             pointer-events: none;
-            z-index: 0;
+            z-index: 2;
             opacity: 0;
             transition: opacity 120ms ease;
         }
@@ -2083,7 +2090,7 @@ function buildCss(): string {
             position: absolute;
             inset: 0;
             pointer-events: none;
-            z-index: 1;
+            z-index: 3;
             background: repeating-linear-gradient(180deg, rgba(255,255,255,0.12) 0, rgba(255,255,255,0.12) 1px, transparent 1px, transparent 4px);
             mix-blend-mode: screen;
             opacity: 0.42;
@@ -2289,12 +2296,53 @@ function findProfileContainerFromBanner(banner: HTMLElement): HTMLElement | null
     return null;
 }
 
+const DISCORD_AVATAR_ID_RE = /\/avatars\/(\d{17,20})\//;
+
+function userIdFromMediaValue(value: string | null | undefined): string | null {
+    if (!value) return null;
+    const values = [value];
+    try {
+        const decoded = decodeURIComponent(value);
+        if (decoded !== value) values.push(decoded);
+    } catch { /* malformed srcset/data attribute — inspect the original */ }
+    for (const candidate of values) {
+        const match = candidate.match(DISCORD_AVATAR_ID_RE);
+        if (match) return match[1];
+    }
+    return null;
+}
+
+function mediaValuesForImage(image: HTMLImageElement): string[] {
+    return [
+        image.currentSrc,
+        image.src,
+        image.getAttribute("src"),
+        image.getAttribute("srcset"),
+        image.getAttribute("data-src"),
+        image.getAttribute("data-lazy-src"),
+        image.getAttribute("data-original")
+    ].filter((value): value is string => Boolean(value));
+}
+
+function userIdFromElementMedia(element: Element): string | null {
+    for (const attr of ["style", "data-background-image", "data-image-url", "data-src", "data-lazy-src"]) {
+        const found = userIdFromMediaValue(element.getAttribute(attr));
+        if (found) return found;
+    }
+    if (element instanceof HTMLImageElement) {
+        for (const value of mediaValuesForImage(element)) {
+            const found = userIdFromMediaValue(value);
+            if (found) return found;
+        }
+    }
+    return null;
+}
+
 /** Try to identify whose profile a popout/full-profile view belongs to. Modern
- *  Discord doesn't put `data-user-id` on profile containers, so we extract it
- *  from an avatar IMG inside via the CDN URL shape
- *  `cdn.discordapp.com/avatars/<userId>/<hash>.<ext>`. Returns null when the
- *  user has Discord's default avatar (no per-user CDN URL — those use
- *  `/assets/<hash>.png` instead). */
+ *  Discord does not consistently put `data-user-id` on profile containers, and
+ *  newer surfaces may expose the avatar through `srcset`, lazy-load attributes,
+ *  or an inline background instead of the loaded `img.src`. Inspect every
+ *  bounded media representation before falling back to React props. */
 function getUserIdFromContainerLegacy(container: Element): string | null {
     // Discord has changed the avatar class token across profile-sidebar and
     // popout layouts. The CDN path is the stable identity signal, so inspect
@@ -2302,9 +2350,12 @@ function getUserIdFromContainerLegacy(container: Element): string | null {
     // requiring the current `avatar__` class name.
     const imgs = container.querySelectorAll("img");
     for (const img of imgs) {
-        const src = (img as HTMLImageElement).currentSrc || (img as HTMLImageElement).src || "";
-        const m = src.match(/\/avatars\/(\d{17,20})\//);
-        if (m) return m[1];
+        const found = userIdFromElementMedia(img);
+        if (found) return found;
+    }
+    for (const el of container.querySelectorAll<HTMLElement>("[style], [data-background-image], [data-image-url]")) {
+        const found = userIdFromElementMedia(el);
+        if (found) return found;
     }
     return null;
 }
@@ -2367,13 +2418,10 @@ function findUserIdFromContainerUncached(container: Element): string | null {
         if (hrefMatch) return hrefMatch[1];
         const domMatch = (el.getAttribute("id") ?? "").match(/(?:user|profile)[-_](\d{17,20})/i);
         if (domMatch) return domMatch[1];
+        const mediaMatch = userIdFromElementMedia(el);
+        if (mediaMatch) return mediaMatch;
     }
 
-    for (const img of container.querySelectorAll("img")) {
-        const src = (img as HTMLImageElement).currentSrc || (img as HTMLImageElement).src || "";
-        const match = src.match(/\/avatars\/(\d{17,20})\//);
-        if (match) return match[1];
-    }
     for (const el of elements) {
         for (const key of Object.keys(el)) {
             if (!key.startsWith("__reactProps$") && !key.startsWith("__reactFiber$")) continue;
@@ -2390,8 +2438,12 @@ function profileIdentitySignature(container: Element): string {
     const attrs = ["data-user-id", "data-userid", "data-profile-user-id", "data-profile-userid", "id"]
         .map(key => container.getAttribute(key) ?? "")
         .join("|");
-    const avatar = container.querySelector("img") as HTMLImageElement | null;
-    return `${attrs}|${avatar?.currentSrc || avatar?.src || ""}|${avatar?.getAttribute("data-dm-flair-avatar-user-id") || ""}|${container.childElementCount}`;
+    const media = Array.from(container.querySelectorAll("img"))
+        .slice(0, 24)
+        .flatMap(img => mediaValuesForImage(img as HTMLImageElement))
+        .join("|");
+    const flairOwner = container.querySelector("[data-dm-flair-avatar-user-id]")?.getAttribute("data-dm-flair-avatar-user-id") || "";
+    return `${attrs}|${media}|${flairOwner}|${container.childElementCount}`;
 }
 
 function getUserIdFromContainer(container: Element): string | null {
@@ -2471,10 +2523,8 @@ function resolveFlairForUserId(userId: string | null, kind: "banner" | "avatar" 
  * remote media load must not leave the stock banner hidden behind a blank
  * overlay. */
 function clearBanner(banner: HTMLElement, failedUrl?: string) {
-    const hadOverlay = banner.hasAttribute("data-dm-flair-banner-applied")
-        || banner.hasAttribute("data-dm-flair-banner-loading-url")
-        || Boolean(banner.querySelector(".dm-flair-banner-video, .dm-flair-banner-image"));
     banner.removeAttribute("data-dm-flair-banner-applied");
+    delete banner.dataset.dmFlairBannerUserId;
     delete banner.dataset.dmFlairBannerPosition;
     delete banner.dataset.dmFlairBannerFit;
     delete banner.dataset.dmFlairMediaEffect;
@@ -2484,14 +2534,6 @@ function clearBanner(banner: HTMLElement, failedUrl?: string) {
         unobserveBannerMedia(v);
         v.remove();
     });
-    // Do not erase Discord's own inline banner styles when this container was
-    // never ours. Only undo properties after we actually painted an overlay.
-    if (hadOverlay) {
-        banner.style.removeProperty("background-image");
-        banner.style.removeProperty("background-size");
-        banner.style.removeProperty("background-position");
-        banner.style.removeProperty("background-repeat");
-    }
     if (banner.hasAttribute("data-dm-flair-original-position")) {
         const originalPosition = banner.dataset.dmFlairOriginalPosition ?? "";
         if (originalPosition) banner.style.position = originalPosition;
@@ -2520,7 +2562,17 @@ function applyBannerPresentation(banner: HTMLElement, flair?: ProfilePresentatio
     else delete banner.dataset.dmFlairMediaEffect;
 }
 
-function applyBanner(banner: HTMLElement, url: string, flair?: ProfilePresentation) {
+function applyBanner(banner: HTMLElement, url: string, userId: string, flair?: ProfilePresentation) {
+    const ownerChanged = banner.dataset.dmFlairBannerUserId !== userId;
+    if (ownerChanged && (banner.hasAttribute("data-dm-flair-banner-applied")
+        || banner.hasAttribute("data-dm-flair-banner-loading-url")
+        || banner.querySelector(".dm-flair-banner-video, .dm-flair-banner-image"))) {
+        // Discord recycles the same banner node between profile popouts. Never
+        // let the previous user's late GIF/video callback paint into the new
+        // owner's profile.
+        clearBanner(banner);
+    }
+    banner.dataset.dmFlairBannerUserId = userId;
     // Presentation is updated before the idempotency check so a tier upgrade or
     // a changed owner preference repaints the current media without refetching
     // the same GIF/video. Defaults remain Discordmaxxer's existing cover/center
@@ -2559,7 +2611,8 @@ function applyBanner(banner: HTMLElement, url: string, flair?: ProfilePresentati
     const finish = (media: HTMLVideoElement | HTMLImageElement) => {
         // A newer scan may have replaced or cleared this request. Never let a
         // late load from an old profile paint over the current native banner.
-        if (banner.dataset.dmFlairBannerLoadingUrl !== url) {
+        if (banner.dataset.dmFlairBannerLoadingUrl !== url
+            || banner.dataset.dmFlairBannerUserId !== userId) {
             media.remove();
             return;
         }
@@ -2575,6 +2628,8 @@ function applyBanner(banner: HTMLElement, url: string, flair?: ProfilePresentati
         }
     };
     const fail = () => {
+        if (banner.dataset.dmFlairBannerLoadingUrl !== url
+            || banner.dataset.dmFlairBannerUserId !== userId) return;
         console.warn("[DMProfileFlair] Remote banner could not be loaded; restored the native banner.", url);
         clearBanner(banner, url);
     };
@@ -2831,7 +2886,7 @@ function scanForPopouts(_root: ParentNode = document) {
         const bannerFlair = resolveFlairForUserId(userId, "banner");
         if (bannerFlair?.bannerUrl) {
             const suppressForTM = tmActive && isAnimatedUrl(bannerFlair.bannerUrl);
-            if (!suppressForTM) applyBanner(banner, bannerFlair.bannerUrl, bannerFlair);
+            if (!suppressForTM) applyBanner(banner, bannerFlair.bannerUrl, userId, bannerFlair);
             else {
                 clearBanner(banner);
             }
@@ -2989,11 +3044,8 @@ function stopObserver() {
     if (rescanTimer !== null) { clearInterval(rescanTimer); rescanTimer = null; }
     document.querySelectorAll("[data-dm-flair-banner-applied]").forEach(el => {
         const e = el as HTMLElement;
-        e.style.removeProperty("background-image");
-        e.style.removeProperty("background-size");
-        e.style.removeProperty("background-position");
-        e.style.removeProperty("background-repeat");
         e.removeAttribute("data-dm-flair-banner-applied");
+        delete e.dataset.dmFlairBannerUserId;
         delete e.dataset.dmFlairBannerAppliedUrl;
         delete e.dataset.dmFlairBannerLoadingUrl;
         delete e.dataset.dmFlairBannerPosition;
@@ -3012,6 +3064,7 @@ function stopObserver() {
     document.querySelectorAll<HTMLElement>("[data-dm-flair-banner-loading-url]").forEach(el => {
         delete el.dataset.dmFlairBannerLoadingUrl;
         delete el.dataset.dmFlairBannerAppliedUrl;
+        delete el.dataset.dmFlairBannerUserId;
         delete el.dataset.dmFlairBannerPosition;
         delete el.dataset.dmFlairBannerFit;
         delete el.dataset.dmFlairMediaEffect;
