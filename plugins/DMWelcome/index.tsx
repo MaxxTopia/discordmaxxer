@@ -33,7 +33,7 @@ import { BADGE_ICON } from "../DMBadge";
 
 // Bump this for meaningful tour content/layout updates. Tiny copy tweaks do
 // not need to interrupt an existing user's workflow.
-const WELCOME_VERSION = 8;
+const WELCOME_VERSION = 9;
 
 const ROOT_ID = "dm-welcome-root";
 const MODAL_ID = "dm-welcome-modal";
@@ -243,6 +243,17 @@ const CSS = `
         display: grid;
         gap: 8px;
         margin-top: 6px;
+    }
+
+    .dmw-scroll-cue {
+        margin-top: 10px;
+        padding: 8px 10px;
+        border: 1px solid rgba(221,177,255,.24);
+        border-radius: 8px;
+        background: rgba(95,40,150,.14);
+        color: #cdb9e8;
+        font-size: 11px;
+        line-height: 1.35;
     }
 
     /* Bundle buttons — 3 stacked or grid, each clickable */
@@ -723,6 +734,7 @@ function renderModalHTML(): string {
 
         <div class="dmw-section">Identity (optional)</div>
         <div class="dmw-identity">${identityRows}</div>
+        <div class="dmw-scroll-cue" role="note">Quick setup is above. Scroll down for profile bundles, plugin health, and featured plugins.</div>
 
         <div class="dmw-section">Profile gradient</div>
         ${gradientSectionHTML()}

@@ -846,25 +846,27 @@ function semanticText(element: HTMLElement): string {
 // Message author names can sit inside a DM/channel wrapper whose hashed class
 // looks like a private-channel surface. Keep the message boundary explicit so
 // the opt-in `messages` setting is always the authority for names in chat.
-// Profile popouts are portaled outside these chat roots, so this does not
-// disable styling after the user opens a profile.
+// A profile popout can be mounted inside a chat portal, so profile semantics
+// must win before the broad message-root fallback.
 const MESSAGE_SURFACE_SEL = '[id^="chat-messages-"], [class*="messageListItem"], [class*="messagesWrapper"], [class*="chatContent"]';
 
 function getSurface(element: HTMLElement): Surface | null {
-    if (element.closest(MESSAGE_SURFACE_SEL)) return "message";
-
+    const inMessageSurface = Boolean(element.closest(MESSAGE_SURFACE_SEL));
+    let sawMessage = inMessageSurface;
     let current: HTMLElement | null = element;
     let depth = 0;
     while (current && depth < 8) {
         const semantic = semanticText(current);
         if (/user.?popout|user.?profile|profile.?modal|profile.?header/.test(semantic)) return "profile";
-        if (/message|chat.?content|markup|reply/.test(semantic)) return "message";
+        if (/message|chat.?content|markup|reply/.test(semantic)) sawMessage = true;
         if (/member|guild.?member|people|friend/.test(semantic)) return "member";
         if (/recipient|private.?channel|dm.?channel|channel.?header|dm.?header/.test(semantic)) return "dm";
         if (/panels|user.?panel|account.?panel|account.?details/.test(semantic)) return "self";
         current = current.parentElement;
         depth++;
     }
+
+    if (sawMessage) return "message";
 
     // A user-id root is a useful fallback for Discord surfaces whose hashed
     // class names no longer contain an obvious semantic hint.
@@ -916,10 +918,6 @@ function shouldApply(element: HTMLElement): { surface: Surface } | null {
     if (!settings.store.active || !isVisibleLeafName(element)) return null;
     const surface = getSurface(element);
     if (!surface || !surfaceEnabled(surface)) return null;
-    // Keep display-name styles out of the message list. The intended reveal
-    // surface is the opened profile/popout; message author labels should stay
-    // native even if an older persisted setting has `messages: true`.
-    if (surface === "message") return null;
     const automaticOtherNameSurface = surface === "profile" || surface === "member" || surface === "dm";
     if (settings.store.styleOtherNames !== true && !automaticOtherNameSurface && !isOwnName(element, surface)) return null;
     return { surface };
@@ -1334,8 +1332,8 @@ const settings = definePluginSettings({
     },
     styleOtherNames: {
         type: OptionType.BOOLEAN,
-        description: "Also style other visible names on less-common Discord surfaces. Profile popouts, member/right-side lists, and DM headers are styled automatically when their own surface toggle is on; chat message authors remain native.",
-        default: false,
+        description: "Also style other visible names on less-common Discord surfaces. Profile popouts, member/right-side lists, DM headers, and message authors each follow their own surface toggle.",
+        default: true,
         onChange: () => scheduleScan()
     },
     selfPanel: {
@@ -1364,8 +1362,8 @@ const settings = definePluginSettings({
     },
     messages: {
         type: OptionType.BOOLEAN,
-        description: "Legacy setting retained for compatibility. Message author labels are intentionally never restyled; use the profile popout after selecting a user to see their style.",
-        default: false,
+        description: "Apply the selected display-name style to visible message author labels. Turn this off if you only want styles on profiles, member rows, and DM headers.",
+        default: true,
         onChange: () => scheduleScan()
     }
 });
@@ -1373,7 +1371,7 @@ const settings = definePluginSettings({
 export default definePlugin({
     name: "DMDisplayNameStyle",
     description:
-        `Creative local display-name styling with ${PRESET_ORDER.length} presets, bundled offline Great Vibes, Fraktur, and comic typefaces, flame/swash/spark ornaments, Custom Lab colors, and per-surface scope. Profile popouts, member/right-side lists, and DM headers style other users automatically; chat message authors remain native until a profile popout is opened. Motion does not follow the OS reduced-motion preference; Tournament Mode pauses it automatically. This does not edit your account; open Discord's native profile editor for the separate account-level Display Name Styles feature.`,
+        `Creative local display-name styling with ${PRESET_ORDER.length} presets, bundled offline Great Vibes, Fraktur, and comic typefaces, flame/swash/spark ornaments, Custom Lab colors, and per-surface scope. Profile popouts, member/right-side lists, DM headers, and message authors can all be styled locally, with separate toggles for each surface. Motion does not follow the OS reduced-motion preference; Tournament Mode pauses it automatically. This does not edit your account; open Discord's native profile editor for the separate account-level Display Name Styles feature.`,
     authors: [{ name: "Diggy", id: 0n }],
     settings,
 

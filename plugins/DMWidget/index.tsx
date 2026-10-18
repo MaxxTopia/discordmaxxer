@@ -2802,32 +2802,20 @@ const WIDGET_APPLICATION_ID_ATTRIBUTES = [
 ];
 
 function visibleProfileWidgetStyles(
-    local: Map<string, WidgetStylePreset> = new Map(),
-    pendingAppIds: Iterable<string> = []
+    _local: Map<string, WidgetStylePreset> = new Map(),
+    _pendingAppIds: Iterable<string> = []
 ): Map<string, WidgetStylePreset> {
-    // The owner marker is authoritative whenever it is readable. Until an
-    // older widget has been migrated (or Discord returns its description),
-    // keep the established viewer fallback so a profile card does not become
-    // inexplicably skinless. This is only a cosmetic fallback; it never
-    // overwrites a published owner marker.
-    const out = new Map<string, WidgetStylePreset>(local);
-    const fallbackPreset = selectedWidgetPreset();
+    // A visible profile belongs to the account being viewed, not the account
+    // running this client. Never use the viewer's local skin as a placeholder
+    // for an unreadable owner marker: that makes another person's widget look
+    // like the viewer's and makes a skin change appear to affect both users.
+    // Unknown owners stay native until their published marker is readable.
+    const out = new Map<string, WidgetStylePreset>();
     const now = Date.now();
-    // Keep the profile card styled during the short owner-marker lookup
-    // window. A fresh owner marker below always replaces this fallback.
-    for (const appId of pendingAppIds) {
-        if (!SNOWFLAKE.test(appId)) continue;
-        const record = visibleWidgetStyles.get(appId);
-        if (!record || now - record.checkedAt > VISIBLE_WIDGET_STYLE_CACHE_MS) out.set(appId, fallbackPreset);
-    }
-    for (const [appId, miss] of visibleWidgetStyleMisses) {
-        if (!SNOWFLAKE.test(appId) || now - miss.checkedAt > VISIBLE_WIDGET_STYLE_MISS_RETRY_MS) continue;
-        out.set(appId, fallbackPreset);
-    }
     for (const [appId, record] of visibleWidgetStyles) {
         if (!SNOWFLAKE.test(appId) || now - record.checkedAt > VISIBLE_WIDGET_STYLE_CACHE_MS) continue;
-        // A readable owner marker always wins over the viewer fallback/local
-        // map, including when both accounts happen to use the same app ID.
+        // A readable owner marker is authoritative, including when both
+        // accounts happen to use the same application id.
         out.set(appId, record.preset);
     }
     return out;
@@ -3676,8 +3664,8 @@ function scanVisibleProfileWidgetCards(): number {
     const localActive = knownWidgetStyles();
     const localHints = knownWidgetHints();
     // The first pass can discover a profile card before its application
-    // metadata has been fetched. Keep the viewer fallback only until a
-    // readable owner marker replaces it; the owner marker always wins.
+    // metadata has been fetched. Keep it native until the owner's marker is
+    // readable; never borrow the viewer's skin during that short lookup.
     const initialActive = visibleProfileWidgetStyles(localActive);
     const initialHints = visibleProfileWidgetHints(localHints);
     const initialHintLabels = Array.from(initialHints.values()).flat().filter(label => label.length >= 3);
@@ -3721,8 +3709,8 @@ function scanVisibleProfileWidgetCards(): number {
     for (const candidate of [...explicitCandidates, ...hintedCardCandidates].slice(0, WIDGET_SKIN_PROFILE_MATCH_MAX)) {
         const appId = visibleWidgetApplicationId(candidate);
         // A profile opened for another account can use the same application id
-        // as the viewer's own widget. The local map is only a startup fallback;
-        // it is not proof that this visible card belongs to the viewer. Always
+        // as the viewer's own widget. The local map is not proof that this
+        // visible card belongs to the viewer. Always
         // hydrate the read-only remote marker for visible profile cards so the
         // owner's published skin can replace a same-id local entry.
         if (appId) discovered.add(appId);
@@ -4142,10 +4130,9 @@ function scanWidgetSkinCards(budgetMs = 120): number {
 
     try {
         const localActive = knownWidgetStyles();
-        // Profile cards use the owner's published marker when available and
-        // the established viewer fallback while an older/missing marker is
-        // being repaired. Keep the viewer's local map for Discord surface
-        // chrome below.
+        // Profile cards use only the owner's published marker. Keep the
+        // viewer's local map for the viewer's own Discord surface chrome
+        // below; it must never bleed into another account's cards.
         const active = visibleProfileWidgetStyles(localActive);
         const surfacePreset = selectedSurfacePreset(localActive);
         if (localActive.size || active.size || surfacePreset) {
