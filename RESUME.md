@@ -1,5 +1,39 @@
 # Discordmaxxer — RESUME
 
+## 2026-10-18 v0.7.97 release candidate — cross-install profile state and DM Hub polish
+
+The isolated `codex/release-v0.7.97` worktree contains the scoped v0.7.97
+candidate. It is not published yet. The release changes are limited to the
+owner/viewer profile-state fixes and DM Hub polish documented in
+`docs/releases/v0.7.97.md`:
+
+- shared owner roster fields now win over stale local settings unless that
+  field is actively being edited, and saves wait for the shared roster to
+  converge before clearing the local draft;
+- viewed profile widget skins use the owner's published marker and no longer
+  fall back to the viewer's local widget choice when the owner marker is
+  missing or unreadable;
+- roster refresh convergence is five minutes instead of one hour;
+- the DM Hub badge preview uses the actual badge artwork; and
+- the first-launch gradient gallery keeps the current choice visible while
+  placing the full gallery behind an explicit Show all control.
+
+Verification completed in this worktree: `pnpm test`, `pnpm build`, strict
+`DM_STRICT_REBRAND=1 pnpm overlay:vencord`,
+`node overlay-scripts/verify-build.mjs`, `pnpm package:dir`,
+`pnpm package:win`, and `git diff --check`. The local x64 unpacked executable
+and Windows installer report product version `0.7.97`; the x64/ARM64 ZIPs,
+installer, and blockmap exist under `dist/`. The two-PC DiggyT -> DiggyAI
+recipient check is still pending and remains the user-owned proof for actual
+cross-account banner/avatar/widget rendering.
+
+Next release actions: inspect the exact staged diff, commit only the six
+source files plus `package.json` and the release notes, push `main` and tag
+`v0.7.97`, then wait for the GitHub release workflow and verify its public
+Windows assets and updater manifest before calling the build live. The dirty
+canonical checkout and the profile-media Worker are separate and must not be
+reset or broadly staged.
+
 ## 2026-10-17 v0.7.96 published — cross-PC profile media and Playlistmaxxing presence
 
 Patch release `v0.7.96` is published from commit `f0a10cf` on `main`, with

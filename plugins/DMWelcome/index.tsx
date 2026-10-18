@@ -12,8 +12,8 @@
  *
  * Persistence: settings.store.seenVersion. Modal auto-shows when
  * seenVersion < WELCOME_VERSION, then writes the new version on dismiss.
- * Bump WELCOME_VERSION when adding new featured plugins to re-trigger the
- * modal on the next launch so existing users see what's new.
+ * Bump WELCOME_VERSION for meaningful tour content or layout updates so
+ * existing users see the repaired experience once.
  */
 
 import { managedStyleRootNode } from "@api/Styles";
@@ -29,11 +29,11 @@ import { GradientPreset, GRADIENT_PRESETS } from "../_dm-shared/gradientPresets"
 import { getPluginHealthSummary } from "../_dm-shared/pluginHealth";
 import { getRosterProfileFlair, onRosterChange } from "../_dm-shared/roster";
 import { hasTier, Tier, TIER_LABELS } from "../_dm-shared/vip";
+import { BADGE_ICON } from "../DMBadge";
 
-// Bump this when new featured plugins are added to force the modal to re-show
-// on launch so existing users see the additions. Major content updates only —
-// not tiny copy tweaks.
-const WELCOME_VERSION = 7;
+// Bump this for meaningful tour content/layout updates. Tiny copy tweaks do
+// not need to interrupt an existing user's workflow.
+const WELCOME_VERSION = 8;
 
 const ROOT_ID = "dm-welcome-root";
 const MODAL_ID = "dm-welcome-modal";
@@ -317,6 +317,10 @@ const CSS = `
     .dmw-preview img {
         width: 100%; height: 100%; object-fit: cover; display: block;
     }
+    .dmw-badge-preview img {
+        width: 42px; height: 42px; object-fit: contain;
+        filter: drop-shadow(0 4px 8px rgba(0,0,0,0.45));
+    }
     .dmw-card-body { min-width: 0; }
     .dmw-card-title {
         font-size: 14px; font-weight: 700; margin-bottom: 3px;
@@ -509,6 +513,26 @@ const CSS = `
         font-family: inherit;
     }
     .dmw-custom-apply:hover { filter: brightness(1.12); }
+    .dmw-gradient-toolbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        margin-top: 8px;
+    }
+    .dmw-gradient-count { font-size: 10px; color: #b994d0; }
+    .dmw-gradient-more {
+        border: 1px solid rgba(226,91,255,0.28);
+        border-radius: 6px;
+        padding: 5px 9px;
+        color: #fbefff;
+        background: rgba(42,9,95,0.48);
+        font-family: inherit;
+        font-size: 11px;
+        font-weight: 700;
+        cursor: pointer;
+    }
+    .dmw-gradient-more:hover { filter: brightness(1.15); }
     .dmw-grad-hint {
         font-size: 11px;
         color: #ddb1ff;
@@ -521,6 +545,8 @@ const CSS = `
 
 let style: HTMLStyleElement | null = null;
 let rootEl: HTMLDivElement | null = null;
+let showAllGradients = false;
+const INITIAL_GRADIENT_COUNT = 8;
 // Auto-open timers, tracked so stop() can cancel them — otherwise a pending
 // timer fires after the plugin (or Discord renderer) is torn down and
 // resurrects the modal, re-appending rootEl to a body we already cleaned up.
@@ -583,7 +609,14 @@ function gradientSectionHTML(): string {
     const selected = tourPresets.find(g => g.primary.toLowerCase() === curP && g.secondary.toLowerCase() === curS);
     const pickerPrimary = /^#[0-9a-f]{6}$/i.test(curP) ? curP : "#e25bff";
     const pickerSecondary = /^#[0-9a-f]{6}$/i.test(curS) ? curS : "#4c51f7";
-    const swatches = tourPresets.map(g => {
+    const visiblePresets = showAllGradients
+        ? tourPresets
+        : (() => {
+            const first = tourPresets.slice(0, INITIAL_GRADIENT_COUNT);
+            if (selected && !first.includes(selected) && first.length) first[first.length - 1] = selected;
+            return first;
+        })();
+    const swatches = visiblePresets.map(g => {
         const sel = g.primary.toLowerCase() === curP && g.secondary.toLowerCase() === curS;
         return `<button class="dmw-grad ${sel ? "sel" : ""}" data-grad="${g.id}"
             style="background:linear-gradient(180deg, ${g.primary} 0%, ${g.secondary} 100%)"
@@ -597,7 +630,12 @@ function gradientSectionHTML(): string {
     const state = selected
         ? `${stateLabel} gradient: <b>${selected.label}</b>.`
         : `${stateLabel} gradient: custom colors.`;
+    const more = tourPresets.length > INITIAL_GRADIENT_COUNT
+        ? `<button class="dmw-gradient-more" data-action="toggle-gradients">${showAllGradients ? "Show fewer gradients" : `Show all ${tourPresets.length} gradients`}</button>`
+        : "";
+    const count = `<span class="dmw-gradient-count">${showAllGradients ? `Showing all ${tourPresets.length}` : `Showing ${visiblePresets.length} of ${tourPresets.length}`} presets</span>`;
     return `<div class="dmw-grads">${swatches}</div>
+        <div class="dmw-gradient-toolbar">${count}${more}</div>
         <div class="dmw-custom-grad">
             <label class="dmw-color-pick">Top <input type="color" data-gradient-color="primary" value="${pickerPrimary}" /></label>
             <label class="dmw-color-pick">Bottom <input type="color" data-gradient-color="secondary" value="${pickerSecondary}" /></label>
@@ -611,7 +649,7 @@ function renderModalHTML(): string {
         const on = getPluginSetting("DMBadge", r.badgeSetting);
         const risk = r.risk ? `<div class="dmw-warn">⚠ ${r.risk}</div>` : "";
         return `<div class="dmw-card">
-            <div class="dmw-preview" aria-hidden="true">🪪</div>
+            <div class="dmw-preview dmw-badge-preview" aria-label="Discordmaxxer badge preview"><img src="${BADGE_ICON}" alt="Discordmaxxer badge" /></div>
             <div class="dmw-card-body">
                 <div class="dmw-card-title">${r.title}</div>
                 <p>${r.blurb}</p>
@@ -771,6 +809,11 @@ function handleClick(e: Event) {
     const actionEl = rawTarget.closest<HTMLElement>("[data-action]");
     if (actionEl) {
         const action = actionEl.dataset.action;
+        if (action === "toggle-gradients") {
+            showAllGradients = !showAllGradients;
+            if (rootEl) rootEl.innerHTML = renderModalHTML();
+            return;
+        }
         if (action === "close" || action === "done") {
             closeModal(true);
             return;
@@ -862,6 +905,7 @@ function ensureRoot() {
 export function openWelcome() {
     ensureRoot();
     if (!rootEl) return;
+    showAllGradients = false;
     rootEl.innerHTML = renderModalHTML();
     rootEl.classList.remove("hidden");
 }
@@ -938,6 +982,7 @@ export default definePlugin({
         style = null;
         removeRosterListener?.();
         removeRosterListener = null;
+        showAllGradients = false;
         delete (globalThis as any).__dmReopenWelcome;
     }
 });

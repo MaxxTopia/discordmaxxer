@@ -2717,25 +2717,15 @@ const WIDGET_APPLICATION_ID_ATTRIBUTES = [
     "application_id"
 ];
 
-function visibleProfileWidgetStyles(local: Map<string, WidgetStylePreset>): Map<string, WidgetStylePreset> {
-    const out = new Map(local);
+function visibleProfileWidgetStyles(): Map<string, WidgetStylePreset> {
+    const out = new Map<string, WidgetStylePreset>();
     const now = Date.now();
-    const fallbackPreset = selectedWidgetPreset();
-    for (const appId of visibleWidgetStyleMisses.keys()) {
-        if (!SNOWFLAKE.test(appId)) continue;
-        // A missing or unreadable owner marker is an availability error, not
-        // permission to render the foreign widget plain. Borrow the viewer's
-        // selected skin until the owner marker becomes readable again. This
-        // deliberately overrides a stale local entry for the same id; a
-        // confirmed remote record below remains authoritative.
-        out.set(appId, fallbackPreset);
-    }
     for (const [appId, record] of visibleWidgetStyles) {
         if (!SNOWFLAKE.test(appId) || now - record.checkedAt > VISIBLE_WIDGET_STYLE_CACHE_MS) continue;
-        // The marker is written by the owner of this application. When the
-        // viewer happens to own the same app, the remote marker is still the
-        // authoritative cross-client value; the viewer fallback is used only
-        // until the marker has been read.
+        // This map is deliberately remote-only. A profile card belongs to the
+        // account being viewed, so a viewer's local selection is never an
+        // acceptable fallback while the owner's published marker is loading,
+        // missing, or unreadable. Missing markers leave the card native.
         out.set(appId, record.preset);
     }
     return out;
@@ -2816,8 +2806,8 @@ function queueVisibleWidgetStyleHydration(appIds: Iterable<string>): void {
                 });
             } else {
                 // A missing marker is an availability error. Remove stale
-                // metadata, keep the profile visibly skinned via the viewer
-                // fallback, and retry so a repaired owner marker takes over.
+                // metadata, keep the profile visibly native, and retry so a
+                // repaired owner marker takes over.
                 const appName = String(application?.name ?? application?.application?.name ?? "").trim();
                 rememberVisibleWidgetStyleMiss(appId, appName ? [appName] : []);
             }
@@ -2825,9 +2815,8 @@ function queueVisibleWidgetStyleHydration(appIds: Iterable<string>): void {
             scheduleWidgetSkinProfileFastScan();
             scheduleWidgetSkinScan(true);
         }).catch(() => {
-            // An unreadable marker is an availability error. Use the viewer
-            // fallback immediately—even if an older marker exists—so a
-            // profile never flashes back to plain Discord. A fresh owner
+            // An unreadable marker is retried later; keep the foreign profile
+            // native instead of borrowing the viewer's skin. A fresh owner
             // marker takes over on the next successful retry.
             rememberVisibleWidgetStyleMiss(appId);
             widgetApplicationCacheEpoch++;
@@ -3586,9 +3575,9 @@ function scanVisibleProfileWidgetCards(): number {
     const localActive = knownWidgetStyles();
     const localHints = knownWidgetHints();
     // The first pass can discover a profile card before its application
-    // metadata has been fetched. Start with the owner's local map for cards
-    // we own, then add only read-only markers fetched for foreign profiles.
-    const initialActive = visibleProfileWidgetStyles(localActive);
+    // metadata has been fetched. Only a published owner marker may style a
+    // profile card; the viewer's local map is never a fallback here.
+    const initialActive = visibleProfileWidgetStyles();
     const initialHints = visibleProfileWidgetHints(localHints);
     const initialHintLabels = Array.from(initialHints.values()).flat().filter(label => label.length >= 3);
     const explicitSelector = WIDGET_APPLICATION_ID_ATTRIBUTES.map(attribute => `[${attribute}]`).join(",");
@@ -3638,7 +3627,7 @@ function scanVisibleProfileWidgetCards(): number {
         if (appId) discovered.add(appId);
     }
     queueVisibleWidgetStyleHydration(discovered);
-    const active = visibleProfileWidgetStyles(localActive);
+    const active = visibleProfileWidgetStyles();
     const known = new Set(active.keys());
     const hints = visibleProfileWidgetHints(localHints);
     const hintLabels = Array.from(hints.values()).flat().filter(label => label.length >= 3);
@@ -4052,7 +4041,9 @@ function scanWidgetSkinCards(budgetMs = 120): number {
 
     try {
         const localActive = knownWidgetStyles();
-        const active = visibleProfileWidgetStyles(localActive);
+        // Profile cards use only the owner-published remote marker. Keep the
+        // viewer's local map for Discord surface chrome below.
+        const active = visibleProfileWidgetStyles();
         const surfacePreset = selectedSurfacePreset(localActive);
         if (localActive.size || active.size || surfacePreset) {
             if (surfacePreset) {

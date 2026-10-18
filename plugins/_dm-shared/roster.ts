@@ -28,10 +28,10 @@ import { Tier } from "./vip";
 // claims (see optimizationmaxxing/vip-worker/worker.js). Each /claim writes
 // to KV and invalidates the worker's in-memory roster cache, so a freshly
 // claimed user appears in the roster within seconds. Worker caches the
-// response for 5 min server-side; client caches for 1 hour locally.
+// response for 5 min server-side; client caches for 5 min locally.
 const ROSTER_URL = "https://optmaxxing-vip.maxxtopia.workers.dev/roster";
 
-const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
+const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 const FETCH_TIMEOUT_MS = 8000;
 
 /** Custom profile flair set by the user — visible only to other Discordmaxxer

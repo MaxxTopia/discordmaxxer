@@ -88,6 +88,32 @@ const EFFECT_OPTIONS: Array<{ value: NonNullable<ProfileFlair["mediaEffect"]>; l
     { value: "scanline", label: "Scanline" }
 ];
 
+// Only fields actively edited in this session may override the shared owner
+// roster for the local self-preview. Persisted settings can be stale after a
+// second Discordmaxxer install changes the account, so treating every local
+// value as authoritative made cross-PC media and colors appear to revert.
+const flairDraftFields = new Set<string>();
+
+function markFlairDraftField(field: string): void {
+    flairDraftFields.add(field);
+}
+
+function clearFlairDraftFields(): void {
+    flairDraftFields.clear();
+}
+
+function applyLocalDraftField(
+    merged: ProfileFlair,
+    settingsValue: unknown,
+    settingKey: string,
+    profileKey: "bannerUrl" | "avatarAnimatedUrl" | "themeColorPrimary" | "themeColorSecondary"
+): void {
+    if (!flairDraftFields.has(settingKey)) return;
+    const value = String(settingsValue ?? "").trim();
+    if (value) merged[profileKey] = value;
+    else delete merged[profileKey];
+}
+
 /** Merge self-preview settings without letting a stale local value bypass the
  * current tier. The worker applies the same rule to the shared roster, but
  * this client-side guard keeps a downgraded account honest before its next
@@ -96,23 +122,47 @@ const EFFECT_OPTIONS: Array<{ value: NonNullable<ProfileFlair["mediaEffect"]>; l
 function mergeLocalPresentationFields(merged: ProfileFlair, s: any): ProfileFlair {
     const tier = getMyTier();
     if (tier >= Tier.MAXXER) {
-        const bannerPosition = s.myBannerPosition.trim(); if (bannerPosition) merged.bannerPosition = bannerPosition as ProfileFlair["bannerPosition"];
-        const avatarPosition = s.myAvatarPosition.trim(); if (avatarPosition) merged.avatarPosition = avatarPosition as ProfileFlair["avatarPosition"];
+        if (flairDraftFields.has("myBannerPosition")) {
+            const bannerPosition = String(s.myBannerPosition ?? "").trim();
+            if (bannerPosition) merged.bannerPosition = bannerPosition as ProfileFlair["bannerPosition"];
+            else delete merged.bannerPosition;
+        }
+        if (flairDraftFields.has("myAvatarPosition")) {
+            const avatarPosition = String(s.myAvatarPosition ?? "").trim();
+            if (avatarPosition) merged.avatarPosition = avatarPosition as ProfileFlair["avatarPosition"];
+            else delete merged.avatarPosition;
+        }
     } else {
         delete merged.bannerPosition;
         delete merged.avatarPosition;
     }
     if (tier >= Tier.MAXXER_PLUS) {
-        const bannerFit = s.myBannerFit.trim(); if (bannerFit) merged.bannerFit = bannerFit as ProfileFlair["bannerFit"];
-        const avatarFit = s.myAvatarFit.trim(); if (avatarFit) merged.avatarFit = avatarFit as ProfileFlair["avatarFit"];
-        const avatarScale = s.myAvatarScale.trim(); if (avatarScale) merged.avatarScale = avatarScale as ProfileFlair["avatarScale"];
+        if (flairDraftFields.has("myBannerFit")) {
+            const bannerFit = String(s.myBannerFit ?? "").trim();
+            if (bannerFit) merged.bannerFit = bannerFit as ProfileFlair["bannerFit"];
+            else delete merged.bannerFit;
+        }
+        if (flairDraftFields.has("myAvatarFit")) {
+            const avatarFit = String(s.myAvatarFit ?? "").trim();
+            if (avatarFit) merged.avatarFit = avatarFit as ProfileFlair["avatarFit"];
+            else delete merged.avatarFit;
+        }
+        if (flairDraftFields.has("myAvatarScale")) {
+            const avatarScale = String(s.myAvatarScale ?? "").trim();
+            if (avatarScale) merged.avatarScale = avatarScale as ProfileFlair["avatarScale"];
+            else delete merged.avatarScale;
+        }
     } else {
         delete merged.bannerFit;
         delete merged.avatarFit;
         delete merged.avatarScale;
     }
     if (tier >= Tier.MAXXER_PLUS_PLUS) {
-        const mediaEffect = s.myMediaEffect.trim(); if (mediaEffect) merged.mediaEffect = mediaEffect as ProfileFlair["mediaEffect"];
+        if (flairDraftFields.has("myMediaEffect")) {
+            const mediaEffect = String(s.myMediaEffect ?? "").trim();
+            if (mediaEffect) merged.mediaEffect = mediaEffect as ProfileFlair["mediaEffect"];
+            else delete merged.mediaEffect;
+        }
     } else {
         delete merged.mediaEffect;
     }
@@ -275,10 +325,10 @@ export function getEffectiveFlairForUser(
         // of being masked to nothing. Filled local fields still preview
         // instantly, no save/worker roundtrip needed.
         const merged: ProfileFlair = { ...(getRosterProfileFlair(userId) ?? {}) };
-        const b = s.myBannerUrl.trim(); if (b) merged.bannerUrl = b;
-        const a = s.myAvatarAnimatedUrl.trim(); if (a) merged.avatarAnimatedUrl = a;
-        const p = s.myThemeColorPrimary.trim(); if (p) merged.themeColorPrimary = p;
-        const sc = s.myThemeColorSecondary.trim(); if (sc) merged.themeColorSecondary = sc;
+        applyLocalDraftField(merged, s.myBannerUrl, "myBannerUrl", "bannerUrl");
+        applyLocalDraftField(merged, s.myAvatarAnimatedUrl, "myAvatarAnimatedUrl", "avatarAnimatedUrl");
+        applyLocalDraftField(merged, s.myThemeColorPrimary, "myThemeColorPrimary", "themeColorPrimary");
+        applyLocalDraftField(merged, s.myThemeColorSecondary, "myThemeColorSecondary", "themeColorSecondary");
         mergeLocalPresentationFields(merged, s);
         if (Object.keys(merged).length) flair = merged;
     }
@@ -355,6 +405,27 @@ async function postFlairUpdate(profile: Partial<ProfileFlair>, replace: boolean)
         toast(`Save failed: ${(e as any)?.message ?? "network"}`, Toasts.Type.FAILURE, 5000);
         return false;
     }
+}
+
+async function settleFlairDraftsAfterSave(expected: Partial<ProfileFlair>): Promise<void> {
+    await refreshRoster();
+    const me = UserStore.getCurrentUser?.();
+    const refreshed = me?.id ? getRosterProfileFlair(me.id) : null;
+    // Cloudflare may briefly serve the previous roster snapshot while its
+    // edge cache expires. Keep the just-saved local draft in that case so the
+    // author's own popout does not flash back to stale colors/media. Once the
+    // shared roster contains the expected state, persisted local settings can
+    // no longer mask another PC.
+    if (!refreshed) {
+        if (Object.keys(expected).length === 0) clearFlairDraftFields();
+        return;
+    }
+    const matches = (Object.keys(expected) as Array<keyof ProfileFlair>).every(key => {
+        const wanted = expected[key];
+        const actual = refreshed[key];
+        return wanted ? actual === wanted : !actual;
+    });
+    if (matches) clearFlairDraftFields();
 }
 
 function validateLocal(profile: Partial<ProfileFlair>): string | null {
@@ -1294,6 +1365,7 @@ function FlairEditor() {
         // so we replace rather than merge — empty fields clear server-side.
         const ok = await postFlairUpdate(proposed, true);
         if (ok) {
+            await settleFlairDraftsAfterSave(proposed);
             // Push the just-saved values to the recents history so Diggy can
             // swap back like Discord's recent-avatars picker.
             recordRecentPicks(
@@ -1325,6 +1397,18 @@ function FlairEditor() {
             s.myAvatarFit = "";
             s.myAvatarScale = "";
             s.myMediaEffect = "";
+            await settleFlairDraftsAfterSave({
+                bannerUrl: undefined,
+                avatarAnimatedUrl: undefined,
+                themeColorPrimary: undefined,
+                themeColorSecondary: undefined,
+                bannerPosition: undefined,
+                avatarPosition: undefined,
+                bannerFit: undefined,
+                avatarFit: undefined,
+                avatarScale: undefined,
+                mediaEffect: undefined
+            });
             announce("success", "Cleared from the shared Discordmaxxer roster.");
         } else {
             announce("error", "The shared clear failed. The error toast above contains the server reason.");
@@ -1561,13 +1645,13 @@ function FlairEditor() {
                     kind="banner"
                     value={s.myBannerUrl}
                     profile={liveProfile}
-                    onChange={value => { s.myBannerUrl = value; }}
+                    onChange={value => { s.myBannerUrl = value; markFlairDraftField("myBannerUrl"); }}
                 />
                 <FlairMediaSetting
                     kind="avatar"
                     value={s.myAvatarAnimatedUrl}
                     profile={liveProfile}
-                    onChange={value => { s.myAvatarAnimatedUrl = value; }}
+                    onChange={value => { s.myAvatarAnimatedUrl = value; markFlairDraftField("myAvatarAnimatedUrl"); }}
                 />
                 <div style={{ margin: "4px 0 8px", padding: "10px 11px", borderRadius: 7, background: "rgba(0, 212, 255, 0.05)", border: "1px solid rgba(0, 212, 255, 0.2)" }}>
                     <div style={{ color: "#fbefff", fontSize: 12, fontWeight: 700, marginBottom: 3 }}>Paid presentation enhancements</div>
@@ -1581,7 +1665,7 @@ function FlairEditor() {
                     value={s.myBannerPosition}
                     minTier={Tier.MAXXER}
                     options={POSITION_OPTIONS}
-                    onChange={value => { s.myBannerPosition = value; }}
+                    onChange={value => { s.myBannerPosition = value; markFlairDraftField("myBannerPosition"); }}
                 />
                 <ProfileEnhancementControl
                     label="Banner fit"
@@ -1589,7 +1673,7 @@ function FlairEditor() {
                     value={s.myBannerFit}
                     minTier={Tier.MAXXER_PLUS}
                     options={FIT_OPTIONS}
-                    onChange={value => { s.myBannerFit = value; }}
+                    onChange={value => { s.myBannerFit = value; markFlairDraftField("myBannerFit"); }}
                 />
                 <ProfileEnhancementControl
                     label="Avatar crop anchor"
@@ -1597,7 +1681,7 @@ function FlairEditor() {
                     value={s.myAvatarPosition}
                     minTier={Tier.MAXXER}
                     options={POSITION_OPTIONS}
-                    onChange={value => { s.myAvatarPosition = value; }}
+                    onChange={value => { s.myAvatarPosition = value; markFlairDraftField("myAvatarPosition"); }}
                 />
                 <ProfileEnhancementControl
                     label="Avatar fit + scale"
@@ -1605,7 +1689,7 @@ function FlairEditor() {
                     value={s.myAvatarFit}
                     minTier={Tier.MAXXER_PLUS}
                     options={FIT_OPTIONS}
-                    onChange={value => { s.myAvatarFit = value; }}
+                    onChange={value => { s.myAvatarFit = value; markFlairDraftField("myAvatarFit"); }}
                 />
                 <ProfileEnhancementControl
                     label="Avatar scale"
@@ -1613,7 +1697,7 @@ function FlairEditor() {
                     value={s.myAvatarScale}
                     minTier={Tier.MAXXER_PLUS}
                     options={SCALE_OPTIONS}
-                    onChange={value => { s.myAvatarScale = value; }}
+                    onChange={value => { s.myAvatarScale = value; markFlairDraftField("myAvatarScale"); }}
                 />
                 <ProfileEnhancementControl
                     label="Media finish"
@@ -1621,21 +1705,21 @@ function FlairEditor() {
                     value={s.myMediaEffect}
                     minTier={Tier.MAXXER_PLUS_PLUS}
                     options={EFFECT_OPTIONS}
-                    onChange={value => { s.myMediaEffect = value; }}
+                    onChange={value => { s.myMediaEffect = value; markFlairDraftField("myMediaEffect"); }}
                 />
                 <ThemeColorSetting
                     kind="primary"
                     value={s.myThemeColorPrimary}
                     primary={normalizeColor(s.myThemeColorPrimary) ?? ""}
                     secondary={normalizeColor(s.myThemeColorSecondary) ?? ""}
-                    onChange={value => { s.myThemeColorPrimary = value; }}
+                    onChange={value => { s.myThemeColorPrimary = value; markFlairDraftField("myThemeColorPrimary"); }}
                 />
                 <ThemeColorSetting
                     kind="secondary"
                     value={s.myThemeColorSecondary}
                     primary={normalizeColor(s.myThemeColorPrimary) ?? ""}
                     secondary={normalizeColor(s.myThemeColorSecondary) ?? ""}
-                    onChange={value => { s.myThemeColorSecondary = value; }}
+                    onChange={value => { s.myThemeColorSecondary = value; markFlairDraftField("myThemeColorSecondary"); }}
                 />
             </div>
 
@@ -1652,7 +1736,7 @@ function FlairEditor() {
                                     key={url}
                                     title={url}
                                     style={thumbButtonStyle}
-                                    onClick={() => { s.myBannerUrl = url; }}
+                                    onClick={() => { s.myBannerUrl = url; markFlairDraftField("myBannerUrl"); }}
                                 >
                                     {/\.(mp4|webm|mov)(\?|$)/i.test(url)
                                         ? <span style={{ ...bannerThumbImg, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14 }}>🎬</span>
@@ -1669,7 +1753,7 @@ function FlairEditor() {
                                     key={url}
                                     title={url}
                                     style={thumbButtonStyle}
-                                    onClick={() => { s.myAvatarAnimatedUrl = url; }}
+                                    onClick={() => { s.myAvatarAnimatedUrl = url; markFlairDraftField("myAvatarAnimatedUrl"); }}
                                 >
                                     <img src={url} alt="" style={avatarThumbImg} onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }} />
                                 </button>
@@ -1687,7 +1771,7 @@ function FlairEditor() {
                                         key={pair}
                                         title={`${p} → ${sec}`}
                                         style={thumbButtonStyle}
-                                        onClick={() => { s.myThemeColorPrimary = p; s.myThemeColorSecondary = sec; }}
+                                        onClick={() => { s.myThemeColorPrimary = p; s.myThemeColorSecondary = sec; markFlairDraftField("myThemeColorPrimary"); markFlairDraftField("myThemeColorSecondary"); }}
                                     >
                                         <span style={colorSwatch(p, sec)} />
                                     </button>
