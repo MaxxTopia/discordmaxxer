@@ -1,9 +1,13 @@
 # Discordmaxxer — RESUME
 
-## 2026-10-17 local candidate — cross-PC profile media and Playlistmaxxing presence
+## 2026-10-17 v0.7.96 published — cross-PC profile media and Playlistmaxxing presence
 
-The published baseline is still v0.7.95. This worktree has two intentional,
-unpublished source changes:
+Patch release `v0.7.96` is published from commit `f0a10cf` on `main`, with
+tag `v0.7.96`. The GitHub release workflow `39088055274` passed, uploaded the
+x64/ARM64 ZIPs, installer, blockmap, and `latest.yml`, and attached readable
+release notes. The public updater manifest reports version `0.7.96`.
+
+The release contains two intentional source changes:
 
 - `plugins/DMProfileFlair/index.tsx` now identifies profile owners from more
   Discord media forms, protects against recycled profile nodes and late media
@@ -25,15 +29,24 @@ Verification passed locally: `pnpm test`, `pnpm build`, strict
 Streammaxxing Tauri suite also passed with 57 tests. `pnpm package:dir` then
 produced a local `dist/win-unpacked` executable whose packaged renderer was
 checked for the new profile-media owner guard and Playlistmaxxing snapshot
-path. No client commit, push, tag, deployment, or publication was performed.
-The second-PC DiggyT to DiggyAI visual test is still pending because the
-public v0.7.95 build cannot contain these local fixes.
+path. The second-PC DiggyT to DiggyAI visual test is still pending; source,
+build, release, and updater proof do not prove the recipient rendered the
+animation.
 
-For the presence path, the user must still run Streammaxxing and click
-Broadcast in Playlistmaxxing. Merely playing music on the site does not send
-the cross-app event. The next release test is: start the hub, click Broadcast,
-start a track, confirm the live title and track artwork, then stop the track
-and verify that `showWhenIdle` only affects the idle fallback.
+The Discordmaxxer client now polls `/nowplaying`, but the companion bridge must
+still be running and Playlistmaxxing Broadcast must be enabled. Merely playing
+music on the site does not send the cross-app event. The next release test is:
+start the hub, click Broadcast, start a track, confirm the live title and
+track artwork, then stop the track and verify that `showWhenIdle` only affects
+the idle fallback.
+
+The companion's desired `/nowplaying` snapshot/priority patch is present in the
+dirty Streammaxxing v0.1.67 source and has a clean, isolated 7-test proof in a
+0.1.60-origin staging worktree, but it was not published because the exact
+clean source that produced the live v0.1.67 installer could not be recovered.
+Publishing from the dirty tree would bundle unrelated WIP or risk downgrading
+existing features. Do not claim the companion updater is changed until that
+source-base gate is resolved.
 
 ## 2026-10-17 in-view media resilience audit — local candidate only
 
