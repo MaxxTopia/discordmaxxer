@@ -2489,7 +2489,16 @@ Release candidate repair in `plugins/DMProfileFlair/index.tsx`:
 Verification for this repair: `git diff --check`, `pnpm test`, `pnpm build`,
 strict `pnpm overlay:vencord`, `node overlay-scripts/verify-build.mjs`,
 `pnpm package:dir`, and `pnpm package:win` all passed. The owner authorized
-publication on 2026-10-19. The candidate is ready to commit and tag as
-v0.7.102; it is not yet published or verified on either signed-in PC. After
-publication, repeat the two-PC avatar test before claiming recipient-side
-rendering is verified.
+publication on 2026-10-19. Commit `2d5364c` was pushed to `main` and the
+release branch, tag `v0.7.102` was pushed, and GitHub Actions run
+`https://github.com/MaxxTopia/discordmaxxer/actions/runs/39332909340`
+completed successfully. The public release is live at
+`https://github.com/MaxxTopia/discordmaxxer/releases/tag/v0.7.102`; its
+installer, x64/ARM64 archives, blockmap, readable notes, and HTTP-200
+`latest.yml` advertising version `0.7.102` were verified.
+
+Still waiting on recipient-side proof: install v0.7.102 on both signed-in
+PCs and repeat the two-PC avatar test before claiming the rendered result is
+verified. Confirm that DiggyAI and DiggyT each show the owner's animated
+avatar without a default/static flash when the profile first opens or the
+client starts, and that an explicit cloud-side clear remains cleared.
