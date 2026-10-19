@@ -16,7 +16,7 @@
  *   - Fetch + parse + cache on first call
  *   - Expiration check (entries past expiresAt are ignored)
  *   - Synchronous read from cache via getRosterTier(userId)
- *   - Silent failure — bad fetch / parse / network = empty roster
+ *   - Resilient failure — bad fetch / parse / network keeps the last good roster
  *
  * Phase 2+ adds: "renewing soon" UX, grace period, signed grants,
  * subscription webhook integration. Roadmap in the design doc.
@@ -28,7 +28,9 @@ import { Tier } from "./vip";
 // claims (see optimizationmaxxing/vip-worker/worker.js). Each /claim writes
 // to KV and invalidates the worker's in-memory roster cache, so a freshly
 // claimed user appears in the roster within seconds. Worker caches the
-// response for 5 min server-side; client caches for 5 min locally.
+// response for 5 min server-side; client keeps a short 5-minute cache too so
+// profile flair changes converge across PCs without repeatedly downloading
+// banner/avatar media or putting pressure on the worker.
 const ROSTER_URL = "https://optmaxxing-vip.maxxtopia.workers.dev/roster";
 
 const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
@@ -88,10 +90,13 @@ interface RosterPayload {
 interface CacheState {
     fetchedAt: number;
     users: Record<string, RosterEntry>;
+    ready: boolean;
 }
 
 let cache: CacheState | null = null;
 let inFlight: Promise<void> | null = null;
+let lastFetchAttemptAt = 0;
+const RETRY_BACKOFF_MS = 15_000;
 
 type RosterListener = () => void;
 const rosterListeners = new Set<RosterListener>();
@@ -103,10 +108,35 @@ function notifyRosterListeners(): void {
     }
 }
 
+function replaceCache(users: Record<string, RosterEntry>, ready = true): void {
+    cache = { fetchedAt: Date.now(), users, ready };
+    avatarFlairFlag = null;
+    notifyRosterListeners();
+}
+
+function markFetchFailure(): void {
+    // Keep the last known-good roster intact. A temporary Worker/KV/R2/network
+    // failure must not turn a populated roster into an empty, "ready" roster
+    // that clears every remote banner, flair, gradient, or widget style.
+    if (!cache) {
+        cache = { fetchedAt: 0, users: {}, ready: false };
+        avatarFlairFlag = null;
+    }
+    notifyRosterListeners();
+}
+
 /** Repaint consumers as soon as an asynchronous roster replacement lands. */
 export function onRosterChange(listener: RosterListener): () => void {
     rosterListeners.add(listener);
     return () => rosterListeners.delete(listener);
+}
+
+/** True only after a valid roster payload has been received. A null or failed
+ * cache means remote ownership is still unknown and renderers should preserve
+ * existing, owner-marked visuals until the async read resolves. */
+export function isRosterReady(): boolean {
+    ensureFresh();
+    return cache?.ready === true;
 }
 
 /** Highest version we know how to read. The worker may emit a lower version
@@ -185,37 +215,35 @@ async function doFetch(): Promise<void> {
         }
         if (!res.ok) {
             console.warn(`[Discordmaxxer roster] fetch ${ROSTER_URL} -> ${res.status}`);
-            cache = { fetchedAt: Date.now(), users: cache?.users ?? {} };
+            markFetchFailure();
             return;
         }
         const payload = (await res.json()) as RosterPayload;
         if (typeof payload?.version !== "number" || payload.version > SUPPORTED_VERSION) {
             console.warn(`[Discordmaxxer roster] unsupported version: ${payload?.version}`);
-            cache = { fetchedAt: Date.now(), users: cache?.users ?? {} };
+            markFetchFailure();
             return;
         }
         if (!payload.users || typeof payload.users !== "object") {
             console.warn("[Discordmaxxer roster] missing/invalid users map");
-            cache = { fetchedAt: Date.now(), users: cache?.users ?? {} };
+            markFetchFailure();
             return;
         }
-        cache = { fetchedAt: Date.now(), users: sanitizeUsers(payload.users) };
+        replaceCache(sanitizeUsers(payload.users));
     } catch (e) {
-        // Network error / abort / parse fail — keep prior cache if any, just
-        // refresh the timestamp so we don't hammer the URL on every read.
+        // Network error / abort / parse fail — keep prior cache and let the
+        // bounded retry backoff try again later without clearing the UI.
         console.warn("[Discordmaxxer roster] fetch failed:", (e as any)?.message ?? e);
-        cache = { fetchedAt: Date.now(), users: cache?.users ?? {} };
-    } finally {
-        // A refresh is also a render event. Notify on failures and unsupported
-        // payloads as well as success so consumers can leave their pending
-        // state without clearing the last known profile decoration first.
-        notifyRosterListeners();
+        markFetchFailure();
     }
 }
 
-function ensureFresh() {
-    const stale = !cache || Date.now() - cache.fetchedAt > CACHE_TTL_MS;
-    if (!stale || inFlight) return;
+function ensureFresh(force = false) {
+    const now = Date.now();
+    const stale = !cache || !cache.ready || now - cache.fetchedAt > CACHE_TTL_MS;
+    const retryBlocked = now - lastFetchAttemptAt < RETRY_BACKOFF_MS;
+    if ((!stale && !force) || inFlight || (!force && retryBlocked)) return;
+    lastFetchAttemptAt = now;
     inFlight = doFetch().finally(() => { inFlight = null; });
 }
 
@@ -238,27 +266,17 @@ export function getRosterTier(userId: string): Tier {
 
 /** Force-refresh on demand (e.g., from a "Refresh roster" Hub button). */
 export function refreshRoster(): Promise<void> {
-    // Keep the last good snapshot visible while the replacement is fetched.
-    // Clearing this synchronously made DMProfileFlair interpret an in-flight
-    // refresh as "the owner has no flair", briefly removing banners, avatars,
-    // and gradient colors every time a profile was opened or focused.
-    if (cache) cache = { ...cache, fetchedAt: 0 };
-    ensureFresh();
+    // Do not clear the last good values while the replacement request is in
+    // flight. Consumers can keep rendering the verified owner state.
+    ensureFresh(true);
     return inFlight ?? Promise.resolve();
-}
-
-/** True once at least one roster response (including a safe empty/failure
- * response) has completed. Consumers use this to distinguish "still loading"
- * from "the owner has no published flair" without destructive cleanup. */
-export function isRosterReady(): boolean {
-    return cache !== null;
 }
 
 /** Diagnostic — used by the VIP card / Hub to show "Last synced: 12 min ago". */
 export function getRosterStatus(): { fetchedAt: number | null; userCount: number } {
     return {
-        fetchedAt: cache?.fetchedAt ?? null,
-        userCount: cache ? Object.keys(cache.users).length : 0
+        fetchedAt: cache?.ready ? cache.fetchedAt : null,
+        userCount: cache?.ready ? Object.keys(cache.users).length : 0
     };
 }
 
@@ -292,7 +310,7 @@ let avatarFlairFlag: { fetchedAt: number; value: boolean } | null = null;
  *  cache is replaced (~once/hour); every other call is O(1). */
 export function rosterHasAnyAvatarFlair(): boolean {
     ensureFresh();
-    if (!cache) return false;
+    if (!cache || !cache.ready) return false;
     if (avatarFlairFlag?.fetchedAt === cache.fetchedAt) return avatarFlairFlag.value;
     let value = false;
     for (const id in cache.users) {

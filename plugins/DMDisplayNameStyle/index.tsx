@@ -845,19 +845,53 @@ function semanticText(element: HTMLElement): string {
 
 // Message author names can sit inside a DM/channel wrapper whose hashed class
 // looks like a private-channel surface. Keep the message boundary explicit so
-// the opt-in `messages` setting is always the authority for names in chat.
-// A profile popout can be mounted inside a chat portal, so profile semantics
-// must win before the broad message-root fallback.
+// the `messages` setting is the authority for names in chat. A profile popout
+// can be mounted inside a chat portal, so profile semantics must win before
+// the broad message-root fallback.
 const MESSAGE_SURFACE_SEL = '[id^="chat-messages-"], [class*="messageListItem"], [class*="messagesWrapper"], [class*="chatContent"]';
+const PROFILE_VISUAL_MARKER_SEL = '[data-dm-flair-theme-applied], [data-dm-flair-banner-applied], [data-dm-flair-banner-owner-id], [data-dm-flair-theme-owner-id]';
+const PROFILE_SURFACE_SEL = '[class*="userPopout"], [class*="user-popout"], [class*="accountPopout"], [class*="account-popout"], [class*="userProfile"], [class*="user-profile"], [class*="profileModal"], [class*="profile-modal"], [class*="profilePanel"], [class*="profile-panel"], [role="dialog"], ' + PROFILE_VISUAL_MARKER_SEL;
+const PROFILE_NAME_FALLBACK_SEL = '[class*="userText"], [class*="user-text"], [class*="nameTag"], [class*="name-tag"], [class*="profile"] [class*="name"], [class*="profile"] [class*="title"], [class*="popout"] [class*="name"], [class*="popout"] [class*="title"], [role="heading"], h1, h2';
+const PROFILE_SEMANTIC_RE = /user.?popout|account.?popout|user.?profile|profile.?modal|profile.?header|profile.?body|profile.?card|profile.?sidebar|profile.?panel|profile.?popover|full.?profile|user.?card/;
+
+function profileDialogLooksLikeUserCard(element: HTMLElement): boolean {
+    if (element.getAttribute("role") !== "dialog") return false;
+    const semantic = semanticText(element);
+    if (PROFILE_SEMANTIC_RE.test(semantic)) return true;
+    // Some Discord builds give the profile dialog only hashed classes. Keep
+    // the fallback narrow: a user card normally has an avatar/banner or a
+    // profile-specific metadata node, while settings and confirmation dialogs
+    // do not. This lets generic name/heading nodes in the profile still use
+    // the display-name style without styling unrelated modal copy.
+    return Boolean(element.querySelector(
+        '[data-user-id], [data-userid], [data-profile-user-id], [data-profile-userid], ' +
+        '[data-dm-flair-avatar-user-id], [data-dm-flair-banner-owner-id], [data-dm-flair-theme-owner-id], ' +
+        '[class*="avatar"], [class*="Avatar"], [class*="banner"], [class*="Banner"], ' +
+        '[class*="memberSince"], [class*="mutual"], img[src*="/avatars/"]'
+    ));
+}
+
+function isProfileLikeContext(element: HTMLElement): boolean {
+    let current: HTMLElement | null = element;
+    for (let depth = 0; current && depth < 12; depth++, current = current.parentElement) {
+        const semantic = semanticText(current);
+        if (PROFILE_SEMANTIC_RE.test(semantic)) return true;
+        if (profileDialogLooksLikeUserCard(current)) return true;
+        if (current.matches(PROFILE_VISUAL_MARKER_SEL) || current.querySelector(PROFILE_VISUAL_MARKER_SEL)) return true;
+    }
+    return false;
+}
 
 function getSurface(element: HTMLElement): Surface | null {
     const inMessageSurface = Boolean(element.closest(MESSAGE_SURFACE_SEL));
     let sawMessage = inMessageSurface;
     let current: HTMLElement | null = element;
     let depth = 0;
-    while (current && depth < 8) {
+    while (current && depth < 14) {
         const semantic = semanticText(current);
-        if (/user.?popout|user.?profile|profile.?modal|profile.?header/.test(semantic)) return "profile";
+        if (PROFILE_SEMANTIC_RE.test(semantic)) return "profile";
+        if (profileDialogLooksLikeUserCard(current)) return "profile";
+        if (current.matches(PROFILE_VISUAL_MARKER_SEL) || current.querySelector(PROFILE_VISUAL_MARKER_SEL)) return "profile";
         if (/message|chat.?content|markup|reply/.test(semantic)) sawMessage = true;
         if (/member|guild.?member|people|friend/.test(semantic)) return "member";
         if (/recipient|private.?channel|dm.?channel|channel.?header|dm.?header/.test(semantic)) return "dm";
@@ -870,12 +904,79 @@ function getSurface(element: HTMLElement): Surface | null {
 
     // A user-id root is a useful fallback for Discord surfaces whose hashed
     // class names no longer contain an obvious semantic hint.
-    return element.closest("[data-user-id]") ? "unknown" : null;
+    return element.closest("[data-user-id], [data-userid], [data-profile-user-id], [data-profile-userid]")
+        ? (isProfileLikeContext(element) ? "profile" : "unknown")
+        : null;
 }
 
 function userIdFor(element: HTMLElement): string | null {
-    const root = element.closest<HTMLElement>("[data-user-id]");
-    return root?.getAttribute("data-user-id") ?? null;
+    const readNode = (node: Element): string | null => {
+        for (const attribute of ["data-user-id", "data-userid", "data-profile-user-id", "data-profile-userid", "data-dm-flair-avatar-user-id"]) {
+            const value = node.getAttribute(attribute) ?? "";
+            if (/^\d{17,20}$/.test(value)) return value;
+        }
+        const idText = node.getAttribute("id") ?? "";
+        const idMatch = idText.match(/(?:user|profile)[-_:]?(\d{17,20})/i);
+        if (idMatch) return idMatch[1];
+        const href = node.getAttribute("href") ?? "";
+        const hrefMatch = href.match(/\/users?\/(\d{17,20})(?:\/|$)/i);
+        if (hrefMatch) return hrefMatch[1];
+        if (node instanceof HTMLImageElement) {
+            const source = node.currentSrc || node.src || "";
+            const avatarMatch = source.match(/\/avatars\/(\d{17,20})\//i);
+            if (avatarMatch) return avatarMatch[1];
+        }
+        return null;
+    };
+
+    // Discord has used both explicit profile data attributes and avatar-only
+    // markers across the profile popout variants. Inspect a small owner-keyed
+    // neighborhood rather than assuming the name element itself carries the
+    // ID. The cap matters because this runs from a mutation observer.
+    const ancestors: HTMLElement[] = [];
+    let current: HTMLElement | null = element;
+    for (let depth = 0; current && depth < 10; depth++, current = current.parentElement) ancestors.push(current);
+    for (const ancestor of ancestors) {
+        const direct = readNode(ancestor);
+        if (direct) return direct;
+        try {
+            for (const node of Array.from(ancestor.querySelectorAll<HTMLElement>(
+                "[data-user-id], [data-userid], [data-profile-user-id], [data-profile-userid], [data-dm-flair-avatar-user-id], img"
+            )).slice(0, 80)) {
+                const nested = readNode(node);
+                if (nested) return nested;
+            }
+        } catch { /* Discord may tear down the profile while it is scanned. */ }
+    }
+    return null;
+}
+
+function normalizedDisplayName(value: unknown): string {
+    return String(value ?? "").trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+function profileDisplayNameValues(element: HTMLElement): Set<string> {
+    const userId = userIdFor(element);
+    if (!userId) return new Set();
+    const user = (UserStore as any).getUser?.(userId) as any;
+    if (!user) return new Set();
+    const values = new Set<string>();
+    for (const value of [user.globalName, user.global_name, user.displayName, user.display_name, user.username, user.tag]) {
+        const normalized = normalizedDisplayName(value);
+        if (normalized) values.add(normalized);
+    }
+    const username = normalizedDisplayName(user.username);
+    const discriminator = String(user.discriminator ?? "").trim();
+    if (username && discriminator && discriminator !== "0") values.add(`${username}#${discriminator}`);
+    return values;
+}
+
+function isExactProfileNameCandidate(element: HTMLElement): boolean {
+    if (!isProfileLikeContext(element)) return false;
+    if (/^(BUTTON|A|INPUT|TEXTAREA|SELECT)$/.test(element.tagName) || element.isContentEditable) return false;
+    const text = normalizedDisplayName(element.textContent);
+    if (!text || text.length > 64 || /\r|\n/.test(element.textContent ?? "")) return false;
+    return profileDisplayNameValues(element).has(text);
 }
 
 function isOwnName(element: HTMLElement, surface: Surface): boolean {
@@ -899,11 +1000,17 @@ function surfaceEnabled(surface: Surface): boolean {
 function hasNameClass(element: HTMLElement): boolean {
     const className = typeof element.className === "string" ? element.className.toLowerCase() : "";
     return /username|display.?name|user.?tag/.test(className)
-        || (element.hasAttribute("data-text-variant") && Boolean(element.closest("[class*='panelTitleContainer']")));
+        || (element.hasAttribute("data-text-variant") && Boolean(element.closest("[class*='panelTitleContainer']")))
+        || (isProfileLikeContext(element) && (
+            /(?:^|[-_])(?:name|title|username|display.?name|user.?text|nametag|namecontainer)(?:[-_]|$)/.test(className)
+            || element.getAttribute("role") === "heading"
+            || element.tagName === "H1"
+            || element.tagName === "H2"
+        ));
 }
 
 function isVisibleLeafName(element: HTMLElement): boolean {
-    if (!element.isConnected || !hasNameClass(element)) return false;
+    if (!element.isConnected || (!hasNameClass(element) && !isExactProfileNameCandidate(element))) return false;
     if (element.closest<HTMLElement>(`#${ROOT_ID}, [${IGNORE_ATTR}], input, textarea, [contenteditable="true"]`)) return false;
     if (element.getAttribute("aria-hidden") === "true") return false;
     if (element.children.length > 0 && element.querySelector<HTMLElement>(candidateSelector())) return false;
@@ -946,14 +1053,29 @@ function applyTarget(element: HTMLElement, surface: Surface, profile: StyleProfi
 }
 
 function candidateSelector(): string {
-    return "[class*='username'],[class*='displayName'],[class*='userTag'],[class*='panelTitleContainer'] [data-text-variant],[class*='nameContainer'] [class*='name'],[class*='nameTag'] [class*='title'],[class*='nameTag'] [class*='name']";
+    return "[class*='username'],[class*='displayName'],[class*='userTag'],[class*='userText'],[class*='panelTitleContainer'] [data-text-variant],[class*='nameContainer'] [class*='name'],[class*='nameTag'] [class*='title'],[class*='nameTag'] [class*='name'],[class*='userPopout'] [class*='name'],[class*='user-popout'] [class*='name'],[class*='accountPopout'] [class*='name'],[class*='account-popout'] [class*='name'],[class*='userProfile'] [class*='name'],[class*='user-profile'] [class*='name'],[class*='profileModal'] [class*='name'],[class*='profile-modal'] [class*='name'],[class*='profilePanel'] [class*='name'],[class*='profile-panel'] [class*='name'],[role='dialog'] [class*='name'],[role='dialog'] [class*='userText']";
 }
 
 function scanRoot(root: ParentNode) {
     const profile = getProfile();
     const candidates: HTMLElement[] = [];
+    const addCandidates = (elements: Iterable<HTMLElement>) => {
+        for (const element of elements) {
+            if (!candidates.includes(element)) candidates.push(element);
+        }
+    };
     if (root instanceof HTMLElement && root.matches(candidateSelector())) candidates.push(root);
-    root.querySelectorAll<HTMLElement>(candidateSelector()).forEach(element => candidates.push(element));
+    addCandidates(root.querySelectorAll<HTMLElement>(candidateSelector()));
+    // Discord has shipped profile popouts whose display-name node uses only a
+    // generic hashed text class. The semantic fallback is scoped to visible
+    // profile/dialog roots and still passes through shouldApply(), so it cannot
+    // style arbitrary modal headings or ordinary chat text.
+    try {
+        const surfaces = root instanceof HTMLElement && root.matches(PROFILE_SURFACE_SEL)
+            ? [root]
+            : Array.from(root.querySelectorAll<HTMLElement>(PROFILE_SURFACE_SEL)).slice(0, 48);
+        for (const surface of surfaces) addCandidates(surface.querySelectorAll<HTMLElement>(PROFILE_NAME_FALLBACK_SEL));
+    } catch { /* Discord may replace a profile portal during this scan. */ }
 
     const seen = new Set<HTMLElement>();
     for (const element of candidates) {
@@ -1002,7 +1124,18 @@ function refresh() {
 function startObserver() {
     if (observer || !document.body) return;
     observer = new MutationObserver(mutations => {
-        if (mutations.some(m => m.type === "childList" || m.attributeName === "class" || m.attributeName === "data-user-id")) {
+        if (mutations.some(m => m.type === "childList"
+            || m.attributeName === "class"
+            || m.attributeName === "data-user-id"
+            || m.attributeName === "data-userid"
+            || m.attributeName === "data-profile-user-id"
+            || m.attributeName === "data-profile-userid"
+            || m.attributeName === "role"
+            || m.attributeName === "aria-label"
+            || m.attributeName === "data-dm-flair-theme-applied"
+            || m.attributeName === "data-dm-flair-banner-applied"
+            || m.attributeName === "data-dm-flair-banner-owner-id"
+            || m.attributeName === "data-dm-flair-theme-owner-id")) {
             scheduleScan();
         }
     });
@@ -1010,7 +1143,7 @@ function startObserver() {
         childList: true,
         subtree: true,
         attributes: true,
-        attributeFilter: ["class", "data-user-id", "aria-hidden"]
+        attributeFilter: ["class", "data-user-id", "data-userid", "data-profile-user-id", "data-profile-userid", "data-dm-flair-avatar-user-id", "data-dm-flair-banner-owner-id", "data-dm-flair-theme-owner-id", "data-dm-flair-theme-applied", "data-dm-flair-banner-applied", "role", "aria-label", "aria-hidden"]
     });
     scanRoot(document);
     syncMotionState();

@@ -197,7 +197,11 @@ async function ensureSlots(): Promise<void> {
         attachedWidgetHints.clear();
         attachedWidgetProfileAccountId = "";
         attachedWidgetProfileVerifiedAt = 0;
+        attachedWidgetProfileEmptySince = 0;
         attachedWidgetRefreshAt = 0;
+        ownedWidgetMarkerRepairAccountId = "";
+        ownedWidgetMarkerRepairAt = 0;
+        ownedWidgetMarkerRepairPromise = null;
         // Let the new account start its own reconciliation immediately. The
         // old task remains harmless because it checks the account before every
         // commit, and its finally block will not clear a newer task.
@@ -2030,6 +2034,10 @@ const WIDGET_SKIN_ATTRS = [
 ];
 const WIDGET_SKIN_VARS = ["--dmw-skin-accent", "--dmw-skin-secondary", "--dmw-skin-surface", "--dmw-skin-animation-delay"];
 const widgetSkinRoots = new Map<HTMLElement, WidgetSkinSnapshot>();
+// Keep a timestamp for the last successful owner-style application. Discord
+// replaces profile cards in several React commits; a transient miss during
+// that replacement must not immediately restore the card to native styling.
+const widgetSkinLastSeenAt = new Map<HTMLElement, number>();
 type SurfaceSkinMode = "follow" | "independent" | "off";
 type SurfaceSkinSnapshot = {
     attrs: Record<string, string | null>;
@@ -2049,8 +2057,10 @@ const widgetApplicationCache = new WeakMap<HTMLElement, {
     match: WidgetCardMatch | null;
     checkedAt: number;
     epoch: number;
+    knownSignature: string;
 }>();
 let widgetApplicationCacheEpoch = 0;
+const widgetOwnerCache = new WeakMap<HTMLElement, { userId: string | null; checkedAt: number; }>();
 let widgetSkinStyleElement: HTMLStyleElement | null = null;
 let widgetSkinObserver: MutationObserver | null = null;
 let widgetSkinProfileMountObserver: MutationObserver | null = null;
@@ -2109,10 +2119,13 @@ type VisibleWidgetStyleRecord = {
 };
 type VisibleWidgetStyleMissRecord = {
     checkedAt: number;
+    firstMissedAt: number;
     hints: string[];
 };
 const visibleWidgetStyles = new Map<string, VisibleWidgetStyleRecord>();
 const visibleWidgetStyleMisses = new Map<string, VisibleWidgetStyleMissRecord>();
+const VISIBLE_WIDGET_STYLE_STALE_GRACE_MS = 120_000;
+const ATTACHED_WIDGET_EMPTY_GRACE_MS = 120_000;
 const visibleWidgetStyleRequests = new Map<string, Promise<void>>();
 const VISIBLE_WIDGET_STYLE_CACHE_MS = 30_000;
 const VISIBLE_WIDGET_STYLE_MISS_RETRY_MS = 15_000;
@@ -2120,10 +2133,15 @@ const VISIBLE_WIDGET_STYLE_MAX = 24;
 const VISIBLE_WIDGET_STYLE_BATCH_MAX = 8;
 let attachedWidgetProfileAccountId = "";
 let attachedWidgetProfileVerifiedAt = 0;
+let attachedWidgetProfileEmptySince = 0;
 let attachedWidgetRefreshAt = 0;
 let attachedWidgetRefreshPromise: Promise<void> | null = null;
 let widgetStyleRefreshTimer: number | null = null;
 const ATTACHED_WIDGET_REFRESH_INTERVAL_MS = 30_000;
+const OWNED_WIDGET_MARKER_REPAIR_INTERVAL_MS = 15 * 60_000;
+let ownedWidgetMarkerRepairAccountId = "";
+let ownedWidgetMarkerRepairAt = 0;
+let ownedWidgetMarkerRepairPromise: Promise<void> | null = null;
 
 function attachedWidgetProfileIsFresh(): boolean {
     const accountId = String(UserStore.getCurrentUser()?.id ?? "");
@@ -2596,6 +2614,7 @@ async function refreshAttachedWidgetStyles(force = false): Promise<void> {
             attachedWidgetHints.clear();
             attachedWidgetProfileAccountId = "";
             attachedWidgetProfileVerifiedAt = 0;
+            attachedWidgetProfileEmptySince = 0;
             widgetApplicationCacheEpoch++;
             return;
         }
@@ -2608,9 +2627,21 @@ async function refreshAttachedWidgetStyles(force = false): Promise<void> {
             return;
         }
         if (widgets.length === 0) {
-            // Only a positively recognized, genuinely empty widget list can
-            // clear state. An unknown response shape above preserves the last
-            // confirmed map so Apply does not report a phantom missing card.
+            const hadAttachedWidgetState =
+                attachedWidgetStyles.size > 0 || attachedWidgetSlots.size > 0 || attachedWidgetHints.size > 0;
+            if (hadAttachedWidgetState && attachedWidgetProfileAccountId === accountId) {
+                const emptySince = attachedWidgetProfileEmptySince || Date.now();
+                attachedWidgetProfileEmptySince = emptySince;
+                if (Date.now() - emptySince < ATTACHED_WIDGET_EMPTY_GRACE_MS) {
+                    // A temporarily empty response is common while the profile/app
+                    // list is still hydrating. Keep the last owner-scoped map instead
+                    // of flashing vanilla UI or borrowing the viewer's skin.
+                    attachedWidgetProfileVerifiedAt = Date.now();
+                    console.warn("[DMWidget] preserving attached widget styles during empty response");
+                    return;
+                }
+            }
+            attachedWidgetProfileEmptySince = 0;
             attachedWidgetStyles.clear();
             attachedWidgetSlots.clear();
             attachedWidgetHints.clear();
@@ -2710,6 +2741,7 @@ async function refreshAttachedWidgetStyles(force = false): Promise<void> {
         attachedWidgetStyles.clear();
         attachedWidgetSlots.clear();
         attachedWidgetHints.clear();
+        attachedWidgetProfileEmptySince = 0;
         // A prior scan may have cached a negative React/DOM lookup while the
         // profile request was still in flight. Invalidate those results as
         // soon as the recovered app map is replaced so an explicit Apply
@@ -2734,6 +2766,55 @@ async function refreshAttachedWidgetStyles(force = false): Promise<void> {
     // queued. Replace that stale pass so the recovered app hints are applied
     // immediately instead of waiting for the periodic reconciliation sweep.
     scheduleWidgetSkinScan(true);
+}
+
+/**
+ * Repair the owner-published style marker once the current account's profile
+ * has been positively reconciled. Older builds could render a skin locally
+ * without persisting the DMWSTYLE1 marker in the owned Discord application,
+ * which left other Discordmaxxer installs with a native-looking card. This
+ * path is deliberately owner-only, bounded, and serialized: it never writes
+ * to an app that is not attached to the signed-in account and never touches
+ * widget content, hero media, or another user's profile.
+ */
+async function repairOwnedWidgetStyleMarkers(): Promise<void> {
+    await ensureSlots();
+    const accountId = String(UserStore.getCurrentUser()?.id ?? "");
+    if (!accountId || !attachedWidgetProfileIsFresh()) return;
+    if (ownedWidgetMarkerRepairAccountId === accountId
+        && Date.now() - ownedWidgetMarkerRepairAt < OWNED_WIDGET_MARKER_REPAIR_INTERVAL_MS) return;
+    if (ownedWidgetMarkerRepairPromise) {
+        await ownedWidgetMarkerRepairPromise;
+        return;
+    }
+
+    ownedWidgetMarkerRepairAccountId = accountId;
+    ownedWidgetMarkerRepairAt = Date.now();
+    const task = (async () => {
+        const appIdsBySlot = new Map<string, string[]>();
+        for (const [appId, slotKey] of attachedWidgetSlots) {
+            if (!SNOWFLAKE.test(appId)) continue;
+            const ids = appIdsBySlot.get(slotKey) ?? [];
+            ids.push(appId);
+            appIdsBySlot.set(slotKey, ids);
+        }
+        for (const [slotKey, appIds] of appIdsBySlot) {
+            if (String(UserStore.getCurrentUser()?.id ?? "") !== accountId || activeSlotsAccountId !== accountId) break;
+            const current = getSlot(slotKey);
+            const basePreset = WIDGET_STYLE_PRESETS.find(item => item.id === current.widgetStyle) ?? presetForSlot(slotKey);
+            const rawUpdatedAt = Number(current.widgetStyleUpdatedAt ?? 0);
+            const updatedAt = Number.isFinite(rawUpdatedAt) && rawUpdatedAt >= 0 ? rawUpdatedAt : 0;
+            const preset = presetWithLayouts(basePreset, current.topLayout, current.bottomLayout);
+            const request = nextWidgetStylePublishRequest(slotKey);
+            await queueRemoteWidgetStyleSync(appIds, slotKey, accountId, preset, updatedAt, request);
+        }
+    })();
+    ownedWidgetMarkerRepairPromise = task;
+    try {
+        await task;
+    } finally {
+        if (ownedWidgetMarkerRepairPromise === task) ownedWidgetMarkerRepairPromise = null;
+    }
 }
 
 function updateAttachedWidgetStylesForSlot(slotKey: string, preset: WidgetStylePreset): void {
@@ -2801,21 +2882,20 @@ const WIDGET_APPLICATION_ID_ATTRIBUTES = [
     "application_id"
 ];
 
-function visibleProfileWidgetStyles(
-    _local: Map<string, WidgetStylePreset> = new Map(),
-    _pendingAppIds: Iterable<string> = []
-): Map<string, WidgetStylePreset> {
-    // A visible profile belongs to the account being viewed, not the account
-    // running this client. Never use the viewer's local skin as a placeholder
-    // for an unreadable owner marker: that makes another person's widget look
-    // like the viewer's and makes a skin change appear to affect both users.
-    // Unknown owners stay native until their published marker is readable.
+function visibleProfileWidgetStyles(): Map<string, WidgetStylePreset> {
     const out = new Map<string, WidgetStylePreset>();
     const now = Date.now();
     for (const [appId, record] of visibleWidgetStyles) {
-        if (!SNOWFLAKE.test(appId) || now - record.checkedAt > VISIBLE_WIDGET_STYLE_CACHE_MS) continue;
-        // A readable owner marker is authoritative, including when both
-        // accounts happen to use the same application id.
+        if (!SNOWFLAKE.test(appId)) continue;
+        const fresh = now - record.checkedAt <= VISIBLE_WIDGET_STYLE_CACHE_MS;
+        const miss = visibleWidgetStyleMisses.get(appId);
+        const staleGrace = miss && now - miss.firstMissedAt <= VISIBLE_WIDGET_STYLE_STALE_GRACE_MS;
+        const hydrationPending = visibleWidgetStyleRequests.has(appId);
+        if (!fresh && !staleGrace && !hydrationPending) continue;
+        // This map is deliberately remote-only. A profile card belongs to the
+        // account being viewed, so a viewer's local selection is never an
+        // acceptable fallback while the owner's published marker is loading,
+        // missing, or unreadable. Missing markers leave the card native.
         out.set(appId, record.preset);
     }
     return out;
@@ -2835,7 +2915,12 @@ function visibleProfileWidgetHints(local: Map<string, string[]>): Map<string, st
         if (current.length) out.set(appId, current);
     }
     for (const [appId, record] of visibleWidgetStyles) {
-        if (!SNOWFLAKE.test(appId) || now - record.checkedAt > VISIBLE_WIDGET_STYLE_CACHE_MS) continue;
+        if (!SNOWFLAKE.test(appId)) continue;
+        const fresh = now - record.checkedAt <= VISIBLE_WIDGET_STYLE_CACHE_MS;
+        const miss = visibleWidgetStyleMisses.get(appId);
+        const staleGrace = miss && now - miss.firstMissedAt <= VISIBLE_WIDGET_STYLE_STALE_GRACE_MS;
+        const hydrationPending = visibleWidgetStyleRequests.has(appId);
+        if (!fresh && !staleGrace && !hydrationPending) continue;
         const current = out.get(appId) ?? [];
         for (const label of record.hints) {
             const clean = String(label ?? "").trim();
@@ -2858,12 +2943,19 @@ function rememberVisibleWidgetStyle(appId: string, record: VisibleWidgetStyleRec
 }
 
 function rememberVisibleWidgetStyleMiss(appId: string, hints: string[] = []): void {
-    visibleWidgetStyles.delete(appId);
+    // Do not throw away the last verified owner style on a network/React
+    // timing miss. Keep it available for a bounded grace period, then allow a
+    // genuinely removed marker to settle back to native Discord styling.
     const previous = visibleWidgetStyleMisses.get(appId);
+    const now = Date.now();
+    const firstMissedAt = previous && now - previous.firstMissedAt <= VISIBLE_WIDGET_STYLE_STALE_GRACE_MS
+        ? previous.firstMissedAt
+        : now;
     const cleanHints = Array.from(new Set(hints.map(label => String(label ?? "").trim()).filter(label => label.length >= 3)));
     visibleWidgetStyleMisses.delete(appId);
     visibleWidgetStyleMisses.set(appId, {
-        checkedAt: Date.now(),
+        checkedAt: now,
+        firstMissedAt,
         hints: cleanHints.length ? cleanHints : (previous?.hints ?? [])
     });
     while (visibleWidgetStyleMisses.size > VISIBLE_WIDGET_STYLE_MAX) {
@@ -2895,9 +2987,9 @@ function queueVisibleWidgetStyleHydration(appIds: Iterable<string>): void {
                     hints: appName ? [appName] : []
                 });
             } else {
-                // A missing marker is an availability error. Remove stale
-                // metadata, keep the viewer fallback active, and retry so a
-                // repaired owner marker takes over.
+                // A missing marker means the owner's choice is not available
+                // to this client. Retry later; viewed profile cards remain
+                // native until the owner's marker is readable.
                 const appName = String(application?.name ?? application?.application?.name ?? "").trim();
                 rememberVisibleWidgetStyleMiss(appId, appName ? [appName] : []);
             }
@@ -2905,8 +2997,9 @@ function queueVisibleWidgetStyleHydration(appIds: Iterable<string>): void {
             scheduleWidgetSkinProfileFastScan();
             scheduleWidgetSkinScan(true);
         }).catch(() => {
-            // An unreadable marker is retried later; keep the temporary viewer
-            // fallback active until a fresh owner marker takes over.
+            // An unreadable marker is retried later. Do not borrow the
+            // viewer's skin for a foreign profile because that makes two
+            // accounts appear to share one widget configuration.
             rememberVisibleWidgetStyleMiss(appId);
             widgetApplicationCacheEpoch++;
             scheduleWidgetSkinProfileFastScan();
@@ -3070,6 +3163,159 @@ const WIDGET_SURFACE_SELECTOR = [
     '[class*="Board"]',
     '[role="dialog"]'
 ].join(",");
+
+// A profile card can be rendered by either account's Discord client. Never
+// use the viewer's local widget map for a foreign profile: first identify the
+// account that owns the visible surface, then merge local styles only when it
+// is positively the signed-in account. The bounded DOM probe also survives
+// Discord's changing hashed class names and avoids React-fiber ownership
+// guesses that previously made cross-account styles appear to move around.
+const WIDGET_OWNER_ATTRIBUTES = [
+    "data-user-id",
+    "data-userid",
+    "data-profile-user-id",
+    "data-profile-userid",
+    "data-dm-flair-avatar-user-id",
+    "data-dm-flair-banner-owner-id",
+    "data-dm-flair-theme-owner-id"
+];
+
+function validWidgetOwnerId(value: unknown): string | null {
+    const id = String(value ?? "").trim();
+    return /^\d{17,20}$/.test(id) ? id : null;
+}
+
+function widgetOwnerIdFromNode(node: Element): string | null {
+    for (const attribute of WIDGET_OWNER_ATTRIBUTES) {
+        const id = validWidgetOwnerId(node.getAttribute(attribute));
+        if (id) return id;
+    }
+    const idText = node.getAttribute("id") ?? "";
+    const idMatch = idText.match(/(?:user|profile)[-_:]?(\d{17,20})/i);
+    if (idMatch) return validWidgetOwnerId(idMatch[1]);
+    const href = node.getAttribute("href") ?? "";
+    const hrefMatch = href.match(/\/users?\/(\d{17,20})(?:\/|$)/i);
+    if (hrefMatch) return validWidgetOwnerId(hrefMatch[1]);
+    if (node instanceof HTMLImageElement) {
+        const source = node.currentSrc || node.src || "";
+        const avatarMatch = source.match(/\/avatars\/(\d{17,20})\//i);
+        if (avatarMatch) return validWidgetOwnerId(avatarMatch[1]);
+    }
+    return null;
+}
+
+function widgetProfileOwnerId(surface: HTMLElement | null): string | null {
+    if (!surface) return null;
+    const now = Date.now();
+    const cached = widgetOwnerCache.get(surface);
+    const cacheTtl = cached?.userId ? 900 : 300;
+    if (cached && now - cached.checkedAt < cacheTtl) return cached.userId;
+
+    const nodes: Element[] = [];
+    const seen = new Set<Element>();
+    let current: HTMLElement | null = surface;
+    for (let depth = 0; current && depth < 7; depth++, current = current.parentElement) {
+        if (!seen.has(current)) { seen.add(current); nodes.push(current); }
+    }
+    try {
+        const selector = WIDGET_OWNER_ATTRIBUTES.map(attribute => `[${attribute}]`).join(",")
+            + ",[href*='/users/'],[id*='user-'],[id*='profile-'],img";
+        for (const node of Array.from(surface.querySelectorAll<HTMLElement>(selector)).slice(0, 180)) {
+            if (!seen.has(node)) { seen.add(node); nodes.push(node); }
+        }
+    } catch { /* Discord may replace the profile subtree during this probe. */ }
+    // Prefer an explicit owner on the profile shell or one of the flair
+    // markers. Those are authoritative. Only fall back to a single avatar
+    // URL when the subtree contains one unambiguous account; returning the
+    // first avatar found was the source of viewer-skin bleed when Discord
+    // recycled a profile popout during a hover/open transition.
+    const directNodes = nodes.filter(node => node === surface || (node.parentElement && nodes.includes(node.parentElement)));
+    let userId: string | null = null;
+    for (const node of directNodes) {
+        userId = widgetOwnerIdFromNode(node);
+        if (userId) break;
+    }
+    if (!userId) {
+        for (const node of nodes) {
+            if (!WIDGET_OWNER_ATTRIBUTES.some(attribute => node.hasAttribute(attribute))) continue;
+            userId = widgetOwnerIdFromNode(node);
+            if (userId) break;
+        }
+    }
+    if (!userId) {
+        const avatarIds = new Set<string>();
+        for (const node of nodes) {
+            if (!(node instanceof HTMLImageElement)) continue;
+            const candidate = widgetOwnerIdFromNode(node);
+            if (candidate) avatarIds.add(candidate);
+            if (avatarIds.size > 1) break;
+        }
+        if (avatarIds.size === 1) userId = avatarIds.values().next().value ?? null;
+    }
+    widgetOwnerCache.set(surface, { userId, checkedAt: now });
+    return userId;
+}
+
+function widgetSurfaceForCard(card: HTMLElement): HTMLElement | null {
+    const surfaces: HTMLElement[] = [];
+    for (let current: HTMLElement | null = card.parentElement, depth = 0; current && depth < 10; depth++, current = current.parentElement) {
+        if (current.matches(WIDGET_SURFACE_SELECTOR)) surfaces.push(current);
+    }
+    // Prefer the nearest surface that actually carries the profile owner. A
+    // Board card is often nested inside an outer dialog whose owner marker is
+    // added one React commit later; choosing a bare inner wrapper there made
+    // the renderer fall back to the viewer's local map or native styling.
+    return surfaces.find(surface => !!widgetProfileOwnerId(surface))
+        ?? surfaces.find(surface => surface.getAttribute("role") === "dialog")
+        ?? surfaces[0]
+        ?? card.parentElement;
+}
+
+function widgetSurfaceLooksProfileOwned(surface: HTMLElement | null): boolean {
+    if (!surface) return false;
+    const className = typeof surface.className === "string" ? surface.className : "";
+    const role = surface.getAttribute("role") ?? "";
+    const semantic = `${className} ${role} ${surface.getAttribute("aria-label") ?? ""}`;
+    // Discord's compact user/profile popout has shipped with hashed class
+    // names that contain none of the words below. Its stable boundary is the
+    // dialog role. Treating that surface as profile-owned is important: a
+    // viewer's local widget map must never be used as the fallback for a
+    // different account while the owner's published marker is hydrating.
+    const ownerSelector = WIDGET_OWNER_ATTRIBUTES.map(attribute => `[${attribute}]`).join(",");
+    const hasExplicitOwner = surface.matches(ownerSelector) || Boolean(surface.querySelector(ownerSelector));
+    return role === "dialog" || hasExplicitOwner || /profile|popout|user.?card|account.?popout|user.?profile|board/i.test(semantic);
+}
+
+function widgetStylesForSurface(
+    remote: Map<string, WidgetStylePreset>,
+    local: Map<string, WidgetStylePreset>,
+    surface: HTMLElement | null
+): Map<string, WidgetStylePreset> {
+    // A normal Discord surface (the open DM header/account panel) belongs to
+    // the signed-in client and may use its local selection. A profile/Board
+    // surface is different: it belongs to the account being viewed, so only
+    // a published remote map may style it unless we can prove it is our own
+    // profile. This prevents DiggyT's local Fort skin from appearing on
+    // DiggyAI while still making the viewer's own profile render immediately.
+    if (!widgetSurfaceLooksProfileOwned(surface)) return new Map(local);
+    const out = new Map(remote);
+    const ownerId = widgetProfileOwnerId(surface);
+    const currentId = validWidgetOwnerId(UserStore.getCurrentUser()?.id);
+    if (ownerId && currentId && ownerId === currentId) {
+        for (const [appId, preset] of local) out.set(appId, preset);
+    }
+    return out;
+}
+
+function widgetHintsForSurface(
+    local: Map<string, string[]>,
+    surface: HTMLElement | null
+): Map<string, string[]> {
+    if (!widgetSurfaceLooksProfileOwned(surface)) return new Map(local);
+    const ownerId = widgetProfileOwnerId(surface);
+    const currentId = validWidgetOwnerId(UserStore.getCurrentUser()?.id);
+    return visibleProfileWidgetHints(ownerId && currentId && ownerId === currentId ? local : new Map());
+}
 // The compact account popout and profile modal can contain a branded Playing
 // card after enough ordinary profile nodes that the general surface-card
 // budget never reaches it. Keep a narrow, profile-owned candidate query so
@@ -3475,16 +3721,17 @@ function hintedWidgetApplicationId(element: HTMLElement, hints: Map<string, stri
 function widgetApplicationMatch(element: HTMLElement, known: Set<string>, hints: Map<string, string[]>): WidgetCardMatch | null {
     const now = Date.now();
     const cached = widgetApplicationCache.get(element);
+    const knownSignature = Array.from(known).sort().join(",");
     // React props are expensive to walk. Keep successful lookups longer and
     // negative lookups for the duration of the normal reconciliation window so
     // unrelated Discord updates do not repeatedly inspect the same card tree.
     const cacheTtl = cached?.match ? 5000 : 2600;
-    if (cached && cached.epoch === widgetApplicationCacheEpoch && now - cached.checkedAt < cacheTtl)
+    if (cached && cached.epoch === widgetApplicationCacheEpoch && cached.knownSignature === knownSignature && now - cached.checkedAt < cacheTtl)
         return cached.match && known.has(cached.match.appId) && cached.match.root.isConnected ? cached.match : null;
     const remember = (appId: string | null, related?: HTMLElement): WidgetCardMatch | null => {
         const root = appId ? widgetCardRoot(related ?? element, appId, hints) : null;
         const match = appId && root ? { appId, root } : null;
-        const value = { match, checkedAt: now, epoch: widgetApplicationCacheEpoch };
+        const value = { match, checkedAt: now, epoch: widgetApplicationCacheEpoch, knownSignature };
         widgetApplicationCache.set(element, value);
         if (related && related !== element) widgetApplicationCache.set(related, value);
         if (match && match.root !== element) widgetApplicationCache.set(match.root, value);
@@ -3521,7 +3768,10 @@ function widgetApplicationMatch(element: HTMLElement, known: Set<string>, hints:
 
 function restoreWidgetSkin(root: HTMLElement): void {
     const snapshot = widgetSkinRoots.get(root);
-    if (!snapshot) return;
+    if (!snapshot) {
+        widgetSkinLastSeenAt.delete(root);
+        return;
+    }
     for (const attr of WIDGET_SKIN_ATTRS) {
         const value = snapshot.attrs[attr];
         if (value === null) root.removeAttribute(attr); else root.setAttribute(attr, value);
@@ -3531,6 +3781,7 @@ function restoreWidgetSkin(root: HTMLElement): void {
         if (!value.value) root.style.removeProperty(name); else root.style.setProperty(name, value.value, value.priority);
     }
     widgetSkinRoots.delete(root);
+    widgetSkinLastSeenAt.delete(root);
 }
 
 function clearWidgetSkinRoot(root: HTMLElement): void {
@@ -3664,9 +3915,9 @@ function scanVisibleProfileWidgetCards(): number {
     const localActive = knownWidgetStyles();
     const localHints = knownWidgetHints();
     // The first pass can discover a profile card before its application
-    // metadata has been fetched. Keep it native until the owner's marker is
-    // readable; never borrow the viewer's skin during that short lookup.
-    const initialActive = visibleProfileWidgetStyles(localActive);
+    // metadata has been fetched. Only a read-only marker published by the
+    // profile owner is allowed to style it; a viewer's local map is never a
+    // valid cross-account fallback.
     const initialHints = visibleProfileWidgetHints(localHints);
     const initialHintLabels = Array.from(initialHints.values()).flat().filter(label => label.length >= 3);
     const explicitSelector = WIDGET_APPLICATION_ID_ATTRIBUTES.map(attribute => `[${attribute}]`).join(",");
@@ -3709,26 +3960,30 @@ function scanVisibleProfileWidgetCards(): number {
     for (const candidate of [...explicitCandidates, ...hintedCardCandidates].slice(0, WIDGET_SKIN_PROFILE_MATCH_MAX)) {
         const appId = visibleWidgetApplicationId(candidate);
         // A profile opened for another account can use the same application id
-        // as the viewer's own widget. The local map is not proof that this
-        // visible card belongs to the viewer. Always
+        // as the viewer's own widget. The local map is only a startup fallback;
+        // it is not proof that this visible card belongs to the viewer. Always
         // hydrate the read-only remote marker for visible profile cards so the
         // owner's published skin can replace a same-id local entry.
         if (appId) discovered.add(appId);
     }
     queueVisibleWidgetStyleHydration(discovered);
-    const active = visibleProfileWidgetStyles(localActive, discovered);
-    const known = new Set(active.keys());
-    const hints = visibleProfileWidgetHints(localHints);
-    const hintLabels = Array.from(hints.values()).flat().filter(label => label.length >= 3);
+    const active = visibleProfileWidgetStyles();
     const ordered = [...explicitCandidates, ...hintedCardCandidates];
-    if (!active.size && !playingCandidates.length) return 0;
+    // Keep the local map in the fast path for the viewer's own profile and
+    // normal Discord chrome. widgetStylesForSurface() still removes it for a
+    // foreign profile surface, so this does not make one account's skin bleed
+    // into another account while the remote marker is being hydrated.
+    if (!active.size && !localActive.size && !playingCandidates.length) return 0;
     if (!ordered.length && !playingCandidates.length) return 0;
     const seen = new Set<HTMLElement>();
     let applied = 0;
     for (const candidate of ordered.slice(0, WIDGET_SKIN_PROFILE_MATCH_MAX)) {
-        const match = widgetApplicationMatch(candidate, known, hints);
+        const surface = widgetSurfaceForCard(candidate);
+        const effectiveActive = widgetStylesForSurface(active, localActive, surface);
+        const effectiveHints = widgetHintsForSurface(localHints, surface);
+        const match = widgetApplicationMatch(candidate, new Set(effectiveActive.keys()), effectiveHints);
         if (!match) continue;
-        const preset = active.get(match.appId);
+        const preset = effectiveActive.get(match.appId);
         const root = match.root;
         if (!preset || seen.has(root) || !root.isConnected) continue;
         if (discordSurfaceSkinBlocked(root)) {
@@ -3754,8 +4009,9 @@ function scanVisibleProfileWidgetCards(): number {
     }
 
     const playingCard = selectPlayingCard(playingCandidates);
-    const playingScope = playingCard?.closest<HTMLElement>(WIDGET_SURFACE_SELECTOR) ?? null;
-    const playingPreset = playingCard ? playingCardPreset(active, seen, playingScope) : null;
+    const playingScope = playingCard ? widgetSurfaceForCard(playingCard) : null;
+    const playingActive = widgetStylesForSurface(active, localActive, playingScope);
+    const playingPreset = playingCard ? playingCardPreset(playingActive, seen, playingScope) : null;
     if (playingCard && playingPreset && !seen.has(playingCard)) {
         if (playingCard.dataset.dmWidgetSurfaceRoot === "true") restoreSurfaceSkin(playingCard);
         applyWidgetSkin(playingCard, playingPreset, DISCORDMAXXER_PLAYING_APP_ID);
@@ -3850,6 +4106,7 @@ function applyWidgetSkin(root: HTMLElement, preset: WidgetStylePreset, appId: st
     if (root.style.getPropertyValue("--dmw-skin-accent") !== preset.accent) root.style.setProperty("--dmw-skin-accent", preset.accent);
     if (root.style.getPropertyValue("--dmw-skin-secondary") !== preset.secondary) root.style.setProperty("--dmw-skin-secondary", preset.secondary);
     if (root.style.getPropertyValue("--dmw-skin-surface") !== preset.surface) root.style.setProperty("--dmw-skin-surface", preset.surface);
+    widgetSkinLastSeenAt.set(root, Date.now());
 }
 
 function isDiscordmaxxerPlayingCard(element: HTMLElement): boolean {
@@ -4000,7 +4257,6 @@ function playingCardPreset(active: Map<string, WidgetStylePreset>, seen: Set<HTM
     const scopedSeen = scope
         ? new Set(Array.from(seen).filter(root => scope.contains(root)))
         : seen;
-    if (!scopedSeen.size) return null;
     // If a per-slot style was just rendered in this pass, match the Playing
     // card to the first visible widget rather than silently using a stale
     // global gallery value. This preserves the original “same skin” look even
@@ -4031,6 +4287,34 @@ function playingCardPreset(active: Map<string, WidgetStylePreset>, seen: Set<HTM
             const preset = active.get(appId);
             if (preset) return preset;
         }
+    }
+    // A Spotify/"Playing" card has no widget application id of its own. If
+    // its sibling widget was not in `seen` yet, associate it by looking only
+    // inside the same profile surface. This keeps the owner's skin while
+    // preventing a style from another open profile or from the viewer from
+    // becoming the fallback.
+    if (scope) {
+        try {
+            for (const candidate of Array.from(scope.querySelectorAll<HTMLElement>(WIDGET_CARD_SELECTOR)).slice(0, 96)) {
+                if (isDiscordmaxxerPlayingCard(candidate)) continue;
+                const appId = visibleWidgetApplicationId(candidate);
+                const preset = appId ? active.get(appId) : undefined;
+                if (preset) return preset;
+            }
+        } catch { /* Discord may recycle the profile tree during this scan. */ }
+    }
+    // The branded Playing card can mount before its sibling widget cards, or
+    // the sibling can be outside the bounded scan set. For the signed-in
+    // user's own profile, the local map is a safe deterministic fallback.
+    // For a foreign profile, however, `active` can contain styles discovered
+    // in another visible profile; using its first entry would paint the wrong
+    // account while the owner's widget marker is still hydrating. Wait for a
+    // same-surface owner card in that case instead of leaking a viewer or
+    // neighbouring user's skin.
+    const ownerId = scope ? widgetProfileOwnerId(scope) : null;
+    const currentId = validWidgetOwnerId(UserStore.getCurrentUser()?.id);
+    if (!scope || (ownerId && currentId && ownerId === currentId)) {
+        return active.values().next().value ?? null;
     }
     return null;
 }
@@ -4130,10 +4414,11 @@ function scanWidgetSkinCards(budgetMs = 120): number {
 
     try {
         const localActive = knownWidgetStyles();
-        // Profile cards use only the owner's published marker. Keep the
-        // viewer's local map for the viewer's own Discord surface chrome
-        // below; it must never bleed into another account's cards.
-        const active = visibleProfileWidgetStyles(localActive);
+        const localHints = knownWidgetHints();
+        // Profile-card skins are remote-owner-only. The viewer's local map is
+        // still used below for the viewer's own Discord chrome surfaces, but
+        // never to paint a viewed account's cards.
+        const active = visibleProfileWidgetStyles();
         const surfacePreset = selectedSurfacePreset(localActive);
         if (localActive.size || active.size || surfacePreset) {
             if (surfacePreset) {
@@ -4153,10 +4438,12 @@ function scanWidgetSkinCards(budgetMs = 120): number {
                 }
             }
         }
-        if (active.size) {
-            const known = new Set(active.keys());
-            const hints = visibleProfileWidgetHints(knownWidgetHints());
-            const hintLabels = Array.from(hints.values()).flat().filter(label => label.length >= 3);
+        if (localActive.size || active.size) {
+            // Discovery may use the union of known local labels and remote
+            // labels. Final ownership is resolved per surface below; this map
+            // is only for finding candidate cards without styling them yet.
+            const discoveryHints = visibleProfileWidgetHints(localHints);
+            const discoveryLabels = Array.from(discoveryHints.values()).flat().filter(label => label.length >= 3);
             // Put explicit application-id hosts first, then prioritize card
             // nodes whose visible text names one of the user's attached apps.
             // This reaches the full Board before unrelated Discord cards while
@@ -4199,7 +4486,7 @@ function scanWidgetSkinCards(budgetMs = 120): number {
                     .filter(candidate => isDiscordmaxxerPlayingCard(candidate));
             }
             const hintedSurfaceCards = surfaceCards.filter(candidate => {
-                try { return widgetTextMatchesHints(String(candidate.textContent ?? ""), hintLabels); }
+                try { return widgetTextMatchesHints(String(candidate.textContent ?? ""), discoveryLabels); }
                 catch { return false; }
             });
             addCandidates(hintedSurfaceCards);
@@ -4218,8 +4505,11 @@ function scanWidgetSkinCards(budgetMs = 120): number {
                     // nested Playing-card host first, because that bypasses
                     // the shared timeline and replacement watcher.
                     if (isDiscordmaxxerPlayingCard(candidate)) continue;
-                    const match = widgetApplicationMatch(candidate, known, hints);
-                    const preset = match ? active.get(match.appId) : undefined;
+                    const surface = widgetSurfaceForCard(candidate);
+                    const effectiveActive = widgetStylesForSurface(active, localActive, surface);
+                    const effectiveHints = widgetHintsForSurface(localHints, surface);
+                    const match = widgetApplicationMatch(candidate, new Set(effectiveActive.keys()), effectiveHints);
+                    const preset = match ? effectiveActive.get(match.appId) : undefined;
                     if (!match || !preset || seen.has(match.root)) continue;
                     const root = match.root;
                     if (discordSurfaceSkinBlocked(root)) {
@@ -4251,8 +4541,9 @@ function scanWidgetSkinCards(budgetMs = 120): number {
                 ...directPlayingCandidates
             ])).filter(candidate => isDiscordmaxxerPlayingCard(candidate));
             const playingCard = selectPlayingCard(playingCandidates);
-            const playingScope = playingCard?.closest<HTMLElement>(WIDGET_SURFACE_SELECTOR) ?? null;
-            const playingPreset = playingCard ? playingCardPreset(active, seen, playingScope) : null;
+            const playingScope = playingCard ? widgetSurfaceForCard(playingCard) : null;
+            const playingActive = widgetStylesForSurface(active, localActive, playingScope);
+            const playingPreset = playingCard ? playingCardPreset(playingActive, seen, playingScope) : null;
             if (playingCard && playingPreset && !seen.has(playingCard)) {
                 if (playingCard.dataset.dmWidgetSurfaceRoot === "true") restoreSurfaceSkin(playingCard);
                 seen.add(playingCard);
@@ -4267,14 +4558,14 @@ function scanWidgetSkinCards(budgetMs = 120): number {
                 clearWidgetSkinPlayingCardHosts();
                 syncWidgetSkinPlayingCardObserver(null);
             }
-            if (complete && seen.size < active.size) {
+            if (complete && seen.size < Math.max(active.size, localActive.size)) {
                 // Keep the final text fallback to semantic card nodes. The
                 // former div-wide query was the main source of renderer stalls
                 // when the editor or a profile modal mounted.
                 const textCandidates = queryWithinSurfaces(WIDGET_CARD_FALLBACK_SELECTOR, 160)
                     .filter(candidate => {
                         const text = String(candidate.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 900);
-                        return text.length >= 3 && widgetTextMatchesHints(text, hintLabels);
+                        return text.length >= 3 && widgetTextMatchesHints(text, discoveryLabels);
                     });
                 inspect(textCandidates, textCandidates.length);
             }
@@ -4292,9 +4583,21 @@ function scanWidgetSkinCards(budgetMs = 120): number {
     // only on a complete pass prevents a partial scan from flashing cards back
     // to plain Discord styling.
     if (complete) {
+        const now = Date.now();
         for (const root of Array.from(widgetSkinRoots.keys())) {
             if (discordSurfaceSkinBlocked(root)) clearWidgetSkinRoot(root);
-            else if (!seen.has(root) || !root.isConnected) restoreWidgetSkin(root);
+            else if (!root.isConnected) restoreWidgetSkin(root);
+            else if (!seen.has(root)) {
+                const appId = root.dataset.dmWidgetAppId ?? "";
+                const waiting = appId.length > 0 && visibleWidgetStyleRequests.has(appId);
+                const missed = appId.length > 0 && visibleWidgetStyleMisses.has(appId);
+                const lastSeenAt = widgetSkinLastSeenAt.get(root) ?? 0;
+                const grace = waiting || missed ? 18_000 : 12_000;
+                // A complete scan can still miss a card while Discord is
+                // replacing its profile subtree. Keep the verified owner skin
+                // briefly instead of flashing the card back to native styles.
+                if (!lastSeenAt || now - lastSeenAt > grace) restoreWidgetSkin(root);
+            }
         }
         // Also clean markers left by an earlier renderer or a hot-reloaded
         // pass that never entered widgetSkinRoots. This is intentionally
@@ -4475,6 +4778,7 @@ function widgetSkinSurfaceNeedsScan(): boolean {
             if (!discordSurfaceSkinTarget(root)) return true;
         }
         const active = knownWidgetStyles();
+        const remoteActive = visibleProfileWidgetStyles();
         const surfacePreset = selectedSurfacePreset(active);
         if (surfacePreset) {
             const surfaces = Array.from(document.querySelectorAll<HTMLElement>(WIDGET_SURFACE_SKIN_SELECTOR)).slice(0, 140);
@@ -4485,8 +4789,8 @@ function widgetSkinSurfaceNeedsScan(): boolean {
                     || candidate.dataset.dmWidgetSurfaceMotionPaused !== (isWidgetPreviewMotionPaused() ? "true" : "false")) return true;
             }
         }
-        if (!active.size) return false;
-        const hintLabels = Array.from(knownWidgetHints().values()).flat().filter(label => label.length >= 3);
+        if (!active.size && !remoteActive.size) return false;
+        const hintLabels = Array.from(visibleProfileWidgetHints(knownWidgetHints()).values()).flat().filter(label => label.length >= 3);
         const surfaces = Array.from(document.querySelectorAll<HTMLElement>(WIDGET_SURFACE_SELECTOR)).slice(0, 24);
         for (const surface of surfaces) {
             const surfaceRect = surface.getBoundingClientRect();
@@ -4630,7 +4934,11 @@ function stopWidgetSkinRenderer(): void {
     attachedWidgetHints.clear();
     attachedWidgetProfileAccountId = "";
     attachedWidgetProfileVerifiedAt = 0;
+    attachedWidgetProfileEmptySince = 0;
     attachedWidgetRefreshAt = 0;
+    ownedWidgetMarkerRepairAccountId = "";
+    ownedWidgetMarkerRepairAt = 0;
+    ownedWidgetMarkerRepairPromise = null;
     activeDiscordConversationRowCache = null;
     widgetSkinStyleElement?.remove();
     widgetSkinStyleElement = null;
@@ -5620,6 +5928,7 @@ export default definePlugin({
         startWidgetSkinRenderer();
         void ensureSlots().then(async () => {
             await refreshAttachedWidgetStyles(true);
+            await repairOwnedWidgetStyleMarkers();
             // Style hydration can finish after the first renderer pass. Reset
             // the cache timestamp and request a fresh scan so a just-mounted
             // Board receives the recovered per-app styles without requiring a
@@ -5656,6 +5965,7 @@ export default definePlugin({
         (globalThis as any).__dmWidgetReskin = async () => {
             await ensureSlots();
             await refreshAttachedWidgetStyles(true);
+            await repairOwnedWidgetStyleMarkers();
             widgetApplicationCacheEpoch++;
             widgetSkinLastScanAt = 0;
             // A manual reskin is an explicit user/dev action. Run one
