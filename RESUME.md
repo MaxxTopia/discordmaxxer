@@ -2395,9 +2395,11 @@ tested. `upstream-watch` will flag the drift; the runbook has the procedure.
 
 ## 2026-10-19 — v0.7.101 cross-account media/widget repair and taskbar icon
 
-Candidate release: v0.7.101 from `codex/release-v0.7.100` in
+Published release: v0.7.101 from `codex/release-v0.7.100` in
 `C:\Users\Diggy\projects\discordmaxxer-release-v0.7.100`. Diggy authorized
-publication on 2026-10-19; publication and Worker deployment are in progress.
+publication on 2026-10-19. The client commit is `47f664c`, `origin/main` and
+the release branch contain it, and tag `v0.7.101` is public at
+`https://github.com/MaxxTopia/discordmaxxer/releases/tag/v0.7.101`.
 The two-PC runtime acceptance test remains separate from source/build/deploy
 proof and still belongs to Diggy after installation.
 
@@ -2435,13 +2437,21 @@ Verification completed:
 - Windows package: `pnpm package:dir` passed. The packaged `app.asar` contains
   `static/taskbar/taskbar.png`; the packaged resources contain
   `shortcut-icon.ico`. The taskbar PNG was visually inspected.
+- Windows distributables: `pnpm package:win` passed and the public release
+  contains the installer, x64/ARM64 archives, blockmap, and `latest.yml`.
 - `git diff --check` passed in both modified worktrees.
+- Worker deployment: commit `a8539f1` is deployed at
+  `https://optmaxxing-vip.maxxtopia.workers.dev`, deployment version
+  `7da980fc-504b-45ce-af59-1507634903b5`; live `GET /roster` returned 200 with
+  `no-store`.
+- Public release workflow: GitHub Actions run
+  `https://github.com/MaxxTopia/discordmaxxer/actions/runs/39291316232`
+  completed successfully. Public `latest.yml` returned 200 and version
+  `0.7.101`.
 
 Not done / waiting on Diggy:
-- The Worker deploy, client tag, and public release still need to complete in
-  this ship operation.
-- Source/build evidence cannot prove two signed-in recipients see the same
-  live profile. Install this candidate on both PCs, sign in as DiggyT and
+- Source/build/deploy evidence cannot prove two signed-in recipients see the
+  same live profile. Install v0.7.101 on both PCs, sign in as DiggyT and
   DiggyAI, then verify: each account's current animated banner is identical
   when viewed from the other account; DiggyT and DiggyAI each show both of the
   owner's chosen widget skins, including the now-playing card; skins do not
@@ -2453,5 +2463,8 @@ Not done / waiting on Diggy:
   the new Discordmaxxer shortcut once. This is Windows shell caching, not a
   renderer data path.
 
-Next action: finish the documented Worker deploy and tag-driven v0.7.101
-release, then perform the two-PC acceptance test above.
+Next action: perform the two-PC acceptance test above. If any account still
+shows a stale banner, missing animation, wrong gradient, or a skinless/wrong
+owner widget, capture the exact account/viewer/build pair and time before
+changing code; the next repair needs to distinguish a client cache/render
+failure from an owner sync or Worker-data failure.
