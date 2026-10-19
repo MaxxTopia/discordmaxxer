@@ -1,5 +1,41 @@
 # Discordmaxxer — RESUME
 
+## 2026-10-19 v0.7.100 published — renderer stability release
+
+v0.7.100 is publicly published from source commit `8a580d8`, with tag
+`v0.7.100`. The release workflow `39204372301` passed its readable-notes,
+dependency, strict overlay, build, artifact verification, Electron Builder,
+asset upload, and Maxxtopia notification steps. The public release is
+`https://github.com/MaxxTopia/discordmaxxer/releases/tag/v0.7.100`; the x64
+installer, x64/ARM64 ZIPs, blockmap, and `latest.yml` are uploaded.
+
+User-visible changes:
+
+- Owner-scoped widget hydration keeps each profile's Fortnite/Valorant skin
+  separate from the viewer's local skin, including during account switches.
+- Last confirmed widget and roster state survives temporary empty or delayed
+  responses, reducing native/default flashes while profile data is loading.
+- Older local widget-style markers are migrated in a bounded, rate-limited way
+  instead of repeatedly triggering broad lookups.
+- `DMDisplayNameStyle` rechecks profile name surfaces after profile flair and
+  other visual markers mount, restoring styles in popouts and profile views.
+- The release includes readable notes and the existing in-view animated
+  banner/avatar renderer; it does not change the Discordmaxxer-only versus
+  vanilla-Discord visibility boundary.
+
+Local verification passed: `pnpm test`, `pnpm build`, strict Vencord overlay
+(85 applied, 0 warnings), compiled-artifact verification, `pnpm package:dir`,
+and `git diff --check`. The original dirty checkout was not modified; this
+release was built from the clean `v0.7.100` release worktree.
+
+Remaining proof is recipient-side, not a source or release failure: install
+the same `0.7.100` build on both PCs and test DiggyT -> DiggyAI and DiggyAI ->
+DiggyT. Confirm each account keeps its own gradient, animated banner/avatar,
+and Fortnite/Valorant widget skins; no viewer skin leaks or native/default
+flash appears; in-view media stays animated; and display-name styles appear
+on chat and profile surfaces. Vanilla Discord still cannot render
+Discordmaxxer-only banners, widgets, flair, or colors.
+
 ## 2026-10-18 v0.7.99 published — cross-account renderer and DM Hub follow-up
 
 v0.7.99 is published from source commit `8d80deb2f25385cb5667d0435f543c643688d427`,
