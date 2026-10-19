@@ -14,6 +14,21 @@ import { invoke, sendSync } from "./typedIpc";
 
 type SpellCheckerResultCallback = (word: string, suggestions: string[]) => void;
 
+type PerformanceModeOptions = {
+    lowerProcessPriority: boolean;
+    capFrameRate: boolean;
+    disableArRpc: boolean;
+};
+
+type PerformanceModeResult = {
+    priorityChanged: boolean;
+    frameRateLimited: boolean;
+    arRpcDisabled: boolean;
+    lowerPriorityRequested: boolean;
+    frameRateCapRequested: boolean;
+    arRpcRequested: boolean;
+};
+
 const spellCheckCallbacks = new Set<SpellCheckerResultCallback>();
 
 ipcRenderer.on(IpcEvents.SPELLCHECK_RESULT, (_, w: string, s: string[]) => {
@@ -145,11 +160,8 @@ export const VesktopNative = {
         }
     },
     performanceMode: {
-        set: (on: boolean) =>
-            invoke<{ priorityChanged: boolean; frameRateLimited: boolean; arRpcDisabled: boolean }>(
-                IpcEvents.DM_SET_PERFORMANCE_MODE,
-                on
-            ),
+        set: (on: boolean, options?: Partial<PerformanceModeOptions>) =>
+            invoke<PerformanceModeResult>(IpcEvents.DM_SET_PERFORMANCE_MODE, on, options),
         // Tell the perf bridge whether we're in a voice call so TournamentMode
         // can keep the renderer + GPU at full priority during calls/streaming
         // (Opus voice encode/decode runs in the renderer) while still throttling

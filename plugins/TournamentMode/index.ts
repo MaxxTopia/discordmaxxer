@@ -41,7 +41,7 @@ import { definePluginSettings } from "@api/Settings";
 import { managedStyleRootNode } from "@api/Styles";
 import { createAndAppendStyle } from "@utils/css";
 import definePlugin, { OptionType } from "@utils/types";
-import { FluxDispatcher, React, SelectedChannelStore, Toasts } from "@webpack/common";
+import { FluxDispatcher, React, SelectedChannelStore, showToast, Toasts } from "@webpack/common";
 
 import { HotkeyPicker } from "../_dm-shared/HotkeyPicker";
 import { matchesHotkey, parseHotkey } from "../_dm-shared/hotkey";
@@ -199,6 +199,19 @@ async function syncNativePerf() {
     return native.performanceMode.set(active, perfOptions());
 }
 
+function showTournamentToast(message: string, type: string, duration = 2200): void {
+    try {
+        // Use the shared helper and the client default placement. Explicit TOP
+        // placement is not consistently mounted across Discord surfaces, so a
+        // toast could be created successfully but never be visible.
+        showToast(message, type, { duration });
+    } catch (e) {
+        // A renderer teardown can race a hotkey callback. Keep the mode change
+        // itself successful and leave a diagnostic for the next launch.
+        console.warn("[TournamentMode] status toast failed:", e);
+    }
+}
+
 async function setActive(next: boolean) {
     active = next;
     publishRuntimeState();
@@ -206,6 +219,14 @@ async function setActive(next: boolean) {
     // Mirror to settings so the Hub's toggle button reflects current state
     // even when the user flipped via hotkey (not via the toggle).
     try { settings.store.manuallyActive = next; } catch { /* settings not init yet */ }
+
+    // Confirm the user's action before waiting on the desktop IPC bridge. The
+    // bridge is best-effort and can be slow during startup; the old ordering
+    // made a successful toggle look broken because the toast was last.
+    showTournamentToast(
+        active ? "🎮 Tournament Mode: ON — applying performance settings…" : "Tournament Mode: OFF — restoring…",
+        active ? Toasts.Type.SUCCESS : Toasts.Type.MESSAGE
+    );
 
     // System-level perf mode bridge
     const native = (globalThis as any).VesktopNative;
@@ -215,19 +236,17 @@ async function setActive(next: boolean) {
             result = await syncNativePerf();
         } catch (e) {
             console.warn("[TournamentMode] performanceMode bridge failed:", e);
+            showTournamentToast(
+                active
+                    ? "Tournament Mode is ON, but desktop performance settings could not be applied."
+                    : "Tournament Mode is OFF, but desktop performance settings may still be restoring.",
+                Toasts.Type.FAILURE,
+                4500
+            );
         }
     }
 
     console.log(`[TournamentMode] ${active ? "ACTIVE" : "off"}`, result);
-
-    Toasts.show({
-        message: active
-            ? `🎮 Tournament Mode: ON — ${result?.lowerPriorityRequested ? "priority↓" : "priority unchanged"}${result?.arRpcRequested ? " · rpc✕" : ""}`
-            : "Tournament Mode: OFF — restored",
-        type: active ? Toasts.Type.SUCCESS : Toasts.Type.MESSAGE,
-        id: Toasts.genId(),
-        options: { duration: 1800, position: Toasts.Position.TOP }
-    });
 }
 
 function teardownHotkey() {

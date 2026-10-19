@@ -1,5 +1,42 @@
 # Discordmaxxer — RESUME
 
+## 2026-10-19 unpublished Tournament Mode toast repair
+
+The current public release remains v0.7.103. This is a local, unpublished
+candidate repair for the report that Tournament Mode changes state but does
+not show its confirmation toast. The source changes are intentionally not
+pushed, tagged, deployed, or published yet.
+
+Root cause and repair:
+
+- `TournamentMode` emitted its status toast only after awaiting the desktop
+  performance IPC bridge. If that bridge was slow or failed during renderer
+  startup, the mode could change while the user saw no confirmation.
+- It also forced the toast into the client's `TOP` position, which is not
+  mounted consistently across Discord surfaces. The candidate uses the shared
+  `showToast` helper and the client's default placement, emits the immediate
+  ON/OFF status before the bridge wait, and emits a longer failure warning if
+  desktop performance settings cannot be applied.
+- The preload bridge previously discarded the performance-options argument.
+  It now forwards the lower-priority, frame-cap, and arRPC options to the main
+  IPC handler. The DM Hub no longer adds a duplicate generic success toast for
+  Tournament Mode; the plugin owns the authoritative status message.
+
+Verification passed locally: `pnpm testTypes`, full `pnpm lint`,
+`pnpm overlay:vencord` (27 custom plugins, 85 idempotent rebrand checks, 0
+warnings), `pnpm build`, `node overlay-scripts/verify-build.mjs`,
+`pnpm package:dir`, `git diff --check`, and focused source assertions covering
+toast ordering, default placement, IPC option forwarding, and duplicate-toast
+suppression. `package:dir` completed with only Electron's existing dependency
+collector/deprecation warnings; it did not fail the package.
+
+Remaining proof is runtime/user-side: in the candidate client, toggle
+Tournament Mode from the DM Hub and with Ctrl+Alt+T, confirm one immediate ON
+or OFF toast, then confirm a clear failure toast if the native bridge is
+unavailable. Confirm the performance options still apply and that no duplicate
+Hub toast appears. Public v0.7.103 is unchanged until Diggy explicitly
+authorizes the next push/release.
+
 ## 2026-10-19 v0.7.103 published — account-scoped profile media repair
 
 v0.7.103 is publicly published from commit `b5dcc70`, with tag `v0.7.103`.
