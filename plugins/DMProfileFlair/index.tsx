@@ -108,6 +108,237 @@ function clearFlairDraftField(field: string): void {
     flairDraftFields.delete(field);
 }
 
+// Profile editor values used to live in one global settings slot. That was
+// fine for a single account, but it meant logging into DiggyT after DiggyAI
+// could make the editor and the background publisher treat DiggyAI's media as
+// DiggyT's. Keep the local editor state keyed by the Discord account that
+// owns it. The Worker roster remains the cross-PC source of truth; this map is
+// only the local cache/draft boundary.
+const PROFILE_LOCAL_STATE_KEYS = [
+    "myBannerUrl",
+    "myVanillaStillFrameUrl",
+    "myAvatarAnimatedUrl",
+    "myThemeColorPrimary",
+    "myThemeColorSecondary",
+    "myBannerPosition",
+    "myAvatarPosition",
+    "myBannerFit",
+    "myAvatarFit",
+    "myAvatarScale",
+    "myMediaEffect"
+] as const;
+type ProfileLocalStateKey = typeof PROFILE_LOCAL_STATE_KEYS[number];
+type ProfileLocalState = Record<ProfileLocalStateKey, string>;
+type ProfileLocalStateMap = Record<string, ProfileLocalState>;
+
+const PROFILE_LOCAL_STATE_MAX_ACCOUNTS = 8;
+let localProfileContextAccountId = "";
+let localProfileContextResolved = false;
+
+const PROFILE_REMOTE_FIELD_BY_LOCAL_KEY: Partial<Record<ProfileLocalStateKey, keyof ProfileFlair>> = {
+    myBannerUrl: "bannerUrl",
+    myAvatarAnimatedUrl: "avatarAnimatedUrl",
+    myThemeColorPrimary: "themeColorPrimary",
+    myThemeColorSecondary: "themeColorSecondary",
+    myBannerPosition: "bannerPosition",
+    myAvatarPosition: "avatarPosition",
+    myBannerFit: "bannerFit",
+    myAvatarFit: "avatarFit",
+    myAvatarScale: "avatarScale",
+    myMediaEffect: "mediaEffect"
+};
+
+function profileSettings(): Record<string, any> {
+    return settings.store as any;
+}
+
+function emptyProfileLocalState(): ProfileLocalState {
+    return Object.fromEntries(PROFILE_LOCAL_STATE_KEYS.map(key => [key, ""])) as ProfileLocalState;
+}
+
+function readProfileLocalState(): ProfileLocalState {
+    const s = profileSettings();
+    const state = emptyProfileLocalState();
+    for (const key of PROFILE_LOCAL_STATE_KEYS) state[key] = String(s[key] ?? "");
+    return state;
+}
+
+function applyProfileLocalState(state: Partial<ProfileLocalState>): void {
+    const s = profileSettings();
+    for (const key of PROFILE_LOCAL_STATE_KEYS) s[key] = String(state[key] ?? "");
+}
+
+function readProfileLocalStateMap(): ProfileLocalStateMap {
+    const raw = profileSettings().profileMediaByAccountJson;
+    if (typeof raw !== "string" || !raw.trim()) return {};
+    try {
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+        const map: ProfileLocalStateMap = {};
+        for (const [accountId, value] of Object.entries(parsed as Record<string, unknown>)) {
+            if (!/^\d{17,20}$/.test(accountId) || !value || typeof value !== "object" || Array.isArray(value)) continue;
+            const state = emptyProfileLocalState();
+            for (const key of PROFILE_LOCAL_STATE_KEYS) {
+                const candidate = (value as Record<string, unknown>)[key];
+                if (typeof candidate === "string") state[key] = candidate;
+            }
+            map[accountId] = state;
+        }
+        return map;
+    } catch {
+        return {};
+    }
+}
+
+function writeProfileLocalStateMap(map: ProfileLocalStateMap): void {
+    const entries = Object.entries(map);
+    const trimmed = entries.length > PROFILE_LOCAL_STATE_MAX_ACCOUNTS
+        ? entries.slice(-PROFILE_LOCAL_STATE_MAX_ACCOUNTS)
+        : entries;
+    profileSettings().profileMediaByAccountJson = JSON.stringify(Object.fromEntries(trimmed));
+}
+
+function persistLocalProfileStateForAccount(accountId = localProfileContextAccountId): void {
+    if (!/^\d{17,20}$/.test(accountId) || !localProfileContextResolved) return;
+    const map = readProfileLocalStateMap();
+    delete map[accountId];
+    map[accountId] = readProfileLocalState();
+    writeProfileLocalStateMap(map);
+}
+
+function clearLocalProfileState(): void {
+    applyProfileLocalState(emptyProfileLocalState());
+}
+
+function applyRemoteProfileToLocalState(remote: ProfileFlair, preserveDrafts: boolean): void {
+    const s = profileSettings();
+    for (const key of PROFILE_LOCAL_STATE_KEYS) {
+        if (key === "myVanillaStillFrameUrl") {
+            // A vanilla fallback is intentionally local and is not part of the
+            // shared roster. Never let it follow another account.
+            if (!preserveDrafts || !flairDraftFields.has(key)) s[key] = "";
+            continue;
+        }
+        if (preserveDrafts && flairDraftFields.has(key)) continue;
+        const remoteKey = PROFILE_REMOTE_FIELD_BY_LOCAL_KEY[key];
+        s[key] = remoteKey ? String(remote[remoteKey] ?? "") : "";
+    }
+}
+
+/**
+ * Select the local profile cache for the currently logged-in Discord account.
+ * On the first run after the account-scoping repair, leave legacy global
+ * values unresolved until the roster is read. That prevents DiggyAI's old
+ * cached URL from flashing on DiggyT (or being uploaded as DiggyT) during
+ * startup. An explicit editor draft is still allowed and is reconciled field
+ * by field once the roster response arrives.
+ */
+function ensureLocalProfileAccountContextForRender(): boolean {
+    const currentId = String(UserStore.getCurrentUser?.()?.id ?? "");
+    if (!/^\d{17,20}$/.test(currentId)) return false;
+    if (localProfileContextAccountId === currentId) return localProfileContextResolved;
+
+    if (localProfileContextAccountId && localProfileContextResolved) {
+        persistLocalProfileStateForAccount(localProfileContextAccountId);
+    }
+    clearFlairDraftFields();
+
+    const s = profileSettings();
+    const map = readProfileLocalStateMap();
+    const storedAccountId = String(s.profileFlairAccountId ?? "").trim();
+    const saved = map[currentId];
+
+    localProfileContextAccountId = currentId;
+    if (saved) {
+        applyProfileLocalState(saved);
+        localProfileContextResolved = true;
+        s.profileFlairAccountId = currentId;
+        return true;
+    }
+
+    // A marker without a map is an older intermediate migration. Treat the
+    // current settings as belonging to that same account exactly once, then
+    // materialize the map so later account switches are deterministic.
+    if (storedAccountId === currentId) {
+        localProfileContextResolved = true;
+        persistLocalProfileStateForAccount(currentId);
+        return true;
+    }
+
+    // Account changed, or this is the first run with legacy unscoped values.
+    // Clear immediately on an account switch. On first run keep the legacy
+    // values only as an unresolved draft until the roster can identify the
+    // canonical owner; the renderer will not use them while unresolved.
+    if (localProfileContextAccountId !== storedAccountId && storedAccountId) {
+        clearLocalProfileState();
+    } else if (storedAccountId) {
+        clearLocalProfileState();
+    }
+    localProfileContextResolved = false;
+    s.profileFlairAccountId = "";
+    return false;
+}
+
+function isLocalProfileContextReadyFor(userId: string): boolean {
+    return localProfileContextResolved
+        && localProfileContextAccountId === userId
+        && String(profileSettings().profileFlairAccountId ?? "") === userId;
+}
+
+/** Reconcile the first-run legacy cache against the current owner's roster. */
+function reconcileLocalProfileAccount(
+    accountId: string,
+    remote: ProfileFlair,
+    remoteProfileKnown: boolean
+): boolean {
+    const currentId = String(UserStore.getCurrentUser?.()?.id ?? "");
+    if (currentId !== accountId) return false;
+    if (localProfileContextAccountId !== accountId) {
+        if (!ensureLocalProfileAccountContextForRender() || localProfileContextAccountId !== accountId) return false;
+    }
+    if (localProfileContextResolved) return true;
+    if (!remoteProfileKnown) return false;
+
+    // The cloud record is authoritative for every field that was not edited
+    // in this session. This is what prevents a stale DiggyAI URL or gradient
+    // from being republished under DiggyT after an install/account switch.
+    applyRemoteProfileToLocalState(remote, true);
+    const s = profileSettings();
+    s.profileFlairAccountId = accountId;
+    localProfileContextResolved = true;
+    persistLocalProfileStateForAccount(accountId);
+    return true;
+}
+
+function markLocalProfileDraftField(field: ProfileLocalStateKey): void {
+    markFlairDraftField(field);
+    persistLocalProfileStateForAccount();
+}
+
+function setLocalProfileDraftField(field: ProfileLocalStateKey, value: string): void {
+    // Account switching can happen while the settings page is open. Resolve
+    // the context before accepting a new draft so a click cannot write into
+    // the previous account's local cache.
+    ensureLocalProfileAccountContextForRender();
+    profileSettings()[field] = value;
+    markLocalProfileDraftField(field);
+}
+
+async function resolveLocalProfileAccountForWrite(accountId: string): Promise<boolean> {
+    if (!/^\d{17,20}$/.test(accountId)) return false;
+    ensureLocalProfileAccountContextForRender();
+    if (isLocalProfileContextReadyFor(accountId)) return true;
+    try {
+        await refreshRoster();
+    } catch (e) {
+        console.warn("[DMProfileFlair] account profile reconciliation failed:", e);
+    }
+    const remote = getRosterProfileFlair(accountId) ?? {};
+    const remoteProfileKnown = getRosterProfileUpdatedAt(accountId) !== undefined;
+    return reconcileLocalProfileAccount(accountId, remote, remoteProfileKnown)
+        && isLocalProfileContextReadyFor(accountId);
+}
+
 function applyLocalDraftField(
     merged: ProfileFlair,
     settingsValue: unknown,
@@ -309,6 +540,8 @@ export function getEffectiveFlairForUser(
     kind: "banner" | "avatar" | "theme"
 ): ProfileFlair | null {
     const s = settings.store;
+    const me = UserStore.getCurrentUser?.();
+    const localContextReady = !!me?.id && ensureLocalProfileAccountContextForRender();
     if (!s.showOthersFlair) return null;
     if (kind === "banner" && !s.showOthersBanner) return null;
     if (kind === "avatar" && !s.showOthersAvatar) return null;
@@ -322,8 +555,7 @@ export function getEffectiveFlairForUser(
     // empty fields fall through to roster (which may have a previously
     // saved version) and then to nothing.
     let flair: ProfileFlair | null = null;
-    const me = UserStore.getCurrentUser?.();
-    if (me?.id === userId) {
+    if (me?.id === userId && localContextReady && isLocalProfileContextReadyFor(userId)) {
         // Per-field merge: start from your saved roster flair, then let any
         // non-empty LOCAL field override it. This matches the documented
         // intent — an empty local field falls through to your roster value
@@ -1371,8 +1603,23 @@ function FlairEditor() {
         "recentPicksJson"
     ]);
     const [busy, setBusy] = React.useState(false);
+    const [, setProfileContextRevision] = React.useState(0);
     const [actionFeedback, setActionFeedback] = React.useState<FlairActionFeedback | null>(null);
     const announce = (kind: FlairActionFeedback["kind"], text: string) => setActionFeedback({ kind, text });
+    const currentAccountId = String(UserStore.getCurrentUser?.()?.id ?? "");
+
+    React.useEffect(() => {
+        let active = true;
+        const reconcile = async () => {
+            if (!/^\d{17,20}$/.test(currentAccountId)) return;
+            if (!isLocalProfileContextReadyFor(currentAccountId)) {
+                await resolveLocalProfileAccountForWrite(currentAccountId);
+            }
+            if (active) setProfileContextRevision(value => value + 1);
+        };
+        void reconcile();
+        return () => { active = false; };
+    }, [currentAccountId]);
     // Track TM state live so the warning notice flips on/off without a panel
     // reopen. Cheap interval — every 2s is plenty, TM toggles are user-driven.
     const [tmActive, setTmActive] = React.useState(isTournamentModeActive());
@@ -1385,6 +1632,19 @@ function FlairEditor() {
     }, []);
 
     const onSave = async () => {
+        const me = UserStore.getCurrentUser?.();
+        if (!me?.id) {
+            const message = "Couldn't read your Discord account yet. Wait for Discordmaxxer to finish loading, then save again.";
+            toast(message, Toasts.Type.FAILURE, 5000);
+            announce("error", message);
+            return;
+        }
+        if (!await resolveLocalProfileAccountForWrite(me.id)) {
+            const message = "Couldn't verify this Discord account's shared profile yet. Wait for the roster to load, then save again.";
+            toast(message, Toasts.Type.FAILURE, 6000);
+            announce("error", message);
+            return;
+        }
         // Normalize colors before sending — the worker validates strict
         // `#RRGGBB`. normalizeColor accepts bare hex, 0x-prefix, 3-digit
         // shorthand, etc and emits canonical lowercase #rrggbb. If a user
@@ -1426,7 +1686,6 @@ function FlairEditor() {
             return;
         }
         setBusy(true);
-        const me = UserStore.getCurrentUser?.();
         const claimCode = getProfileClaimCode();
         const needsBannerUpload = !!proposed.bannerUrl && !!me?.id
             && !isCanonicalProfileMediaUrl(proposed.bannerUrl, me.id, "banner");
@@ -1473,7 +1732,12 @@ function FlairEditor() {
             s.myAvatarAnimatedUrl = String(proposed.avatarAnimatedUrl ?? "");
             s.myThemeColorPrimary = String(proposed.themeColorPrimary ?? "");
             s.myThemeColorSecondary = String(proposed.themeColorSecondary ?? "");
+            localProfileContextAccountId = me.id;
+            localProfileContextResolved = true;
+            profileSettings().profileFlairAccountId = me.id;
+            persistLocalProfileStateForAccount(me.id);
             await settleFlairDraftsAfterSave(proposed);
+            persistLocalProfileStateForAccount(me.id);
             // Push the just-saved values to the recents history so Diggy can
             // swap back like Discord's recent-avatars picker.
             recordRecentPicks(
@@ -1491,6 +1755,13 @@ function FlairEditor() {
 
     const onClearAll = async () => {
         if (!confirm("Clear all your custom profile flair (banner, avatar, colors, and presentation choices)?")) return;
+        const me = UserStore.getCurrentUser?.();
+        if (!me?.id || !await resolveLocalProfileAccountForWrite(me.id)) {
+            const message = "Couldn't verify this Discord account's shared profile yet. Wait for the roster to load, then try again.";
+            toast(message, Toasts.Type.FAILURE, 6000);
+            announce("error", message);
+            return;
+        }
         setBusy(true);
         announce("info", "Clearing your shared Discordmaxxer flair…");
         const ok = await postFlairUpdate({}, true);
@@ -1505,6 +1776,10 @@ function FlairEditor() {
             s.myAvatarFit = "";
             s.myAvatarScale = "";
             s.myMediaEffect = "";
+            localProfileContextAccountId = me.id;
+            localProfileContextResolved = true;
+            profileSettings().profileFlairAccountId = me.id;
+            persistLocalProfileStateForAccount(me.id);
             await settleFlairDraftsAfterSave({
                 bannerUrl: undefined,
                 avatarAnimatedUrl: undefined,
@@ -1517,6 +1792,8 @@ function FlairEditor() {
                 avatarScale: undefined,
                 mediaEffect: undefined
             });
+            clearFlairDraftFields();
+            persistLocalProfileStateForAccount(me.id);
             announce("success", "Cleared from the shared Discordmaxxer roster.");
         } else {
             announce("error", "The shared clear failed. The error toast above contains the server reason.");
@@ -1753,13 +2030,13 @@ function FlairEditor() {
                     kind="banner"
                     value={s.myBannerUrl}
                     profile={liveProfile}
-                    onChange={value => { s.myBannerUrl = value; markFlairDraftField("myBannerUrl"); }}
+                    onChange={value => setLocalProfileDraftField("myBannerUrl", value)}
                 />
                 <FlairMediaSetting
                     kind="avatar"
                     value={s.myAvatarAnimatedUrl}
                     profile={liveProfile}
-                    onChange={value => { s.myAvatarAnimatedUrl = value; markFlairDraftField("myAvatarAnimatedUrl"); }}
+                    onChange={value => setLocalProfileDraftField("myAvatarAnimatedUrl", value)}
                 />
                 <div style={{ margin: "4px 0 8px", padding: "10px 11px", borderRadius: 7, background: "rgba(0, 212, 255, 0.05)", border: "1px solid rgba(0, 212, 255, 0.2)" }}>
                     <div style={{ color: "#fbefff", fontSize: 12, fontWeight: 700, marginBottom: 3 }}>Paid presentation enhancements</div>
@@ -1773,7 +2050,7 @@ function FlairEditor() {
                     value={s.myBannerPosition}
                     minTier={Tier.MAXXER}
                     options={POSITION_OPTIONS}
-                    onChange={value => { s.myBannerPosition = value; markFlairDraftField("myBannerPosition"); }}
+                    onChange={value => setLocalProfileDraftField("myBannerPosition", value)}
                 />
                 <ProfileEnhancementControl
                     label="Banner fit"
@@ -1781,7 +2058,7 @@ function FlairEditor() {
                     value={s.myBannerFit}
                     minTier={Tier.MAXXER_PLUS}
                     options={FIT_OPTIONS}
-                    onChange={value => { s.myBannerFit = value; markFlairDraftField("myBannerFit"); }}
+                    onChange={value => setLocalProfileDraftField("myBannerFit", value)}
                 />
                 <ProfileEnhancementControl
                     label="Avatar crop anchor"
@@ -1789,7 +2066,7 @@ function FlairEditor() {
                     value={s.myAvatarPosition}
                     minTier={Tier.MAXXER}
                     options={POSITION_OPTIONS}
-                    onChange={value => { s.myAvatarPosition = value; markFlairDraftField("myAvatarPosition"); }}
+                    onChange={value => setLocalProfileDraftField("myAvatarPosition", value)}
                 />
                 <ProfileEnhancementControl
                     label="Avatar fit + scale"
@@ -1797,7 +2074,7 @@ function FlairEditor() {
                     value={s.myAvatarFit}
                     minTier={Tier.MAXXER_PLUS}
                     options={FIT_OPTIONS}
-                    onChange={value => { s.myAvatarFit = value; markFlairDraftField("myAvatarFit"); }}
+                    onChange={value => setLocalProfileDraftField("myAvatarFit", value)}
                 />
                 <ProfileEnhancementControl
                     label="Avatar scale"
@@ -1805,7 +2082,7 @@ function FlairEditor() {
                     value={s.myAvatarScale}
                     minTier={Tier.MAXXER_PLUS}
                     options={SCALE_OPTIONS}
-                    onChange={value => { s.myAvatarScale = value; markFlairDraftField("myAvatarScale"); }}
+                    onChange={value => setLocalProfileDraftField("myAvatarScale", value)}
                 />
                 <ProfileEnhancementControl
                     label="Media finish"
@@ -1813,21 +2090,21 @@ function FlairEditor() {
                     value={s.myMediaEffect}
                     minTier={Tier.MAXXER_PLUS_PLUS}
                     options={EFFECT_OPTIONS}
-                    onChange={value => { s.myMediaEffect = value; markFlairDraftField("myMediaEffect"); }}
+                    onChange={value => setLocalProfileDraftField("myMediaEffect", value)}
                 />
                 <ThemeColorSetting
                     kind="primary"
                     value={s.myThemeColorPrimary}
                     primary={normalizeColor(s.myThemeColorPrimary) ?? ""}
                     secondary={normalizeColor(s.myThemeColorSecondary) ?? ""}
-                    onChange={value => { s.myThemeColorPrimary = value; markFlairDraftField("myThemeColorPrimary"); }}
+                    onChange={value => setLocalProfileDraftField("myThemeColorPrimary", value)}
                 />
                 <ThemeColorSetting
                     kind="secondary"
                     value={s.myThemeColorSecondary}
                     primary={normalizeColor(s.myThemeColorPrimary) ?? ""}
                     secondary={normalizeColor(s.myThemeColorSecondary) ?? ""}
-                    onChange={value => { s.myThemeColorSecondary = value; markFlairDraftField("myThemeColorSecondary"); }}
+                    onChange={value => setLocalProfileDraftField("myThemeColorSecondary", value)}
                 />
             </div>
 
@@ -1844,7 +2121,7 @@ function FlairEditor() {
                                     key={url}
                                     title={url}
                                     style={thumbButtonStyle}
-                                    onClick={() => { s.myBannerUrl = url; markFlairDraftField("myBannerUrl"); }}
+                                    onClick={() => setLocalProfileDraftField("myBannerUrl", url)}
                                 >
                                     {/\.(mp4|webm|mov)(\?|$)/i.test(url)
                                         ? <span style={{ ...bannerThumbImg, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14 }}>🎬</span>
@@ -1861,7 +2138,7 @@ function FlairEditor() {
                                     key={url}
                                     title={url}
                                     style={thumbButtonStyle}
-                                    onClick={() => { s.myAvatarAnimatedUrl = url; markFlairDraftField("myAvatarAnimatedUrl"); }}
+                                    onClick={() => setLocalProfileDraftField("myAvatarAnimatedUrl", url)}
                                 >
                                     <img src={url} alt="" style={avatarThumbImg} onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }} />
                                 </button>
@@ -1879,7 +2156,10 @@ function FlairEditor() {
                                         key={pair}
                                         title={`${p} → ${sec}`}
                                         style={thumbButtonStyle}
-                                        onClick={() => { s.myThemeColorPrimary = p; s.myThemeColorSecondary = sec; markFlairDraftField("myThemeColorPrimary"); markFlairDraftField("myThemeColorSecondary"); }}
+                                        onClick={() => {
+                                            setLocalProfileDraftField("myThemeColorPrimary", p);
+                                            setLocalProfileDraftField("myThemeColorSecondary", sec);
+                                        }}
                                     >
                                         <span style={colorSwatch(p, sec)} />
                                     </button>
@@ -2072,6 +2352,22 @@ const settings = definePluginSettings({
         default: "",
         hidden: true
     },
+    // Hidden account boundary for local profile settings. The shared Worker
+    // roster is still the cross-PC source of truth; these two values prevent
+    // one Discord account's local media from being reused for another account
+    // on the same machine.
+    profileFlairAccountId: {
+        type: OptionType.STRING,
+        description: "(Managed by DMProfileFlair account scoping.)",
+        default: "",
+        hidden: true
+    },
+    profileMediaByAccountJson: {
+        type: OptionType.STRING,
+        description: "(Managed by DMProfileFlair account-scoped local profile cache.)",
+        default: "{}",
+        hidden: true
+    },
     manualClaimCode: {
         type: OptionType.STRING,
         description:
@@ -2162,6 +2458,13 @@ async function syncLocalProfileMediaToCloud(): Promise<void> {
             await refreshRoster();
             const remote = getRosterProfileFlair(me.id) ?? {};
             const remoteProfileKnown = getRosterProfileUpdatedAt(me.id) !== undefined;
+            if (!reconcileLocalProfileAccount(me.id, remote, remoteProfileKnown)) {
+                // Do not publish an unscoped legacy value when the roster is
+                // unavailable. A later focus/visibility pass will retry after
+                // the account identity has a trustworthy remote record.
+                profileMediaLastSyncAt = Date.now() - PROFILE_MEDIA_SYNC_INTERVAL_MS + PROFILE_MEDIA_SYNC_RETRY_MS;
+                return;
+            }
             const remoteUpdatedAt = getRosterProfileUpdatedAt(me.id) ?? 0;
             const remoteBanner = typeof remote.bannerUrl === "string" ? remote.bannerUrl : "";
             const remoteAvatar = typeof remote.avatarAnimatedUrl === "string" ? remote.avatarAnimatedUrl : "";
@@ -2220,10 +2523,8 @@ async function syncLocalProfileMediaToCloud(): Promise<void> {
                 await refreshRoster();
                 const latest = getRosterProfileFlair(me.id) ?? {};
                 const latestKnown = getRosterProfileUpdatedAt(me.id) !== undefined;
-                const latestBanner = typeof latest.bannerUrl === "string" ? latest.bannerUrl : "";
-                const latestAvatar = typeof latest.avatarAnimatedUrl === "string" ? latest.avatarAnimatedUrl : "";
-                if (!flairDraftFields.has("myBannerUrl") && (latestKnown || latestBanner)) s.myBannerUrl = latestBanner;
-                if (!flairDraftFields.has("myAvatarAnimatedUrl") && (latestKnown || latestAvatar)) s.myAvatarAnimatedUrl = latestAvatar;
+                if (latestKnown) applyRemoteProfileToLocalState(latest, true);
+                persistLocalProfileStateForAccount(me.id);
                 profileMediaLastSyncAt = Date.now();
                 profileMediaLastSyncSignature = `${me.id}|${getRosterProfileUpdatedAt(me.id) ?? 0}|${s.myBannerUrl}|${s.myAvatarAnimatedUrl}`;
                 return;
@@ -2231,6 +2532,7 @@ async function syncLocalProfileMediaToCloud(): Promise<void> {
 
             if (proposed.bannerUrl) s.myBannerUrl = proposed.bannerUrl;
             if (proposed.avatarAnimatedUrl) s.myAvatarAnimatedUrl = proposed.avatarAnimatedUrl;
+            persistLocalProfileStateForAccount(me.id);
             // The worker invalidates its roster memo on a successful write;
             // refresh immediately so the owner's own popout does not show a
             // one-frame stale native banner while waiting for the 30s TTL.
@@ -2787,6 +3089,8 @@ function getUserIdFromContainer(container: Element): string | null {
  *  Falls through viewer toggles, hide list, and TournamentMode gates. */
 function resolveFlairForUserId(userId: string | null, kind: "banner" | "avatar" | "theme"): ProfileFlair | null {
     const s = settings.store;
+    const me = UserStore.getCurrentUser?.();
+    const localContextReady = !!me?.id && ensureLocalProfileAccountContextForRender();
     if (!s.showOthersFlair) {
         // Master viewer-toggle is off — still allow self-preview rendering on
         // your own popout, otherwise the setter UX feels broken (you set a
@@ -2809,8 +3113,7 @@ function resolveFlairForUserId(userId: string | null, kind: "banner" | "avatar" 
     if (userId && isFlairHiddenForUser(userId)) return null;
 
     let flair: ProfileFlair | null = null;
-    const me = UserStore.getCurrentUser?.();
-    if (userId && me?.id === userId) {
+    if (userId && me?.id === userId && localContextReady && isLocalProfileContextReadyFor(userId)) {
         // Per-field merge (see getEffectiveFlairForUser): roster is the base,
         // and only fields actively edited in this session may override it.
         // Persisted values can belong to another Discordmaxxer install or be
@@ -2829,6 +3132,7 @@ function resolveFlairForUserId(userId: string | null, kind: "banner" | "avatar" 
             && !flairDraftFields.has("myAvatarAnimatedUrl")
             && !merged.avatarAnimatedUrl
             && getRosterProfileUpdatedAt(userId) === undefined
+            && isLocalProfileContextReadyFor(userId)
             && s.myAvatarAnimatedUrl.trim()) {
             merged.avatarAnimatedUrl = s.myAvatarAnimatedUrl.trim();
         }
@@ -3192,6 +3496,10 @@ function preserveAppliedAvatarWhileRosterPending(element: HTMLElement, userId: s
 }
 
 function scanForPopouts(_root: ParentNode = document) {
+    // Resolve the account-local cache before any self surface is inspected.
+    // This prevents the previous account's media from flashing into the new
+    // account while the roster request is still in flight.
+    const localContextReady = ensureLocalProfileAccountContextForRender();
     const me = UserStore.getCurrentUser?.();
     const tmActive = isTournamentModeActive();
     const rosterReady = isRosterReady();
@@ -3275,7 +3583,9 @@ function scanForPopouts(_root: ParentNode = document) {
     // it's what makes the per-mutation observer affordable.
     const sa = settings.store;
     const selfId = String(me?.id ?? "");
-    const selfHasAvatarFlair = !!sa.myAvatarAnimatedUrl.trim()
+    const selfHasAvatarFlair = (localContextReady
+        && isLocalProfileContextReadyFor(selfId)
+        && !!sa.myAvatarAnimatedUrl.trim())
         || (!!selfId && !!getRosterProfileFlair(selfId)?.avatarAnimatedUrl);
     const othersAvatarFlair =
         rosterReady && sa.showOthersFlair && sa.showOthersAvatar && rosterHasAnyAvatarFlair();
@@ -3333,7 +3643,7 @@ function scanForPopouts(_root: ParentNode = document) {
             else if (!userId || !preserveAppliedAvatarWhileRosterPending(a, userId, rosterReady)) clearAvatar(a);
         }
         // Warn once if the current user has a default avatar.
-        if (me && !me.avatar && settings.store.myAvatarAnimatedUrl.trim() && !defaultAvatarWarned) {
+        if (me && localContextReady && isLocalProfileContextReadyFor(selfId) && !me.avatar && settings.store.myAvatarAnimatedUrl.trim() && !defaultAvatarWarned) {
             defaultAvatarWarned = true;
             toast(
                 "⚠ Your Discord avatar is set to the default — your animated avatar will only show on profile popouts + full profile, not member list or chat. Upload any custom Discord avatar to fix.",

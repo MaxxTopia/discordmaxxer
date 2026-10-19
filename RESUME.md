@@ -1,5 +1,27 @@
 # Discordmaxxer — RESUME
 
+## 2026-10-19 v0.7.103 candidate — account-scoped profile media repair
+
+v0.7.103 is the account-isolation repair for the profile media regression. The
+client now keeps banner, animated avatar, gradient, and presentation state
+separate per Discord account instead of reconciling through one shared local
+slot. Startup and account switching wait for the matching roster identity
+before adopting legacy local media, and editor save, clear, recent-media,
+color, and presentation controls use the active account boundary.
+
+Verification completed before publication: `pnpm test`, `pnpm build`, strict
+Vencord overlay (`85` idempotent rebrand checks, `0` warnings),
+`node overlay-scripts/verify-build.mjs`, `pnpm package:dir`,
+`pnpm package:win`, executable ProductVersion `0.7.103.0`, and
+`git diff --check`. The live Worker already contains distinct healthy media
+records for DiggyT and DiggyAI, so no re-upload is required for those records.
+
+Publication and recipient-side proof are still pending. After publication,
+install the same `0.7.103` build on both PCs and test both account directions;
+confirm each account keeps its own animated banner/avatar, gradient, and
+widget skins without a native/default flash. Discordmaxxer-only visuals still
+require Discordmaxxer on both the owner and viewing clients.
+
 ## 2026-10-19 v0.7.100 published — renderer stability release
 
 v0.7.100 is publicly published from source commit `8a580d8`, with tag
