@@ -2468,3 +2468,28 @@ shows a stale banner, missing animation, wrong gradient, or a skinless/wrong
 owner widget, capture the exact account/viewer/build pair and time before
 changing code; the next repair needs to distinguish a client cache/render
 failure from an owner sync or Worker-data failure.
+
+## 2026-10-19 — v0.7.102 avatar regression release candidate
+
+After v0.7.101, the owner animated-avatar path could fall back to Discord's
+native avatar while the roster was still loading, or when a persisted owner
+avatar existed before a cloud profile record arrived. The live Worker data was
+checked first: DiggyAI's roster entry contains a canonical avatar URL, and the
+Worker returns it as HTTP 200 `image/gif` with a 2.9 MB payload. This is a
+client state-timing regression, not a missing media object.
+
+Release candidate repair in `plugins/DMProfileFlair/index.tsx`:
+- restore the v0.7.100-compatible persisted-avatar fallback only when no
+  timestamped cloud profile record has supplied an avatar;
+- preserve an already-proven, owner-marked avatar while the first roster fetch
+  is pending, without allowing it to leak to another profile;
+- keep a populated cloud avatar authoritative and continue honoring a
+  timestamped empty profile as an explicit clear.
+
+Verification for this repair: `git diff --check`, `pnpm test`, `pnpm build`,
+strict `pnpm overlay:vencord`, `node overlay-scripts/verify-build.mjs`,
+`pnpm package:dir`, and `pnpm package:win` all passed. The owner authorized
+publication on 2026-10-19. The candidate is ready to commit and tag as
+v0.7.102; it is not yet published or verified on either signed-in PC. After
+publication, repeat the two-PC avatar test before claiming recipient-side
+rendering is verified.

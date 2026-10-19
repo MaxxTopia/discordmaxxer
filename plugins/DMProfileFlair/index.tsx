@@ -2814,13 +2814,24 @@ function resolveFlairForUserId(userId: string | null, kind: "banner" | "avatar" 
         // Per-field merge (see getEffectiveFlairForUser): roster is the base,
         // and only fields actively edited in this session may override it.
         // Persisted values can belong to another Discordmaxxer install or be
-        // an old external URL, so they must never beat the owner's cloud
-        // record after a restart.
+        // an old external URL, so they must never beat a populated owner
+        // record after a restart. Avatar rendering keeps one compatibility
+        // fallback: if the roster has not supplied a profile record yet, a
+        // persisted owner avatar may continue rendering instead of flashing
+        // back to Discord's native avatar. A timestamped empty profile still
+        // wins, so an explicit cloud-side clear is respected.
         const merged: ProfileFlair = { ...(getRosterProfileFlair(userId) ?? {}) };
         applyLocalDraftField(merged, s.myBannerUrl, "myBannerUrl", "bannerUrl");
         applyLocalDraftField(merged, s.myAvatarAnimatedUrl, "myAvatarAnimatedUrl", "avatarAnimatedUrl");
         applyLocalDraftField(merged, s.myThemeColorPrimary, "myThemeColorPrimary", "themeColorPrimary");
         applyLocalDraftField(merged, s.myThemeColorSecondary, "myThemeColorSecondary", "themeColorSecondary");
+        if (kind === "avatar"
+            && !flairDraftFields.has("myAvatarAnimatedUrl")
+            && !merged.avatarAnimatedUrl
+            && getRosterProfileUpdatedAt(userId) === undefined
+            && s.myAvatarAnimatedUrl.trim()) {
+            merged.avatarAnimatedUrl = s.myAvatarAnimatedUrl.trim();
+        }
         mergeLocalPresentationFields(merged, s);
         if (Object.keys(merged).length) flair = merged;
     } else if (userId) {
@@ -3172,6 +3183,14 @@ function clearAppliedAvatars() {
     document.querySelectorAll<HTMLElement>("[data-dm-flair-bg-avatar-applied]").forEach(clearBackgroundAvatar);
 }
 
+/** Keep an already-proven owner avatar in place while the first roster fetch
+ * is still pending. The owner marker prevents this from leaking the viewer's
+ * avatar into another person's surface; once the roster is ready, the normal
+ * cloud ownership decision resumes and can replace or clear it. */
+function preserveAppliedAvatarWhileRosterPending(element: HTMLElement, userId: string, rosterReady: boolean): boolean {
+    return !rosterReady && element.dataset.dmFlairAvatarUserId === userId;
+}
+
 function scanForPopouts(_root: ParentNode = document) {
     const me = UserStore.getCurrentUser?.();
     const tmActive = isTournamentModeActive();
@@ -3277,7 +3296,7 @@ function scanForPopouts(_root: ParentNode = document) {
             const avatarFlair = resolveFlairForUserId(userId, "avatar");
             if (avatarFlair?.avatarAnimatedUrl) {
                 applyAvatar(el, avatarFlair.avatarAnimatedUrl, userId, avatarFlair);
-            } else {
+            } else if (!preserveAppliedAvatarWhileRosterPending(el, userId, rosterReady)) {
                 clearAvatar(el);
             }
         });
@@ -3297,7 +3316,7 @@ function scanForPopouts(_root: ParentNode = document) {
             const avatarFlair = resolveFlairForUserId(userId, "avatar");
             if (avatarFlair?.avatarAnimatedUrl) {
                 applyBackgroundAvatar(el, avatarFlair.avatarAnimatedUrl, userId, avatarFlair);
-            } else {
+            } else if (!preserveAppliedAvatarWhileRosterPending(el, userId, rosterReady)) {
                 clearBackgroundAvatar(el);
             }
         });
@@ -3311,7 +3330,7 @@ function scanForPopouts(_root: ParentNode = document) {
             if (!rosterReady && String(me?.id ?? "") !== String(userId ?? "")) continue;
             const flair = resolveFlairForUserId(userId, "avatar");
             if (flair?.avatarAnimatedUrl) applyAvatar(a, flair.avatarAnimatedUrl, userId ?? undefined, flair);
-            else clearAvatar(a);
+            else if (!userId || !preserveAppliedAvatarWhileRosterPending(a, userId, rosterReady)) clearAvatar(a);
         }
         // Warn once if the current user has a default avatar.
         if (me && !me.avatar && settings.store.myAvatarAnimatedUrl.trim() && !defaultAvatarWarned) {
