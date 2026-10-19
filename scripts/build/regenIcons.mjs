@@ -43,6 +43,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, "..", "..");
 const HOLES_PNG = resolve(ROOT, "build", "icon-source.png");      // with bullet holes
 const NO_HOLES_PNG = resolve(ROOT, "build", "tray-source.png");   // no bullet holes
+const BRANDING_PNG = resolve(ROOT, "branding", "existing-dm-logo-render.png");
 const SVG = resolve(ROOT, "build", "icon.svg");
 const ICO = resolve(ROOT, "build", "icon.ico");                   // .exe / pinned taskbar (no holes)
 const SHORTCUT_ICO = resolve(ROOT, "build", "shortcut-icon.ico"); // Start menu + desktop (with holes)
@@ -86,6 +87,13 @@ console.log(`[regenIcons] no-bullet-holes source: ${noHolesSrc.path} (${noHolesS
 
 const holesSrc = await loadSource(HOLES_PNG, SVG);
 console.log(`[regenIcons] bullet-holes source:    ${holesSrc.path} (${holesSrc.buf.length} bytes)`);
+
+// The taskbar is a user-facing identity surface. The old tray glyph is a
+// tiny white face with transparent padding, which Windows can rasterize as a
+// generic paper icon at taskbar size. Prefer the full Discordmaxxer brand mark
+// here while keeping the existing executable/shortcut/tray sources stable.
+const taskbarSrc = await loadSource(BRANDING_PNG, NO_HOLES_PNG, HOLES_PNG, SVG);
+console.log(`[regenIcons] branded taskbar source:  ${taskbarSrc.path} (${taskbarSrc.buf.length} bytes)`);
 
 // Tray + taskbar PNGs reuse the no-holes source; aliased for clarity below.
 const traySrc = noHolesSrc;
@@ -145,11 +153,11 @@ const trayUnreadPng = await makeSharp(traySrc, 512)
 await writeFile(TRAY_UNREAD_PNG, trayUnreadPng);
 console.log(`[regenIcons] wrote ${TRAY_UNREAD_PNG} (${trayUnreadPng.length} bytes)`);
 
-// Taskbar runtime override icon (Win32 BrowserWindow.setIcon). 256x256 from
-// the no-bullet-holes tray-source so the taskbar/Alt-Tab thumbnail doesn't
-// show bullet-hole noise. The shortcut/exe icon (build/icon.ico) keeps the
-// bullet-holes form via the main source. See src/main/mainWindow.ts.
-const taskbarPng = await makeSharp(traySrc, 512)
+// Taskbar runtime override icon (Win32 BrowserWindow.setIcon). Use the full
+// Discordmaxxer brand mark so Windows does not reduce the transparent tray
+// glyph to a white paper-looking square. The shortcut/exe/tray sources stay
+// unchanged. See src/main/mainWindow.ts.
+const taskbarPng = await makeSharp(taskbarSrc, 512)
     .resize(256, 256)
     .png()
     .toBuffer();

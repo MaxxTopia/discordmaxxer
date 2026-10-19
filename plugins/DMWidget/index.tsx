@@ -2112,18 +2112,26 @@ const attachedWidgetHints = new Map<string, string[]>();
 // the viewer's first widget for the profile owner's widget and paint the
 // viewer's selected skin onto somebody else's card.
 type VisibleWidgetStyleRecord = {
+    appId: string;
+    ownerKey: string;
+    ownerId: string | null;
     preset: WidgetStylePreset;
     updatedAt: number;
     checkedAt: number;
     hints: string[];
 };
 type VisibleWidgetStyleMissRecord = {
+    appId: string;
+    ownerKey: string;
+    ownerId: string | null;
     checkedAt: number;
     firstMissedAt: number;
     hints: string[];
 };
 const visibleWidgetStyles = new Map<string, VisibleWidgetStyleRecord>();
 const visibleWidgetStyleMisses = new Map<string, VisibleWidgetStyleMissRecord>();
+const visibleWidgetSurfaceKeys = new WeakMap<HTMLElement, string>();
+let visibleWidgetSurfaceSerial = 0;
 const VISIBLE_WIDGET_STYLE_STALE_GRACE_MS = 120_000;
 const ATTACHED_WIDGET_EMPTY_GRACE_MS = 120_000;
 const visibleWidgetStyleRequests = new Map<string, Promise<void>>();
@@ -2142,6 +2150,21 @@ const OWNED_WIDGET_MARKER_REPAIR_INTERVAL_MS = 15 * 60_000;
 let ownedWidgetMarkerRepairAccountId = "";
 let ownedWidgetMarkerRepairAt = 0;
 let ownedWidgetMarkerRepairPromise: Promise<void> | null = null;
+
+function visibleWidgetOwnerKey(surface: HTMLElement | null): string {
+    const ownerId = widgetProfileOwnerId(surface);
+    if (ownerId) return `owner:${ownerId}`;
+    if (!surface) return "no-surface";
+    const existing = visibleWidgetSurfaceKeys.get(surface);
+    if (existing) return existing;
+    const key = `surface:${++visibleWidgetSurfaceSerial}`;
+    visibleWidgetSurfaceKeys.set(surface, key);
+    return key;
+}
+
+function visibleWidgetCacheKey(appId: string, ownerKey: string): string {
+    return `${ownerKey}|${appId}`;
+}
 
 function attachedWidgetProfileIsFresh(): boolean {
     const accountId = String(UserStore.getCurrentUser()?.id ?? "");
@@ -2882,59 +2905,68 @@ const WIDGET_APPLICATION_ID_ATTRIBUTES = [
     "application_id"
 ];
 
-function visibleProfileWidgetStyles(): Map<string, WidgetStylePreset> {
+function visibleProfileWidgetStyles(ownerKey?: string, ownerId?: string | null): Map<string, WidgetStylePreset> {
     const out = new Map<string, WidgetStylePreset>();
     const now = Date.now();
-    for (const [appId, record] of visibleWidgetStyles) {
-        if (!SNOWFLAKE.test(appId)) continue;
+    for (const [cacheKey, record] of visibleWidgetStyles) {
+        if (!SNOWFLAKE.test(record.appId)) continue;
+        if (ownerKey && (!record.ownerId
+            || (record.ownerKey !== ownerKey && record.ownerId !== ownerId))) continue;
         const fresh = now - record.checkedAt <= VISIBLE_WIDGET_STYLE_CACHE_MS;
-        const miss = visibleWidgetStyleMisses.get(appId);
+        const miss = visibleWidgetStyleMisses.get(cacheKey);
         const staleGrace = miss && now - miss.firstMissedAt <= VISIBLE_WIDGET_STYLE_STALE_GRACE_MS;
-        const hydrationPending = visibleWidgetStyleRequests.has(appId);
+        const hydrationPending = visibleWidgetStyleRequests.has(cacheKey);
         if (!fresh && !staleGrace && !hydrationPending) continue;
         // This map is deliberately remote-only. A profile card belongs to the
         // account being viewed, so a viewer's local selection is never an
         // acceptable fallback while the owner's published marker is loading,
         // missing, or unreadable. Missing markers leave the card native.
-        out.set(appId, record.preset);
+        out.set(record.appId, record.preset);
     }
     return out;
 }
 
-function visibleProfileWidgetHints(local: Map<string, string[]>): Map<string, string[]> {
+function visibleProfileWidgetHints(
+    local: Map<string, string[]>,
+    ownerKey?: string,
+    ownerId?: string | null
+): Map<string, string[]> {
     const out = new Map<string, string[]>();
     for (const [appId, labels] of local) out.set(appId, Array.from(new Set(labels)));
     const now = Date.now();
-    for (const [appId, miss] of visibleWidgetStyleMisses) {
-        if (!SNOWFLAKE.test(appId) || !miss.hints.length) continue;
-        const current = out.get(appId) ?? [];
+    for (const [, miss] of visibleWidgetStyleMisses) {
+        if (!SNOWFLAKE.test(miss.appId) || !miss.hints.length) continue;
+        if (ownerKey && miss.ownerKey !== ownerKey && (!miss.ownerId || miss.ownerId !== ownerId)) continue;
+        const current = out.get(miss.appId) ?? [];
         for (const label of miss.hints) {
             const clean = String(label ?? "").trim();
             if (clean.length >= 3 && !current.includes(clean)) current.push(clean);
         }
-        if (current.length) out.set(appId, current);
+        if (current.length) out.set(miss.appId, current);
     }
-    for (const [appId, record] of visibleWidgetStyles) {
-        if (!SNOWFLAKE.test(appId)) continue;
+    for (const [cacheKey, record] of visibleWidgetStyles) {
+        if (!SNOWFLAKE.test(record.appId)) continue;
+        if (ownerKey && (!record.ownerId
+            || (record.ownerKey !== ownerKey && record.ownerId !== ownerId))) continue;
         const fresh = now - record.checkedAt <= VISIBLE_WIDGET_STYLE_CACHE_MS;
-        const miss = visibleWidgetStyleMisses.get(appId);
+        const miss = visibleWidgetStyleMisses.get(cacheKey);
         const staleGrace = miss && now - miss.firstMissedAt <= VISIBLE_WIDGET_STYLE_STALE_GRACE_MS;
-        const hydrationPending = visibleWidgetStyleRequests.has(appId);
+        const hydrationPending = visibleWidgetStyleRequests.has(cacheKey);
         if (!fresh && !staleGrace && !hydrationPending) continue;
-        const current = out.get(appId) ?? [];
+        const current = out.get(record.appId) ?? [];
         for (const label of record.hints) {
             const clean = String(label ?? "").trim();
             if (clean.length >= 3 && !current.includes(clean)) current.push(clean);
         }
-        if (current.length) out.set(appId, current);
+        if (current.length) out.set(record.appId, current);
     }
     return out;
 }
 
-function rememberVisibleWidgetStyle(appId: string, record: VisibleWidgetStyleRecord): void {
-    visibleWidgetStyles.delete(appId);
-    visibleWidgetStyles.set(appId, record);
-    visibleWidgetStyleMisses.delete(appId);
+function rememberVisibleWidgetStyle(cacheKey: string, record: VisibleWidgetStyleRecord): void {
+    visibleWidgetStyles.delete(cacheKey);
+    visibleWidgetStyles.set(cacheKey, record);
+    visibleWidgetStyleMisses.delete(cacheKey);
     while (visibleWidgetStyles.size > VISIBLE_WIDGET_STYLE_MAX) {
         const oldest = visibleWidgetStyles.keys().next().value;
         if (typeof oldest !== "string") break;
@@ -2942,18 +2974,23 @@ function rememberVisibleWidgetStyle(appId: string, record: VisibleWidgetStyleRec
     }
 }
 
-function rememberVisibleWidgetStyleMiss(appId: string, hints: string[] = []): void {
+function rememberVisibleWidgetStyleMiss(
+    cacheKey: string,
+    request: Pick<VisibleWidgetStyleMissRecord, "appId" | "ownerKey" | "ownerId">,
+    hints: string[] = []
+): void {
     // Do not throw away the last verified owner style on a network/React
     // timing miss. Keep it available for a bounded grace period, then allow a
     // genuinely removed marker to settle back to native Discord styling.
-    const previous = visibleWidgetStyleMisses.get(appId);
+    const previous = visibleWidgetStyleMisses.get(cacheKey);
     const now = Date.now();
     const firstMissedAt = previous && now - previous.firstMissedAt <= VISIBLE_WIDGET_STYLE_STALE_GRACE_MS
         ? previous.firstMissedAt
         : now;
     const cleanHints = Array.from(new Set(hints.map(label => String(label ?? "").trim()).filter(label => label.length >= 3)));
-    visibleWidgetStyleMisses.delete(appId);
-    visibleWidgetStyleMisses.set(appId, {
+    visibleWidgetStyleMisses.delete(cacheKey);
+    visibleWidgetStyleMisses.set(cacheKey, {
+        ...request,
         checkedAt: now,
         firstMissedAt,
         hints: cleanHints.length ? cleanHints : (previous?.hints ?? [])
@@ -2965,22 +3002,36 @@ function rememberVisibleWidgetStyleMiss(appId: string, hints: string[] = []): vo
     }
 }
 
-function queueVisibleWidgetStyleHydration(appIds: Iterable<string>): void {
+type VisibleWidgetStyleHydrationRequest = {
+    appId: string;
+    ownerKey: string;
+    ownerId: string | null;
+};
+
+function queueVisibleWidgetStyleHydration(requests: Iterable<VisibleWidgetStyleHydrationRequest>): void {
     const now = Date.now();
-    const pending = Array.from(new Set(Array.from(appIds).filter(appId => SNOWFLAKE.test(appId)))).slice(0, VISIBLE_WIDGET_STYLE_BATCH_MAX);
-    for (const appId of pending) {
-        const cached = visibleWidgetStyles.get(appId);
+    const deduped = new Map<string, VisibleWidgetStyleHydrationRequest>();
+    for (const request of requests) {
+        if (SNOWFLAKE.test(request.appId)) deduped.set(visibleWidgetCacheKey(request.appId, request.ownerKey), request);
+    }
+    const pending = Array.from(deduped.entries()).slice(0, VISIBLE_WIDGET_STYLE_BATCH_MAX);
+    for (const [cacheKey, request] of pending) {
+        const { appId, ownerKey, ownerId } = request;
+        const cached = visibleWidgetStyles.get(cacheKey);
         if (cached && now - cached.checkedAt <= VISIBLE_WIDGET_STYLE_CACHE_MS) continue;
-        const missAt = visibleWidgetStyleMisses.get(appId)?.checkedAt ?? 0;
+        const missAt = visibleWidgetStyleMisses.get(cacheKey)?.checkedAt ?? 0;
         if (missAt && now - missAt <= VISIBLE_WIDGET_STYLE_MISS_RETRY_MS) continue;
-        if (visibleWidgetStyleRequests.has(appId)) continue;
+        if (visibleWidgetStyleRequests.has(cacheKey)) continue;
 
         const task = apiGet(`/applications/${appId}`).then(application => {
             const remoteStyle = remoteWidgetStyleFromApplication(application);
             if (remoteStyle) {
                 const remotePreset = WIDGET_STYLE_PRESETS.find(item => item.id === remoteStyle.style) ?? WIDGET_STYLE_PRESETS[0];
                 const appName = String(application?.name ?? application?.application?.name ?? "").trim();
-                rememberVisibleWidgetStyle(appId, {
+                rememberVisibleWidgetStyle(cacheKey, {
+                    appId,
+                    ownerKey,
+                    ownerId,
                     preset: presetWithLayouts(remotePreset, remoteStyle.topLayout, remoteStyle.bottomLayout),
                     updatedAt: remoteStyle.updatedAt,
                     checkedAt: Date.now(),
@@ -2991,7 +3042,7 @@ function queueVisibleWidgetStyleHydration(appIds: Iterable<string>): void {
                 // to this client. Retry later; viewed profile cards remain
                 // native until the owner's marker is readable.
                 const appName = String(application?.name ?? application?.application?.name ?? "").trim();
-                rememberVisibleWidgetStyleMiss(appId, appName ? [appName] : []);
+                rememberVisibleWidgetStyleMiss(cacheKey, { appId, ownerKey, ownerId }, appName ? [appName] : []);
             }
             widgetApplicationCacheEpoch++;
             scheduleWidgetSkinProfileFastScan();
@@ -3000,14 +3051,14 @@ function queueVisibleWidgetStyleHydration(appIds: Iterable<string>): void {
             // An unreadable marker is retried later. Do not borrow the
             // viewer's skin for a foreign profile because that makes two
             // accounts appear to share one widget configuration.
-            rememberVisibleWidgetStyleMiss(appId);
+            rememberVisibleWidgetStyleMiss(cacheKey, { appId, ownerKey, ownerId });
             widgetApplicationCacheEpoch++;
             scheduleWidgetSkinProfileFastScan();
             scheduleWidgetSkinScan(true);
         }).finally(() => {
-            visibleWidgetStyleRequests.delete(appId);
+            visibleWidgetStyleRequests.delete(cacheKey);
         });
-        visibleWidgetStyleRequests.set(appId, task);
+        visibleWidgetStyleRequests.set(cacheKey, task);
     }
 }
 
@@ -3176,6 +3227,8 @@ const WIDGET_OWNER_ATTRIBUTES = [
     "data-profile-user-id",
     "data-profile-userid",
     "data-dm-flair-avatar-user-id",
+    "data-dm-flair-profile-owner-id",
+    "data-dm-flair-banner-user-id",
     "data-dm-flair-banner-owner-id",
     "data-dm-flair-theme-owner-id"
 ];
@@ -3287,7 +3340,6 @@ function widgetSurfaceLooksProfileOwned(surface: HTMLElement | null): boolean {
 }
 
 function widgetStylesForSurface(
-    remote: Map<string, WidgetStylePreset>,
     local: Map<string, WidgetStylePreset>,
     surface: HTMLElement | null
 ): Map<string, WidgetStylePreset> {
@@ -3298,8 +3350,8 @@ function widgetStylesForSurface(
     // profile. This prevents DiggyT's local Fort skin from appearing on
     // DiggyAI while still making the viewer's own profile render immediately.
     if (!widgetSurfaceLooksProfileOwned(surface)) return new Map(local);
-    const out = new Map(remote);
     const ownerId = widgetProfileOwnerId(surface);
+    const out = new Map(visibleProfileWidgetStyles(visibleWidgetOwnerKey(surface), ownerId));
     const currentId = validWidgetOwnerId(UserStore.getCurrentUser()?.id);
     if (ownerId && currentId && ownerId === currentId) {
         for (const [appId, preset] of local) out.set(appId, preset);
@@ -3312,9 +3364,14 @@ function widgetHintsForSurface(
     surface: HTMLElement | null
 ): Map<string, string[]> {
     if (!widgetSurfaceLooksProfileOwned(surface)) return new Map(local);
+    const ownerKey = visibleWidgetOwnerKey(surface);
     const ownerId = widgetProfileOwnerId(surface);
     const currentId = validWidgetOwnerId(UserStore.getCurrentUser()?.id);
-    return visibleProfileWidgetHints(ownerId && currentId && ownerId === currentId ? local : new Map());
+    return visibleProfileWidgetHints(
+        ownerId && currentId && ownerId === currentId ? local : new Map(),
+        ownerKey,
+        ownerId
+    );
 }
 // The compact account popout and profile modal can contain a branded Playing
 // card after enough ordinary profile nodes that the general surface-card
@@ -3956,7 +4013,7 @@ function scanVisibleProfileWidgetCards(): number {
             }
         }
     } catch { /* ignore a profile surface that is being replaced */ }
-    const discovered = new Set<string>();
+    const discovered = new Map<string, VisibleWidgetStyleHydrationRequest>();
     for (const candidate of [...explicitCandidates, ...hintedCardCandidates].slice(0, WIDGET_SKIN_PROFILE_MATCH_MAX)) {
         const appId = visibleWidgetApplicationId(candidate);
         // A profile opened for another account can use the same application id
@@ -3964,9 +4021,17 @@ function scanVisibleProfileWidgetCards(): number {
         // it is not proof that this visible card belongs to the viewer. Always
         // hydrate the read-only remote marker for visible profile cards so the
         // owner's published skin can replace a same-id local entry.
-        if (appId) discovered.add(appId);
+        if (!appId) continue;
+        const surface = widgetSurfaceForCard(candidate);
+        if (!widgetSurfaceLooksProfileOwned(surface)) continue;
+        const ownerKey = visibleWidgetOwnerKey(surface);
+        discovered.set(visibleWidgetCacheKey(appId, ownerKey), {
+            appId,
+            ownerKey,
+            ownerId: widgetProfileOwnerId(surface)
+        });
     }
-    queueVisibleWidgetStyleHydration(discovered);
+    queueVisibleWidgetStyleHydration(discovered.values());
     const active = visibleProfileWidgetStyles();
     const ordered = [...explicitCandidates, ...hintedCardCandidates];
     // Keep the local map in the fast path for the viewer's own profile and
@@ -3979,7 +4044,7 @@ function scanVisibleProfileWidgetCards(): number {
     let applied = 0;
     for (const candidate of ordered.slice(0, WIDGET_SKIN_PROFILE_MATCH_MAX)) {
         const surface = widgetSurfaceForCard(candidate);
-        const effectiveActive = widgetStylesForSurface(active, localActive, surface);
+        const effectiveActive = widgetStylesForSurface(localActive, surface);
         const effectiveHints = widgetHintsForSurface(localHints, surface);
         const match = widgetApplicationMatch(candidate, new Set(effectiveActive.keys()), effectiveHints);
         if (!match) continue;
@@ -4010,7 +4075,7 @@ function scanVisibleProfileWidgetCards(): number {
 
     const playingCard = selectPlayingCard(playingCandidates);
     const playingScope = playingCard ? widgetSurfaceForCard(playingCard) : null;
-    const playingActive = widgetStylesForSurface(active, localActive, playingScope);
+    const playingActive = widgetStylesForSurface(localActive, playingScope);
     const playingPreset = playingCard ? playingCardPreset(playingActive, seen, playingScope) : null;
     if (playingCard && playingPreset && !seen.has(playingCard)) {
         if (playingCard.dataset.dmWidgetSurfaceRoot === "true") restoreSurfaceSkin(playingCard);
@@ -4496,6 +4561,24 @@ function scanWidgetSkinCards(budgetMs = 120): number {
             // on normal reconciliation passes; the global fallback is only
             // needed while the surface selector is still settling.
             if (surfaceCards.length === 0) addCandidates(query(WIDGET_CARD_SELECTOR, 240));
+            const hydrationRequests = new Map<string, VisibleWidgetStyleHydrationRequest>();
+            for (const candidate of Array.from(new Set([
+                ...orderedCandidates,
+                ...surfaceCards,
+                ...directPlayingCandidates
+            ]))) {
+                const appId = visibleWidgetApplicationId(candidate);
+                if (!appId) continue;
+                const surface = widgetSurfaceForCard(candidate);
+                if (!widgetSurfaceLooksProfileOwned(surface)) continue;
+                const ownerKey = visibleWidgetOwnerKey(surface);
+                hydrationRequests.set(visibleWidgetCacheKey(appId, ownerKey), {
+                    appId,
+                    ownerKey,
+                    ownerId: widgetProfileOwnerId(surface)
+                });
+            }
+            queueVisibleWidgetStyleHydration(hydrationRequests.values());
             const inspect = (candidates: Iterable<HTMLElement>, limit: number) => {
                 let inspected = 0;
                 for (const candidate of candidates) {
@@ -4506,7 +4589,7 @@ function scanWidgetSkinCards(budgetMs = 120): number {
                     // the shared timeline and replacement watcher.
                     if (isDiscordmaxxerPlayingCard(candidate)) continue;
                     const surface = widgetSurfaceForCard(candidate);
-                    const effectiveActive = widgetStylesForSurface(active, localActive, surface);
+                    const effectiveActive = widgetStylesForSurface(localActive, surface);
                     const effectiveHints = widgetHintsForSurface(localHints, surface);
                     const match = widgetApplicationMatch(candidate, new Set(effectiveActive.keys()), effectiveHints);
                     const preset = match ? effectiveActive.get(match.appId) : undefined;
@@ -4542,7 +4625,7 @@ function scanWidgetSkinCards(budgetMs = 120): number {
             ])).filter(candidate => isDiscordmaxxerPlayingCard(candidate));
             const playingCard = selectPlayingCard(playingCandidates);
             const playingScope = playingCard ? widgetSurfaceForCard(playingCard) : null;
-            const playingActive = widgetStylesForSurface(active, localActive, playingScope);
+            const playingActive = widgetStylesForSurface(localActive, playingScope);
             const playingPreset = playingCard ? playingCardPreset(playingActive, seen, playingScope) : null;
             if (playingCard && playingPreset && !seen.has(playingCard)) {
                 if (playingCard.dataset.dmWidgetSurfaceRoot === "true") restoreSurfaceSkin(playingCard);
@@ -4589,8 +4672,12 @@ function scanWidgetSkinCards(budgetMs = 120): number {
             else if (!root.isConnected) restoreWidgetSkin(root);
             else if (!seen.has(root)) {
                 const appId = root.dataset.dmWidgetAppId ?? "";
-                const waiting = appId.length > 0 && visibleWidgetStyleRequests.has(appId);
-                const missed = appId.length > 0 && visibleWidgetStyleMisses.has(appId);
+                const surface = widgetSurfaceForCard(root);
+                const cacheKey = appId.length > 0 && widgetSurfaceLooksProfileOwned(surface)
+                    ? visibleWidgetCacheKey(appId, visibleWidgetOwnerKey(surface))
+                    : "";
+                const waiting = cacheKey.length > 0 && visibleWidgetStyleRequests.has(cacheKey);
+                const missed = cacheKey.length > 0 && visibleWidgetStyleMisses.has(cacheKey);
                 const lastSeenAt = widgetSkinLastSeenAt.get(root) ?? 0;
                 const grace = waiting || missed ? 18_000 : 12_000;
                 // A complete scan can still miss a card while Discord is
