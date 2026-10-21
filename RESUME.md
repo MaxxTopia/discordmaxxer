@@ -37,6 +37,19 @@ unavailable. Confirm the performance options still apply and that no duplicate
 Hub toast appears. Public v0.7.103 is unchanged until Diggy explicitly
 authorizes the next push/release.
 
+## 2026-10-21 v0.7.105 published — hotfix: restore widget skin gradient frames
+
+v0.7.105 is publicly published from commit `4fb3c13`, with tag `v0.7.105`.
+The public Release workflow `39669745838` passed. The release has the x64
+installer, x64/ARM64 ZIPs, blockmap, readable release notes, and `latest.yml`;
+the public updater manifest reports `version: 0.7.105` and points to
+`Discordmaxxer-Setup-0.7.105.exe`.
+
+User-visible repair: Fixed a visual regression in v0.7.104 where colored gradient
+borders and frames around profile widget cards (e.g. Valorant and Fortnite cards)
+stopped rendering. DMWidget was reverted to the known-good v0.7.103 state, restoring
+all card frame effects, gradients, and skin styling.
+
 ## 2026-10-21 v0.7.104 published — profile flair controls, widget skins, and tournament mode
 
 v0.7.104 is publicly published from commit `3033319`, with tag `v0.7.104`.
