@@ -20,6 +20,10 @@ export interface FeaturedPlugin {
     where?: string;
     /** Path under static/, served via vesktop://static/<path>. Optional. */
     gif?: string;
+    /** Built-in preview when a static image is a better fit than an asset. */
+    preview?: "spotify" | "displayName";
+    /** Related plugin ids controlled together by this card. */
+    plugins?: string[];
     /** Tier gate. If set, card shows a 🔒 badge for users without entitlement. */
     tier?: Tier;
     /** Emoji shown when no GIF is present (most cards). */
@@ -33,29 +37,32 @@ export const FEATURED_PLUGINS: FeaturedPlugin[] = [
         oneLiner: "Adds a Spotify mini-player above your username — skip tracks, scrub, and see what's playing without leaving Discord.",
         where: "Above your username, bottom-left.",
         emoji: "🎵",
-        gif: "featured/spotifycontrols.gif"
+        preview: "spotify",
+        plugins: ["SpotifyControls", "SpotifyShareCommands", "FixSpotifyEmbeds"]
     },
     {
         id: "DMProfileFlair",
-        title: "Custom banners, animated PFPs + profile themes",
-        oneLiner: "Choose a free local gradient or media, share eligible media with other Discordmaxxer installs, or use the separate one-time controls for Discord's own profile fields.",
-        where: "Open Appearance Center to copy/import one field, publish shared media, or reach Discord's native profile editor.",
+        title: "Animated PFPs + Custom Banners",
+        oneLiner: "Use animated avatars, banners, and profile themes for free. Paid tiers add cross-PC publishing, faster sync, and extra presentation controls.",
+        where: "Configure in Discordmaxxer settings → Profile Flair.",
         emoji: "✨",
-        gif: "featured/dmprofileflair.gif"
+        gif: "featured/dmprofileflair-2s.gif"
     },
     {
         id: "DMDisplayNameStyle",
         title: "Style your display name",
-        oneLiner: "Browse 30 local looks with script, blackletter, comic fonts, flame tips, swashes, sparks, color, glow, and motion. For account-wide styles in standard Discord, use its separate native editor; your real name is unchanged here.",
-        where: "Use Browse local looks for this client's visual grid, or Native name styles for Discord's account editor.",
-        emoji: "✦"
+        oneLiner: "Browse 30 local looks with different fonts, colors, finishes, and motion. It changes how names are painted in Discordmaxxer; your real account name stays unchanged.",
+        where: "DM Hub → Browse display-name looks.",
+        emoji: "Aa",
+        preview: "displayName"
     },
     {
         id: "FakeNitro",
-        title: "Send any emoji, sticker, stream HD",
-        oneLiner: "Adds client-side emoji and sticker conveniences where Discord allows them. It cannot unlock server-enforced Nitro limits; non-modded friends receive a clean fallback link when needed.",
-        where: "Just send normally — auto-handled.",
-        emoji: "🎉"
+        title: "Emoji, sticker & stream helpers",
+        oneLiner: "Use eligible external emoji and stickers with normal send controls, plus Discordmaxxer's screen-share quality controls. Server-enforced Nitro limits still apply; non-modded friends get a clean fallback link.",
+        where: "Send normally; choose resolution and FPS in the stream picker.",
+        emoji: "🎉",
+        plugins: ["FakeNitro", "GifPaste", "StickerPaste", "WebScreenShareFix"]
     },
     {
         id: "MessageLogger",
@@ -66,8 +73,8 @@ export const FEATURED_PLUGINS: FeaturedPlugin[] = [
     },
     {
         id: "TournamentMode",
-        title: "Gaming Mode",
-        oneLiner: "One toggle lowers Discord's process priority, pauses costly background work, and disables rich-presence polling. A 30 FPS request is best-effort and may be ignored in normal windowed mode.",
+        title: "Gaming mode (Tournament Mode)",
+        oneLiner: "The gaming-performance switch: lowers Discord's process priority, caps its renderer at 30 FPS, and pauses decorative animations so more headroom goes to your game.",
         where: "Ctrl+Alt+T, or the DM Hub button.",
         emoji: "🎮"
     },

@@ -316,6 +316,7 @@ export const DEFAULT_THEME: ThemeId = "maxxer";
  */
 export function themeCss(theme: Theme): string {
     const p = theme.palette;
+    const scope = `body.${theme.bodyClass}`;
     return `
     :root, body.${theme.bodyClass} {
         /* Brand — both legacy + modern Discord var systems */
@@ -357,6 +358,31 @@ export function themeCss(theme: Theme): string {
         --bg-overlay-chat: ${p.bgPrimary};
         --bg-overlay-app-frame: ${p.bgTertiary};
 
+        /* Current Discord builds use this newer surface graph instead of
+         * the legacy --background-* names above. Keep both graphs aligned so
+         * a theme does not silently fall back to Discord's stock gray chrome. */
+        --bg-1: ${p.bgFloating};
+        --bg-2: ${p.bgSecondary};
+        --bg-3: ${p.bgPrimary};
+        --bg-4: ${p.bgTertiary};
+        --bg-base-primary: ${p.bgPrimary};
+        --bg-base-secondary: ${p.bgSecondary};
+        --bg-base-tertiary: ${p.bgTertiary};
+        --bg-base-low: ${p.bgSecondaryAlt};
+        --bg-base-lowest: ${p.bgTertiary};
+        --background-base: ${p.bgPrimary};
+        --background-base-lowest: ${p.bgTertiary};
+        --background-base-lower: ${p.bgSecondaryAlt};
+        --background-base-low: ${p.bgPrimary};
+        --background-base-secondary: ${p.bgSecondary};
+        --background-surface-high: ${p.bgSecondary};
+        --background-surface-higher: ${p.bgFloating};
+        --background-surface-highest: ${p.bgInput};
+        --bg-surface-raised: ${p.bgSecondary};
+        --bg-surface-overlay: ${p.bgFloating};
+        --bg-floating: ${p.bgFloating};
+        --background-overlay: ${p.bgFloating};
+
         /* Text */
         --text-normal: ${p.textNormal};
         --text-default: ${p.textNormal};
@@ -389,8 +415,47 @@ export function themeCss(theme: Theme): string {
         --scrollbar-auto-thumb: ${p.brandTrans};
         --scrollbar-auto-track: ${p.bgSecondaryAlt};
     }
+    /* A few high-traffic Discord surfaces now carry literal colors instead
+     * of consuming either variable graph. Paint those known shells directly
+     * while leaving profile/widget surfaces to DMWidget's own skin layer. */
+    ${scope} {
+        background-color: ${p.bgTertiary} !important;
+        color: ${p.textNormal};
+    }
+    ${scope} [class*="sidebar__"],
+    ${scope} [class*="sidebarList_"],
+    ${scope} [class*="privateChannels_"] {
+        background-color: ${p.bgSecondary} !important;
+    }
+    ${scope} [class*="guilds__"],
+    ${scope} [class*="guilds_"] {
+        background-color: ${p.bgTertiary} !important;
+    }
+    ${scope} main[class*="chatContent_"] {
+        background-color: ${p.bgPrimary} !important;
+        border-color: ${p.border} !important;
+    }
+    ${scope} [class*="messagesWrapper_"],
+    ${scope} [class*="scroller_"][class*="customTheme_"] {
+        background-color: ${p.bgPrimary} !important;
+    }
+    ${scope} form[class*="form_"] {
+        background-color: ${p.bgPrimary} !important;
+    }
+    ${scope} [class*="channelTextArea_"] {
+        background-color: ${p.bgInput} !important;
+        border-color: ${p.border} !important;
+    }
+    ${scope} [class*="searchBar_"] {
+        background-color: ${p.bgSecondaryAlt} !important;
+        border-color: ${p.border} !important;
+    }
+    ${scope} [class*="channelName__"],
+    ${scope} [class*="channelName_"] {
+        color: ${p.channelText};
+    }
     ${theme.headingFont ? `
-    body.${theme.bodyClass} h1, body.${theme.bodyClass} h2, body.${theme.bodyClass} h3 {
+    ${scope} h1, ${scope} h2, ${scope} h3 {
         font-family: ${theme.headingFont};
     }` : ""}
     `;
@@ -725,5 +790,15 @@ export function themeFlairCss(theme: Theme): string {
         `
     };
 
-    return `${SHARED_KEYFRAMES}\n${PERSONALITY[theme.id] || ""}`;
+    const REDUCED_MOTION = `
+        @media (prefers-reduced-motion: reduce) {
+            body.${cls} *, body.${cls} *::before, body.${cls} *::after {
+                animation-duration: 0.001ms !important;
+                animation-iteration-count: 1 !important;
+                scroll-behavior: auto !important;
+                transition-duration: 0.001ms !important;
+            }
+        }
+    `;
+    return `${SHARED_KEYFRAMES}\n${PERSONALITY[theme.id] || ""}\n${REDUCED_MOTION}`;
 }

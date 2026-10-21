@@ -41,37 +41,17 @@ import { definePluginSettings } from "@api/Settings";
 import { managedStyleRootNode } from "@api/Styles";
 import { createAndAppendStyle } from "@utils/css";
 import definePlugin, { OptionType } from "@utils/types";
-import { FluxDispatcher, React, SelectedChannelStore, showToast, Toasts } from "@webpack/common";
-
-import { HotkeyPicker } from "../_dm-shared/HotkeyPicker";
-import { matchesHotkey, parseHotkey } from "../_dm-shared/hotkey";
+import { FluxDispatcher, SelectedChannelStore, Toasts } from "@webpack/common";
 
 const HOTKEY_ID = "discordmaxxer.TournamentMode";
-const TOURNAMENT_MODE_EVENT = "discordmaxxer:tournament-mode-changed";
 
 let style: HTMLStyleElement;
 let active = false;
 let hotkeyHandler: ((e: KeyboardEvent) => void) | null = null;
 let globalRegistered = false;
 let voiceSub: ((e: any) => void) | null = null;
-let pluginStarted = false;
-
-/**
- * Keep cosmetic plugins on the same runtime truth as the performance mode.
- * PlainSettings is persisted, so it can briefly describe the previous
- * renderer session during an update/reload. The runtime mirror is reset on
- * every plugin start and the event makes dependent renderers repaint
- * immediately when the hotkey or Hub toggle changes state.
- */
-function publishRuntimeState(): void {
-    try {
-        (globalThis as any).__dmTournamentModeActive = active;
-        window.dispatchEvent(new CustomEvent(TOURNAMENT_MODE_EVENT, { detail: { active } }));
-    } catch {
-        // Renderer teardown can race plugin shutdown; the persisted setting is
-        // still updated by setActive and the next start will publish again.
-    }
-}
+let statusToast: HTMLDivElement | null = null;
+let statusToastTimer: number | null = null;
 
 // Report voice-channel join/leave to the perf bridge. While Tournament Mode is
 // on, this keeps the renderer + GPU at full priority during a call/stream (the
@@ -113,22 +93,15 @@ const PERF_CSS = `
 `;
 
 const settings = definePluginSettings({
-    picker: {
-        type: OptionType.COMPONENT,
-        description: "",
-        component: TournamentHotkeyPicker
-    },
     hotkey: {
         type: OptionType.STRING,
-        description: "Advanced text value for the toggle shortcut. Use the recorder above for the common path.",
-        default: "ctrl+alt+t",
-        onChange: () => { if (pluginStarted) reapplyHotkey(); }
+        description: "Hotkey to toggle (format: ctrl+alt+t). Works system-wide when 'Use OS-level hotkey' is on.",
+        default: "ctrl+alt+t"
     },
     useGlobalHotkey: {
         type: OptionType.BOOLEAN,
         description: "Use OS-level hotkey (fires while you're in a game with Discord unfocused). Recommended ON for competitive use.",
-        default: true,
-        onChange: () => { if (pluginStarted) reapplyHotkey(); }
+        default: true
     },
     enabledOnStart: {
         type: OptionType.BOOLEAN,
@@ -138,26 +111,17 @@ const settings = definePluginSettings({
     lowerProcessPriority: {
         type: OptionType.BOOLEAN,
         description: "Lower Discord's process priority to BELOW_NORMAL while TM is on. Frees CPU scheduling slots for your game. Recommended ON.",
-        default: true,
-        onChange: () => {
-            if (active) syncNativePerf().catch(e => console.warn("[TournamentMode] lowerProcessPriority update failed:", e));
-        }
+        default: true
     },
     capFrameRate: {
         type: OptionType.BOOLEAN,
-        description: "Request a 30 fps renderer cap while TM is on. Normal windowed rendering may ignore this best-effort request; the other TM savings still apply.",
-        default: true,
-        onChange: () => {
-            if (active) syncNativePerf().catch(e => console.warn("[TournamentMode] capFrameRate update failed:", e));
-        }
+        description: "Cap renderer frame rate at 30 fps while TM is on (default 60). Halves compositor GPU load. Recommended ON.",
+        default: true
     },
     disableArRpc: {
         type: OptionType.BOOLEAN,
         description: "Terminate Rich Presence worker (arRPC) while TM is on. Disables 'Now Playing' detection. Set OFF if you want streamers/friends to see your game.",
-        default: true,
-        onChange: () => {
-            if (active) syncNativePerf().catch(e => console.warn("[TournamentMode] disableArRpc update failed:", e));
-        }
+        default: true
     },
     // Runtime mirror of the `active` module-level flag. Hidden from the
     // settings UI (DiscordmaxxerHub uses it to render a real toggle button
@@ -175,54 +139,122 @@ const settings = definePluginSettings({
     }
 });
 
-function TournamentHotkeyPicker() {
-    return React.createElement(HotkeyPicker, {
-        value: settings.store.hotkey,
-        defaultValue: "ctrl+alt+t",
-        label: "Tournament Mode shortcut",
-        description: "Record a shortcut to toggle performance mode. OS-level mode works while Discord is unfocused; the window fallback remains available.",
-        onChange: value => { settings.store.hotkey = value; }
-    });
+interface ParsedHotkey {
+    ctrl: boolean;
+    alt: boolean;
+    shift: boolean;
+    key: string;
 }
 
-function perfOptions() {
+function parseHotkey(hk: string): ParsedHotkey {
+    const parts = hk.toLowerCase().split("+").map(s => s.trim());
     return {
-        lowerProcessPriority: settings.store.lowerProcessPriority,
-        capFrameRate: settings.store.capFrameRate,
-        disableArRpc: settings.store.disableArRpc
+        ctrl: parts.includes("ctrl"),
+        alt: parts.includes("alt"),
+        shift: parts.includes("shift"),
+        key: parts[parts.length - 1] ?? ""
     };
 }
 
-async function syncNativePerf() {
-    const native = (globalThis as any).VesktopNative;
-    if (!native?.performanceMode?.set) return null;
-    return native.performanceMode.set(active, perfOptions());
+function hideTournamentStatusOverlay(): void {
+    if (statusToastTimer !== null) {
+        window.clearTimeout(statusToastTimer);
+        statusToastTimer = null;
+    }
+    statusToast?.remove();
+    statusToast = null;
 }
 
-function showTournamentToast(message: string, type: string, duration = 2200): void {
+function showTournamentToast(message: string, type: any, duration = 3200): void {
+    // Discord's native toast API is valid, but in this client/theme combination
+    // it can collapse into an empty grey marker. Keep the status readable by
+    // rendering a small plugin-owned status surface instead of depending on
+    // Discord's internal toast CSS/layout.
+    if (typeof document === "undefined") return;
+    const mount = document.body ?? document.documentElement;
+    if (!mount) return;
+
+    if (statusToastTimer !== null) {
+        window.clearTimeout(statusToastTimer);
+        statusToastTimer = null;
+    }
+
+    if (!statusToast || !statusToast.isConnected) {
+        statusToast = document.createElement("div");
+        statusToast.setAttribute("role", "status");
+        statusToast.setAttribute("aria-live", "polite");
+        statusToast.style.position = "fixed";
+        statusToast.style.top = "24px";
+        statusToast.style.right = "24px";
+        statusToast.style.zIndex = "100000";
+        statusToast.style.maxWidth = "min(440px, calc(100vw - 48px))";
+        statusToast.style.padding = "12px 16px";
+        statusToast.style.border = "1px solid rgba(255, 255, 255, 0.16)";
+        statusToast.style.borderRadius = "10px";
+        statusToast.style.boxSizing = "border-box";
+        statusToast.style.color = "#fff";
+        statusToast.style.fontFamily = "var(--font-primary, sans-serif)";
+        statusToast.style.fontSize = "14px";
+        statusToast.style.fontWeight = "600";
+        statusToast.style.lineHeight = "1.35";
+        statusToast.style.letterSpacing = "0.01em";
+        statusToast.style.boxShadow = "0 10px 28px rgba(0, 0, 0, 0.38)";
+        statusToast.style.pointerEvents = "none";
+        statusToast.style.opacity = "0";
+        statusToast.style.transform = "translateY(-8px)";
+        statusToast.style.transition = "opacity 160ms ease, transform 160ms ease";
+        mount.appendChild(statusToast);
+    }
+
+    const failure = type === Toasts.Type.FAILURE;
+    const success = type === Toasts.Type.SUCCESS;
+    statusToast.textContent = message;
+    statusToast.style.background = failure
+        ? "linear-gradient(135deg, #8e2632, #5b1824)"
+        : success
+            ? "linear-gradient(135deg, #237a58, #14513d)"
+            : "linear-gradient(135deg, #4b3c8f, #29234f)";
+    statusToast.style.borderColor = failure
+        ? "rgba(255, 130, 143, 0.7)"
+        : success
+            ? "rgba(111, 255, 194, 0.55)"
+            : "rgba(190, 176, 255, 0.55)";
+    statusToast.style.opacity = "1";
+    statusToast.style.transform = "translateY(0)";
+
+    statusToastTimer = window.setTimeout(() => {
+        if (!statusToast) return;
+        statusToast.style.opacity = "0";
+        statusToast.style.transform = "translateY(-8px)";
+        statusToastTimer = window.setTimeout(hideTournamentStatusOverlay, 180);
+    }, duration);
+}
+
+function publishTournamentModeState(): void {
+    // DMWidget needs the live renderer state, not the persisted hidden setting.
+    // The setting can survive a reload while the module-level performance mode
+    // has already been reset to OFF.
+    (globalThis as any).__dmTournamentModeActive = active;
     try {
-        // Use the shared helper and the client default placement. Explicit TOP
-        // placement is not consistently mounted across Discord surfaces, so a
-        // toast could be created successfully but never be visible.
-        showToast(message, type, { duration });
-    } catch (e) {
-        // A renderer teardown can race a hotkey callback. Keep the mode change
-        // itself successful and leave a diagnostic for the next launch.
-        console.warn("[TournamentMode] status toast failed:", e);
+        window.dispatchEvent(new CustomEvent("discordmaxxer:tournament-mode-changed", {
+            detail: { active }
+        }));
+    } catch {
+        // The plugin can be stopped during renderer teardown.
     }
 }
 
 async function setActive(next: boolean) {
     active = next;
-    publishRuntimeState();
     if (style) style.textContent = active ? PERF_CSS : "";
+    publishTournamentModeState();
     // Mirror to settings so the Hub's toggle button reflects current state
     // even when the user flipped via hotkey (not via the toggle).
     try { settings.store.manuallyActive = next; } catch { /* settings not init yet */ }
 
-    // Confirm the user's action before waiting on the desktop IPC bridge. The
-    // bridge is best-effort and can be slow during startup; the old ordering
-    // made a successful toggle look broken because the toast was last.
+    // Acknowledge the user's click immediately. Waiting for the native bridge
+    // made the old toast race Discord's renderer and sometimes left only the
+    // small grey toast marker visible.
     showTournamentToast(
         active ? "🎮 Tournament Mode: ON — applying performance settings…" : "Tournament Mode: OFF — restoring…",
         active ? Toasts.Type.SUCCESS : Toasts.Type.MESSAGE
@@ -231,89 +263,40 @@ async function setActive(next: boolean) {
     // System-level perf mode bridge
     const native = (globalThis as any).VesktopNative;
     let result: any = null;
+    let nativeFailed = false;
     if (native?.performanceMode?.set) {
         try {
-            result = await syncNativePerf();
+            result = await native.performanceMode.set(active);
         } catch (e) {
+            nativeFailed = true;
             console.warn("[TournamentMode] performanceMode bridge failed:", e);
-            showTournamentToast(
-                active
-                    ? "Tournament Mode is ON, but desktop performance settings could not be applied."
-                    : "Tournament Mode is OFF, but desktop performance settings may still be restoring.",
-                Toasts.Type.FAILURE,
-                4500
-            );
         }
     }
 
     console.log(`[TournamentMode] ${active ? "ACTIVE" : "off"}`, result);
-}
-
-function teardownHotkey() {
-    if (globalRegistered) {
-        (globalThis as any).VesktopNative?.globalHotkey?.unregister?.(HOTKEY_ID);
-        globalRegistered = false;
+    if (nativeFailed) {
+        showTournamentToast(
+            "Tournament Mode changed locally, but the system performance bridge did not respond.",
+            Toasts.Type.FAILURE,
+            4500
+        );
     }
-    if (hotkeyHandler) {
-        window.removeEventListener("keydown", hotkeyHandler);
-        hotkeyHandler = null;
-    }
-}
-
-async function setupHotkey() {
-    teardownHotkey();
-
-    const native = (globalThis as any).VesktopNative;
-    const wantGlobal = settings.store.useGlobalHotkey && native?.globalHotkey?.register;
-
-    if (wantGlobal) {
-        try {
-            const ok = await native.globalHotkey.register(HOTKEY_ID, settings.store.hotkey, () => {
-                void setActive(!active);
-            });
-            if (ok) {
-                globalRegistered = true;
-                console.log("[TournamentMode] OS-level hotkey registered");
-                return;
-            }
-            console.warn("[TournamentMode] OS-level register failed (likely conflict) — falling back to window-focused");
-        } catch (e) {
-            console.warn("[TournamentMode] OS-level register threw, falling back:", e);
-        }
-    }
-
-    const hk = parseHotkey(settings.store.hotkey);
-    hotkeyHandler = (e: KeyboardEvent) => {
-        // Let Discord's own keybinds win when the OS-level registration
-        // was unavailable and this renderer fallback is active.
-        if (e.defaultPrevented) return;
-        if (matchesHotkey(e, hk)) {
-            e.preventDefault();
-            e.stopPropagation();
-            void setActive(!active);
-        }
-    };
-    window.addEventListener("keydown", hotkeyHandler);
-}
-
-function reapplyHotkey() {
-    void setupHotkey().catch(e => console.warn("[TournamentMode] hotkey reapply failed:", e));
 }
 
 export default definePlugin({
     name: "TournamentMode",
-    description: "Press Ctrl+Alt+T (configurable) to toggle a real performance mode for gaming: drops Discord's process priority, requests a best-effort 30 fps renderer cap, kills Rich Presence, and pauses animated emoji/avatars/typing-dots. Safe to leave on permanently — only strips things with measurable CPU/GPU cost; cosmetic plugins stay fully active.",
+    description: "Press Ctrl+Alt+T (configurable) to toggle a real performance mode for gaming: drops Discord's process priority, caps the renderer at 30 fps, kills Rich Presence, and pauses animated emoji/avatars/typing-dots. Safe to leave on permanently — only strips things with measurable CPU/GPU cost; cosmetic plugins stay fully active.",
     authors: [{ name: "Diggy", id: 0n }],
     settings,
 
     async start() {
-        style = createAndAppendStyle("dm-tournament-mode", managedStyleRootNode);
-        pluginStarted = true;
-        // A previous renderer can have left the persisted mirror set to true
-        // even though this fresh plugin instance starts inactive. Establish a
-        // known runtime baseline before other plugins read it.
+        // `manuallyActive` is a runtime mirror, not a startup preference. Do
+        // not let a value persisted by an earlier renderer session freeze
+        // cosmetic motion after a normal reload.
         active = false;
-        publishRuntimeState();
+        try { settings.store.manuallyActive = false; } catch { /* settings not init */ }
+        publishTournamentModeState();
+        style = createAndAppendStyle("dm-tournament-mode", managedStyleRootNode);
 
         // Track voice-channel state so the perf bridge can protect renderer+GPU
         // priority during calls/streaming. Report the current state once (in case
@@ -344,15 +327,47 @@ export default definePlugin({
                     console.warn("[TournamentMode] startup perf-state reset failed:", e);
                 }
             }
-            try { settings.store.manuallyActive = false; } catch { /* settings not init */ }
-            publishRuntimeState();
         }
 
-        await setupHotkey();
+        const native = (globalThis as any).VesktopNative;
+        const wantGlobal = settings.store.useGlobalHotkey && native?.globalHotkey?.register;
+
+        if (wantGlobal) {
+            try {
+                const ok = await native.globalHotkey.register(HOTKEY_ID, settings.store.hotkey, () => {
+                    setActive(!active);
+                });
+                if (ok) {
+                    globalRegistered = true;
+                    console.log("[TournamentMode] OS-level hotkey registered");
+                    return;
+                }
+                console.warn("[TournamentMode] OS-level register failed (likely conflict) — falling back to window-focused");
+            } catch (e) {
+                console.warn("[TournamentMode] OS-level register threw, falling back:", e);
+            }
+        }
+
+        const hk = parseHotkey(settings.store.hotkey);
+        hotkeyHandler = (e: KeyboardEvent) => {
+            // Let Discord's own keybinds win when the OS-level registration
+            // was unavailable and this renderer fallback is active.
+            if (e.defaultPrevented) return;
+            if (
+                e.ctrlKey === hk.ctrl &&
+                e.altKey === hk.alt &&
+                e.shiftKey === hk.shift &&
+                e.key.toLowerCase() === hk.key
+            ) {
+                e.preventDefault();
+                e.stopPropagation();
+                setActive(!active);
+            }
+        };
+        window.addEventListener("keydown", hotkeyHandler);
     },
 
     async stop() {
-        pluginStarted = false;
         if (active) {
             // Restore system state before unloading
             await setActive(false);
@@ -365,13 +380,20 @@ export default definePlugin({
             }
             voiceSub = null;
         }
-        teardownHotkey();
+        if (globalRegistered) {
+            (globalThis as any).VesktopNative?.globalHotkey?.unregister?.(HOTKEY_ID);
+            globalRegistered = false;
+        }
+        if (hotkeyHandler) {
+            window.removeEventListener("keydown", hotkeyHandler);
+            hotkeyHandler = null;
+        }
         style?.remove();
+        hideTournamentStatusOverlay();
         active = false;
         // Ensure the persisted "on" mirror is cleared even if we started this
         // session inactive (enabledOnStart=false) with a stale saved value —
         // otherwise the Hub toggle shows ON while the feature is OFF.
         try { settings.store.manuallyActive = false; } catch { /* settings not init */ }
-        publishRuntimeState();
     }
 });

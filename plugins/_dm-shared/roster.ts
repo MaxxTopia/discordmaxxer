@@ -3,8 +3,8 @@
  * Copyright (c) 2026 Diggy
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * Fetches the project-wide tier roster on app startup and caches it for 30
- * seconds. The roster is a JSON file at a stable URL — see docs/v0.2-tier-
+ * Fetches the project-wide tier roster on app startup and caches it for 5
+ * minutes. The roster is a JSON file at a stable URL — see docs/v0.2-tier-
  * roster.md for the design and the migration path to the hub-site domain.
  *
  * NOT a Vencord plugin — just a shared utility imported by vip.ts. Lives
@@ -28,12 +28,12 @@ import { Tier } from "./vip";
 // claims (see optimizationmaxxing/vip-worker/worker.js). Each /claim writes
 // to KV and invalidates the worker's in-memory roster cache, so a freshly
 // claimed user appears in the roster within seconds. Worker caches the
-// response in a short server-side memo; client keeps a short 30-second cache so
+// response for 5 min server-side; client keeps a short 5-minute cache too so
 // profile flair changes converge across PCs without repeatedly downloading
 // banner/avatar media or putting pressure on the worker.
 const ROSTER_URL = "https://optmaxxing-vip.maxxtopia.workers.dev/roster";
 
-const CACHE_TTL_MS = 30 * 1000; // 30 seconds; owner state must not go stale for minutes
+const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 const FETCH_TIMEOUT_MS = 8000;
 
 /** Custom profile flair set by the user — visible only to other Discordmaxxer
@@ -65,6 +65,8 @@ export interface ProfileFlair {
     avatarScale?: "0.9" | "1" | "1.1";
     /** Optional owner-chosen presentation effect. MAXXER++ only. */
     mediaEffect?: "none" | "glow" | "scanline";
+    /** Optional playback rate for shared banner video and animated previews. MAXXER+ only. */
+    mediaSpeed?: "0.75" | "1" | "1.25" | "1.5";
 }
 
 interface RosterEntry {
@@ -79,9 +81,6 @@ interface RosterEntry {
     /** v2+ — user-set profile flair (banner / animated avatar / theme colors).
      *  Always optional. Missing on v1 payloads. */
     profile?: ProfileFlair;
-    /** Worker profile-write timestamp used for optimistic concurrency during
-     *  automatic cross-install media synchronization. */
-    profileUpdatedAt?: number;
 }
 
 interface RosterPayload {
@@ -161,6 +160,7 @@ const POSITIONS = new Set(["center", "top", "bottom"]);
 const FITS = new Set(["cover", "contain"]);
 const SCALES = new Set(["0.9", "1", "1.1"]);
 const EFFECTS = new Set(["none", "glow", "scanline"]);
+const MEDIA_SPEEDS = new Set(["0.75", "1", "1.25", "1.5"]);
 const VALID_TIERS = new Set<number>([Tier.FREE, Tier.MAXXER, Tier.MAXXER_PLUS, Tier.MAXXER_PLUS_PLUS]);
 
 function sanitizeProfile(p: any): ProfileFlair | undefined {
@@ -176,6 +176,7 @@ function sanitizeProfile(p: any): ProfileFlair | undefined {
     if (typeof p.avatarFit === "string" && FITS.has(p.avatarFit)) out.avatarFit = p.avatarFit;
     if (typeof p.avatarScale === "string" && SCALES.has(p.avatarScale)) out.avatarScale = p.avatarScale;
     if (typeof p.mediaEffect === "string" && EFFECTS.has(p.mediaEffect)) out.mediaEffect = p.mediaEffect;
+    if (typeof p.mediaSpeed === "string" && MEDIA_SPEEDS.has(p.mediaSpeed)) out.mediaSpeed = p.mediaSpeed;
     return Object.keys(out).length ? out : undefined;
 }
 
@@ -192,8 +193,6 @@ function sanitizeUsers(raw: Record<string, any>): Record<string, RosterEntry> {
         if (typeof e.grantedBy === "string") entry.grantedBy = e.grantedBy;
         if (typeof e.via === "string") entry.via = e.via;
         if (typeof e.founderNumber === "number") entry.founderNumber = e.founderNumber;
-        const profileUpdatedAt = Number(e.profileUpdatedAt);
-        if (Number.isFinite(profileUpdatedAt) && profileUpdatedAt >= 0) entry.profileUpdatedAt = profileUpdatedAt;
         const prof = sanitizeProfile(e.profile);
         if (prof) entry.profile = prof;
         out[id] = entry;
@@ -214,9 +213,7 @@ async function doFetch(): Promise<void> {
         const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
         let res: Response;
         try {
-            // Owner media and widget markers must not be served from a stale
-            // browser/intermediary cache after another PC publishes a change.
-            res = await fetch(ROSTER_URL, { cache: "no-store", signal: ctrl.signal });
+            res = await fetch(ROSTER_URL, { cache: "no-cache", signal: ctrl.signal });
         } finally {
             clearTimeout(timer);
         }
@@ -307,17 +304,6 @@ export function getRosterProfileFlair(userId: string): ProfileFlair | undefined 
     const entry = cache.users[userId];
     if (!entry || isExpired(entry)) return undefined;
     return entry.profile;
-}
-
-/** The owner's last profile-write timestamp, when supplied by the worker.
- * Background media sync sends it back as an optimistic-concurrency token so
- * a stale install cannot replace a newer banner/avatar selected elsewhere. */
-export function getRosterProfileUpdatedAt(userId: string): number | undefined {
-    ensureFresh();
-    if (!cache) return undefined;
-    const entry = cache.users[userId];
-    if (!entry || isExpired(entry)) return undefined;
-    return entry.profileUpdatedAt;
 }
 
 let avatarFlairFlag: { fetchedAt: number; value: boolean } | null = null;

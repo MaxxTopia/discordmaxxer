@@ -12,7 +12,7 @@
  *   FREE        gray   #9aa1ad  (placeholder; not a Hypixel color)
  *   MAXXER      green  #55FF55  (Hypixel [VIP])
  *   MAXXER+     aqua   #55FFFF  (Hypixel [MVP])
- *   MAXXER++    gold   #FFAA00  (Hypixel [MVP++], with red §c #FF5555 "+")
+ *   MAXXER++    champagne #F3D27A (with deep-wine #8F1D3B "+")
  *
  * Imported by the rebrand patch in overlay-scripts/rebrand-vencord.mjs,
  * which replaces the SpecialCard JSX in vencord-src's vencord settings tab.
@@ -67,8 +67,8 @@ const LADDER: TierVisual[] = [
     },
     {
         tier: Tier.MAXXER_PLUS_PLUS,
-        bracketColor: "#FFAA00",
-        plusColor: "#FF5555",
+        bracketColor: "#F3D27A",
+        plusColor: "#8F1D3B",
         perks: [
             "Animated badge · selectable finish",
             "Voice channel name color · supporter credit",

@@ -29,16 +29,17 @@ import { definePluginSettings } from "@api/Settings";
 import { managedStyleRootNode } from "@api/Styles";
 import { createAndAppendStyle } from "@utils/css";
 import definePlugin, { OptionType } from "@utils/types";
+import { UserStore } from "@webpack/common";
 
-import { getRosterFounderNumber, getRosterStatus, getRosterTier, refreshRoster } from "../_dm-shared/roster";
-import { Tier, TIER_LABELS } from "../_dm-shared/vip";
+import { getRosterFounderNumber, getRosterStatus, getRosterTier, onRosterChange, refreshRoster } from "../_dm-shared/roster";
+import { getMyTier, Tier, TIER_LABELS } from "../_dm-shared/vip";
 
-// Hypixel-aligned tier colors. MAXXER+ uses one bracket color; MAXXER++ has
-// a second "plus" color (Hypixel's red §c) we apply as the animated shimmer.
+// Hypixel-inspired tier colors. MAXXER++ uses a softer champagne gold with a
+// deep-wine accent so the role reads premium instead of orange-heavy.
 const COLORS = {
     [Tier.MAXXER]: { ring: "#55FF55", name: "#55FF55", glow: "rgba(85, 255, 85, 0.55)" },
     [Tier.MAXXER_PLUS]: { ring: "#55FFFF", name: "#55FFFF", glow: "rgba(85, 255, 255, 0.55)" },
-    [Tier.MAXXER_PLUS_PLUS]: { ring: "#FFAA00", name: "#FFD27A", glow: "rgba(255, 170, 0, 0.6)" }
+    [Tier.MAXXER_PLUS_PLUS]: { ring: "#F3D27A", name: "#FFE5A8", glow: "rgba(243, 210, 122, 0.55)" }
 } as const;
 
 // Founder badges shown via addProfileBadge. We register one badge per number
@@ -49,9 +50,26 @@ const FOUNDER_CAP = 33;
 const FOUNDER_BADGES = new Map<string, ProfileBadge>();
 const MAXXER_PLUS_PLUS_BADGE_ID = "discordmaxxer-tier-maxxer-plus-plus";
 let maxxerPlusPlusBadge: ProfileBadge | null = null;
+let stopRosterListener: (() => void) | null = null;
+
+/**
+ * The public roster is the source of truth for other users, but it is not
+ * guaranteed to be hydrated when Discord first renders the current user's
+ * popout. Use the same self-tier resolver as the tier-gated plugins for our
+ * own profile, so a hardcoded owner tier or freshly-bound claim is not lost
+ * just because the roster request is still in flight.
+ */
+function getDisplayTier(userId: string): Tier {
+    try {
+        if (UserStore.getCurrentUser()?.id === userId) return getMyTier();
+    } catch {
+        // Discord can briefly expose UserStore before it is fully initialized.
+    }
+    return getRosterTier(userId);
+}
 
 const BADGE_FINISH_OPTIONS = [
-    { label: "Gold Sweep", value: "gold", description: "Classic gold with a warm red edge." },
+    { label: "Champagne Sweep", value: "gold", description: "Soft champagne gold with a deep-wine edge." },
     { label: "Sunset Ember", value: "sunset", description: "Orange-to-crimson sunset finish." },
     { label: "Aurora Ice", value: "aurora", description: "Cool cyan-to-violet aurora finish." }
 ] as const;
@@ -112,7 +130,7 @@ function makeMaxxerPlusPlusBadgeSvg(animated: boolean, finish: string): string {
     // fallback; the clipped sheen is an optional SMIL animation layered on
     // top, so reduced-motion/older Chromium still gets a readable badge.
     const palettes: Record<string, { light: string; mid: string; deep: string; shine: string; stroke: string; text: string }> = {
-        gold: { light: "#FFF0B3", mid: "#FFAA00", deep: "#FF5555", shine: "#FFF7D6", stroke: "#FFE7A8", text: "#2A1203" },
+        gold: { light: "#FFF4C2", mid: "#F3D27A", deep: "#8F1D3B", shine: "#FFF9E6", stroke: "#FFE7A8", text: "#29120A" },
         sunset: { light: "#FFD0A8", mid: "#FF6B35", deep: "#C92A5A", shine: "#FFE6C7", stroke: "#FFB38A", text: "#2B0B0B" },
         aurora: { light: "#D7FFFF", mid: "#55FFFF", deep: "#7E5BFF", shine: "#F3FFFF", stroke: "#B3FFFF", text: "#07152A" }
     };
@@ -148,7 +166,7 @@ function registerMaxxerPlusPlusBadge() {
         iconSrc: makeMaxxerPlusPlusBadgeSvg(settings.store.animatedBadgePlusPlus, settings.store.badgeFinish),
         position: BadgePosition.START,
         link: "https://maxxtopia.com/discordmaxxer/vip/",
-        shouldShow: ({ userId }: { userId: string }) => getRosterTier(userId) >= Tier.MAXXER_PLUS_PLUS
+        shouldShow: ({ userId }: { userId: string }) => getDisplayTier(userId) >= Tier.MAXXER_PLUS_PLUS
     };
     addProfileBadge(badge);
     maxxerPlusPlusBadge = badge;
@@ -395,7 +413,7 @@ function tagElement(el: Element) {
     }
     if (node.dataset) node.dataset.dmTierFor = wantTag;
 
-    const tier = getRosterTier(userId);
+    const tier = getDisplayTier(userId);
     if (tier > Tier.FREE) {
         el.setAttribute("data-dm-tier", TIER_LABELS[tier]);
     }
@@ -443,6 +461,16 @@ function startObserver() {
     if (!rescanTimer) rescanTimer = setInterval(() => scanRoot(document), 5000);
 }
 
+function refreshTierFlairSurface() {
+    if (!tierFlairStarted) return;
+    // The badge registry evaluates shouldShow while a profile surface is
+    // opening. Re-register after an async roster replacement so a popout that
+    // opened during the initial fetch gets the newly eligible badge too.
+    unregisterMaxxerPlusPlusBadge();
+    registerMaxxerPlusPlusBadge();
+    scanRoot(document);
+}
+
 function stopObserver() {
     observer?.disconnect();
     observer = null;
@@ -466,7 +494,7 @@ const settings = definePluginSettings({
     },
     nameTint: {
         type: OptionType.BOOLEAN,
-        description: "Member list name tint with glow-glimmer — names of MAXXER+ users pulse aqua, MAXXER++ shimmer gold.",
+        description: "Member list name tint with glow-glimmer — names of MAXXER+ users pulse aqua, MAXXER++ shimmer champagne.",
         default: true,
         onChange: () => { if (style) style.textContent = buildCss(); }
     },
@@ -478,7 +506,7 @@ const settings = definePluginSettings({
     },
     animatedBadgePlusPlus: {
         type: OptionType.BOOLEAN,
-        description: "Animate the MAXXER++ tier badge and name tint with a gold→red light sweep. Disable if it's distracting.",
+        description: "Animate the MAXXER++ tier badge and name tint with a champagne→wine light sweep. Disable if it's distracting.",
         default: true,
         onChange: () => {
             if (style) style.textContent = buildCss();
@@ -490,10 +518,10 @@ const settings = definePluginSettings({
     },
     badgeFinish: {
         type: OptionType.SELECT,
-        description: "MAXXER++ only — choose the finish of your profile badge: Gold Sweep, Sunset Ember, or Aurora Ice.",
+        description: "MAXXER++ only — choose the finish of your profile badge: Champagne Sweep, Sunset Ember, or Aurora Ice.",
         default: "gold",
         options: [
-            { label: "Gold Sweep", value: "gold", default: true },
+            { label: "Champagne Sweep", value: "gold", default: true },
             { label: "Sunset Ember", value: "sunset" },
             { label: "Aurora Ice", value: "aurora" }
         ],
@@ -511,7 +539,7 @@ const settings = definePluginSettings({
     },
     voiceColor: {
         type: OptionType.BOOLEAN,
-        description: "Voice channel name color (MAXXER++ only) — gold tint on MAXXER++ users while in voice channels.",
+        description: "Voice channel name color (MAXXER++ only) — champagne tint on MAXXER++ users while in voice channels.",
         default: true,
         onChange: () => { if (style) style.textContent = buildCss(); }
     },
@@ -565,11 +593,18 @@ export default definePlugin({
         style.textContent = buildCss();
         registerFounderBadges();
         registerMaxxerPlusPlusBadge();
+        stopRosterListener = onRosterChange(refreshTierFlairSurface);
         startObserver();
+        // Hydrate immediately rather than waiting for the first tagged row to
+        // trigger a background fetch. This removes the first-open race for
+        // profile badges and member-list flair.
+        void refreshRoster();
     },
 
     stop() {
         tierFlairStarted = false;
+        stopRosterListener?.();
+        stopRosterListener = null;
         stopObserver();
         unregisterFounderBadges();
         unregisterMaxxerPlusPlusBadge();

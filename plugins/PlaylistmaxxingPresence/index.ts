@@ -6,27 +6,27 @@ import { ApplicationAssetUtils, FluxDispatcher } from "@webpack/common";
    Shows "Listening to Playlistmaxxing" on your Discord profile (green LISTENING
    status, like Spotify). Static by default; if the streammaxxing hub is running
    and you've hit Broadcast in the web app, it live-upgrades to the current song
-   (title / artist / album art / progress). The client listens for live SSE events
-   and also polls a tiny current-track snapshot so starting the plugin after a
-   song is already playing still catches up. */
+   (title / artist / album art / progress). The live path is best-effort ??? Discord
+   runs over https, so a plain http://127.0.0.1 feed can be blocked; when it is,
+   the static "Listening to Playlistmaxxing" badge still shows. */
 
 const SOCKET_ID = "Playlistmaxxing";
 const APP_ID = "1502451778426372116"; // Maxxtopia / discordmaxxer Discord application
-const NAME = "Playlistmaxxing";
+const SOURCE_LABEL = "music.maxxtopia.com";
+const NAME = SOURCE_LABEL;
 const BUTTON_LABEL = "Listen along";
 const BUTTON_URL = "https://music.maxxtopia.com";
 const HUB_EVENTS = "http://127.0.0.1:4747/events";
-const HUB_NOWPLAYING = "http://127.0.0.1:4747/nowplaying";
+const HUB_SNAPSHOT = "http://127.0.0.1:4747/nowplaying";
 const REFRESH_MS = 60_000;
-const SNAPSHOT_REFRESH_MS = 10_000;
 const ACTIVITY_TYPE_LISTENING = 2;
 
 type Song = { title?: string; artist?: string; art?: string; durationMs?: number; progressMs?: number; playing?: boolean; };
 
 let current: Song | null = null;
 let timer: ReturnType<typeof setInterval> | null = null;
-let snapshotTimer: ReturnType<typeof setInterval> | null = null;
 let es: EventSource | null = null;
+let refreshGeneration = 0;
 const assetCache = new Map<string, string>();
 
 const settings = definePluginSettings({
@@ -44,7 +44,7 @@ const settings = definePluginSettings({
     },
     showWhenIdle: {
         type: OptionType.BOOLEAN,
-        description: "Keep the static \"Listening to Playlistmaxxing\" card visible when no song is detected. It does not hide a live track.",
+        description: "Keep showing \"Listening to Playlistmaxxing\" even when no song is detected.",
         default: true,
         onChange: () => refresh()
     }
@@ -75,17 +75,8 @@ async function buildActivity(): Promise<any | null> {
 
     const assets: Record<string, string> = {};
     if (song?.art) {
-        // Playlistmaxxing already provides the exact public artwork shown in
-        // its popout. Discord Rich Presence accepts public HTTP(S) artwork and
-        // media-proxies it for viewers; treating the URL as an application
-        // asset key made every track silently fall back to the app icon.
-        if (/^https?:\/\//i.test(song.art)) {
-            assets.large_image = song.art;
-            assets.large_text = song.title || NAME;
-        } else {
-            const id = await resolveAsset(song.art);
-            if (id) { assets.large_image = id; assets.large_text = song.title || NAME; }
-        }
+        const id = await resolveAsset(song.art);
+        if (id) { assets.large_image = id; assets.large_text = song.title || NAME; }
     }
 
     let timestamps: { start: number; end?: number; } | undefined;
@@ -94,13 +85,14 @@ async function buildActivity(): Promise<any | null> {
         timestamps = { start, end: start + song.durationMs };
     }
 
+    const sourceState = song?.artist ? `${song.artist} ??? ${SOURCE_LABEL}` : SOURCE_LABEL;
     return {
         application_id: APP_ID,
         name: NAME,
         type: ACTIVITY_TYPE_LISTENING,
         details: song ? (song.title || "Now playing") : "Every platform. One playlist.",
-        state: song ? (song.artist || undefined) : undefined,
-        flags: 1, // INSTANCE — keeps the entry stable
+        state: sourceState,
+        flags: 1, // INSTANCE ??? keeps the entry stable
         assets: Object.keys(assets).length ? assets : undefined,
         timestamps,
         buttons: s.showButton ? [BUTTON_LABEL] : undefined,
@@ -109,11 +101,13 @@ async function buildActivity(): Promise<any | null> {
 }
 
 async function refresh() {
-    try { setActivity(await buildActivity()); } catch { /* ignore */ }
-}
-
-function disconnect() {
-    if (es) { try { es.close(); } catch { /* ignore */ } es = null; }
+    const generation = ++refreshGeneration;
+    try {
+        const activity = await buildActivity();
+        // Artwork asset resolution is asynchronous. Do not let an older song
+        // finish later and overwrite a newer track's presence.
+        if (generation === refreshGeneration) setActivity(activity);
+    } catch { /* ignore */ }
 }
 
 function applyNowPlaying(d: any) {
@@ -125,9 +119,9 @@ function applyNowPlaying(d: any) {
     }
     if (d.kind !== "track") return;
     current = {
-        title: typeof d.title === "string" ? d.title : undefined,
-        artist: typeof d.artist === "string" ? d.artist : undefined,
-        art: typeof d.art_url === "string" ? d.art_url : undefined,
+        title: d.title,
+        artist: d.artist,
+        art: d.art_url,
         durationMs: Number(d.duration_ms) || 0,
         progressMs: Number(d.progress_ms) || 0,
         playing: d.is_playing !== false
@@ -135,28 +129,19 @@ function applyNowPlaying(d: any) {
     void refresh();
 }
 
-async function syncNowPlayingSnapshot() {
+async function syncSnapshot() {
     if (!settings.store.liveSync) return;
     try {
-        const response = await fetch(`${HUB_NOWPLAYING}?_=${Date.now()}`, { cache: "no-store" });
+        const response = await fetch(HUB_SNAPSHOT, { cache: "no-store" });
         if (!response.ok) return;
         applyNowPlaying(await response.json());
     } catch {
-        // The companion hub may not be running yet. Keep the static activity
-        // behavior and let the next poll/EventSource reconnect recover it.
+        // The static presence remains useful when Streammaxxing is not running.
     }
 }
 
-function stopSnapshotPolling() {
-    if (snapshotTimer) clearInterval(snapshotTimer);
-    snapshotTimer = null;
-}
-
-function startSnapshotPolling() {
-    stopSnapshotPolling();
-    if (!settings.store.liveSync) return;
-    void syncNowPlayingSnapshot();
-    snapshotTimer = setInterval(() => { void syncNowPlayingSnapshot(); }, SNAPSHOT_REFRESH_MS);
+function disconnect() {
+    if (es) { try { es.close(); } catch { /* ignore */ } es = null; }
 }
 
 function connect() {
@@ -164,45 +149,37 @@ function connect() {
     if (!settings.store.liveSync) return;
     try {
         es = new EventSource(HUB_EVENTS);
-        es.onopen = () => { void syncNowPlayingSnapshot(); };
         es.onmessage = (e: MessageEvent) => {
             let d: any;
             try { d = JSON.parse(e.data); } catch { return; }
             applyNowPlaying(d);
         };
-        es.onerror = () => { void syncNowPlayingSnapshot(); };
-    } catch { /* EventSource unavailable — static only */ }
+        es.onerror = () => { /* hub unreachable / blocked ??? keep the static badge */ };
+    } catch { /* EventSource unavailable ??? static only */ }
 }
 
 function reconnect() {
     connect();
-    startSnapshotPolling();
-    if (!settings.store.liveSync) {
-        current = null;
-    }
-    void refresh();
+    void syncSnapshot().finally(() => refresh());
 }
 
 export default definePlugin({
     name: "PlaylistmaxxingPresence",
-    description: "Shows \"Listening to Playlistmaxxing\" on your Discord — live-syncs the current song when you Broadcast from music.maxxtopia.com.",
+    description: "Shows \"Listening to music.maxxtopia.com\" on your Discord ??? live-syncs the current song when you Broadcast from Playlistmaxxing.",
     authors: [{ name: "Diggy", id: 0n }],
     enabledByDefault: true,
     settings,
 
     start() {
-        refresh();
+        void syncSnapshot().finally(() => refresh());
         timer = setInterval(refresh, REFRESH_MS);
         connect();
-        startSnapshotPolling();
     },
 
     stop() {
         if (timer) clearInterval(timer);
         timer = null;
-        stopSnapshotPolling();
         disconnect();
-        current = null;
         setActivity(null);
     }
 });

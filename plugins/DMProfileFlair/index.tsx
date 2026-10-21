@@ -6,9 +6,10 @@
  * User-set custom profile flair, visible only to other Discordmaxxer clients
  * (same architecture as DiscordmaxxerBadge Channel A — fetched from the public
  * tier roster, rendered client-side, vanilla Discord never sees it). The
- * settings panel also exposes an explicit vanilla share bridge: it copies a
- * normal Discord message card or a PNG still frame, because stock Discord
- * cannot render roster-only fields in a profile.
+ * settings panel keeps the shared roster path separate from the optional,
+ * one-click native Discord profile PATCH helpers. Stock Discord cannot render
+ * roster-only fields in a profile, so the editor does not pretend a copied
+ * chat message is a profile integration.
  *
  *   E) Custom banner — image or short MP4 URL, replaces Discord's banner
  *      in profile popouts. Free for every roster-claimed user.
@@ -36,19 +37,55 @@
 
 import { definePluginSettings } from "@api/Settings";
 import { managedStyleRootNode } from "@api/Styles";
+import * as DataStore from "@api/DataStore";
 import { createAndAppendStyle } from "@utils/css";
 import definePlugin, { OptionType } from "@utils/types";
 import { Button, React, RestAPI, Toasts, UserStore } from "@webpack/common";
 
 import { makePersistentValue } from "../_dm-shared/persist";
-import { getRosterProfileFlair, getRosterProfileUpdatedAt, isRosterReady, onRosterChange, ProfileFlair, refreshRoster, rosterHasAnyAvatarFlair } from "../_dm-shared/roster";
+import { getRosterProfileFlair, isRosterReady, onRosterChange, ProfileFlair, refreshRoster, rosterHasAnyAvatarFlair } from "../_dm-shared/roster";
 import { getMyTier, Tier } from "../_dm-shared/vip";
-import { normalizeCode, readBinding } from "../_dm-shared/vipClaim";
+import { activateFreeProfile, getMyHwid, normalizeCode, readBinding, reserveFreeActivationWindow } from "../_dm-shared/vipClaim";
 
 const WORKER_PROFILE_URL = "https://optmaxxing-vip.maxxtopia.workers.dev/profile";
 const WORKER_PROFILE_MEDIA_URL = "https://optmaxxing-vip.maxxtopia.workers.dev/profile-media";
-const WORKER_PROFILE_MEDIA_ORIGIN = "https://optmaxxing-vip.maxxtopia.workers.dev";
-const VANILLA_SHARE_URL = "https://maxxtopia.com/discordmaxxer";
+type FlairMediaKind = "banner" | "avatar";
+
+const PROFILE_LOCAL_MEDIA_KEYS = {
+    banner: "dm-profile-flair-local-banner",
+    avatar: "dm-profile-flair-local-avatar"
+} as const;
+const MAX_PROFILE_LOCAL_IMAGE_BYTES = 5 * 1024 * 1024;
+const MAX_PROFILE_LOCAL_VIDEO_BYTES = 15 * 1024 * 1024;
+const MAX_PROFILE_MEDIA_DURATION_SECONDS = 20;
+const MAX_PROFILE_MEDIA_DIMENSION = 4096;
+const MAX_PROFILE_AVATAR_DIMENSION = 2048;
+const MAX_PROFILE_STATIC_OPTIMIZE_INPUT_BYTES = 40 * 1024 * 1024;
+const OPTIMIZABLE_PROFILE_IMAGE_MIMES = new Set(["image/png", "image/jpeg", "image/webp"]);
+
+interface ProfileMediaMetadata {
+    mime: string;
+    bytes: number;
+    width?: number;
+    height?: number;
+    duration?: number;
+}
+
+interface LocalProfileMedia {
+    url: string;
+    fileName: string;
+    mime: string;
+    file?: File;
+    metadata?: ProfileMediaMetadata;
+    error?: string;
+}
+
+const localProfileMedia: Record<FlairMediaKind, LocalProfileMedia> = {
+    banner: { url: "", fileName: "", mime: "" },
+    avatar: { url: "", fileName: "", mime: "" }
+};
+const localProfileMediaListeners = new Set<() => void>();
+let localProfileMediaHydration: Promise<void> | null = null;
 
 const PROFILE_FIELD_MIN_TIER: Record<keyof ProfileFlair, Tier> = {
     bannerUrl: Tier.FREE,
@@ -60,7 +97,8 @@ const PROFILE_FIELD_MIN_TIER: Record<keyof ProfileFlair, Tier> = {
     bannerFit: Tier.MAXXER_PLUS,
     avatarFit: Tier.MAXXER_PLUS,
     avatarScale: Tier.MAXXER_PLUS,
-    mediaEffect: Tier.MAXXER_PLUS_PLUS
+    mediaEffect: Tier.MAXXER_PLUS_PLUS,
+    mediaSpeed: Tier.MAXXER_PLUS
 };
 
 const URL_RE = /^https:\/\/[^\s]{1,250}$/;
@@ -69,6 +107,7 @@ const PROFILE_POSITION_VALUES = new Set<NonNullable<ProfileFlair["bannerPosition
 const PROFILE_FIT_VALUES = new Set<NonNullable<ProfileFlair["bannerFit"]>>(["cover", "contain"]);
 const PROFILE_SCALE_VALUES = new Set<NonNullable<ProfileFlair["avatarScale"]>>(["0.9", "1", "1.1"]);
 const PROFILE_EFFECT_VALUES = new Set<NonNullable<ProfileFlair["mediaEffect"]>>(["none", "glow", "scanline"]);
+const PROFILE_SPEED_VALUES = new Set<NonNullable<ProfileFlair["mediaSpeed"]>>(["0.75", "1", "1.25", "1.5"]);
 
 const POSITION_OPTIONS: Array<{ value: NonNullable<ProfileFlair["bannerPosition"]>; label: string }> = [
     { value: "center", label: "Center" },
@@ -89,11 +128,43 @@ const EFFECT_OPTIONS: Array<{ value: NonNullable<ProfileFlair["mediaEffect"]>; l
     { value: "glow", label: "Soft glow" },
     { value: "scanline", label: "Scanline" }
 ];
+const SPEED_OPTIONS: Array<{ value: NonNullable<ProfileFlair["mediaSpeed"]>; label: string }> = [
+    { value: "0.75", label: "75% · slow" },
+    { value: "1", label: "100% · normal" },
+    { value: "1.25", label: "125% · quick" },
+    { value: "1.5", label: "150% · fast" }
+];
 
-// Only fields actively edited in this session may override the shared owner
-// roster for the local self-preview. Persisted settings can be stale after a
-// second Discordmaxxer install changes the account, so treating every local
-// value as authoritative made cross-PC media and colors appear to revert.
+function isLegacyProfileMediaUrl(value: string): boolean {
+    // Older builds stored the worker's collection route without /banner or
+    // /avatar. It is a JSON/media lookup route, not a playable file, so never
+    // let it keep winning over the current roster value.
+    return /\/profile-media\/[^/?#]+\/?$/i.test(value.trim());
+}
+
+/** True for the current Worker-owned media file route. These URLs are valid
+ * direct media URLs, but keeping them as a renderer-side HTTPS source is
+ * fragile in the Discord/Electron renderer: an extensionless GIF/video can
+ * be classified by Chromium's media loader before CORS/content sniffing has
+ * completed. The main-process dm-media proxy already preserves the upstream
+ * Content-Type and gives the preview a same-origin, reliable source. */
+function isSharedProfileMediaUrl(value: string): boolean {
+    try {
+        const parsed = new URL(value.trim());
+        return parsed.protocol === "https:" &&
+            parsed.hostname === "optmaxxing-vip.maxxtopia.workers.dev" &&
+            /^\/profile-media\/[^/?#]+\/(?:banner|avatar)\/[0-9a-f-]{36}$/i.test(parsed.pathname);
+    } catch {
+        return false;
+    }
+}
+
+// Settings are persisted locally, so a value left over from an older account
+// or an earlier device must not silently override the shared roster forever.
+// Only fields the user has actively edited in this editor session are local
+// drafts. Once Save succeeds and the roster is refreshed, the worker becomes
+// the source of truth again. This is what lets another PC converge on the
+// same banner, avatar, and gradient without changing the media itself.
 const flairDraftFields = new Set<string>();
 
 function markFlairDraftField(field: string): void {
@@ -102,241 +173,6 @@ function markFlairDraftField(field: string): void {
 
 function clearFlairDraftFields(): void {
     flairDraftFields.clear();
-}
-
-function clearFlairDraftField(field: string): void {
-    flairDraftFields.delete(field);
-}
-
-// Profile editor values used to live in one global settings slot. That was
-// fine for a single account, but it meant logging into DiggyT after DiggyAI
-// could make the editor and the background publisher treat DiggyAI's media as
-// DiggyT's. Keep the local editor state keyed by the Discord account that
-// owns it. The Worker roster remains the cross-PC source of truth; this map is
-// only the local cache/draft boundary.
-const PROFILE_LOCAL_STATE_KEYS = [
-    "myBannerUrl",
-    "myVanillaStillFrameUrl",
-    "myAvatarAnimatedUrl",
-    "myThemeColorPrimary",
-    "myThemeColorSecondary",
-    "myBannerPosition",
-    "myAvatarPosition",
-    "myBannerFit",
-    "myAvatarFit",
-    "myAvatarScale",
-    "myMediaEffect"
-] as const;
-type ProfileLocalStateKey = typeof PROFILE_LOCAL_STATE_KEYS[number];
-type ProfileLocalState = Record<ProfileLocalStateKey, string>;
-type ProfileLocalStateMap = Record<string, ProfileLocalState>;
-
-const PROFILE_LOCAL_STATE_MAX_ACCOUNTS = 8;
-let localProfileContextAccountId = "";
-let localProfileContextResolved = false;
-
-const PROFILE_REMOTE_FIELD_BY_LOCAL_KEY: Partial<Record<ProfileLocalStateKey, keyof ProfileFlair>> = {
-    myBannerUrl: "bannerUrl",
-    myAvatarAnimatedUrl: "avatarAnimatedUrl",
-    myThemeColorPrimary: "themeColorPrimary",
-    myThemeColorSecondary: "themeColorSecondary",
-    myBannerPosition: "bannerPosition",
-    myAvatarPosition: "avatarPosition",
-    myBannerFit: "bannerFit",
-    myAvatarFit: "avatarFit",
-    myAvatarScale: "avatarScale",
-    myMediaEffect: "mediaEffect"
-};
-
-function profileSettings(): Record<string, any> {
-    return settings.store as any;
-}
-
-function emptyProfileLocalState(): ProfileLocalState {
-    return Object.fromEntries(PROFILE_LOCAL_STATE_KEYS.map(key => [key, ""])) as ProfileLocalState;
-}
-
-function readProfileLocalState(): ProfileLocalState {
-    const s = profileSettings();
-    const state = emptyProfileLocalState();
-    for (const key of PROFILE_LOCAL_STATE_KEYS) state[key] = String(s[key] ?? "");
-    return state;
-}
-
-function applyProfileLocalState(state: Partial<ProfileLocalState>): void {
-    const s = profileSettings();
-    for (const key of PROFILE_LOCAL_STATE_KEYS) s[key] = String(state[key] ?? "");
-}
-
-function readProfileLocalStateMap(): ProfileLocalStateMap {
-    const raw = profileSettings().profileMediaByAccountJson;
-    if (typeof raw !== "string" || !raw.trim()) return {};
-    try {
-        const parsed = JSON.parse(raw);
-        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-        const map: ProfileLocalStateMap = {};
-        for (const [accountId, value] of Object.entries(parsed as Record<string, unknown>)) {
-            if (!/^\d{17,20}$/.test(accountId) || !value || typeof value !== "object" || Array.isArray(value)) continue;
-            const state = emptyProfileLocalState();
-            for (const key of PROFILE_LOCAL_STATE_KEYS) {
-                const candidate = (value as Record<string, unknown>)[key];
-                if (typeof candidate === "string") state[key] = candidate;
-            }
-            map[accountId] = state;
-        }
-        return map;
-    } catch {
-        return {};
-    }
-}
-
-function writeProfileLocalStateMap(map: ProfileLocalStateMap): void {
-    const entries = Object.entries(map);
-    const trimmed = entries.length > PROFILE_LOCAL_STATE_MAX_ACCOUNTS
-        ? entries.slice(-PROFILE_LOCAL_STATE_MAX_ACCOUNTS)
-        : entries;
-    profileSettings().profileMediaByAccountJson = JSON.stringify(Object.fromEntries(trimmed));
-}
-
-function persistLocalProfileStateForAccount(accountId = localProfileContextAccountId): void {
-    if (!/^\d{17,20}$/.test(accountId) || !localProfileContextResolved) return;
-    const map = readProfileLocalStateMap();
-    delete map[accountId];
-    map[accountId] = readProfileLocalState();
-    writeProfileLocalStateMap(map);
-}
-
-function clearLocalProfileState(): void {
-    applyProfileLocalState(emptyProfileLocalState());
-}
-
-function applyRemoteProfileToLocalState(remote: ProfileFlair, preserveDrafts: boolean): void {
-    const s = profileSettings();
-    for (const key of PROFILE_LOCAL_STATE_KEYS) {
-        if (key === "myVanillaStillFrameUrl") {
-            // A vanilla fallback is intentionally local and is not part of the
-            // shared roster. Never let it follow another account.
-            if (!preserveDrafts || !flairDraftFields.has(key)) s[key] = "";
-            continue;
-        }
-        if (preserveDrafts && flairDraftFields.has(key)) continue;
-        const remoteKey = PROFILE_REMOTE_FIELD_BY_LOCAL_KEY[key];
-        s[key] = remoteKey ? String(remote[remoteKey] ?? "") : "";
-    }
-}
-
-/**
- * Select the local profile cache for the currently logged-in Discord account.
- * On the first run after the account-scoping repair, leave legacy global
- * values unresolved until the roster is read. That prevents DiggyAI's old
- * cached URL from flashing on DiggyT (or being uploaded as DiggyT) during
- * startup. An explicit editor draft is still allowed and is reconciled field
- * by field once the roster response arrives.
- */
-function ensureLocalProfileAccountContextForRender(): boolean {
-    const currentId = String(UserStore.getCurrentUser?.()?.id ?? "");
-    if (!/^\d{17,20}$/.test(currentId)) return false;
-    if (localProfileContextAccountId === currentId) return localProfileContextResolved;
-
-    if (localProfileContextAccountId && localProfileContextResolved) {
-        persistLocalProfileStateForAccount(localProfileContextAccountId);
-    }
-    clearFlairDraftFields();
-
-    const s = profileSettings();
-    const map = readProfileLocalStateMap();
-    const storedAccountId = String(s.profileFlairAccountId ?? "").trim();
-    const saved = map[currentId];
-
-    localProfileContextAccountId = currentId;
-    if (saved) {
-        applyProfileLocalState(saved);
-        localProfileContextResolved = true;
-        s.profileFlairAccountId = currentId;
-        return true;
-    }
-
-    // A marker without a map is an older intermediate migration. Treat the
-    // current settings as belonging to that same account exactly once, then
-    // materialize the map so later account switches are deterministic.
-    if (storedAccountId === currentId) {
-        localProfileContextResolved = true;
-        persistLocalProfileStateForAccount(currentId);
-        return true;
-    }
-
-    // Account changed, or this is the first run with legacy unscoped values.
-    // Clear immediately on an account switch. On first run keep the legacy
-    // values only as an unresolved draft until the roster can identify the
-    // canonical owner; the renderer will not use them while unresolved.
-    if (localProfileContextAccountId !== storedAccountId && storedAccountId) {
-        clearLocalProfileState();
-    } else if (storedAccountId) {
-        clearLocalProfileState();
-    }
-    localProfileContextResolved = false;
-    s.profileFlairAccountId = "";
-    return false;
-}
-
-function isLocalProfileContextReadyFor(userId: string): boolean {
-    return localProfileContextResolved
-        && localProfileContextAccountId === userId
-        && String(profileSettings().profileFlairAccountId ?? "") === userId;
-}
-
-/** Reconcile the first-run legacy cache against the current owner's roster. */
-function reconcileLocalProfileAccount(
-    accountId: string,
-    remote: ProfileFlair,
-    remoteProfileKnown: boolean
-): boolean {
-    const currentId = String(UserStore.getCurrentUser?.()?.id ?? "");
-    if (currentId !== accountId) return false;
-    if (localProfileContextAccountId !== accountId) {
-        if (!ensureLocalProfileAccountContextForRender() || localProfileContextAccountId !== accountId) return false;
-    }
-    if (localProfileContextResolved) return true;
-    if (!remoteProfileKnown) return false;
-
-    // The cloud record is authoritative for every field that was not edited
-    // in this session. This is what prevents a stale DiggyAI URL or gradient
-    // from being republished under DiggyT after an install/account switch.
-    applyRemoteProfileToLocalState(remote, true);
-    const s = profileSettings();
-    s.profileFlairAccountId = accountId;
-    localProfileContextResolved = true;
-    persistLocalProfileStateForAccount(accountId);
-    return true;
-}
-
-function markLocalProfileDraftField(field: ProfileLocalStateKey): void {
-    markFlairDraftField(field);
-    persistLocalProfileStateForAccount();
-}
-
-function setLocalProfileDraftField(field: ProfileLocalStateKey, value: string): void {
-    // Account switching can happen while the settings page is open. Resolve
-    // the context before accepting a new draft so a click cannot write into
-    // the previous account's local cache.
-    ensureLocalProfileAccountContextForRender();
-    profileSettings()[field] = value;
-    markLocalProfileDraftField(field);
-}
-
-async function resolveLocalProfileAccountForWrite(accountId: string): Promise<boolean> {
-    if (!/^\d{17,20}$/.test(accountId)) return false;
-    ensureLocalProfileAccountContextForRender();
-    if (isLocalProfileContextReadyFor(accountId)) return true;
-    try {
-        await refreshRoster();
-    } catch (e) {
-        console.warn("[DMProfileFlair] account profile reconciliation failed:", e);
-    }
-    const remote = getRosterProfileFlair(accountId) ?? {};
-    const remoteProfileKnown = getRosterProfileUpdatedAt(accountId) !== undefined;
-    return reconcileLocalProfileAccount(accountId, remote, remoteProfileKnown)
-        && isLocalProfileContextReadyFor(accountId);
 }
 
 function applyLocalDraftField(
@@ -351,11 +187,12 @@ function applyLocalDraftField(
     else delete merged[profileKey];
 }
 
-/** Merge self-preview settings without letting a stale local value bypass the
- * current tier. The worker applies the same rule to the shared roster, but
- * this client-side guard keeps a downgraded account honest before its next
- * roster refresh too. Free users retain the base media and colors; only the
- * optional presentation controls are removed when they are not entitled. */
+/** Merge only active self-preview drafts without letting stale local settings
+ * bypass the current tier. The worker applies the same rule to the shared
+ * roster, but this client-side guard keeps a downgraded account honest before
+ * its next roster refresh too. Free users retain the base media and colors;
+ * only the optional presentation controls are removed when they are not
+ * entitled. */
 function mergeLocalPresentationFields(merged: ProfileFlair, s: any): ProfileFlair {
     const tier = getMyTier();
     if (tier >= Tier.MAXXER) {
@@ -389,10 +226,16 @@ function mergeLocalPresentationFields(merged: ProfileFlair, s: any): ProfileFlai
             if (avatarScale) merged.avatarScale = avatarScale as ProfileFlair["avatarScale"];
             else delete merged.avatarScale;
         }
+        if (flairDraftFields.has("myMediaSpeed")) {
+            const mediaSpeed = String(s.myMediaSpeed ?? "").trim();
+            if (mediaSpeed) merged.mediaSpeed = mediaSpeed as ProfileFlair["mediaSpeed"];
+            else delete merged.mediaSpeed;
+        }
     } else {
         delete merged.bannerFit;
         delete merged.avatarFit;
         delete merged.avatarScale;
+        delete merged.mediaSpeed;
     }
     if (tier >= Tier.MAXXER_PLUS_PLUS) {
         if (flairDraftFields.has("myMediaEffect")) {
@@ -470,29 +313,461 @@ function toast(msg: string, type: any = Toasts.Type.SUCCESS, durationMs = 3000) 
     });
 }
 
-async function copyText(text: string): Promise<boolean> {
+function notifyLocalProfileMediaListeners(): void {
+    localProfileMediaListeners.forEach(listener => listener());
+}
+
+function isAcceptedLocalProfileFile(kind: FlairMediaKind, file: File): boolean {
+    const mime = getLocalProfileMediaMime(file);
+    if (kind === "avatar") {
+        return ["image/gif", "image/apng", "image/png", "image/jpeg", "image/webp"].includes(mime);
+    }
+    return ["image/gif", "image/apng", "image/png", "image/jpeg", "image/webp", "video/mp4", "video/webm", "video/quicktime"].includes(mime);
+}
+
+function getLocalProfileMediaMime(file: File): string {
+    const declared = file.type.trim().toLowerCase();
+    if (declared && declared !== "application/octet-stream") return declared;
+    const extension = file.name.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1];
+    return ({
+        apng: "image/apng",
+        gif: "image/gif",
+        png: "image/png",
+        jpg: "image/jpeg",
+        jpeg: "image/jpeg",
+        webp: "image/webp",
+        mp4: "video/mp4",
+        webm: "video/webm",
+        mov: "video/quicktime"
+    } as Record<string, string>)[extension ?? ""] ?? declared;
+}
+
+function isLocalVideoFile(file: File): boolean {
+    return getLocalProfileMediaMime(file).startsWith("video/");
+}
+
+function maxLocalProfileMediaBytes(file: File): number {
+    return isLocalVideoFile(file) ? MAX_PROFILE_LOCAL_VIDEO_BYTES : MAX_PROFILE_LOCAL_IMAGE_BYTES;
+}
+
+function formatMediaBytes(bytes: number): string {
+    if (!Number.isFinite(bytes) || bytes < 0) return "size unknown";
+    if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatMediaDetails(metadata?: ProfileMediaMetadata): string {
+    if (!metadata) return "";
+    const details = [formatMediaBytes(metadata.bytes)];
+    if (metadata.width && metadata.height) details.push(`${metadata.width}×${metadata.height}`);
+    if (metadata.duration && Number.isFinite(metadata.duration)) details.push(`${metadata.duration.toFixed(1)}s`);
+    return details.join(" · ");
+}
+
+function localProfileMediaTypeError(kind: FlairMediaKind, file: File): string | null {
+    if (!isAcceptedLocalProfileFile(kind, file)) {
+        return kind === "avatar"
+            ? "Choose a PNG, JPG, WebP, GIF, or APNG avatar file."
+            : "Choose a PNG, JPG, WebP, GIF, APNG, MP4, WEBM, or MOV banner file.";
+    }
+    return null;
+}
+
+function localProfileMediaError(kind: FlairMediaKind, file: File): string | null {
+    const typeError = localProfileMediaTypeError(kind, file);
+    if (typeError) return typeError;
+    const maxBytes = maxLocalProfileMediaBytes(file);
+    if (file.size > maxBytes) {
+        return `That local ${kind} is over ${isLocalVideoFile(file) ? "15 MB" : "5 MB"}. Choose a smaller file.`;
+    }
+    return null;
+}
+
+function readLocalProfileMediaMetadata(kind: FlairMediaKind, file: File): Promise<ProfileMediaMetadata> {
+    const objectUrl = URL.createObjectURL(file);
+    return new Promise((resolve, reject) => {
+        let settled = false;
+        const finish = (error?: Error, metadata?: ProfileMediaMetadata) => {
+            if (settled) return;
+            settled = true;
+            URL.revokeObjectURL(objectUrl);
+            error ? reject(error) : resolve(metadata ?? { mime: getLocalProfileMediaMime(file), bytes: file.size });
+        };
+        if (isLocalVideoFile(file)) {
+            const video = document.createElement("video");
+            video.preload = "metadata";
+            video.onloadedmetadata = () => {
+                const width = video.videoWidth;
+                const height = video.videoHeight;
+                const duration = video.duration;
+                finish(undefined, {
+                    mime: getLocalProfileMediaMime(file),
+                    bytes: file.size,
+                    width,
+                    height,
+                    ...(Number.isFinite(duration) ? { duration } : {})
+                });
+            };
+            video.onerror = () => finish(new Error("Discordmaxxer could not read that video. Try MP4 or WebM with a valid media track."));
+            video.src = objectUrl;
+            return;
+        }
+        const image = new Image();
+        image.onload = () => {
+            finish(undefined, {
+                mime: getLocalProfileMediaMime(file),
+                bytes: file.size,
+                width: image.naturalWidth,
+                height: image.naturalHeight
+            });
+        };
+        image.onerror = () => finish(new Error(`Discordmaxxer could not read that ${kind} image. Try PNG, JPG, WebP, or GIF.`));
+        image.src = objectUrl;
+    });
+}
+
+function inspectLocalProfileMedia(kind: FlairMediaKind, file: File): Promise<ProfileMediaMetadata> {
+    return readLocalProfileMediaMetadata(kind, file).then(metadata => {
+        const maxDimension = kind === "avatar" ? MAX_PROFILE_AVATAR_DIMENSION : MAX_PROFILE_MEDIA_DIMENSION;
+        if ((metadata.width ?? 0) > maxDimension || (metadata.height ?? 0) > maxDimension) {
+            throw new Error(`That ${kind} is ${metadata.width}×${metadata.height}. The maximum is ${maxDimension}×${maxDimension}.`);
+        }
+        if ((metadata.duration ?? 0) > MAX_PROFILE_MEDIA_DURATION_SECONDS) {
+            throw new Error(`That ${kind} is ${Math.ceil(metadata.duration ?? 0)} seconds long. Keep animated banners to ${MAX_PROFILE_MEDIA_DURATION_SECONDS} seconds or less.`);
+        }
+        return metadata;
+    });
+}
+
+function isOptimizableProfileImage(file: File): boolean {
+    return OPTIMIZABLE_PROFILE_IMAGE_MIMES.has(getLocalProfileMediaMime(file));
+}
+
+function optimizeRasterProfileImage(kind: FlairMediaKind, file: File): Promise<File> {
+    if (!isOptimizableProfileImage(file)) {
+        return Promise.reject(new Error("Animated GIFs and videos cannot be compressed in the client yet. Choose a smaller animated file."));
+    }
+    if (file.size > MAX_PROFILE_STATIC_OPTIMIZE_INPUT_BYTES) {
+        return Promise.reject(new Error("That image is too large to optimize safely in the client. Choose an image under 40 MB."));
+    }
+    const objectUrl = URL.createObjectURL(file);
+    return new Promise((resolve, reject) => {
+        const image = new Image();
+        let settled = false;
+        const finish = (error?: Error, output?: File) => {
+            if (settled) return;
+            settled = true;
+            URL.revokeObjectURL(objectUrl);
+            error ? reject(error) : output ? resolve(output) : reject(new Error("Could not optimize that image."));
+        };
+        image.onload = () => {
+            const maxDimension = kind === "avatar" ? MAX_PROFILE_AVATAR_DIMENSION : MAX_PROFILE_MEDIA_DIMENSION;
+            const scale = Math.min(1, maxDimension / Math.max(image.naturalWidth, image.naturalHeight));
+            const canvas = document.createElement("canvas");
+            canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+            canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+            const context = canvas.getContext("2d");
+            if (!context) {
+                finish(new Error("Your browser could not prepare that image for upload."));
+                return;
+            }
+            context.drawImage(image, 0, 0, canvas.width, canvas.height);
+            const qualities = [0.9, 0.78, 0.64, 0.5];
+            const attempt = (index: number) => {
+                canvas.toBlob(blob => {
+                    if (!blob) {
+                        finish(new Error("Your browser could not optimize that image."));
+                        return;
+                    }
+                    const outputName = file.name.replace(/\.[^.]+$/, "") || `${kind}-optimized`;
+                    const output = new File([blob], `${outputName}.webp`, {
+                        type: "image/webp",
+                        lastModified: file.lastModified || Date.now()
+                    });
+                    if (output.size <= MAX_PROFILE_LOCAL_IMAGE_BYTES || index === qualities.length - 1) {
+                        finish(undefined, output);
+                        return;
+                    }
+                    attempt(index + 1);
+                }, "image/webp", qualities[index]);
+            };
+            attempt(0);
+        };
+        image.onerror = () => finish(new Error(`Discordmaxxer could not read that ${kind} image.`));
+        image.src = objectUrl;
+    });
+}
+
+function getLocalProfileMedia(kind: FlairMediaKind): LocalProfileMedia {
+    return localProfileMedia[kind];
+}
+
+async function hydrateLocalProfileMedia(): Promise<void> {
+    if (localProfileMediaHydration) return localProfileMediaHydration;
+    localProfileMediaHydration = Promise.all((Object.keys(PROFILE_LOCAL_MEDIA_KEYS) as FlairMediaKind[]).map(async kind => {
+        try {
+            const value = await DataStore.get<Blob>(PROFILE_LOCAL_MEDIA_KEYS[kind]);
+            if (!(value instanceof Blob)) return;
+            const sourceFile = value instanceof File
+                ? value
+                : new File([value], `${kind}-local-media`, { type: value.type || "application/octet-stream" });
+            const mime = getLocalProfileMediaMime(sourceFile);
+            const file = value instanceof File
+                ? new File([value], value.name, { type: mime })
+                : new File([value], `${kind}-local-media`, { type: mime });
+            const error = localProfileMediaError(kind, file);
+            if (error) return;
+            const metadata = await inspectLocalProfileMedia(kind, file);
+            const url = URL.createObjectURL(file);
+            localProfileMedia[kind] = {
+                url,
+                fileName: String(file.name || `${kind}-local-media`),
+                mime,
+                file,
+                metadata,
+                error: undefined
+            };
+        } catch (error) {
+            console.warn(`[DMProfileFlair] could not restore local ${kind}:`, error);
+        }
+    })).then(() => notifyLocalProfileMediaListeners());
+    return localProfileMediaHydration;
+}
+
+async function saveLocalProfileMedia(kind: FlairMediaKind, file: File, metadata?: ProfileMediaMetadata): Promise<void> {
+    const error = localProfileMediaError(kind, file);
+    if (error) throw new Error(error);
+    const inspected = metadata ?? await inspectLocalProfileMedia(kind, file);
+    const previous = localProfileMedia[kind].url;
+    if (previous) URL.revokeObjectURL(previous);
+    localProfileMedia[kind] = {
+        url: URL.createObjectURL(file),
+        fileName: file.name,
+        mime: getLocalProfileMediaMime(file),
+        file,
+        metadata: inspected,
+        error: undefined
+    };
+    notifyLocalProfileMediaListeners();
     try {
-        await navigator.clipboard.writeText(text);
-        return true;
-    } catch (e) {
-        console.warn("[DMProfileFlair] clipboard text write failed:", e);
+        await DataStore.set(PROFILE_LOCAL_MEDIA_KEYS[kind], new File([file], file.name, { type: getLocalProfileMediaMime(file) }));
+    } catch (error) {
+        console.warn(`[DMProfileFlair] could not persist local ${kind}:`, error);
+        toast(`Local ${kind} preview loaded for this session, but Discordmaxxer could not remember the file.`, Toasts.Type.MESSAGE, 5000);
+    }
+}
+
+async function clearLocalProfileMedia(kind: FlairMediaKind): Promise<void> {
+    const previous = localProfileMedia[kind].url;
+    if (previous) URL.revokeObjectURL(previous);
+    localProfileMedia[kind] = { url: "", fileName: "", mime: "" };
+    notifyLocalProfileMediaListeners();
+    try {
+        await DataStore.del(PROFILE_LOCAL_MEDIA_KEYS[kind]);
+    } catch (error) {
+        console.warn(`[DMProfileFlair] could not remove local ${kind}:`, error);
+    }
+}
+
+function setLocalProfileMediaError(kind: FlairMediaKind, error: string | undefined): void {
+    localProfileMedia[kind].error = error;
+    notifyLocalProfileMediaListeners();
+}
+
+function readFileAsDataUri(file: File, onProgress?: (percent: number) => void): Promise<string> {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onprogress = event => {
+            if (event.lengthComputable) onProgress?.(Math.round((event.loaded / event.total) * 35));
+        };
+        reader.onload = () => {
+            const result = typeof reader.result === "string" ? reader.result : "";
+            if (result.startsWith("data:")) resolve(result);
+            else reject(new Error("Could not read the selected file."));
+        };
+        reader.onerror = () => reject(new Error("Could not read the selected file."));
+        reader.onabort = () => reject(new Error("Reading the selected file was cancelled."));
+        reader.readAsDataURL(file);
+    });
+}
+
+function drawVideoPosterFromFile(file: File): Promise<string | undefined> {
+    const blobUrl = URL.createObjectURL(file);
+    return new Promise(resolve => {
+        const video = document.createElement("video");
+        video.muted = true;
+        video.playsInline = true;
+        video.preload = "metadata";
+        let settled = false;
+        const finish = (poster?: string) => {
+            if (settled) return;
+            settled = true;
+            URL.revokeObjectURL(blobUrl);
+            resolve(poster);
+        };
+        video.onloadeddata = () => {
+            try {
+                const maxWidth = 960;
+                const ratio = video.videoWidth > maxWidth ? maxWidth / video.videoWidth : 1;
+                const canvas = document.createElement("canvas");
+                canvas.width = Math.max(1, Math.round((video.videoWidth || 640) * ratio));
+                canvas.height = Math.max(1, Math.round((video.videoHeight || 360) * ratio));
+                const context = canvas.getContext("2d");
+                if (!context) return finish();
+                context.drawImage(video, 0, 0, canvas.width, canvas.height);
+                finish(canvas.toDataURL("image/jpeg", 0.82));
+            } catch (error) {
+                console.warn("[DMProfileFlair] local video poster generation failed:", error);
+                finish();
+            }
+        };
+        video.onerror = () => finish();
+        window.setTimeout(() => finish(), 10000);
+        video.src = blobUrl;
+    });
+}
+
+function waitForUploadRetry(delayMs: number): Promise<void> {
+    return new Promise(resolve => window.setTimeout(resolve, delayMs));
+}
+
+interface UploadedProfileMedia {
+    url: string;
+    posterUrl?: string;
+    mime: string;
+    bytes: number;
+    metadata?: ProfileMediaMetadata;
+}
+
+async function uploadProfileMedia(
+    kind: FlairMediaKind,
+    file: File,
+    claimCode: string,
+    onProgress?: (percent: number) => void
+): Promise<UploadedProfileMedia> {
+    const localError = localProfileMediaError(kind, file);
+    if (localError) throw new Error(localError);
+    await inspectLocalProfileMedia(kind, file);
+    onProgress?.(5);
+    const dataUri = await readFileAsDataUri(file, percent => onProgress?.(percent));
+    const posterDataUri = kind === "banner" && isLocalVideoFile(file)
+        ? await drawVideoPosterFromFile(file)
+        : undefined;
+    onProgress?.(40);
+    const me = UserStore.getCurrentUser?.();
+    if (!me?.id) throw new Error("Could not read your Discord user ID for the upload.");
+    const requestBody = JSON.stringify({
+        userId: me.id,
+        claimCode,
+        kind,
+        mime: getLocalProfileMediaMime(file),
+        dataUri,
+        ...(posterDataUri ? { posterDataUri } : {})
+    });
+    let lastError = "upload failed";
+    for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+            const result = await new Promise<UploadedProfileMedia>((resolve, reject) => {
+                const xhr = new XMLHttpRequest();
+                xhr.open("POST", WORKER_PROFILE_MEDIA_URL);
+                xhr.timeout = 120_000;
+                xhr.setRequestHeader("content-type", "application/json");
+                xhr.upload.onprogress = event => {
+                    if (event.lengthComputable) onProgress?.(40 + Math.round((event.loaded / event.total) * 60));
+                };
+                const markRetryable = (message: string) => {
+                    const error = new Error(message) as Error & { retryable?: boolean };
+                    error.retryable = true;
+                    reject(error);
+                };
+                xhr.onerror = () => markRetryable("network error while uploading media");
+                xhr.ontimeout = () => markRetryable("the media upload timed out");
+                xhr.onabort = () => reject(new Error("the media upload was cancelled"));
+                xhr.onload = () => {
+                    let body: any = {};
+                    try { body = JSON.parse(xhr.responseText || "{}"); } catch { /* handled below */ }
+                    if (xhr.status >= 200 && xhr.status < 300 && body?.url) {
+                        resolve({
+                            url: body.url,
+                            posterUrl: body.posterUrl,
+                            mime: body.mime || getLocalProfileMediaMime(file),
+                            bytes: Number(body.bytes) || file.size,
+                            metadata: body.metadata
+                        });
+                        return;
+                    }
+                    const retryable = xhr.status === 408 || xhr.status === 429 || xhr.status >= 500;
+                    const error = new Error(body?.error || `server returned ${xhr.status || "no status"}`) as Error & { retryable?: boolean };
+                    error.retryable = retryable;
+                    reject(error);
+                };
+                xhr.send(requestBody);
+            });
+            onProgress?.(100);
+            return result;
+        } catch (error) {
+            lastError = (error as Error)?.message || lastError;
+            if (!(error as Error & { retryable?: boolean })?.retryable || attempt === 2) break;
+            onProgress?.(40);
+            await waitForUploadRetry(500 * (attempt + 1));
+        }
+    }
+    throw new Error(`Media upload failed after retries: ${lastError}`);
+}
+
+function isOwnedProfileMediaUrl(value: string, kind: FlairMediaKind, userId: string): boolean {
+    try {
+        const parsed = new URL(value);
+        return parsed.origin === "https://optmaxxing-vip.maxxtopia.workers.dev" &&
+            new RegExp(`^/profile-media/${userId}/${kind}/[0-9a-f-]{36}$`, "i").test(parsed.pathname);
+    } catch {
         return false;
     }
 }
 
-function getCurrentDisplayName(): string {
-    const me = UserStore.getCurrentUser?.() as any;
-    return me?.globalName || me?.username || me?.tag || "A Discordmaxxer user";
-}
-
-function buildVanillaShareText(bannerUrl: string, stillFrameUrl: string): string {
-    const lines = [
-        `✨ ${getCurrentDisplayName()} is using Discordmaxxer`,
-        bannerUrl ? `Animated banner preview: ${bannerUrl}` : "",
-        stillFrameUrl ? `Vanilla-safe still preview: ${stillFrameUrl}` : "",
-        `See how: ${VANILLA_SHARE_URL}`
-    ];
-    return lines.filter(Boolean).join("\n");
+async function importProfileMedia(
+    kind: FlairMediaKind,
+    sourceUrl: string,
+    claimCode: string,
+    onProgress?: (percent: number) => void
+): Promise<UploadedProfileMedia> {
+    const me = UserStore.getCurrentUser?.();
+    if (!me?.id) throw new Error("Could not read your Discord user ID for the media import.");
+    if (!/^https:\/\/[^\s]+$/i.test(sourceUrl)) {
+        throw new Error("Media import needs a direct HTTPS URL.");
+    }
+    const body = JSON.stringify({ userId: me.id, claimCode, kind, sourceUrl });
+    let lastError = "import failed";
+    onProgress?.(10);
+    for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+            const response = await fetch(`${WORKER_PROFILE_MEDIA_URL}/import`, {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body
+            });
+            const result = await response.json().catch(() => ({}));
+            if (response.ok && result?.url) {
+                onProgress?.(100);
+                return {
+                    url: result.url,
+                    posterUrl: result.posterUrl,
+                    mime: result.mime || "application/octet-stream",
+                    bytes: Number(result.bytes) || 0,
+                    metadata: result.metadata
+                };
+            }
+            const error = new Error(result?.error || `media import returned ${response.status || "no status"}`) as Error & { retryable?: boolean };
+            error.retryable = response.status === 408 || response.status === 429 || response.status >= 500;
+            throw error;
+        } catch (error) {
+            lastError = (error as Error)?.message || lastError;
+            if (!(error as Error & { retryable?: boolean })?.retryable || attempt === 2) break;
+            onProgress?.(20);
+            await waitForUploadRetry(500 * (attempt + 1));
+        }
+    }
+    throw new Error(`Media import failed after retries: ${lastError}`);
 }
 
 /** TournamentMode integration: read the plugin's manuallyActive flag through
@@ -540,28 +815,19 @@ export function getEffectiveFlairForUser(
     kind: "banner" | "avatar" | "theme"
 ): ProfileFlair | null {
     const s = settings.store;
-    const me = UserStore.getCurrentUser?.();
-    const localContextReady = !!me?.id && ensureLocalProfileAccountContextForRender();
     if (!s.showOthersFlair) return null;
     if (kind === "banner" && !s.showOthersBanner) return null;
     if (kind === "avatar" && !s.showOthersAvatar) return null;
     if (kind === "theme" && !s.showOthersThemeColors) return null;
     if (isFlairHiddenForUser(userId)) return null;
 
-    // Self-preview path: when rendering YOUR OWN popout, prefer the local
-    // setter-side settings over the roster lookup. Lets you see your flair
-    // change as soon as you type a URL — no save, no worker, no claim, no
-    // roster cache wait. Renders only the fields you've filled in locally;
-    // empty fields fall through to roster (which may have a previously
-    // saved version) and then to nothing.
+    // Self-preview path: start from the shared roster, then overlay only
+    // fields actively edited in this session. Persisted settings are not
+    // treated as a permanent override because they may belong to an older
+    // device/account state.
     let flair: ProfileFlair | null = null;
-    if (me?.id === userId && localContextReady && isLocalProfileContextReadyFor(userId)) {
-        // Per-field merge: start from your saved roster flair, then let any
-        // non-empty LOCAL field override it. This matches the documented
-        // intent — an empty local field falls through to your roster value
-        // (e.g. a banner you saved earlier but never re-typed locally) instead
-        // of being masked to nothing. Filled local fields still preview
-        // instantly, no save/worker roundtrip needed.
+    const me = UserStore.getCurrentUser?.();
+    if (me?.id === userId) {
         const merged: ProfileFlair = { ...(getRosterProfileFlair(userId) ?? {}) };
         applyLocalDraftField(merged, s.myBannerUrl, "myBannerUrl", "bannerUrl");
         applyLocalDraftField(merged, s.myAvatarAnimatedUrl, "myAvatarAnimatedUrl", "avatarAnimatedUrl");
@@ -570,137 +836,112 @@ export function getEffectiveFlairForUser(
         mergeLocalPresentationFields(merged, s);
         if (Object.keys(merged).length) flair = merged;
     }
-    if (!flair) flair = getRosterProfileFlair(userId) ?? null;
+    if (!flair) flair = me?.id === userId ? null : remoteFlairForRender(userId);
     if (!flair) return null;
 
-    if ((kind === "banner" || kind === "avatar") && isTournamentModeActive()) {
-        // Animated content is the whole point of TM suppression — even a
-        // banner image is technically a network fetch + decode we don't
-        // want during a match. Theme colors are not animated media, so they stay.
-        return null;
+    if (kind === "banner" || kind === "avatar") {
+        const mediaUrl = kind === "banner" ? flair.bannerUrl : flair.avatarAnimatedUrl;
+        if (isTournamentModeActive() && mediaUrl && isAnimatedUrl(mediaUrl)) {
+            // TournamentMode pauses animated decode/compositing. Static images
+            // remain useful and cheap, so they continue to render.
+            return null;
+        }
     }
     return flair;
 }
 
-function getProfileClaimCode(): string {
-    // Modern Discord can clear localStorage, so the persisted manual code is
-    // an intentional fallback for the cross-PC profile-media path.
+async function ensureProfileClaim(): Promise<string | null> {
+    // Modern Discord nukes window.localStorage to prevent token theft from
+    // injected scripts. That means readBinding() (which reads from localStorage)
+    // returns null even after a successful claim. Fall through to the plugin's
+    // own `manualClaimCode` setting which IS persisted (Vencord writes settings
+    // to disk via main process, independent of localStorage).
+    let claimCode = "";
     const binding = readBinding();
-    if (binding?.code) return binding.code;
-    const manual = settings.store.manualClaimCode?.trim();
-    return manual ? normalizeCode(manual) : "";
+    if (binding?.code) {
+        claimCode = binding.code;
+    } else if (settings.store.manualClaimCode?.trim()) {
+        // Use the shared normalizer so a pasted "MAXX-AAAA-BBBB-CCCC-DDDD"
+        // becomes the canonical 16-char code. The ad-hoc strip here only
+        // removed dashes, leaving the MAXX prefix → a 20-char mismatch.
+        claimCode = normalizeCode(settings.store.manualClaimCode);
+    }
+    if (!claimCode && !settings.store.manualClaimCode?.trim()) {
+        // The free binding is still identity-checked by Discord OAuth and
+        // bound to this PC's HWID. Start it from the user's Save/Clear click
+        // so the authorization tab is opened before the first await and is
+        // not rejected by Chromium popup protection.
+        const authorizationWindow = reserveFreeActivationWindow();
+        if (!authorizationWindow) {
+            toast("Discord authorization was blocked. Allow the browser window and try again.", Toasts.Type.FAILURE, 6000);
+            return null;
+        }
+        toast("Activating free profile once… authorize Discord in the new window, then your flair will save automatically.", Toasts.Type.MESSAGE, 6000);
+        const hwid = await getMyHwid();
+        if (!hwid) {
+            try { authorizationWindow.close?.(); } catch { /* best effort */ }
+            toast("Could not read this PC's HWID yet. Try Save again in a moment, or open DMVipClaim.", Toasts.Type.FAILURE, 6000);
+            return null;
+        }
+        const activation = await activateFreeProfile(hwid, authorizationWindow);
+        if (!activation.ok) {
+            toast(activation.error || "Free profile activation did not complete.", Toasts.Type.FAILURE, 7000);
+            return null;
+        }
+        claimCode = activation.binding?.code || readBinding()?.code || "";
+    }
+    if (!claimCode) {
+        toast(
+            "Free profile activation did not complete. Try Save again, or open DMVipClaim to retry the activation flow.",
+            Toasts.Type.FAILURE, 6000
+        );
+        return null;
+    }
+    return claimCode;
 }
 
-function isCanonicalProfileMediaUrl(value: string, userId: string, kind: "banner" | "avatar"): boolean {
-    try {
-        const url = new URL(value);
-        return url.origin === WORKER_PROFILE_MEDIA_ORIGIN
-            && new RegExp(`^/profile-media/${userId}/${kind}/[0-9a-f-]{36}$`, "i").test(url.pathname);
-    } catch {
-        return false;
-    }
-}
-
-function inferProfileMediaMime(sourceUrl: string, fetched: FetchedDataUri): string {
-    const reported = fetched.mime.trim().toLowerCase();
-    if (reported && reported !== "application/octet-stream") return reported;
-    try {
-        const pathname = new URL(sourceUrl).pathname.toLowerCase();
-        const extension = pathname.match(/\.([a-z0-9]+)$/)?.[1] ?? "";
-        const byExtension: Record<string, string> = {
-            gif: "image/gif",
-            png: "image/png",
-            jpg: "image/jpeg",
-            jpeg: "image/jpeg",
-            webp: "image/webp",
-            mp4: "video/mp4",
-            webm: "video/webm",
-            mov: "video/quicktime"
-        };
-        return byExtension[extension] ?? reported;
-    } catch {
-        return reported;
-    }
-}
-
-async function uploadProfileMedia(
-    kind: "banner" | "avatar",
-    sourceUrl: string,
-    userId: string,
-    claimCode: string
-): Promise<string> {
-    const media = await fetchDataUri(sourceUrl);
-    if (!media) throw new Error(`Could not download the ${kind} media from its URL`);
-    const mime = inferProfileMediaMime(sourceUrl, media);
-    if (!mime) throw new Error(`Could not determine the ${kind} media type`);
-    const maxBytes = mime.startsWith("video/") ? 15 * 1024 * 1024 : 5 * 1024 * 1024;
-    if (media.bytes > maxBytes) {
-        throw new Error(`${kind} is ${(media.bytes / (1024 * 1024)).toFixed(1)} MB; the shared limit is ${maxBytes / (1024 * 1024)} MB`);
-    }
-    const res = await fetch(WORKER_PROFILE_MEDIA_URL, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ userId, claimCode, kind, mime, dataUri: media.dataUri })
-    });
-    const body = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(body?.error ?? `media upload failed (${res.status})`);
-    const canonical = String(body?.url ?? "").trim();
-    if (!isCanonicalProfileMediaUrl(canonical, userId, kind)) {
-        throw new Error("the worker returned an invalid shared media URL");
-    }
-    return canonical;
-}
-
-async function postFlairUpdate(
-    profile: Partial<ProfileFlair>,
-    replace: boolean,
-    announceToast = true,
-    ifUpdatedAt?: number
-): Promise<boolean> {
+async function postFlairUpdate(profile: Partial<ProfileFlair>, replace: boolean, claimCodeOverride = ""): Promise<boolean> {
     const me = UserStore.getCurrentUser();
     if (!me?.id) {
-        if (announceToast) toast("Couldn't read your Discord user ID", Toasts.Type.FAILURE);
+        toast("Couldn't read your Discord user ID", Toasts.Type.FAILURE);
         return false;
     }
-    const claimCode = getProfileClaimCode();
-    if (!claimCode) {
-        if (announceToast) {
-            toast(
-                "Free profile flair is ready, but cross-PC saving needs activation. Open DMHub → Activate free profile, or paste a paid code into 'manualClaimCode'.",
-                Toasts.Type.FAILURE, 6000
-            );
-        }
-        return false;
-    }
+    const claimCode = claimCodeOverride || await ensureProfileClaim();
+    if (!claimCode) return false;
     try {
-        const payload: Record<string, unknown> = { userId: me.id, claimCode, profile, replace };
-        if (ifUpdatedAt !== undefined && Number.isFinite(ifUpdatedAt)) payload.ifUpdatedAt = ifUpdatedAt;
         const res = await fetch(WORKER_PROFILE_URL, {
             method: "POST",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify(payload)
+            body: JSON.stringify({
+                userId: me.id,
+                claimCode,
+                profile,
+                replace
+            })
         });
         const body = await res.json().catch(() => ({}));
         if (!res.ok) {
-            if (announceToast) toast(`Save failed: ${body?.error ?? res.status}`, Toasts.Type.FAILURE, 5000);
-            else console.warn("[DMProfileFlair] background profile save rejected:", body?.error ?? res.status);
+            toast(`Save failed: ${body?.error ?? res.status}`, Toasts.Type.FAILURE, 5000);
             return false;
         }
-        if (announceToast) toast("✅ Profile flair saved — other Discordmaxxer users see it after the next roster refresh");
+        toast("✅ Profile flair saved — other Discordmaxxer users see it within ~5 min");
         // TournamentMode silently suppresses banner + animated avatar (it's
         // the whole point of TM — free up CPU/GPU). The save itself works
         // fine, but the visual won't appear until TM is toggled off, which
         // looks indistinguishable from a broken save. Call it out explicitly.
-        if (announceToast && isTournamentModeActive() && (profile.bannerUrl || profile.avatarAnimatedUrl)) {
+        const hasAnimatedMedia =
+            (profile.bannerUrl ? isAnimatedUrl(profile.bannerUrl) : false) ||
+            (profile.avatarAnimatedUrl ? isAnimatedUrl(profile.avatarAnimatedUrl) : false);
+        if (isTournamentModeActive() && hasAnimatedMedia) {
             toast(
-                "⚠ TournamentMode is on — your banner + animated avatar won't render until you toggle TM off. Theme colors still paint.",
+                "⚠ TournamentMode is on — animated media is paused until you toggle TM off. Static images and theme colors still paint.",
                 Toasts.Type.MESSAGE, 8000
             );
         }
         return true;
     } catch (e) {
         console.warn("[DMProfileFlair] save failed:", e);
-        if (announceToast) toast(`Save failed: ${(e as any)?.message ?? "network"}`, Toasts.Type.FAILURE, 5000);
+        toast(`Save failed: ${(e as any)?.message ?? "network"}`, Toasts.Type.FAILURE, 5000);
         return false;
     }
 }
@@ -712,8 +953,8 @@ async function settleFlairDraftsAfterSave(expected: Partial<ProfileFlair>): Prom
     // Cloudflare may briefly serve the previous roster snapshot while its
     // edge cache expires. Keep the just-saved local draft in that case so the
     // author's own popout does not flash back to stale colors/media. Once the
-    // shared roster contains the expected state, persisted local settings can
-    // no longer mask another PC.
+    // shared roster contains the expected state, the worker is authoritative
+    // again and persisted local settings can no longer mask another PC.
     if (!refreshed) {
         if (Object.keys(expected).length === 0) clearFlairDraftFields();
         return;
@@ -753,6 +994,9 @@ function validateLocal(profile: Partial<ProfileFlair>): string | null {
         }
         if (k === "mediaEffect" && !PROFILE_EFFECT_VALUES.has(v as any)) {
             return `${k} must be clean, glow, or scanline`;
+        }
+        if (k === "mediaSpeed" && !PROFILE_SPEED_VALUES.has(v as any)) {
+            return `${k} must be 0.75, 1, 1.25, or 1.5`;
         }
     }
     return null;
@@ -1039,55 +1283,6 @@ async function extractStillFrameFromUrl(httpsUrl: string): Promise<string | null
     }
 }
 
-/**
- * Copy a rendered still frame to the system clipboard so the user can paste
- * it into an ordinary Discord message. This is the no-Nitro, vanilla-visible
- * path: the pasted attachment is a normal Discord message, not a profile
- * mutation and not a Discordmaxxer-only field.
- */
-async function copyVanillaStillFrame(sourceUrl: string): Promise<boolean> {
-    if (!URL_RE.test(sourceUrl)) {
-        toast("Set a valid direct banner or still-frame URL first.", Toasts.Type.FAILURE, 5000);
-        return false;
-    }
-    const pageHint = detectPageHostMistake(sourceUrl);
-    if (pageHint) {
-        toast(pageHint, Toasts.Type.FAILURE, 8000);
-        return false;
-    }
-
-    toast("Extracting a PNG still frame for vanilla Discord…", Toasts.Type.MESSAGE, 3000);
-    const dataUri = await extractStillFrameFromUrl(sourceUrl);
-    if (!dataUri) {
-        toast("Couldn't extract a still frame — use a direct image/video URL.", Toasts.Type.FAILURE, 6000);
-        return false;
-    }
-
-    try {
-        // ClipboardItem is deliberately accessed through globalThis so this
-        // stays compatible with older Electron type definitions. Chromium's
-        // normal permission prompt, if any, is still respected.
-        const clipboard = navigator.clipboard as Clipboard & { write?: (items: ClipboardItem[]) => Promise<void> };
-        const ClipboardItemCtor = (globalThis as any).ClipboardItem;
-        if (!clipboard?.write || !ClipboardItemCtor) throw new Error("image clipboard API unavailable");
-        const blob = await (await fetch(dataUri)).blob();
-        await clipboard.write([new ClipboardItemCtor({ "image/png": blob })]);
-        toast("✅ Still frame copied — paste it into a normal Discord message for vanilla users to see.", Toasts.Type.SUCCESS, 6000);
-        return true;
-    } catch (e) {
-        console.warn("[DMProfileFlair] clipboard image write failed:", e);
-        const fallback = await copyText(buildVanillaShareText("", sourceUrl));
-        toast(
-            fallback
-                ? "Image clipboard is unavailable here, so the still-frame link was copied instead."
-                : "Clipboard access was blocked. Save the still frame through the browser or copy the URL manually.",
-            fallback ? Toasts.Type.MESSAGE : Toasts.Type.FAILURE,
-            7000
-        );
-        return fallback;
-    }
-}
-
 function drawVideoFirstFrame(blobUrl: string): Promise<string | null> {
     return new Promise(resolve => {
         const v = document.createElement("video");
@@ -1295,12 +1490,12 @@ async function broadcastBanner(url: string): Promise<boolean> {
     }
 }
 
-type FlairMediaKind = "banner" | "avatar";
-
 interface DirectMediaPreviewProps {
     kind: FlairMediaKind;
     url: string;
-    profile?: Pick<ProfileFlair, "bannerPosition" | "avatarPosition" | "bannerFit" | "avatarFit" | "avatarScale" | "mediaEffect">;
+    isVideoSource?: boolean;
+    profile?: Pick<ProfileFlair, "bannerPosition" | "avatarPosition" | "bannerFit" | "avatarFit" | "avatarScale" | "mediaEffect" | "mediaSpeed">;
+    onPickFile?: () => void;
 }
 
 /**
@@ -1308,11 +1503,16 @@ interface DirectMediaPreviewProps {
  * input makes it obvious which source is being previewed, while the existing
  * dm-media proxy keeps cross-origin video previews usable in Chromium.
  */
-function DirectMediaPreview({ kind, url, profile }: DirectMediaPreviewProps) {
+function DirectMediaPreview({ kind, url, isVideoSource = false, profile, onPickFile }: DirectMediaPreviewProps) {
     const [state, setState] = React.useState<"empty" | "loading" | "ready" | "error">("empty");
     const validSource = /^(?:https:\/\/|blob:|data:)/i.test(url);
-    const isVideo = isVideoUrl(url);
-    const source = isVideo && validSource ? proxyVideoUrl(url) : url;
+    const isVideo = isVideoSource || isVideoUrl(url);
+    const isSharedMedia = isSharedProfileMediaUrl(url);
+    // Worker-owned URLs are direct files, but they are extensionless and can
+    // be GIFs or video. Proxy them for both <img> and <video> previews so the
+    // renderer receives the server's real Content-Type instead of guessing
+    // from the URL path.
+    const source = validSource && (isVideo || isSharedMedia) ? proxyVideoUrl(url) : url;
     const objectPosition = kind === "banner"
         ? profile?.bannerPosition ?? "center"
         : profile?.avatarPosition ?? "center";
@@ -1321,6 +1521,9 @@ function DirectMediaPreview({ kind, url, profile }: DirectMediaPreviewProps) {
         : profile?.avatarFit ?? "cover";
     const avatarScale = kind === "avatar" ? Number(profile?.avatarScale ?? "1") : 1;
     const mediaEffect = profile?.mediaEffect ?? "none";
+    const mediaSpeed = PROFILE_SPEED_VALUES.has(profile?.mediaSpeed as any)
+        ? Number(profile?.mediaSpeed)
+        : 1;
 
     React.useEffect(() => {
         setState(url && validSource ? "loading" : "empty");
@@ -1368,14 +1571,33 @@ function DirectMediaPreview({ kind, url, profile }: DirectMediaPreviewProps) {
         lineHeight: 1.35
     };
 
+    const previewInteraction = onPickFile ? {
+        role: "button" as const,
+        tabIndex: 0,
+        onClick: onPickFile,
+        onKeyDown: (event: React.KeyboardEvent) => {
+            if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                onPickFile();
+            }
+        },
+        "aria-label": `Choose a local ${kind} file`
+    } : {};
+
     if (!url) {
-        return <div style={frameStyle} aria-label={`${kind} live preview`}>
-            <div style={messageStyle}>Paste a direct HTTPS {kind} image, GIF, or video URL to preview it here.</div>
+        return <div style={{ ...frameStyle, cursor: onPickFile ? "pointer" : undefined }} aria-label={`${kind} live preview`} {...previewInteraction}>
+            <div style={messageStyle}>
+                <span>Paste a direct HTTPS {kind} image, GIF, or video URL to preview it here.</span>
+                {onPickFile && <span style={{ display: "block", marginTop: 7, color: "#e25bff", fontWeight: 700 }}>or click to choose a local file</span>}
+            </div>
         </div>;
     }
     if (!validSource) {
-        return <div style={frameStyle} aria-label={`${kind} live preview`}>
-            <div style={messageStyle}>Preview needs a direct HTTPS media URL, not a webpage link.</div>
+        return <div style={{ ...frameStyle, cursor: onPickFile ? "pointer" : undefined }} aria-label={`${kind} live preview`} {...previewInteraction}>
+            <div style={messageStyle}>
+                <span>Preview needs a direct HTTPS media URL, not a webpage link.</span>
+                {onPickFile && <span style={{ display: "block", marginTop: 7, color: "#e25bff", fontWeight: 700 }}>or click to choose a local file</span>}
+            </div>
         </div>;
     }
 
@@ -1383,7 +1605,7 @@ function DirectMediaPreview({ kind, url, profile }: DirectMediaPreviewProps) {
     const onError = () => setState("error");
 
     return (
-        <div style={frameStyle} aria-label={`${kind} live preview`}>
+        <div style={{ ...frameStyle, cursor: onPickFile && state === "error" ? "pointer" : undefined }} aria-label={`${kind} live preview`} {...(state === "error" ? previewInteraction : {})}>
             {isVideo ? (
                 <video
                     src={source}
@@ -1393,7 +1615,11 @@ function DirectMediaPreview({ kind, url, profile }: DirectMediaPreviewProps) {
                     playsInline
                     preload="metadata"
                     style={mediaStyle}
-                    onLoadedData={onReady}
+                    onLoadedData={event => {
+                        event.currentTarget.playbackRate = mediaSpeed;
+                        event.currentTarget.defaultPlaybackRate = mediaSpeed;
+                        onReady();
+                    }}
                     onError={onError}
                 />
             ) : (
@@ -1420,7 +1646,12 @@ function DirectMediaPreview({ kind, url, profile }: DirectMediaPreviewProps) {
                 />
             )}
             {state === "loading" && <div style={messageStyle}>Loading preview…</div>}
-            {state === "error" && <div style={messageStyle}>Could not load this URL. Use the direct media file link, not a webpage.</div>}
+            {state === "error" && <div style={messageStyle}>
+                <span>{isSharedMedia
+                    ? "The saved shared media copy could not be loaded. Choose the original file or paste its direct HTTPS source again, then Save."
+                    : "Source did not load. Clear it, choose a local file, or paste a direct HTTPS media URL — not the old `/profile-media/&lt;id&gt;` route."}</span>
+                {onPickFile && <span style={{ display: "block", marginTop: 7, color: "#e25bff", fontWeight: 700 }}>click to choose a local file</span>}
+            </div>}
         </div>
     );
 }
@@ -1453,29 +1684,148 @@ const settingInputStyle: React.CSSProperties = {
 interface FlairMediaSettingProps {
     kind: FlairMediaKind;
     value: string;
-    profile?: Pick<ProfileFlair, "bannerPosition" | "avatarPosition" | "bannerFit" | "avatarFit" | "avatarScale" | "mediaEffect">;
+    profile?: Pick<ProfileFlair, "bannerPosition" | "avatarPosition" | "bannerFit" | "avatarFit" | "avatarScale" | "mediaEffect" | "mediaSpeed">;
     onChange(value: string): void;
 }
 
 function FlairMediaSetting({ kind, value, profile, onChange }: FlairMediaSettingProps) {
+    const [, forceLocalMediaRender] = React.useState(0);
+    const fileInputRef = React.useRef<HTMLInputElement>(null);
     const label = kind === "banner" ? "My Banner URL" : "My Avatar Animated URL";
     const description = kind === "banner"
-        ? "[Channel E · FREE] Paste a DIRECT image, GIF, or short MP4/WebM URL — not a webpage. The preview below updates as you type."
-        : "[Channel F · FREE] Paste a DIRECT image or GIF URL — not a webpage. Shared avatars accept GIF/image media; video avatars are native-Discord-only. The preview below updates as you type.";
+        ? "[Channel E · FREE] Paste a DIRECT image, GIF, or short MP4/WebM URL — not a webpage. Save imports it into your private shared media, or choose/drag a local banner."
+        : "[Channel F · FREE] Paste a DIRECT image or GIF URL — not a webpage. Save imports it into your private shared media, or choose/drag a local image/GIF avatar. Video avatars remain native-Discord-only.";
+    const local = getLocalProfileMedia(kind);
+    const remoteValue = value.trim();
+    const previewUrl = remoteValue || local.url;
+    const localIsActive = !remoteValue && Boolean(local.url);
+
+    React.useEffect(() => {
+        let alive = true;
+        const listener = () => { if (alive) forceLocalMediaRender(version => version + 1); };
+        localProfileMediaListeners.add(listener);
+        void hydrateLocalProfileMedia();
+        return () => {
+            alive = false;
+            localProfileMediaListeners.delete(listener);
+        };
+    }, [kind]);
+
+    const pickLocalFile = () => fileInputRef.current?.click();
+    const changeRemoteValue = (nextValue: string) => {
+        setLocalProfileMediaError(kind, undefined);
+        onChange(nextValue);
+    };
+    const acceptFile = async (file: File | undefined) => {
+        if (!file) return;
+        const typeError = localProfileMediaTypeError(kind, file);
+        if (typeError) {
+            setLocalProfileMediaError(kind, typeError);
+            toast(typeError, Toasts.Type.FAILURE, 5000);
+            return;
+        }
+        try {
+            let candidate = file;
+            const rawMetadata = await readLocalProfileMediaMetadata(kind, file);
+            const maxDimension = kind === "avatar" ? MAX_PROFILE_AVATAR_DIMENSION : MAX_PROFILE_MEDIA_DIMENSION;
+            const needsStaticOptimization = isOptimizableProfileImage(file) && (
+                file.size > MAX_PROFILE_LOCAL_IMAGE_BYTES ||
+                (rawMetadata.width ?? 0) > maxDimension ||
+                (rawMetadata.height ?? 0) > maxDimension
+            );
+            if (needsStaticOptimization) {
+                toast(`Optimizing this static ${kind} for Discordmaxxer…`, Toasts.Type.MESSAGE, 5000);
+                candidate = await optimizeRasterProfileImage(kind, file);
+            }
+            const error = localProfileMediaError(kind, candidate);
+            if (error) throw new Error(error);
+            const metadata = await inspectLocalProfileMedia(kind, candidate);
+            await saveLocalProfileMedia(kind, candidate, metadata);
+            changeRemoteValue("");
+            const optimizedNotice = candidate !== file ? " It was automatically optimized to fit the shared limits." : "";
+            toast(`Local ${kind} preview loaded.${optimizedNotice} Press Save to upload it and share it with other Discordmaxxer users.`, Toasts.Type.MESSAGE, 7000);
+        } catch (error) {
+            const message = (error as Error)?.message || `Could not load that local ${kind}.`;
+            setLocalProfileMediaError(kind, message);
+            toast(message, Toasts.Type.FAILURE, 5000);
+        }
+    };
+    const stopEditorEvent = (event: React.SyntheticEvent) => event.stopPropagation();
+    const localStatus = local.error
+        ? { color: "#ffb4c4", background: "rgba(237, 66, 69, 0.12)", border: "rgba(237, 66, 69, 0.42)", text: local.error }
+        : localIsActive && local.metadata
+            ? { color: "#b9f7d1", background: "rgba(67, 211, 123, 0.09)", border: "rgba(67, 211, 123, 0.32)", text: `Local file ready · ${formatMediaDetails(local.metadata)}` }
+            : null;
+    const remoteStatus = remoteValue
+        ? isLegacyProfileMediaUrl(remoteValue)
+            ? { color: "#ffb4c4", background: "rgba(237, 66, 69, 0.12)", border: "rgba(237, 66, 69, 0.42)", text: "This is an old media collection URL, not a playable file. Paste a direct HTTPS media URL." }
+            : !URL_RE.test(remoteValue)
+                ? { color: "#ffcfda", background: "rgba(237, 66, 69, 0.1)", border: "rgba(237, 66, 69, 0.32)", text: "Paste a direct HTTPS media URL. The server will verify size, format, dimensions, and duration when you save." }
+                : { color: "#cbd0e0", background: "rgba(0, 212, 255, 0.06)", border: "rgba(0, 212, 255, 0.22)", text: "Direct URL ready · the server will validate and import a private shared copy when you save." }
+        : null;
+    // The local error slot also carries a failed server import. Keeping it in
+    // the field makes a rejected URL actionable instead of leaving the user
+    // with a toast that disappears while the invalid URL remains in place.
+    const status = localIsActive || local.error ? localStatus : remoteStatus;
 
     return (
-        <div style={{ margin: "14px 0 16px" }}>
+        <div
+            style={{ margin: "14px 0 16px" }}
+            onDragEnter={event => { event.preventDefault(); event.stopPropagation(); }}
+            onDragOverCapture={event => { event.preventDefault(); event.stopPropagation(); }}
+            onDropCapture={event => { event.preventDefault(); event.stopPropagation(); void acceptFile(event.dataTransfer.files?.[0]); }}
+            onPointerDown={stopEditorEvent}
+            onContextMenu={stopEditorEvent}
+        >
             <div style={settingLabelStyle}>{label}</div>
             <div style={settingDescriptionStyle}>{description}</div>
+            <input
+                ref={fileInputRef}
+                type="file"
+                accept={kind === "banner" ? "image/*,video/mp4,video/webm,video/quicktime" : "image/*"}
+                style={{ display: "none" }}
+                tabIndex={-1}
+                onChange={event => { void acceptFile(event.currentTarget.files?.[0]); event.currentTarget.value = ""; }}
+            />
             <input
                 type="text"
                 aria-label={label}
                 placeholder="https://..."
                 value={value}
                 style={settingInputStyle}
-                onChange={event => onChange(event.currentTarget.value)}
+                onChange={event => changeRemoteValue(event.currentTarget.value)}
+                onPointerDown={stopEditorEvent}
+                onClick={stopEditorEvent}
+                onContextMenu={stopEditorEvent}
             />
-            <DirectMediaPreview kind={kind} url={value.trim()} profile={profile} />
+            <div style={{ display: "flex", gap: 7, flexWrap: "wrap", marginTop: 7 }}>
+                <Button size={Button.Sizes.SMALL} color={Button.Colors.PRIMARY} onClick={pickLocalFile}>
+                    📁 Choose local file
+                </Button>
+                {remoteValue && <Button size={Button.Sizes.SMALL} color={Button.Colors.PRIMARY} onClick={() => changeRemoteValue("")}>
+                    Clear URL
+                </Button>}
+                {localIsActive && <Button size={Button.Sizes.SMALL} color={Button.Colors.RED} onClick={() => { void clearLocalProfileMedia(kind); }}>
+                    Remove local preview
+                </Button>}
+            </div>
+            {localIsActive && <div style={{ marginTop: 6, color: "#e5c6ff", fontSize: 10.5 }}>
+                Local preview: <b>{local.fileName || "selected file"}</b>. Press Save to upload it, validate it, and share it with other Discordmaxxer clients.
+            </div>}
+            {status && <div
+                role={status === localStatus && local.error ? "alert" : "status"}
+                aria-live="polite"
+                style={{ marginTop: 7, padding: "7px 9px", borderRadius: 6, color: status.color, background: status.background, border: `1px solid ${status.border}`, fontSize: 10.5, lineHeight: 1.35 }}
+            >
+                <span aria-hidden="true" style={{ marginRight: 5 }}>{status === localStatus && local.error ? "!" : "●"}</span>{status.text}
+            </div>}
+            <DirectMediaPreview
+                kind={kind}
+                url={previewUrl}
+                isVideoSource={localIsActive && local.mime.startsWith("video/")}
+                profile={profile}
+                onPickFile={pickLocalFile}
+            />
         </div>
     );
 }
@@ -1582,6 +1932,45 @@ type FlairActionFeedback = {
     text: string;
 };
 
+function RecentMediaThumb({ kind, url }: { kind: FlairMediaKind; url: string }) {
+    const [mode, setMode] = React.useState<"image" | "video" | "error">(isVideoUrl(url) ? "video" : "image");
+    React.useEffect(() => setMode(isVideoUrl(url) ? "video" : "image"), [url]);
+    const mediaStyle: React.CSSProperties = {
+        width: 46,
+        height: 46,
+        borderRadius: "50%",
+        objectFit: "cover",
+        display: "block",
+        background: "#222",
+        border: "1px solid rgba(255,255,255,0.12)"
+    };
+    if (mode === "video") {
+        return <video
+            src={proxyVideoUrl(url)}
+            muted
+            loop
+            autoPlay
+            playsInline
+            preload="metadata"
+            aria-label={`Recent ${kind} video`}
+            style={mediaStyle}
+            onError={() => setMode("image")}
+        />;
+    }
+    if (mode === "image") {
+        return <img
+            src={isSharedProfileMediaUrl(url) ? proxyVideoUrl(url) : url}
+            alt={`Recent ${kind}`}
+            referrerPolicy="no-referrer"
+            style={mediaStyle}
+            onError={() => setMode("error")}
+        />;
+    }
+    return <span aria-label={`Recent ${kind} unavailable`} style={{ ...mediaStyle, display: "flex", alignItems: "center", justifyContent: "center", color: "#e25bff", fontSize: 18 }}>
+        {kind === "banner" ? "▰" : "●"}
+    </span>;
+}
+
 function FlairEditor() {
     // Use Vencord's reactive settings hook while the editor is mounted inside
     // the plugin-settings page. The generic ComponentSetting host invokes this
@@ -1589,7 +1978,6 @@ function FlairEditor() {
     // defaults are materialized before the editor dereferences URL/color fields.
     const s = settings.use([
         "myBannerUrl",
-        "myVanillaStillFrameUrl",
         "myAvatarAnimatedUrl",
         "myThemeColorPrimary",
         "myThemeColorSecondary",
@@ -1598,28 +1986,62 @@ function FlairEditor() {
         "myBannerFit",
         "myAvatarFit",
         "myAvatarScale",
+        "myMediaSpeed",
         "myMediaEffect",
         "manualClaimCode",
         "recentPicksJson"
     ]);
     const [busy, setBusy] = React.useState(false);
-    const [, setProfileContextRevision] = React.useState(0);
     const [actionFeedback, setActionFeedback] = React.useState<FlairActionFeedback | null>(null);
     const announce = (kind: FlairActionFeedback["kind"], text: string) => setActionFeedback({ kind, text });
-    const currentAccountId = String(UserStore.getCurrentUser?.()?.id ?? "");
-
+    const [, forceRosterHydrationRender] = React.useState(0);
     React.useEffect(() => {
-        let active = true;
-        const reconcile = async () => {
-            if (!/^\d{17,20}$/.test(currentAccountId)) return;
-            if (!isLocalProfileContextReadyFor(currentAccountId)) {
-                await resolveLocalProfileAccountForWrite(currentAccountId);
+        let alive = true;
+        void (async () => {
+            await hydrateLocalProfileMedia();
+            try {
+                await refreshRoster();
+            } catch (error) {
+                console.warn("[DMProfileFlair] editor roster hydration failed:", error);
             }
-            if (active) setProfileContextRevision(value => value + 1);
-        };
-        void reconcile();
-        return () => { active = false; };
-    }, [currentAccountId]);
+            if (!alive || !isRosterReady()) return;
+            const me = UserStore.getCurrentUser?.();
+            const remote = me?.id ? getRosterProfileFlair(me.id) : null;
+            if (!remote) return;
+
+            // A persisted field is only a draft after the user edits it in
+            // this editor session. This clears the old base /profile-media/:id
+            // value seen in older builds and lets the current roster route win
+            // on every client without erasing an active unsaved edit.
+            const pairs: Array<[string, keyof ProfileFlair]> = [
+                ["myBannerUrl", "bannerUrl"],
+                ["myAvatarAnimatedUrl", "avatarAnimatedUrl"],
+                ["myThemeColorPrimary", "themeColorPrimary"],
+                ["myThemeColorSecondary", "themeColorSecondary"],
+                ["myBannerPosition", "bannerPosition"],
+                ["myAvatarPosition", "avatarPosition"],
+                ["myBannerFit", "bannerFit"],
+                ["myAvatarFit", "avatarFit"],
+                ["myAvatarScale", "avatarScale"],
+                ["myMediaSpeed", "mediaSpeed"],
+                ["myMediaEffect", "mediaEffect"]
+            ];
+            let changed = false;
+            for (const [settingKey, profileKey] of pairs) {
+                if (flairDraftFields.has(settingKey)) continue;
+                const localValue = String((settings.store as any)[settingKey] ?? "").trim();
+                const remoteValue = String(remote[profileKey] ?? "").trim();
+                if (remoteValue || isLegacyProfileMediaUrl(localValue)) {
+                    if (localValue !== remoteValue) {
+                        (settings.store as any)[settingKey] = remoteValue;
+                        changed = true;
+                    }
+                }
+            }
+            if (changed && alive) forceRosterHydrationRender(version => version + 1);
+        })();
+        return () => { alive = false; };
+    }, []);
     // Track TM state live so the warning notice flips on/off without a panel
     // reopen. Cheap interval — every 2s is plenty, TM toggles are user-driven.
     const [tmActive, setTmActive] = React.useState(isTournamentModeActive());
@@ -1632,19 +2054,6 @@ function FlairEditor() {
     }, []);
 
     const onSave = async () => {
-        const me = UserStore.getCurrentUser?.();
-        if (!me?.id) {
-            const message = "Couldn't read your Discord account yet. Wait for Discordmaxxer to finish loading, then save again.";
-            toast(message, Toasts.Type.FAILURE, 5000);
-            announce("error", message);
-            return;
-        }
-        if (!await resolveLocalProfileAccountForWrite(me.id)) {
-            const message = "Couldn't verify this Discord account's shared profile yet. Wait for the roster to load, then save again.";
-            toast(message, Toasts.Type.FAILURE, 6000);
-            announce("error", message);
-            return;
-        }
         // Normalize colors before sending — the worker validates strict
         // `#RRGGBB`. normalizeColor accepts bare hex, 0x-prefix, 3-digit
         // shorthand, etc and emits canonical lowercase #rrggbb. If a user
@@ -1663,6 +2072,17 @@ function FlairEditor() {
             themeColorPrimary: normalizeForSave(s.myThemeColorPrimary),
             themeColorSecondary: normalizeForSave(s.myThemeColorSecondary)
         };
+        const localUploads: FlairMediaKind[] = [];
+        const remoteImports: FlairMediaKind[] = [];
+        if (!proposed.bannerUrl && getLocalProfileMedia("banner").file) localUploads.push("banner");
+        if (!proposed.avatarAnimatedUrl && getLocalProfileMedia("avatar").file) localUploads.push("avatar");
+        const currentUserId = UserStore.getCurrentUser?.()?.id;
+        if (currentUserId && proposed.bannerUrl && !isOwnedProfileMediaUrl(proposed.bannerUrl, "banner", currentUserId)) {
+            remoteImports.push("banner");
+        }
+        if (currentUserId && proposed.avatarAnimatedUrl && !isOwnedProfileMediaUrl(proposed.avatarAnimatedUrl, "avatar", currentUserId)) {
+            remoteImports.push("avatar");
+        }
         // Never send a locked control. This keeps a stale local setting from
         // making a free save fail after a tier downgrade, while an empty
         // control on an eligible tier intentionally clears that presentation
@@ -1675,6 +2095,7 @@ function FlairEditor() {
             proposed.bannerFit = s.myBannerFit.trim() || undefined;
             proposed.avatarFit = s.myAvatarFit.trim() || undefined;
             proposed.avatarScale = s.myAvatarScale.trim() || undefined;
+            proposed.mediaSpeed = s.myMediaSpeed.trim() || undefined;
         }
         if (myTier >= Tier.MAXXER_PLUS_PLUS) {
             proposed.mediaEffect = s.myMediaEffect.trim() || undefined;
@@ -1686,82 +2107,95 @@ function FlairEditor() {
             return;
         }
         setBusy(true);
-        const claimCode = getProfileClaimCode();
-        const needsBannerUpload = !!proposed.bannerUrl && !!me?.id
-            && !isCanonicalProfileMediaUrl(proposed.bannerUrl, me.id, "banner");
-        const needsAvatarUpload = !!proposed.avatarAnimatedUrl && !!me?.id
-            && !isCanonicalProfileMediaUrl(proposed.avatarAnimatedUrl, me.id, "avatar");
-        if ((needsBannerUpload || needsAvatarUpload) && (!me?.id || !claimCode)) {
-            const message = "Cross-PC media saving needs activation. Open DMHub → Activate free profile, then save again.";
-            toast(message, Toasts.Type.FAILURE, 6000);
-            announce("error", message);
-            setBusy(false);
-            return;
-        }
         try {
-            // External URLs are only local inputs. Upload them once to the
-            // owner's Worker namespace before publishing the roster, so every
-            // other client receives the same durable bytes instead of a stale
-            // or account-local URL. Uploads are sequential and limited to the
-            // two fields in this editor; background repair is separately
-            // throttled below to avoid quota storms.
-            if (needsBannerUpload) {
-                announce("info", "Saving your banner to shared Discordmaxxer storage…");
-                proposed.bannerUrl = await uploadProfileMedia("banner", proposed.bannerUrl!, me!.id, claimCode);
+            let claimCode = "";
+            if (localUploads.length || remoteImports.length) {
+                claimCode = (await ensureProfileClaim()) || "";
+                if (!claimCode) {
+                    announce("error", "Free profile activation is required once before media can be imported or uploaded.");
+                    return;
+                }
+                for (const kind of localUploads) {
+                    const file = getLocalProfileMedia(kind).file;
+                    if (!file) throw new Error(`The selected ${kind} file is no longer available. Choose it again and retry.`);
+                    try {
+                        announce("info", `Uploading ${kind}… 0% (the file stays local until this Save)`);
+                        const uploaded = await uploadProfileMedia(kind, file, claimCode, percent => {
+                            announce("info", `Uploading ${kind}… ${percent}%`);
+                        });
+                        setLocalProfileMediaError(kind, undefined);
+                        if (kind === "banner") {
+                            proposed.bannerUrl = uploaded.url;
+                            s.myBannerUrl = uploaded.url;
+                        } else {
+                            proposed.avatarAnimatedUrl = uploaded.url;
+                            s.myAvatarAnimatedUrl = uploaded.url;
+                        }
+                    } catch (error) {
+                        setLocalProfileMediaError(kind, (error as Error)?.message || `Could not upload that ${kind} file.`);
+                        throw error;
+                    }
+                }
+                for (const kind of remoteImports) {
+                    const sourceUrl = kind === "banner" ? proposed.bannerUrl : proposed.avatarAnimatedUrl;
+                    if (!sourceUrl) continue;
+                    try {
+                        announce("info", `Importing ${kind} URL… the server is checking the file before sharing it`);
+                        const imported = await importProfileMedia(kind, sourceUrl, claimCode, percent => {
+                            announce("info", `Importing ${kind} URL… ${percent}%`);
+                        });
+                        setLocalProfileMediaError(kind, undefined);
+                        if (kind === "banner") {
+                            proposed.bannerUrl = imported.url;
+                            s.myBannerUrl = imported.url;
+                        } else {
+                            proposed.avatarAnimatedUrl = imported.url;
+                            s.myAvatarAnimatedUrl = imported.url;
+                        }
+                    } catch (error) {
+                        setLocalProfileMediaError(kind, (error as Error)?.message || `Could not import that ${kind} URL.`);
+                        throw error;
+                    }
+                }
             }
-            if (needsAvatarUpload) {
-                announce("info", "Saving your avatar to shared Discordmaxxer storage…");
-                proposed.avatarAnimatedUrl = await uploadProfileMedia("avatar", proposed.avatarAnimatedUrl!, me!.id, claimCode);
+            const postErr = validateLocal(proposed);
+            if (postErr) {
+                toast(postErr, Toasts.Type.FAILURE, 5000);
+                announce("error", postErr);
+                return;
             }
-        } catch (e) {
-            const message = `Media upload failed: ${(e as any)?.message ?? "network"}`;
-            toast(message, Toasts.Type.FAILURE, 6000);
-            announce("error", message);
+            announce("info", localUploads.length || remoteImports.length
+                ? "Saving the validated media and profile settings…"
+                : "Saving to the shared Discordmaxxer roster…");
+            // Replace mode: the editor reflects the user's full intended state,
+            // so we replace rather than merge — empty fields clear server-side.
+            const ok = await postFlairUpdate(proposed, true, claimCode);
+            if (ok) {
+                for (const kind of localUploads) await clearLocalProfileMedia(kind);
+                await settleFlairDraftsAfterSave(proposed);
+                // Push the just-saved values to the recents history so Diggy can
+                // swap back like Discord's recent-avatars picker.
+                recordRecentPicks(
+                    proposed.bannerUrl || "",
+                    proposed.avatarAnimatedUrl || "",
+                    proposed.themeColorPrimary || "",
+                    proposed.themeColorSecondary || ""
+                );
+                announce("success", "Saved to the shared Discordmaxxer roster. Other updated Discordmaxxer clients will see it after their roster refresh.");
+            } else {
+                announce("error", "The shared save failed. The error toast above contains the server reason; your local file is still available to retry.");
+            }
+        } catch (error) {
+            const message = (error as Error)?.message || "The media upload failed.";
+            toast(message, Toasts.Type.FAILURE, 7000);
+            announce("error", `${message} Your selected file was kept locally so you can retry.`);
+        } finally {
             setBusy(false);
-            return;
         }
-        announce("info", "Saving to the shared Discordmaxxer roster…");
-        // Replace mode: the editor reflects the user's full intended state,
-        // so we replace rather than merge — empty fields clear server-side.
-        const ok = await postFlairUpdate(proposed, true);
-        if (ok) {
-            // Keep the local editor aligned with the canonical Worker URL. It
-            // is still a preview setting, but it must not re-upload the same
-            // bytes on every restart.
-            s.myBannerUrl = String(proposed.bannerUrl ?? "");
-            s.myAvatarAnimatedUrl = String(proposed.avatarAnimatedUrl ?? "");
-            s.myThemeColorPrimary = String(proposed.themeColorPrimary ?? "");
-            s.myThemeColorSecondary = String(proposed.themeColorSecondary ?? "");
-            localProfileContextAccountId = me.id;
-            localProfileContextResolved = true;
-            profileSettings().profileFlairAccountId = me.id;
-            persistLocalProfileStateForAccount(me.id);
-            await settleFlairDraftsAfterSave(proposed);
-            persistLocalProfileStateForAccount(me.id);
-            // Push the just-saved values to the recents history so Diggy can
-            // swap back like Discord's recent-avatars picker.
-            recordRecentPicks(
-                proposed.bannerUrl || "",
-                proposed.avatarAnimatedUrl || "",
-                proposed.themeColorPrimary || "",
-                proposed.themeColorSecondary || ""
-            );
-            announce("success", "Saved to the shared Discordmaxxer roster. Other updated Discordmaxxer clients will see it after their roster refresh.");
-        } else {
-            announce("error", "The shared save failed. The error toast above contains the server reason.");
-        }
-        setBusy(false);
     };
 
     const onClearAll = async () => {
         if (!confirm("Clear all your custom profile flair (banner, avatar, colors, and presentation choices)?")) return;
-        const me = UserStore.getCurrentUser?.();
-        if (!me?.id || !await resolveLocalProfileAccountForWrite(me.id)) {
-            const message = "Couldn't verify this Discord account's shared profile yet. Wait for the roster to load, then try again.";
-            toast(message, Toasts.Type.FAILURE, 6000);
-            announce("error", message);
-            return;
-        }
         setBusy(true);
         announce("info", "Clearing your shared Discordmaxxer flair…");
         const ok = await postFlairUpdate({}, true);
@@ -1775,11 +2209,9 @@ function FlairEditor() {
             s.myBannerFit = "";
             s.myAvatarFit = "";
             s.myAvatarScale = "";
+            s.myMediaSpeed = "";
             s.myMediaEffect = "";
-            localProfileContextAccountId = me.id;
-            localProfileContextResolved = true;
-            profileSettings().profileFlairAccountId = me.id;
-            persistLocalProfileStateForAccount(me.id);
+            await Promise.all([clearLocalProfileMedia("banner"), clearLocalProfileMedia("avatar")]);
             await settleFlairDraftsAfterSave({
                 bannerUrl: undefined,
                 avatarAnimatedUrl: undefined,
@@ -1790,10 +2222,9 @@ function FlairEditor() {
                 bannerFit: undefined,
                 avatarFit: undefined,
                 avatarScale: undefined,
+                mediaSpeed: undefined,
                 mediaEffect: undefined
             });
-            clearFlairDraftFields();
-            persistLocalProfileStateForAccount(me.id);
             announce("success", "Cleared from the shared Discordmaxxer roster.");
         } else {
             announce("error", "The shared clear failed. The error toast above contains the server reason.");
@@ -1832,14 +2263,14 @@ function FlairEditor() {
     };
 
     const onBroadcastBannerPalette = async () => {
-        const source = s.myVanillaStillFrameUrl.trim() || s.myBannerUrl.trim();
+        const source = s.myBannerUrl.trim();
         if (!source) {
             toast("Set your banner URL above before trying the native color test.", Toasts.Type.FAILURE, 5000);
             return;
         }
         if (!confirm(broadcastConfirmCopy(
             "theme colors",
-            "We'll sample the selected banner (or your chosen still-frame URL) and write only two native Discord profile colors. This does not upload the banner, change your avatar, or send a message. Discord may still restrict the render to Nitro accounts, so a vanilla second-account check is required."
+            "We'll sample the selected banner and write only two native Discord profile colors. This does not upload the banner, change your avatar, or send a message. Discord may still restrict the render to Nitro accounts, so a vanilla second-account check is required."
         ))) return;
         setBusy(true);
         announce("info", "Sampling the banner and sending the one-time native color update…");
@@ -1904,43 +2335,6 @@ function FlairEditor() {
         setBusy(false);
     };
 
-    // ── Vanilla compatibility bridge ─────────────────────────────────────
-    // These actions never write to the Discord account. They only place user-
-    // chosen media/text on the local clipboard for an explicit paste into a
-    // normal Discord message or DM. That is the only reliable no-Nitro route
-    // for a stock client to see a roster-only banner.
-    const onCopyVanillaCard = async () => {
-        const banner = s.myBannerUrl.trim();
-        const still = s.myVanillaStillFrameUrl.trim();
-        if (!banner && !still) {
-            toast("Set a banner URL or a vanilla still-frame URL first.", Toasts.Type.FAILURE, 5000);
-            return;
-        }
-        const ok = await copyText(buildVanillaShareText(banner, still));
-        toast(
-            ok
-                ? "✅ Vanilla share card copied — paste it into a Discord chat."
-                : "Clipboard access was blocked; copy the banner link manually from the settings field.",
-            ok ? Toasts.Type.SUCCESS : Toasts.Type.FAILURE,
-            6000
-        );
-    };
-
-    const onCopyVanillaStill = async () => {
-        const source = s.myVanillaStillFrameUrl.trim() || s.myBannerUrl.trim();
-        if (!source) {
-            toast("Set a banner URL or a vanilla still-frame URL first.", Toasts.Type.FAILURE, 5000);
-            return;
-        }
-        setBusy(true);
-        announce("info", "Extracting a still frame for the vanilla share path…");
-        const ok = await copyVanillaStillFrame(source);
-        announce(ok ? "success" : "error", ok
-            ? "Vanilla still frame copied. Paste it into a normal Discord chat."
-            : "Could not copy the vanilla still frame. The error toast above contains the reason.");
-        setBusy(false);
-    };
-
     const wrapStyle: React.CSSProperties = {
         marginTop: 12, padding: "12px 14px",
         background: "rgba(226, 91, 255, 0.05)",
@@ -1972,19 +2366,16 @@ function FlairEditor() {
     const broadcastBtnRow: React.CSSProperties = {
         display: "flex", flexDirection: "column", gap: 6, marginTop: 8
     };
-    const vanillaBridgeStyle: React.CSSProperties = {
-        marginTop: 14, padding: "12px 0 0", borderTop: "1px dashed rgba(226, 91, 255, 0.35)"
-    };
-
     // ── Recent picks UI — Discord-style quick-pick history ─────────────────
     const recents = readRecentPicks();
     const hasAnyRecents = recents.banners.length > 0 || recents.avatars.length > 0 || recents.colors.length > 0;
-    const liveProfile: Pick<ProfileFlair, "bannerPosition" | "avatarPosition" | "bannerFit" | "avatarFit" | "avatarScale" | "mediaEffect"> = {
+    const liveProfile: Pick<ProfileFlair, "bannerPosition" | "avatarPosition" | "bannerFit" | "avatarFit" | "avatarScale" | "mediaEffect" | "mediaSpeed"> = {
         bannerPosition: (s.myBannerPosition || undefined) as ProfileFlair["bannerPosition"],
         avatarPosition: (s.myAvatarPosition || undefined) as ProfileFlair["avatarPosition"],
         bannerFit: (s.myBannerFit || undefined) as ProfileFlair["bannerFit"],
         avatarFit: (s.myAvatarFit || undefined) as ProfileFlair["avatarFit"],
         avatarScale: (s.myAvatarScale || undefined) as ProfileFlair["avatarScale"],
+        mediaSpeed: (s.myMediaSpeed || undefined) as ProfileFlair["mediaSpeed"],
         mediaEffect: (s.myMediaEffect || undefined) as ProfileFlair["mediaEffect"]
     };
 
@@ -1993,26 +2384,20 @@ function FlairEditor() {
         borderBottom: "1px dashed rgba(226, 91, 255, 0.35)"
     };
     const recentsRowStyle: React.CSSProperties = {
-        display: "flex", alignItems: "center", gap: 6, marginTop: 6, flexWrap: "wrap"
+        display: "flex", alignItems: "center", gap: 8, marginTop: 6, flexWrap: "wrap"
     };
     const recentsLabelStyle: React.CSSProperties = {
-        fontSize: 11, fontWeight: 600, color: "#cbd0e0", minWidth: 60
+        fontSize: 11, fontWeight: 600, color: "#cbd0e0", minWidth: 64
     };
     const thumbButtonStyle: React.CSSProperties = {
-        background: "transparent", border: "1px solid rgba(226, 91, 255, 0.35)",
-        borderRadius: 4, padding: 1, cursor: "pointer", display: "inline-flex"
-    };
-    const bannerThumbImg: React.CSSProperties = {
-        width: 60, height: 24, objectFit: "cover", borderRadius: 3, display: "block",
-        background: "#222"
-    };
-    const avatarThumbImg: React.CSSProperties = {
-        width: 26, height: 26, objectFit: "cover", borderRadius: "50%", display: "block",
-        background: "#222"
+        background: "#17131d", border: "1px solid rgba(226, 91, 255, 0.42)",
+        borderRadius: "50%", padding: 2, cursor: "pointer", display: "inline-flex",
+        transition: "transform 120ms ease, border-color 120ms ease"
     };
     const colorSwatch = (p: string, s: string): React.CSSProperties => ({
-        width: 26, height: 26, borderRadius: 4, display: "inline-block",
-        background: `linear-gradient(180deg, ${p} 0%, ${s} 100%)`
+        width: 46, height: 46, borderRadius: "50%", display: "inline-block",
+        background: `linear-gradient(180deg, ${p} 0%, ${s} 100%)`,
+        border: "1px solid rgba(255,255,255,0.12)"
     });
 
     return (
@@ -2030,13 +2415,13 @@ function FlairEditor() {
                     kind="banner"
                     value={s.myBannerUrl}
                     profile={liveProfile}
-                    onChange={value => setLocalProfileDraftField("myBannerUrl", value)}
+                    onChange={value => { markFlairDraftField("myBannerUrl"); s.myBannerUrl = value; }}
                 />
                 <FlairMediaSetting
                     kind="avatar"
                     value={s.myAvatarAnimatedUrl}
                     profile={liveProfile}
-                    onChange={value => setLocalProfileDraftField("myAvatarAnimatedUrl", value)}
+                    onChange={value => { markFlairDraftField("myAvatarAnimatedUrl"); s.myAvatarAnimatedUrl = value; }}
                 />
                 <div style={{ margin: "4px 0 8px", padding: "10px 11px", borderRadius: 7, background: "rgba(0, 212, 255, 0.05)", border: "1px solid rgba(0, 212, 255, 0.2)" }}>
                     <div style={{ color: "#fbefff", fontSize: 12, fontWeight: 700, marginBottom: 3 }}>Paid presentation enhancements</div>
@@ -2050,7 +2435,7 @@ function FlairEditor() {
                     value={s.myBannerPosition}
                     minTier={Tier.MAXXER}
                     options={POSITION_OPTIONS}
-                    onChange={value => setLocalProfileDraftField("myBannerPosition", value)}
+                    onChange={value => { markFlairDraftField("myBannerPosition"); s.myBannerPosition = value; }}
                 />
                 <ProfileEnhancementControl
                     label="Banner fit"
@@ -2058,7 +2443,7 @@ function FlairEditor() {
                     value={s.myBannerFit}
                     minTier={Tier.MAXXER_PLUS}
                     options={FIT_OPTIONS}
-                    onChange={value => setLocalProfileDraftField("myBannerFit", value)}
+                    onChange={value => { markFlairDraftField("myBannerFit"); s.myBannerFit = value; }}
                 />
                 <ProfileEnhancementControl
                     label="Avatar crop anchor"
@@ -2066,7 +2451,7 @@ function FlairEditor() {
                     value={s.myAvatarPosition}
                     minTier={Tier.MAXXER}
                     options={POSITION_OPTIONS}
-                    onChange={value => setLocalProfileDraftField("myAvatarPosition", value)}
+                    onChange={value => { markFlairDraftField("myAvatarPosition"); s.myAvatarPosition = value; }}
                 />
                 <ProfileEnhancementControl
                     label="Avatar fit + scale"
@@ -2074,7 +2459,7 @@ function FlairEditor() {
                     value={s.myAvatarFit}
                     minTier={Tier.MAXXER_PLUS}
                     options={FIT_OPTIONS}
-                    onChange={value => setLocalProfileDraftField("myAvatarFit", value)}
+                    onChange={value => { markFlairDraftField("myAvatarFit"); s.myAvatarFit = value; }}
                 />
                 <ProfileEnhancementControl
                     label="Avatar scale"
@@ -2082,7 +2467,15 @@ function FlairEditor() {
                     value={s.myAvatarScale}
                     minTier={Tier.MAXXER_PLUS}
                     options={SCALE_OPTIONS}
-                    onChange={value => setLocalProfileDraftField("myAvatarScale", value)}
+                    onChange={value => { markFlairDraftField("myAvatarScale"); s.myAvatarScale = value; }}
+                />
+                <ProfileEnhancementControl
+                    label="Media speed"
+                    description="Set shared banner video playback speed. GIF timing stays native because changing it would require re-encoding the GIF."
+                    value={s.myMediaSpeed}
+                    minTier={Tier.MAXXER_PLUS}
+                    options={SPEED_OPTIONS}
+                    onChange={value => { markFlairDraftField("myMediaSpeed"); s.myMediaSpeed = value; }}
                 />
                 <ProfileEnhancementControl
                     label="Media finish"
@@ -2090,21 +2483,21 @@ function FlairEditor() {
                     value={s.myMediaEffect}
                     minTier={Tier.MAXXER_PLUS_PLUS}
                     options={EFFECT_OPTIONS}
-                    onChange={value => setLocalProfileDraftField("myMediaEffect", value)}
+                    onChange={value => { markFlairDraftField("myMediaEffect"); s.myMediaEffect = value; }}
                 />
                 <ThemeColorSetting
                     kind="primary"
                     value={s.myThemeColorPrimary}
                     primary={normalizeColor(s.myThemeColorPrimary) ?? ""}
                     secondary={normalizeColor(s.myThemeColorSecondary) ?? ""}
-                    onChange={value => setLocalProfileDraftField("myThemeColorPrimary", value)}
+                    onChange={value => { markFlairDraftField("myThemeColorPrimary"); s.myThemeColorPrimary = value; }}
                 />
                 <ThemeColorSetting
                     kind="secondary"
                     value={s.myThemeColorSecondary}
                     primary={normalizeColor(s.myThemeColorPrimary) ?? ""}
                     secondary={normalizeColor(s.myThemeColorSecondary) ?? ""}
-                    onChange={value => setLocalProfileDraftField("myThemeColorSecondary", value)}
+                    onChange={value => { markFlairDraftField("myThemeColorSecondary"); s.myThemeColorSecondary = value; }}
                 />
             </div>
 
@@ -2119,13 +2512,11 @@ function FlairEditor() {
                             {recents.banners.map(url => (
                                 <button
                                     key={url}
-                                    title={url}
+                                    title="Re-apply recent banner"
                                     style={thumbButtonStyle}
-                                    onClick={() => setLocalProfileDraftField("myBannerUrl", url)}
+                                    onClick={() => { markFlairDraftField("myBannerUrl"); s.myBannerUrl = url; }}
                                 >
-                                    {/\.(mp4|webm|mov)(\?|$)/i.test(url)
-                                        ? <span style={{ ...bannerThumbImg, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14 }}>🎬</span>
-                                        : <img src={url} alt="" style={bannerThumbImg} onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }} />}
+                                    <RecentMediaThumb kind="banner" url={url} />
                                 </button>
                             ))}
                         </div>
@@ -2136,11 +2527,11 @@ function FlairEditor() {
                             {recents.avatars.map(url => (
                                 <button
                                     key={url}
-                                    title={url}
+                                    title="Re-apply recent avatar"
                                     style={thumbButtonStyle}
-                                    onClick={() => setLocalProfileDraftField("myAvatarAnimatedUrl", url)}
+                                    onClick={() => { markFlairDraftField("myAvatarAnimatedUrl"); s.myAvatarAnimatedUrl = url; }}
                                 >
-                                    <img src={url} alt="" style={avatarThumbImg} onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }} />
+                                    <RecentMediaThumb kind="avatar" url={url} />
                                 </button>
                             ))}
                         </div>
@@ -2154,12 +2545,9 @@ function FlairEditor() {
                                 return (
                                     <button
                                         key={pair}
-                                        title={`${p} → ${sec}`}
+                                        title="Re-apply recent gradient"
                                         style={thumbButtonStyle}
-                                        onClick={() => {
-                                            setLocalProfileDraftField("myThemeColorPrimary", p);
-                                            setLocalProfileDraftField("myThemeColorSecondary", sec);
-                                        }}
+                                        onClick={() => { markFlairDraftField("myThemeColorPrimary"); markFlairDraftField("myThemeColorSecondary"); s.myThemeColorPrimary = p; s.myThemeColorSecondary = sec; }}
                                     >
                                         <span style={colorSwatch(p, sec)} />
                                     </button>
@@ -2172,10 +2560,9 @@ function FlairEditor() {
 
             {tmActive && (
                 <div style={tmWarnStyle}>
-                    🟡 <b>TournamentMode is currently active.</b> Your banner and animated avatar
-                    will be <b>suppressed</b> in profile popouts until you toggle TM off (TM exists
-                    to free up CPU/GPU, so animated content is paused by design). Theme colors
-                    still render normally.
+                    🟡 <b>TournamentMode is currently active.</b> Animated banner/avatar media is
+                    <b> paused</b> until you toggle TM off (TM exists to free up CPU/GPU). Static
+                    images and theme colors still render normally.
                 </div>
             )}
             <div style={noteStyle}>
@@ -2184,11 +2571,11 @@ function FlairEditor() {
                 Worker validates the roster claim and media safety server-side. Profile
                 flair is free for every claimed Discordmaxxer user: one active banner,
                 one active animated avatar, and the two theme colors. TournamentMode
-                pauses animated media while it is active.
+                pauses animated media while it is active; static profile images remain available.
             </div>
             <div style={btnRow}>
                 <Button size={Button.Sizes.SMALL} color={Button.Colors.BRAND} onClick={onSave} disabled={busy}>
-                    💾 Save to Discordmaxxer
+                    💾 {((!s.myBannerUrl.trim() && !!getLocalProfileMedia("banner").file) || (!s.myAvatarAnimatedUrl.trim() && !!getLocalProfileMedia("avatar").file)) ? "Upload & Save to Discordmaxxer" : "Save to Discordmaxxer"}
                 </Button>
                 <Button size={Button.Sizes.SMALL} color={Button.Colors.RED} onClick={onClearAll} disabled={busy}>
                     ✕ Clear all my flair
@@ -2227,11 +2614,12 @@ function FlairEditor() {
             )}
 
             <div style={broadcastWrapStyle}>
-                <div style={broadcastTitleStyle}>📡 Broadcast to vanilla Discord (one-time)</div>
+                <div style={broadcastTitleStyle}>📡 Optional native Discord profile tools (one-time)</div>
                 <div style={broadcastNoteStyle}>
-                    The buttons above save flair that <b>only other Discordmaxxer users</b> can see.
-                    These buttons below PATCH your <b>real Discord profile</b> so <b>everyone</b> sees it —
-                    Nitro friends, normies, mobile-only users, the works. Fires once per click; never re-asserts.
+                    The Save button above publishes flair that <b>other Discordmaxxer users</b> can see.
+                    These optional buttons PATCH your <b>real Discord profile</b> once when clicked, as a
+                    convenience for fields Discord itself supports. You can always make the same changes in
+                    Discord's normal Profile settings; these buttons never re-assert or fight your native edits.
                     <br /><br />
                     <b>Theme gradient:</b> PATCH succeeds on free accounts but Discord silently <b>Nitro-gates the render</b> — vanilla viewers see default unless you have Nitro. <b>Static avatar:</b> free. <b>Any banner (static or still-frame):</b> Nitro required server-side. The new palette button samples your banner into two native colors as a best-effort test; it does not upload the banner or change your avatar.
                     <br /><br />
@@ -2255,25 +2643,6 @@ function FlairEditor() {
                     </Button>
                 </div>
             </div>
-
-            <div style={vanillaBridgeStyle}>
-                <div style={broadcastTitleStyle}>🌉 Vanilla compatibility bridge (normal Discord message)</div>
-                <div style={broadcastNoteStyle}>
-                    Stock Discord cannot render Discordmaxxer-only profile flair, and Nitro is required for a real
-                    Discord profile banner. These buttons do not touch your account: they copy a share card or a
-                    PNG still frame so you can paste it into a normal Discord channel or DM. That is what vanilla
-                    users can actually see. Use the optional still-frame URL below when you want to choose a
-                    specific fallback; otherwise the first frame of your banner is used.
-                </div>
-                <div style={broadcastBtnRow}>
-                    <Button size={Button.Sizes.SMALL} color={Button.Colors.BRAND} onClick={onCopyVanillaCard} disabled={busy}>
-                        📋 Copy vanilla share card (animated link + install link)
-                    </Button>
-                    <Button size={Button.Sizes.SMALL} color={Button.Colors.BRAND} onClick={onCopyVanillaStill} disabled={busy}>
-                        🖼 Copy vanilla still frame (paste into chat)
-                    </Button>
-                </div>
-            </div>
         </div>
     );
 }
@@ -2285,14 +2654,6 @@ const settings = definePluginSettings({
         description: "(Shown in the Live appearance preview below.)",
         default: "",
         hidden: true
-    },
-    myVanillaStillFrameUrl: {
-        type: OptionType.STRING,
-        description:
-            "Optional vanilla fallback: a direct static PNG/JPG/WebP URL you want to show to stock Discord users. " +
-            "The bridge uses this instead of extracting the first frame from myBannerUrl. This stays local and is " +
-            "never sent to the Discordmaxxer roster.",
-        default: ""
     },
     myAvatarAnimatedUrl: {
         type: OptionType.STRING,
@@ -2346,36 +2707,17 @@ const settings = definePluginSettings({
         default: "",
         hidden: true
     },
-    myMediaEffect: {
+    myMediaSpeed: {
         type: OptionType.STRING,
         description: "(Managed by the profile editor.)",
         default: "",
         hidden: true
     },
-    // Hidden account boundary for local profile settings. The shared Worker
-    // roster is still the cross-PC source of truth; these two values prevent
-    // one Discord account's local media from being reused for another account
-    // on the same machine.
-    profileFlairAccountId: {
+    myMediaEffect: {
         type: OptionType.STRING,
-        description: "(Managed by DMProfileFlair account scoping.)",
+        description: "(Managed by the profile editor.)",
         default: "",
         hidden: true
-    },
-    profileMediaByAccountJson: {
-        type: OptionType.STRING,
-        description: "(Managed by DMProfileFlair account-scoped local profile cache.)",
-        default: "{}",
-        hidden: true
-    },
-    manualClaimCode: {
-        type: OptionType.STRING,
-        description:
-            "Optional fallback: paste your VIP claim code (the MAXX-XXXX-XXXX-XXXX-XXXX you redeemed) here " +
-            "if Save → 'Save to Discordmaxxer' tells you it can't find your binding. Discord disables " +
-            "localStorage in modern builds which breaks the normal binding-read path; this setting is " +
-            "persisted to disk via Vencord, so it survives. Auto-normalized (dashes + case ignored).",
-        default: ""
     },
     // Hidden — JSON-stringified history of the last MAX_RECENTS values for
     // banner URL / avatar URL / color pair ("primary|secondary"). Pushed on
@@ -2385,7 +2727,8 @@ const settings = definePluginSettings({
     recentPicksJson: {
         type: OptionType.STRING,
         description: "(hidden) JSON history of recent flair picks — managed by the editor's Save button.",
-        default: "{}"
+        default: "{}",
+        hidden: true
     },
     editor: {
         type: OptionType.COMPONENT,
@@ -2415,6 +2758,15 @@ const settings = definePluginSettings({
         type: OptionType.BOOLEAN,
         description: "Render other users' profile gradient colors.",
         default: true
+    },
+    manualClaimCode: {
+        type: OptionType.STRING,
+        description:
+            "Optional fallback: paste your VIP claim code (the MAXX-XXXX-XXXX-XXXX-XXXX you redeemed) here " +
+            "if Save → 'Save to Discordmaxxer' tells you it can't find your binding. Discord disables " +
+            "localStorage in modern builds which breaks the normal binding-read path; this setting is " +
+            "persisted to disk via Vencord, so it survives. Auto-normalized (dashes + case ignored).",
+        default: ""
     }
 });
 
@@ -2427,158 +2779,11 @@ const settings = definePluginSettings({
 
 let style: HTMLStyleElement | null = null;
 let observer: MutationObserver | null = null;
-let mediaPlaybackObserver: IntersectionObserver | null = null;
 let rescanTimer: number | null = null;
 let defaultAvatarWarned = false;
 let removeRosterListener: (() => void) | null = null;
 let lastRosterRefreshAt = 0;
 const ROSTER_FOCUS_REFRESH_INTERVAL_MS = 30_000;
-const PROFILE_MEDIA_SYNC_INTERVAL_MS = 5 * 60 * 1000;
-const PROFILE_MEDIA_SYNC_RETRY_MS = 60 * 1000;
-let profileMediaSyncTimer: number | null = null;
-let profileMediaSyncInFlight: Promise<void> | null = null;
-let profileMediaLastSyncAt = 0;
-let profileMediaLastSyncSignature = "";
-
-/**
- * Repair the owner's persisted banner/avatar after a client restart. The
- * editor's explicit Save remains the path for unsaved drafts; this background
- * path only handles persisted values that are not already canonical Worker
- * media. That makes the first PC that can see a local banner the publisher,
- * while protecting a newer choice made on another PC with ifUpdatedAt.
- */
-async function syncLocalProfileMediaToCloud(): Promise<void> {
-    if (profileMediaSyncInFlight) return profileMediaSyncInFlight;
-    const task = (async () => {
-        const me = UserStore.getCurrentUser?.();
-        const claimCode = getProfileClaimCode();
-        if (!me?.id || !claimCode) return;
-
-        try {
-            await refreshRoster();
-            const remote = getRosterProfileFlair(me.id) ?? {};
-            const remoteProfileKnown = getRosterProfileUpdatedAt(me.id) !== undefined;
-            if (!reconcileLocalProfileAccount(me.id, remote, remoteProfileKnown)) {
-                // Do not publish an unscoped legacy value when the roster is
-                // unavailable. A later focus/visibility pass will retry after
-                // the account identity has a trustworthy remote record.
-                profileMediaLastSyncAt = Date.now() - PROFILE_MEDIA_SYNC_INTERVAL_MS + PROFILE_MEDIA_SYNC_RETRY_MS;
-                return;
-            }
-            const remoteUpdatedAt = getRosterProfileUpdatedAt(me.id) ?? 0;
-            const remoteBanner = typeof remote.bannerUrl === "string" ? remote.bannerUrl : "";
-            const remoteAvatar = typeof remote.avatarAnimatedUrl === "string" ? remote.avatarAnimatedUrl : "";
-            const s = settings.store;
-            let banner = s.myBannerUrl.trim();
-            let avatar = s.myAvatarAnimatedUrl.trim();
-            const bannerDraft = flairDraftFields.has("myBannerUrl");
-            const avatarDraft = flairDraftFields.has("myAvatarAnimatedUrl");
-
-            // After a second install changes the account, the shared owner
-            // record wins over stale persisted local settings unless the user
-            // is actively editing that field right now.
-            if (!bannerDraft && (remoteProfileKnown ? banner !== remoteBanner : !!remoteBanner && banner !== remoteBanner)) {
-                s.myBannerUrl = remoteBanner;
-                banner = remoteBanner;
-            }
-            if (!avatarDraft && (remoteProfileKnown ? avatar !== remoteAvatar : !!remoteAvatar && avatar !== remoteAvatar)) {
-                s.myAvatarAnimatedUrl = remoteAvatar;
-                avatar = remoteAvatar;
-            }
-
-            const signature = `${me.id}|${remoteUpdatedAt}|${banner}|${avatar}|${bannerDraft ? 1 : 0}|${avatarDraft ? 1 : 0}`;
-            const now = Date.now();
-            if (profileMediaLastSyncSignature === signature
-                && now - profileMediaLastSyncAt < PROFILE_MEDIA_SYNC_INTERVAL_MS) return;
-
-            const proposed: Partial<ProfileFlair> = {};
-            if (!bannerDraft && banner) {
-                if (!isCanonicalProfileMediaUrl(banner, me.id, "banner")) {
-                    proposed.bannerUrl = await uploadProfileMedia("banner", banner, me.id, claimCode);
-                } else if (banner !== remoteBanner) {
-                    proposed.bannerUrl = banner;
-                }
-            }
-            if (!avatarDraft && avatar) {
-                if (!isCanonicalProfileMediaUrl(avatar, me.id, "avatar")) {
-                    proposed.avatarAnimatedUrl = await uploadProfileMedia("avatar", avatar, me.id, claimCode);
-                } else if (avatar !== remoteAvatar) {
-                    proposed.avatarAnimatedUrl = avatar;
-                }
-            }
-
-            if (!Object.keys(proposed).length) {
-                profileMediaLastSyncAt = now;
-                profileMediaLastSyncSignature = signature;
-                return;
-            }
-
-            // Passing 0 when no profile timestamp exists is intentional: it
-            // makes a concurrent first write conflict with an already-created
-            // profile instead of allowing a stale install to win silently.
-            const saved = await postFlairUpdate(proposed, false, false, remoteUpdatedAt);
-            if (!saved) {
-                // A 409 means another PC won. Re-read and adopt the winner;
-                // do not retry the stale local bytes in a loop.
-                await refreshRoster();
-                const latest = getRosterProfileFlair(me.id) ?? {};
-                const latestKnown = getRosterProfileUpdatedAt(me.id) !== undefined;
-                if (latestKnown) applyRemoteProfileToLocalState(latest, true);
-                persistLocalProfileStateForAccount(me.id);
-                profileMediaLastSyncAt = Date.now();
-                profileMediaLastSyncSignature = `${me.id}|${getRosterProfileUpdatedAt(me.id) ?? 0}|${s.myBannerUrl}|${s.myAvatarAnimatedUrl}`;
-                return;
-            }
-
-            if (proposed.bannerUrl) s.myBannerUrl = proposed.bannerUrl;
-            if (proposed.avatarAnimatedUrl) s.myAvatarAnimatedUrl = proposed.avatarAnimatedUrl;
-            persistLocalProfileStateForAccount(me.id);
-            // The worker invalidates its roster memo on a successful write;
-            // refresh immediately so the owner's own popout does not show a
-            // one-frame stale native banner while waiting for the 30s TTL.
-            await refreshRoster();
-            profileMediaLastSyncAt = Date.now();
-            profileMediaLastSyncSignature = `${me.id}|${getRosterProfileUpdatedAt(me.id) ?? 0}|${s.myBannerUrl}|${s.myAvatarAnimatedUrl}`;
-        } catch (e) {
-            // Background repair must never interrupt Discord or create a toast
-            // storm. It will retry once after a bounded delay when the profile
-            // surface is focused again.
-            console.warn("[DMProfileFlair] background profile media sync failed:", e);
-            profileMediaLastSyncAt = Date.now() - PROFILE_MEDIA_SYNC_INTERVAL_MS + PROFILE_MEDIA_SYNC_RETRY_MS;
-        }
-    })().finally(() => { profileMediaSyncInFlight = null; });
-    profileMediaSyncInFlight = task;
-    return task;
-}
-
-function scheduleProfileMediaSync(): void {
-    if (document.hidden || profileMediaSyncTimer !== null) return;
-    profileMediaSyncTimer = window.setTimeout(() => {
-        profileMediaSyncTimer = null;
-        void syncLocalProfileMediaToCloud();
-    }, 1500);
-}
-
-function resumeVisibleBannerVideos(): void {
-    if (document.hidden) return;
-    document.querySelectorAll<HTMLVideoElement>(".dm-flair-banner-video").forEach(video => {
-        const rect = video.getBoundingClientRect();
-        const inViewport = rect.bottom > 0 && rect.right > 0
-            && rect.top < window.innerHeight && rect.left < window.innerWidth;
-        if (inViewport) video.play().catch(() => {});
-    });
-}
-
-function observeBannerMedia(media: HTMLVideoElement | HTMLImageElement): void {
-    // Chromium resumes animated images on its own when they become visible;
-    // only videos need an explicit play() nudge after background throttling.
-    if (!(media instanceof HTMLVideoElement) || !mediaPlaybackObserver) return;
-    mediaPlaybackObserver.observe(media);
-}
-
-function unobserveBannerMedia(media: Element): void {
-    mediaPlaybackObserver?.unobserve(media);
-}
 
 function refreshRosterForVisibleSurface(): void {
     if (document.hidden) return;
@@ -2590,17 +2795,9 @@ function refreshRosterForVisibleSurface(): void {
 }
 
 const onVisibilityChange = () => {
-    if (!document.hidden) {
-        resumeVisibleBannerVideos();
-        refreshRosterForVisibleSurface();
-        scheduleProfileMediaSync();
-    }
+    if (!document.hidden) refreshRosterForVisibleSurface();
 };
-const onRosterFocus = () => {
-    resumeVisibleBannerVideos();
-    refreshRosterForVisibleSurface();
-    scheduleProfileMediaSync();
-};
+const onRosterFocus = () => refreshRosterForVisibleSurface();
 
 
 /** True if a URL is explicitly marked or named as a video. Shared profile
@@ -2636,19 +2833,16 @@ function isAnimatedUrl(url: string): boolean {
         /\/avatars\/\d{17,20}\/a_[^/?#]+\.(?:gif|webp|png)(?:[?#]|$)/i.test(url);
 }
 
+function profileMediaPlaybackRate(value?: string): number {
+    return PROFILE_SPEED_VALUES.has(value as any) ? Number(value) : 1;
+}
+
 function buildCss(): string {
     return `
-        /* Keep the native media hidden only while our replacement has loaded.
-           Discord has used <img>, <picture>, and <video> for this surface over
-           time; do not blanket-hide descendants because the avatar may live in
-           the same profile root. */
-        [data-dm-flair-banner-applied] > img:not(.dm-flair-banner-image),
-        [data-dm-flair-banner-applied] > picture,
-        [data-dm-flair-banner-applied] > video:not(.dm-flair-banner-video) {
+        /* Hide Discord's stock banner <img> when we've painted ours over the
+           container. The data-attr is set inline by tagPopout. */
+        [data-dm-flair-banner-applied] > img:first-child {
             visibility: hidden !important;
-        }
-        [data-dm-flair-banner-applied] {
-            isolation: isolate;
         }
         /* Video banner overlay — covers the banner area, click-through, low
            paint cost (one composited surface). */
@@ -2660,7 +2854,7 @@ function buildCss(): string {
             object-fit: cover;
             object-position: center;
             pointer-events: none;
-            z-index: 2;
+            z-index: 0;
             opacity: 0;
             transition: opacity 120ms ease;
         }
@@ -2676,7 +2870,7 @@ function buildCss(): string {
             object-fit: cover;
             object-position: center;
             pointer-events: none;
-            z-index: 2;
+            z-index: 0;
             opacity: 0;
             transition: opacity 120ms ease;
         }
@@ -2705,7 +2899,7 @@ function buildCss(): string {
             position: absolute;
             inset: 0;
             pointer-events: none;
-            z-index: 3;
+            z-index: 1;
             background: repeating-linear-gradient(180deg, rgba(255,255,255,0.12) 0, rgba(255,255,255,0.12) 1px, transparent 1px, transparent 4px);
             mix-blend-mode: screen;
             opacity: 0.42;
@@ -2911,53 +3105,12 @@ function findProfileContainerFromBanner(banner: HTMLElement): HTMLElement | null
     return null;
 }
 
-const DISCORD_AVATAR_ID_RE = /\/avatars\/(\d{17,20})\//;
-
-function userIdFromMediaValue(value: string | null | undefined): string | null {
-    if (!value) return null;
-    const values = [value];
-    try {
-        const decoded = decodeURIComponent(value);
-        if (decoded !== value) values.push(decoded);
-    } catch { /* malformed srcset/data attribute — inspect the original */ }
-    for (const candidate of values) {
-        const match = candidate.match(DISCORD_AVATAR_ID_RE);
-        if (match) return match[1];
-    }
-    return null;
-}
-
-function mediaValuesForImage(image: HTMLImageElement): string[] {
-    return [
-        image.currentSrc,
-        image.src,
-        image.getAttribute("src"),
-        image.getAttribute("srcset"),
-        image.getAttribute("data-src"),
-        image.getAttribute("data-lazy-src"),
-        image.getAttribute("data-original")
-    ].filter((value): value is string => Boolean(value));
-}
-
-function userIdFromElementMedia(element: Element): string | null {
-    for (const attr of ["style", "data-background-image", "data-image-url", "data-src", "data-lazy-src"]) {
-        const found = userIdFromMediaValue(element.getAttribute(attr));
-        if (found) return found;
-    }
-    if (element instanceof HTMLImageElement) {
-        for (const value of mediaValuesForImage(element)) {
-            const found = userIdFromMediaValue(value);
-            if (found) return found;
-        }
-    }
-    return null;
-}
-
 /** Try to identify whose profile a popout/full-profile view belongs to. Modern
- *  Discord does not consistently put `data-user-id` on profile containers, and
- *  newer surfaces may expose the avatar through `srcset`, lazy-load attributes,
- *  or an inline background instead of the loaded `img.src`. Inspect every
- *  bounded media representation before falling back to React props. */
+ *  Discord doesn't put `data-user-id` on profile containers, so we extract it
+ *  from an avatar IMG inside via the CDN URL shape
+ *  `cdn.discordapp.com/avatars/<userId>/<hash>.<ext>`. Returns null when the
+ *  user has Discord's default avatar (no per-user CDN URL — those use
+ *  `/assets/<hash>.png` instead). */
 function getUserIdFromContainerLegacy(container: Element): string | null {
     // Discord has changed the avatar class token across profile-sidebar and
     // popout layouts. The CDN path is the stable identity signal, so inspect
@@ -2965,12 +3118,9 @@ function getUserIdFromContainerLegacy(container: Element): string | null {
     // requiring the current `avatar__` class name.
     const imgs = container.querySelectorAll("img");
     for (const img of imgs) {
-        const found = userIdFromElementMedia(img);
-        if (found) return found;
-    }
-    for (const el of container.querySelectorAll<HTMLElement>("[style], [data-background-image], [data-image-url]")) {
-        const found = userIdFromElementMedia(el);
-        if (found) return found;
+        const src = (img as HTMLImageElement).currentSrc || (img as HTMLImageElement).src || "";
+        const m = src.match(/\/avatars\/(\d{17,20})\//);
+        if (m) return m[1];
     }
     return null;
 }
@@ -3033,10 +3183,13 @@ function findUserIdFromContainerUncached(container: Element): string | null {
         if (hrefMatch) return hrefMatch[1];
         const domMatch = (el.getAttribute("id") ?? "").match(/(?:user|profile)[-_](\d{17,20})/i);
         if (domMatch) return domMatch[1];
-        const mediaMatch = userIdFromElementMedia(el);
-        if (mediaMatch) return mediaMatch;
     }
 
+    for (const img of container.querySelectorAll("img")) {
+        const src = (img as HTMLImageElement).currentSrc || (img as HTMLImageElement).src || "";
+        const match = src.match(/\/avatars\/(\d{17,20})\//);
+        if (match) return match[1];
+    }
     for (const el of elements) {
         for (const key of Object.keys(el)) {
             if (!key.startsWith("__reactProps$") && !key.startsWith("__reactFiber$")) continue;
@@ -3053,12 +3206,8 @@ function profileIdentitySignature(container: Element): string {
     const attrs = ["data-user-id", "data-userid", "data-profile-user-id", "data-profile-userid", "id"]
         .map(key => container.getAttribute(key) ?? "")
         .join("|");
-    const media = Array.from(container.querySelectorAll("img"))
-        .slice(0, 24)
-        .flatMap(img => mediaValuesForImage(img as HTMLImageElement))
-        .join("|");
-    const flairOwner = container.querySelector("[data-dm-flair-avatar-user-id]")?.getAttribute("data-dm-flair-avatar-user-id") || "";
-    return `${attrs}|${media}|${flairOwner}|${container.childElementCount}`;
+    const avatar = container.querySelector("img") as HTMLImageElement | null;
+    return `${attrs}|${avatar?.currentSrc || avatar?.src || ""}|${avatar?.getAttribute("data-dm-flair-avatar-user-id") || ""}|${container.childElementCount}`;
 }
 
 function getUserIdFromContainer(container: Element): string | null {
@@ -3071,7 +3220,12 @@ function getUserIdFromContainer(container: Element): string | null {
     if (profileRoot && profileRoot !== container) roots.push(profileRoot);
     const signature = roots.map(profileIdentitySignature).join("||");
     const cached = profileIdentityCache.get(container);
-    if (cached?.signature === signature && Date.now() - cached.checkedAt < 1500) return cached.userId;
+    // A null result is usually just the first few frames of a Discord popout
+    // mounting. Cache positive identities normally, but keep a null result
+    // only briefly so a late avatar/data attribute can be picked up without
+    // making the profile flair disappear for a full polling interval.
+    const cacheTtl = cached?.userId ? 1500 : 160;
+    if (cached?.signature === signature && Date.now() - cached.checkedAt < cacheTtl) return cached.userId;
     let userId: string | null = null;
     for (const root of roots) {
         userId = findUserIdFromContainerUncached(root);
@@ -3081,16 +3235,74 @@ function getUserIdFromContainer(container: Element): string | null {
     return userId;
 }
 
+const PROFILE_VISUAL_PENDING_GRACE_MS = 4500;
+// Keep the last confirmed remote visual briefly while the roster request or the
+// profile popout is hydrating. This prevents a vanilla flash without making stale
+// account data permanent.
+const REMOTE_PROFILE_VISUAL_GRACE_MS = 120_000;
+const remoteFlairLastKnown = new Map<string, { flair: ProfileFlair; savedAt: number }>();
+
+/**
+ * Keep a bounded, owner-keyed copy of a foreign user's last verified flair.
+ * Discord frequently tears down and remounts a profile surface in several
+ * React commits. During that window the roster lookup can briefly return no
+ * record even though the owner has not changed. Returning the last record for
+ * a bounded period prevents the banner/theme/avatar from flashing to native
+ * defaults, while the user ID key prevents one profile from borrowing another
+ * profile's cosmetics and the expiry lets a real removal take effect.
+ */
+function remoteFlairForRender(userId: string): ProfileFlair | null {
+    const fresh = getRosterProfileFlair(userId);
+    if (fresh) {
+        const copy = { ...fresh };
+        remoteFlairLastKnown.set(userId, { flair: copy, savedAt: Date.now() });
+        return copy;
+    }
+    const cached = remoteFlairLastKnown.get(userId);
+    if (!cached) return null;
+    if (Date.now() - cached.savedAt <= REMOTE_PROFILE_VISUAL_GRACE_MS) return cached.flair;
+    remoteFlairLastKnown.delete(userId);
+    return null;
+}
+
+function profileVisualExists(container: HTMLElement, banner: HTMLElement): boolean {
+    return banner.hasAttribute("data-dm-flair-banner-applied")
+        || banner.hasAttribute("data-dm-flair-banner-loading-url")
+        || Boolean(banner.querySelector(".dm-flair-banner-video, .dm-flair-banner-image"))
+        || container.hasAttribute("data-dm-flair-theme-applied");
+}
+
+/** Keep a known owner's last rendered visuals while the roster or Discord's
+ * identity-bearing children are still mounting. This is deliberately short
+ * lived and owner-aware: it prevents a flash to native Discord defaults, but
+ * never lets a previous user's flair leak into a different profile. */
+function preserveProfileVisualDuringPendingRoster(container: HTMLElement, banner: HTMLElement, userId: string | null): boolean {
+    // A missing identity can be a short DOM-mount gap even when the roster is
+    // already ready. Keep that gap very short; a known identity still waits
+    // for the authoritative roster result below.
+    if ((userId && isRosterReady()) || !profileVisualExists(container, banner)) return false;
+    const bannerOwner = banner.dataset.dmFlairBannerOwnerId;
+    const themeOwner = container.dataset.dmFlairThemeOwnerId;
+    if (userId && ((bannerOwner && bannerOwner !== userId) || (themeOwner && themeOwner !== userId))) return false;
+    const pendingSince = Number(container.dataset.dmFlairPendingSince ?? 0) || Date.now();
+    container.dataset.dmFlairPendingSince = String(pendingSince);
+    const grace = userId ? PROFILE_VISUAL_PENDING_GRACE_MS : 900;
+    return Date.now() - pendingSince <= grace;
+}
+
+function clearProfileVisualPending(container: HTMLElement): void {
+    delete container.dataset.dmFlairPendingSince;
+}
+
 /** Single point that decides what flair (if any) to render for a given user.
- *  - Self (me.id === userId): prefer local plugin settings so saves render
- *    instantly without a worker roundtrip.
+ *  - Self (me.id === userId): start with the shared roster and overlay only
+ *    fields actively edited in this editor session, so stale persisted values
+ *    cannot mask the current cross-PC profile.
  *  - Other users on roster: read their saved flair from `getRosterProfileFlair`.
  *  - Anyone else: return null (no flair).
  *  Falls through viewer toggles, hide list, and TournamentMode gates. */
 function resolveFlairForUserId(userId: string | null, kind: "banner" | "avatar" | "theme"): ProfileFlair | null {
     const s = settings.store;
-    const me = UserStore.getCurrentUser?.();
-    const localContextReady = !!me?.id && ensureLocalProfileAccountContextForRender();
     if (!s.showOthersFlair) {
         // Master viewer-toggle is off — still allow self-preview rendering on
         // your own popout, otherwise the setter UX feels broken (you set a
@@ -3113,37 +3325,24 @@ function resolveFlairForUserId(userId: string | null, kind: "banner" | "avatar" 
     if (userId && isFlairHiddenForUser(userId)) return null;
 
     let flair: ProfileFlair | null = null;
-    if (userId && me?.id === userId && localContextReady && isLocalProfileContextReadyFor(userId)) {
-        // Per-field merge (see getEffectiveFlairForUser): roster is the base,
-        // and only fields actively edited in this session may override it.
-        // Persisted values can belong to another Discordmaxxer install or be
-        // an old external URL, so they must never beat a populated owner
-        // record after a restart. Avatar rendering keeps one compatibility
-        // fallback: if the roster has not supplied a profile record yet, a
-        // persisted owner avatar may continue rendering instead of flashing
-        // back to Discord's native avatar. A timestamped empty profile still
-        // wins, so an explicit cloud-side clear is respected.
+    const me = UserStore.getCurrentUser?.();
+    if (userId && me?.id === userId) {
         const merged: ProfileFlair = { ...(getRosterProfileFlair(userId) ?? {}) };
         applyLocalDraftField(merged, s.myBannerUrl, "myBannerUrl", "bannerUrl");
         applyLocalDraftField(merged, s.myAvatarAnimatedUrl, "myAvatarAnimatedUrl", "avatarAnimatedUrl");
         applyLocalDraftField(merged, s.myThemeColorPrimary, "myThemeColorPrimary", "themeColorPrimary");
         applyLocalDraftField(merged, s.myThemeColorSecondary, "myThemeColorSecondary", "themeColorSecondary");
-        if (kind === "avatar"
-            && !flairDraftFields.has("myAvatarAnimatedUrl")
-            && !merged.avatarAnimatedUrl
-            && getRosterProfileUpdatedAt(userId) === undefined
-            && isLocalProfileContextReadyFor(userId)
-            && s.myAvatarAnimatedUrl.trim()) {
-            merged.avatarAnimatedUrl = s.myAvatarAnimatedUrl.trim();
-        }
         mergeLocalPresentationFields(merged, s);
         if (Object.keys(merged).length) flair = merged;
     } else if (userId) {
-        flair = getRosterProfileFlair(userId) ?? null;
+        flair = remoteFlairForRender(userId);
     }
     if (!flair) return null;
 
-    if ((kind === "banner" || kind === "avatar") && isTournamentModeActive()) return null;
+    if (kind === "banner" || kind === "avatar") {
+        const mediaUrl = kind === "banner" ? flair.bannerUrl : flair.avatarAnimatedUrl;
+        if (isTournamentModeActive() && mediaUrl && isAnimatedUrl(mediaUrl)) return null;
+    }
     return flair;
 }
 
@@ -3151,18 +3350,26 @@ function resolveFlairForUserId(userId: string | null, kind: "banner" | "avatar" 
  * remote media load must not leave the stock banner hidden behind a blank
  * overlay. */
 function clearBanner(banner: HTMLElement, failedUrl?: string) {
+    const hadOverlay = banner.hasAttribute("data-dm-flair-banner-applied")
+        || banner.hasAttribute("data-dm-flair-banner-loading-url")
+        || Boolean(banner.querySelector(".dm-flair-banner-video, .dm-flair-banner-image"));
     banner.removeAttribute("data-dm-flair-banner-applied");
-    delete banner.dataset.dmFlairBannerUserId;
-    delete banner.dataset.dmFlairBannerOwnerId;
     delete banner.dataset.dmFlairBannerPosition;
     delete banner.dataset.dmFlairBannerFit;
+    delete banner.dataset.dmFlairMediaSpeed;
     delete banner.dataset.dmFlairMediaEffect;
     delete banner.dataset.dmFlairBannerAppliedUrl;
     delete banner.dataset.dmFlairBannerLoadingUrl;
-    banner.querySelectorAll(".dm-flair-banner-video, .dm-flair-banner-image").forEach(v => {
-        unobserveBannerMedia(v);
-        v.remove();
-    });
+    delete banner.dataset.dmFlairBannerOwnerId;
+    banner.querySelectorAll(".dm-flair-banner-video, .dm-flair-banner-image").forEach(v => v.remove());
+    // Do not erase Discord's own inline banner styles when this container was
+    // never ours. Only undo properties after we actually painted an overlay.
+    if (hadOverlay) {
+        banner.style.removeProperty("background-image");
+        banner.style.removeProperty("background-size");
+        banner.style.removeProperty("background-position");
+        banner.style.removeProperty("background-repeat");
+    }
     if (banner.hasAttribute("data-dm-flair-original-position")) {
         const originalPosition = banner.dataset.dmFlairOriginalPosition ?? "";
         if (originalPosition) banner.style.position = originalPosition;
@@ -3179,7 +3386,7 @@ function clearBanner(banner: HTMLElement, failedUrl?: string) {
 }
 
 type ProfilePresentation = Pick<ProfileFlair,
-    "bannerPosition" | "avatarPosition" | "bannerFit" | "avatarFit" | "avatarScale" | "mediaEffect"
+    "bannerPosition" | "avatarPosition" | "bannerFit" | "avatarFit" | "avatarScale" | "mediaEffect" | "mediaSpeed"
 >;
 
 function applyBannerPresentation(banner: HTMLElement, flair?: ProfilePresentation) {
@@ -3187,27 +3394,20 @@ function applyBannerPresentation(banner: HTMLElement, flair?: ProfilePresentatio
     else delete banner.dataset.dmFlairBannerPosition;
     if (flair?.bannerFit) banner.dataset.dmFlairBannerFit = flair.bannerFit;
     else delete banner.dataset.dmFlairBannerFit;
+    const speed = profileMediaPlaybackRate(flair?.mediaSpeed);
+    if (speed !== 1) banner.dataset.dmFlairMediaSpeed = String(speed);
+    else delete banner.dataset.dmFlairMediaSpeed;
     if (flair?.mediaEffect && flair.mediaEffect !== "none") banner.dataset.dmFlairMediaEffect = flair.mediaEffect;
     else delete banner.dataset.dmFlairMediaEffect;
 }
 
-function applyBanner(banner: HTMLElement, url: string, userId: string, flair?: ProfilePresentation) {
-    const ownerChanged = banner.dataset.dmFlairBannerUserId !== userId;
-    if (ownerChanged && (banner.hasAttribute("data-dm-flair-banner-applied")
-        || banner.hasAttribute("data-dm-flair-banner-loading-url")
-        || banner.querySelector(".dm-flair-banner-video, .dm-flair-banner-image"))) {
-        // Discord recycles the same banner node between profile popouts. Never
-        // let the previous user's late GIF/video callback paint into the new
-        // owner's profile.
-        clearBanner(banner);
-    }
-    banner.dataset.dmFlairBannerUserId = userId;
-    banner.dataset.dmFlairBannerOwnerId = userId;
+function applyBanner(banner: HTMLElement, url: string, flair?: ProfilePresentation, ownerId?: string) {
     // Presentation is updated before the idempotency check so a tier upgrade or
     // a changed owner preference repaints the current media without refetching
     // the same GIF/video. Defaults remain Discordmaxxer's existing cover/center
     // rendering, so FREE media is never downgraded.
     applyBannerPresentation(banner, flair);
+    if (ownerId) banner.dataset.dmFlairBannerOwnerId = ownerId;
     const failedUrl = banner.dataset.dmFlairBannerFailedUrl;
     const failedAt = Number(banner.dataset.dmFlairBannerFailedAt ?? 0);
     const isVideo = isVideoUrl(url);
@@ -3215,7 +3415,14 @@ function applyBanner(banner: HTMLElement, url: string, userId: string, flair?: P
     const appliedOverlay = banner.querySelector(selector);
     // Do not recreate a media element that is already visible or currently
     // loading. The observer runs frequently while a popout is opening.
-    if (banner.dataset.dmFlairBannerAppliedUrl === url && appliedOverlay) return;
+    if (banner.dataset.dmFlairBannerAppliedUrl === url && appliedOverlay) {
+        if (appliedOverlay instanceof HTMLVideoElement) {
+            const speed = profileMediaPlaybackRate(flair?.mediaSpeed);
+            appliedOverlay.playbackRate = speed;
+            appliedOverlay.defaultPlaybackRate = speed;
+        }
+        return;
+    }
     if (banner.dataset.dmFlairBannerLoadingUrl === url) return;
     // Avoid recreating a known-dead media URL every 2s. Retry after a short
     // cooldown so a repaired remote asset can recover without a client restart.
@@ -3232,6 +3439,7 @@ function applyBanner(banner: HTMLElement, url: string, userId: string, flair?: P
         || banner.querySelector(".dm-flair-banner-video, .dm-flair-banner-image")) {
         clearBanner(banner);
     }
+    if (ownerId) banner.dataset.dmFlairBannerOwnerId = ownerId;
     if (!banner.hasAttribute("data-dm-flair-original-position")) {
         banner.dataset.dmFlairOriginalPosition = banner.style.position || "";
         if (!banner.style.position) banner.style.position = "relative";
@@ -3242,7 +3450,7 @@ function applyBanner(banner: HTMLElement, url: string, userId: string, flair?: P
         // A newer scan may have replaced or cleared this request. Never let a
         // late load from an old profile paint over the current native banner.
         if (banner.dataset.dmFlairBannerLoadingUrl !== url
-            || banner.dataset.dmFlairBannerUserId !== userId) {
+            || (ownerId && banner.dataset.dmFlairBannerOwnerId !== ownerId)) {
             media.remove();
             return;
         }
@@ -3251,15 +3459,16 @@ function applyBanner(banner: HTMLElement, url: string, userId: string, flair?: P
         delete banner.dataset.dmFlairBannerFailedAt;
         media.style.opacity = "1";
         banner.dataset.dmFlairBannerAppliedUrl = url;
+        if (ownerId) banner.dataset.dmFlairBannerOwnerId = ownerId;
         banner.setAttribute("data-dm-flair-banner-applied", "1");
         if (media instanceof HTMLVideoElement) {
-            observeBannerMedia(media);
+            const speed = profileMediaPlaybackRate(flair?.mediaSpeed);
+            media.playbackRate = speed;
+            media.defaultPlaybackRate = speed;
             media.play().catch(() => {});
         }
     };
     const fail = () => {
-        if (banner.dataset.dmFlairBannerLoadingUrl !== url
-            || banner.dataset.dmFlairBannerUserId !== userId) return;
         console.warn("[DMProfileFlair] Remote banner could not be loaded; restored the native banner.", url);
         clearBanner(banner, url);
     };
@@ -3274,10 +3483,15 @@ function applyBanner(banner: HTMLElement, url: string, userId: string, flair?: P
         v.loop = true;
         v.muted = true;
         v.playsInline = true;
+        v.playbackRate = profileMediaPlaybackRate(flair?.mediaSpeed);
+        v.defaultPlaybackRate = v.playbackRate;
+        if (/\/profile-media\/\d{17,20}\/(?:banner|avatar)\/[0-9a-f-]{36}(?:\?|$)/i.test(url)) {
+            const posterUrl = `${url}${url.includes("?") ? "&" : "?"}dmx-poster=1`;
+            v.poster = isSharedProfileMediaUrl(url) ? proxyVideoUrl(posterUrl) : posterUrl;
+        }
         v.onloadeddata = () => finish(v);
         v.onerror = fail;
         banner.appendChild(v);
-        observeBannerMedia(v);
         v.src = proxyVideoUrl(url);
         v.play().catch(() => {});
         return;
@@ -3295,7 +3509,7 @@ function applyBanner(banner: HTMLElement, url: string, userId: string, flair?: P
     image.onload = () => finish(image);
     image.onerror = fail;
     banner.appendChild(image);
-    image.src = url;
+    image.src = isSharedProfileMediaUrl(url) ? proxyVideoUrl(url) : url;
 }
 
 /** Accept `RRGGBB`, `#RRGGBB`, or `0xRRGGBB` and emit canonical `#RRGGBB`.
@@ -3348,8 +3562,7 @@ function applyTheme(container: HTMLElement, primary?: string, secondary?: string
 }
 
 function clearTheme(container: HTMLElement) {
-    if (!container.hasAttribute("data-dm-flair-theme-applied")
-        && !container.dataset.dmFlairThemeOwnerId) return;
+    if (!container.hasAttribute("data-dm-flair-theme-applied")) return;
     container.style.removeProperty("background-image");
     container.style.removeProperty("background-color");
     container.style.removeProperty("--profile-gradient-primary-color");
@@ -3392,6 +3605,7 @@ function clearAvatar(avatar: HTMLImageElement) {
 
 function applyAvatar(avatar: HTMLImageElement, url: string, userId?: string, flair?: ProfilePresentation) {
     applyAvatarPresentation(avatar, flair);
+    const renderUrl = isSharedProfileMediaUrl(url) ? proxyVideoUrl(url) : url;
     // Idempotency MUST compare against the URL we last applied (stashed on the
     // element), NOT against `avatar.src`. The browser normalizes/encodes the
     // src it reads back (dm-media:// scheme, percent-encoding, trailing
@@ -3426,7 +3640,7 @@ function applyAvatar(avatar: HTMLImageElement, url: string, userId?: string, fla
             const orig = avatar.dataset.dmFlairOriginalSrc;
             if (orig && avatar.src !== orig) avatar.src = orig;
         };
-        avatar.src = url;
+        avatar.src = renderUrl;
         avatar.dataset.dmFlairAppliedUrl = url;
         if (userId) avatar.dataset.dmFlairAvatarUserId = userId;
         avatar.setAttribute("data-dm-flair-avatar-applied", "1");
@@ -3437,7 +3651,7 @@ function applyAvatar(avatar: HTMLImageElement, url: string, userId?: string, fla
         avatar.dataset.dmFlairFailedUrl = url;
         console.warn("[DMProfileFlair] Remote avatar could not be loaded; kept the native avatar.", url);
     };
-    probe.src = url;
+    probe.src = renderUrl;
 }
 
 function clearBackgroundAvatar(el: HTMLElement) {
@@ -3468,7 +3682,8 @@ function applyBackgroundAvatarPresentation(el: HTMLElement, flair?: ProfilePrese
 
 function applyBackgroundAvatar(el: HTMLElement, url: string, userId?: string, flair?: ProfilePresentation) {
     applyBackgroundAvatarPresentation(el, flair);
-    const newBg = `url("${url}")`;
+    const renderUrl = isSharedProfileMediaUrl(url) ? proxyVideoUrl(url) : url;
+    const newBg = `url("${renderUrl}")`;
     if (el.dataset.dmFlairAppliedUrl === url) {
         if (userId) el.dataset.dmFlairAvatarUserId = userId;
         return;
@@ -3487,19 +3702,7 @@ function clearAppliedAvatars() {
     document.querySelectorAll<HTMLElement>("[data-dm-flair-bg-avatar-applied]").forEach(clearBackgroundAvatar);
 }
 
-/** Keep an already-proven owner avatar in place while the first roster fetch
- * is still pending. The owner marker prevents this from leaking the viewer's
- * avatar into another person's surface; once the roster is ready, the normal
- * cloud ownership decision resumes and can replace or clear it. */
-function preserveAppliedAvatarWhileRosterPending(element: HTMLElement, userId: string, rosterReady: boolean): boolean {
-    return !rosterReady && element.dataset.dmFlairAvatarUserId === userId;
-}
-
 function scanForPopouts(_root: ParentNode = document) {
-    // Resolve the account-local cache before any self surface is inspected.
-    // This prevents the previous account's media from flashing into the new
-    // account while the roster request is still in flight.
-    const localContextReady = ensureLocalProfileAccountContextForRender();
     const me = UserStore.getCurrentUser?.();
     const tmActive = isTournamentModeActive();
     const rosterReady = isRosterReady();
@@ -3510,9 +3713,7 @@ function scanForPopouts(_root: ParentNode = document) {
     for (const banner of banners) {
         const container = findProfileContainerFromBanner(banner);
         if (!container) {
-            // Discord can mount the banner shell before its profile container.
-            // Leave any already-applied owner decoration in place until the
-            // next observer pass can identify the new surface.
+            clearBanner(banner);
             continue;
         }
         // Identify whose popout this is by extracting userId from an avatar
@@ -3526,29 +3727,25 @@ function scanForPopouts(_root: ParentNode = document) {
         // returns their real id.
         const userId = getUserIdFromContainer(container);
         if (!userId) {
-            // Identity is briefly unavailable while Discord commits the avatar
-            // and profile data. Clearing here caused the native banner and
-            // default gradient to flash before the same scan could recover.
-            // Once identity is available, the normal owner lookup below will
-            // clear decorations that do not belong to the new profile.
+            if (preserveProfileVisualDuringPendingRoster(container, banner, null)) continue;
+            clearBanner(banner);
+            clearTheme(container);
+            clearProfileVisualPending(container);
             continue;
         }
 
-        // Give DMWidget an authoritative owner marker on the profile shell.
-        // Banner/theme markers are not guaranteed to exist when a user has
-        // only widget flair, so relying on those made foreign cards fall back
-        // to the viewer's style or appear unskinned during hydration.
-        container.dataset.dmFlairProfileOwnerId = userId;
-
-        // A remote roster refresh is asynchronous. Keep the last known
-        // decoration for other users until the replacement response arrives;
-        // self-preview can still use its local fields immediately.
-        if (!rosterReady && String(me?.id ?? "") !== userId) continue;
+        // The profile identity is known, but the shared roster may still be
+        // fetching. Keep this exact owner's already-rendered media/gradient in
+        // place until the authoritative result arrives. If the owner marker
+        // belongs to a different user, the helper returns false and we clear
+        // it immediately instead of leaking one profile into another.
+        if (!rosterReady && preserveProfileVisualDuringPendingRoster(container, banner, userId)) continue;
+        clearProfileVisualPending(container);
 
         const bannerFlair = resolveFlairForUserId(userId, "banner");
         if (bannerFlair?.bannerUrl) {
             const suppressForTM = tmActive && isAnimatedUrl(bannerFlair.bannerUrl);
-            if (!suppressForTM) applyBanner(banner, bannerFlair.bannerUrl, userId, bannerFlair);
+            if (!suppressForTM) applyBanner(banner, bannerFlair.bannerUrl, bannerFlair, userId);
             else {
                 clearBanner(banner);
             }
@@ -3582,16 +3779,15 @@ function scanForPopouts(_root: ParentNode = document) {
     // This is the common case (most users in most servers have no flair), and
     // it's what makes the per-mutation observer affordable.
     const sa = settings.store;
-    const selfId = String(me?.id ?? "");
-    const selfHasAvatarFlair = (localContextReady
-        && isLocalProfileContextReadyFor(selfId)
-        && !!sa.myAvatarAnimatedUrl.trim())
-        || (!!selfId && !!getRosterProfileFlair(selfId)?.avatarAnimatedUrl);
+    const selfHasAvatarFlair = !!sa.myAvatarAnimatedUrl.trim();
     const othersAvatarFlair =
-        rosterReady && sa.showOthersFlair && sa.showOthersAvatar && rosterHasAnyAvatarFlair();
+        sa.showOthersFlair && sa.showOthersAvatar && (!rosterReady || rosterHasAnyAvatarFlair());
     const anyAvatarFlair = selfHasAvatarFlair || othersAvatarFlair;
+    const avatarRosterPending = !rosterReady && sa.showOthersFlair && sa.showOthersAvatar;
 
-    if (!tmActive && anyAvatarFlair) {
+    // `resolveFlairForUserId` filters only animated media while TM is active;
+    // keep scanning so a static shared avatar still renders during a match.
+    if (anyAvatarFlair) {
         document.querySelectorAll("img").forEach(img => {
             const el = img as HTMLImageElement;
             const src = el.currentSrc || el.src || "";
@@ -3602,11 +3798,10 @@ function scanForPopouts(_root: ParentNode = document) {
             // can be mistaken for the profile being viewed.
             const userId = m?.[1] ?? el.dataset.dmFlairAvatarUserId;
             if (!userId) return;
-            if (!rosterReady && String(me?.id ?? "") !== userId) return;
             const avatarFlair = resolveFlairForUserId(userId, "avatar");
             if (avatarFlair?.avatarAnimatedUrl) {
                 applyAvatar(el, avatarFlair.avatarAnimatedUrl, userId, avatarFlair);
-            } else if (!preserveAppliedAvatarWhileRosterPending(el, userId, rosterReady)) {
+            } else if (!avatarRosterPending || el.dataset.dmFlairAvatarUserId !== userId) {
                 clearAvatar(el);
             }
         });
@@ -3622,11 +3817,10 @@ function scanForPopouts(_root: ParentNode = document) {
             const m = bg.match(/\/avatars\/(\d{17,20})\//);
             const userId = m?.[1] ?? el.dataset.dmFlairAvatarUserId;
             if (!userId) return;
-            if (!rosterReady && String(me?.id ?? "") !== userId) return;
             const avatarFlair = resolveFlairForUserId(userId, "avatar");
             if (avatarFlair?.avatarAnimatedUrl) {
                 applyBackgroundAvatar(el, avatarFlair.avatarAnimatedUrl, userId, avatarFlair);
-            } else if (!preserveAppliedAvatarWhileRosterPending(el, userId, rosterReady)) {
+            } else if (!avatarRosterPending || el.dataset.dmFlairAvatarUserId !== userId) {
                 clearBackgroundAvatar(el);
             }
         });
@@ -3637,13 +3831,12 @@ function scanForPopouts(_root: ParentNode = document) {
         for (const a of fallback) {
             const container = findProfileContainerFromBanner(a as any) ?? a.closest('[class*="user-profile-popout"]') ?? a.parentElement;
             const userId = container ? getUserIdFromContainer(container) : null;
-            if (!rosterReady && String(me?.id ?? "") !== String(userId ?? "")) continue;
             const flair = resolveFlairForUserId(userId, "avatar");
             if (flair?.avatarAnimatedUrl) applyAvatar(a, flair.avatarAnimatedUrl, userId ?? undefined, flair);
-            else if (!userId || !preserveAppliedAvatarWhileRosterPending(a, userId, rosterReady)) clearAvatar(a);
+            else if (!avatarRosterPending || a.dataset.dmFlairAvatarUserId !== userId) clearAvatar(a);
         }
         // Warn once if the current user has a default avatar.
-        if (me && localContextReady && isLocalProfileContextReadyFor(selfId) && !me.avatar && settings.store.myAvatarAnimatedUrl.trim() && !defaultAvatarWarned) {
+        if (me && !me.avatar && settings.store.myAvatarAnimatedUrl.trim() && !defaultAvatarWarned) {
             defaultAvatarWarned = true;
             toast(
                 "⚠ Your Discord avatar is set to the default — your animated avatar will only show on profile popouts + full profile, not member list or chat. Upload any custom Discord avatar to fix.",
@@ -3651,7 +3844,7 @@ function scanForPopouts(_root: ParentNode = document) {
                 10000
             );
         }
-    } else if (rosterReady || tmActive) {
+    } else {
         // Clear swaps when TournamentMode is active or the roster/viewer
         // toggle no longer exposes any avatar flair. This also prevents an
         // old remote avatar from remaining visible after a profile change.
@@ -3677,16 +3870,6 @@ function scheduleScan() {
 
 function startObserver() {
     if (observer) return;
-    if (typeof IntersectionObserver !== "undefined") {
-        mediaPlaybackObserver = new IntersectionObserver(entries => {
-            if (document.hidden) return;
-            for (const entry of entries) {
-                if (!entry.isIntersecting) continue;
-                const video = entry.target as HTMLVideoElement;
-                if (video instanceof HTMLVideoElement) video.play().catch(() => {});
-            }
-        }, { threshold: 0.01 });
-    }
     document.addEventListener("visibilitychange", onVisibilityChange);
     window.addEventListener("focus", onRosterFocus);
     removeRosterListener = onRosterChange(scheduleScan);
@@ -3698,7 +3881,6 @@ function startObserver() {
     // surfaces and halves the steady-state polling cost vs the old 1s.
     rescanTimer = window.setInterval(() => scanForPopouts(document), 2000);
     refreshRosterForVisibleSurface();
-    scheduleProfileMediaSync();
 }
 
 function stopObserver() {
@@ -3709,17 +3891,17 @@ function stopObserver() {
     lastRosterRefreshAt = 0;
     observer?.disconnect();
     observer = null;
-    mediaPlaybackObserver?.disconnect();
-    mediaPlaybackObserver = null;
     if (rescanTimer !== null) { clearInterval(rescanTimer); rescanTimer = null; }
-    if (profileMediaSyncTimer !== null) { clearTimeout(profileMediaSyncTimer); profileMediaSyncTimer = null; }
     document.querySelectorAll("[data-dm-flair-banner-applied]").forEach(el => {
         const e = el as HTMLElement;
+        e.style.removeProperty("background-image");
+        e.style.removeProperty("background-size");
+        e.style.removeProperty("background-position");
+        e.style.removeProperty("background-repeat");
         e.removeAttribute("data-dm-flair-banner-applied");
-        delete e.dataset.dmFlairBannerUserId;
-        delete e.dataset.dmFlairBannerOwnerId;
         delete e.dataset.dmFlairBannerAppliedUrl;
         delete e.dataset.dmFlairBannerLoadingUrl;
+        delete e.dataset.dmFlairBannerOwnerId;
         delete e.dataset.dmFlairBannerPosition;
         delete e.dataset.dmFlairBannerFit;
         delete e.dataset.dmFlairMediaEffect;
@@ -3736,7 +3918,6 @@ function stopObserver() {
     document.querySelectorAll<HTMLElement>("[data-dm-flair-banner-loading-url]").forEach(el => {
         delete el.dataset.dmFlairBannerLoadingUrl;
         delete el.dataset.dmFlairBannerAppliedUrl;
-        delete el.dataset.dmFlairBannerUserId;
         delete el.dataset.dmFlairBannerOwnerId;
         delete el.dataset.dmFlairBannerPosition;
         delete el.dataset.dmFlairBannerFit;
@@ -3757,9 +3938,6 @@ function stopObserver() {
         e.style.removeProperty("--profile-body-background-color");
         e.removeAttribute("data-dm-flair-theme-applied");
         delete e.dataset.dmFlairThemeOwnerId;
-    });
-    document.querySelectorAll<HTMLElement>("[data-dm-flair-profile-owner-id]").forEach(el => {
-        delete el.dataset.dmFlairProfileOwnerId;
     });
     // Restore original avatar src/backgrounds and remove owner presentation
     // attributes so toggling the plugin off + on cannot leave stale media or

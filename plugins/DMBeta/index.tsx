@@ -125,7 +125,7 @@ function BetaPanel() {
 
     if (!loaded) return null;
 
-    const trackColor = enabled ? "#FFAA00" : "rgba(255,255,255,0.18)";
+    const trackColor = enabled ? "#F3D27A" : "rgba(255,255,255,0.18)";
     const knobX = enabled ? 22 : 2;
 
     return (
@@ -171,7 +171,7 @@ function BetaPanel() {
                 }} />
             </button>
             <div style={{ flex: 1 }}>
-                <div style={{ fontSize: "13px", fontWeight: 600, color: allowed ? "#FFD27A" : "#9aa1ad" }}>
+                <div style={{ fontSize: "13px", fontWeight: 600, color: allowed ? "#FFE5A8" : "#9aa1ad" }}>
                     Beta channel {allowed ? "" : "🔒 (MAXXER++ required)"}
                 </div>
                 <div style={{ fontSize: "11.5px", color: "#a0a6b4", marginTop: "2px", lineHeight: 1.4 }}>

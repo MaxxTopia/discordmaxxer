@@ -818,8 +818,6 @@ async function republishConfig(slotKey: string): Promise<string | null> {
 
 const widgetStylePublishSerial = new Map<string, number>();
 let widgetStyleSyncQueue: Promise<void> = Promise.resolve();
-const ownerWidgetStyleBootstrapAt = new Map<string, number>();
-const OWNER_WIDGET_STYLE_BOOTSTRAP_RETRY_MS = 15 * 60 * 1000;
 
 function nextWidgetStylePublishRequest(slotKey: string): number {
     const request = (widgetStylePublishSerial.get(slotKey) ?? 0) + 1;
@@ -864,69 +862,6 @@ async function syncRemoteWidgetStyle(appId: string, slotKey: string, accountId: 
         console.warn("[DMWidget] cross-install widget skin sync failed:", error);
         return false;
     }
-}
-
-type OwnerWidgetStyleBootstrap = {
-    appId: string;
-    slotKey: string;
-    accountId: string;
-    preset: WidgetStylePreset;
-    updatedAt: number;
-};
-
-/**
- * Migrate older locally-selected skins into the cross-install marker without
- * making the owner click Apply again. This is deliberately best-effort and
- * rate-limited: it only reads/patches an attached application when its marker
- * is missing or older than the current local choice, and it never overwrites a
- * marker that is at least as new as the local selection.
- */
-async function syncMissingOwnerWidgetStyleMarker(candidate: OwnerWidgetStyleBootstrap): Promise<void> {
-    const { appId, slotKey, accountId, preset, updatedAt } = candidate;
-    if (!SNOWFLAKE.test(appId) || !accountId) return;
-    if (String(UserStore.getCurrentUser()?.id ?? "") !== accountId || activeSlotsAccountId !== accountId) return;
-    const key = `${accountId}:${appId}`;
-    const lastAttempt = ownerWidgetStyleBootstrapAt.get(key) ?? 0;
-    if (lastAttempt && Date.now() - lastAttempt < OWNER_WIDGET_STYLE_BOOTSTRAP_RETRY_MS) return;
-    ownerWidgetStyleBootstrapAt.set(key, Date.now());
-    try {
-        const application = await apiGet(`/applications/${appId}`);
-        if (String(UserStore.getCurrentUser()?.id ?? "") !== accountId || activeSlotsAccountId !== accountId) return;
-        const remoteStyle = remoteWidgetStyleFromApplication(application);
-        if (remoteStyle && remoteStyle.updatedAt > updatedAt) return;
-        const current = getSlot(slotKey);
-        if (current.appId !== appId || current.widgetStyle !== preset.id || current.widgetStyleSource === "remote") return;
-        const localIsAuthoritative = current.widgetStyleSource === "local";
-        if (remoteStyle && (remoteStyle.updatedAt > updatedAt || (remoteStyle.updatedAt === updatedAt && !localIsAuthoritative))) return;
-        const currentDescription = applicationDescription(application);
-        if (currentDescription === null) return;
-        const description = remoteWidgetDescriptionFor(currentDescription, preset, updatedAt);
-        if (!description || description === currentDescription) return;
-        await apiPatch(`/applications/${appId}`, { description });
-        const confirmedApplication = await apiGet(`/applications/${appId}`);
-        const confirmed = remoteWidgetStyleFromApplication(confirmedApplication);
-        if (!confirmed || confirmed.style !== preset.id || confirmed.updatedAt !== updatedAt) {
-            ownerWidgetStyleBootstrapAt.set(key, Date.now() - OWNER_WIDGET_STYLE_BOOTSTRAP_RETRY_MS + 30_000);
-            console.warn("[DMWidget] owner widget skin marker was not confirmed:", appId);
-        }
-    } catch (error) {
-        // Do not make an otherwise cosmetic migration noisy for the user. A
-        // later 30-second reconciliation can retry after a transient Discord
-        // response, while the local skin remains usable on this install.
-        ownerWidgetStyleBootstrapAt.set(key, Date.now() - OWNER_WIDGET_STYLE_BOOTSTRAP_RETRY_MS + 30_000);
-        console.warn("[DMWidget] owner widget skin marker migration failed:", error);
-    }
-}
-
-function queueOwnerWidgetStyleMarkerSync(candidates: OwnerWidgetStyleBootstrap[]): void {
-    const unique = Array.from(new Map(candidates.map(candidate => [`${candidate.accountId}:${candidate.appId}`, candidate])).values()).slice(0, 4);
-    if (!unique.length) return;
-    const result = widgetStyleSyncQueue.then(async () => {
-        for (const candidate of unique) await syncMissingOwnerWidgetStyleMarker(candidate);
-    }, async () => {
-        for (const candidate of unique) await syncMissingOwnerWidgetStyleMarker(candidate);
-    });
-    widgetStyleSyncQueue = result.then(() => undefined, () => undefined);
 }
 
 interface WidgetStyleSyncResult {
@@ -1847,34 +1782,39 @@ const WIDGET_CLIENT_SKIN_CSS = `
 [data-dm-widget-skin]::before, [data-dm-widget-skin]::after { content: ""; position: absolute; pointer-events: none; border-radius: inherit; }
 [data-dm-widget-skin]::before { z-index: 0; inset: 0; background-repeat: no-repeat; }
 [data-dm-widget-skin]::after { z-index: 2; inset: 0; }
+[data-dm-widget-skin][data-dm-widget-motion-paused="false"]::before,
+[data-dm-widget-skin][data-dm-widget-motion-paused="false"]::after {
+    animation-play-state: running !important;
+    will-change: transform, opacity;
+}
 [data-dm-widget-skin] > * { position: relative; z-index: 1; }
 [data-dm-widget-skin="neonCircuit"] { background-image: linear-gradient(104deg, transparent 0 24%, color-mix(in srgb, var(--dmw-skin-accent) 12%, transparent) 36%, color-mix(in srgb, #8c63ff 13%, transparent) 52%, color-mix(in srgb, var(--dmw-skin-secondary) 20%, transparent) 70%, transparent 92%), linear-gradient(180deg, transparent 8%, color-mix(in srgb, var(--dmw-skin-secondary) 13%, transparent) 53%, transparent 94%), linear-gradient(135deg, var(--dmw-skin-surface), #111d31 72%) !important; }
-[data-dm-widget-skin="neonCircuit"]::before { background-image: linear-gradient(104deg, transparent 0 23%, color-mix(in srgb, var(--dmw-skin-accent) 16%, transparent) 35%, color-mix(in srgb, #8c63ff 14%, transparent) 51%, color-mix(in srgb, var(--dmw-skin-secondary) 22%, transparent) 69%, transparent 92%), linear-gradient(180deg, transparent 9%, color-mix(in srgb, var(--dmw-skin-secondary) 22%, transparent) 52%, transparent 92%), repeating-linear-gradient(90deg, transparent 0 22px, color-mix(in srgb, var(--dmw-skin-accent) 7%, transparent) 23px 24px), radial-gradient(circle at 94% 8%, color-mix(in srgb, var(--dmw-skin-secondary) 44%, transparent), transparent 38%); clip-path: polygon(0 0, 100% 0, 100% 64%, 73% 52%, 51% 100%, 0 82%); filter: blur(.15px); animation: dm-widget-client-aurora 8s ease-in-out infinite alternate; }
-[data-dm-widget-skin="neonCircuit"]::after { inset: -15% -34%; width: 38%; background: linear-gradient(90deg, transparent, color-mix(in srgb, #fff 68%, var(--dmw-skin-accent)), transparent); filter: blur(2px); transform: rotate(17deg); animation: dm-widget-client-prism 5s ease-in-out infinite; }
+[data-dm-widget-skin="neonCircuit"]::before { background-image: linear-gradient(104deg, transparent 0 23%, color-mix(in srgb, var(--dmw-skin-accent) 16%, transparent) 35%, color-mix(in srgb, #8c63ff 14%, transparent) 51%, color-mix(in srgb, var(--dmw-skin-secondary) 22%, transparent) 69%, transparent 92%), linear-gradient(180deg, transparent 9%, color-mix(in srgb, var(--dmw-skin-secondary) 22%, transparent) 52%, transparent 92%), repeating-linear-gradient(90deg, transparent 0 22px, color-mix(in srgb, var(--dmw-skin-accent) 7%, transparent) 23px 24px), radial-gradient(circle at 94% 8%, color-mix(in srgb, var(--dmw-skin-secondary) 44%, transparent), transparent 38%); clip-path: polygon(0 0, 100% 0, 100% 64%, 73% 52%, 51% 100%, 0 82%); filter: blur(.15px); animation: dm-widget-client-aurora 8s ease-in-out infinite alternate !important; }
+[data-dm-widget-skin="neonCircuit"]::after { inset: -15% -34%; width: 38%; background: linear-gradient(90deg, transparent, color-mix(in srgb, #fff 68%, var(--dmw-skin-accent)), transparent); filter: blur(2px); transform: rotate(17deg); animation: dm-widget-client-prism 5s ease-in-out infinite !important; }
   [data-dm-widget-skin="emberProtocol"] { background-image: radial-gradient(ellipse at 4% 100%, color-mix(in srgb, var(--dmw-skin-accent) 34%, transparent), transparent 42%), radial-gradient(ellipse at 96% 4%, color-mix(in srgb, var(--dmw-skin-secondary) 24%, transparent), transparent 36%), linear-gradient(115deg, #101819, #1d2b24 55%, #100f18 100%) !important; }
-  [data-dm-widget-skin="emberProtocol"]::before { background-image: radial-gradient(ellipse 18% 44% at 2% 18%, color-mix(in srgb, var(--dmw-skin-accent) 46%, transparent), transparent 70%), radial-gradient(ellipse 16% 42% at 98% 82%, color-mix(in srgb, var(--dmw-skin-secondary) 35%, transparent), transparent 70%), radial-gradient(circle at 10% 92%, color-mix(in srgb, var(--dmw-skin-accent) 72%, transparent) 0 2px, transparent 3px), radial-gradient(circle at 91% 12%, color-mix(in srgb, var(--dmw-skin-secondary) 72%, transparent) 0 2px, transparent 3px), linear-gradient(118deg, transparent 0 42%, color-mix(in srgb, var(--dmw-skin-accent) 10%, transparent) 52%, transparent 62%); clip-path: polygon(0 0, 100% 0, 100% 100%, 80% 95%, 62% 100%, 37% 94%, 0 100%); animation: dm-widget-client-mothlight-dust 5.4s ease-in-out infinite alternate; }
-  [data-dm-widget-skin="emberProtocol"]::after { inset: 0; background-image: radial-gradient(circle at 7% 14%, color-mix(in srgb, var(--dmw-skin-accent) 88%, white) 0 2px, transparent 3.5px), radial-gradient(circle at 94% 16%, color-mix(in srgb, var(--dmw-skin-secondary) 88%, white) 0 2px, transparent 3.5px), radial-gradient(circle at 3% 78%, color-mix(in srgb, var(--dmw-skin-accent) 74%, transparent) 0 2px, transparent 3.5px), radial-gradient(circle at 96% 84%, color-mix(in srgb, var(--dmw-skin-secondary) 74%, transparent) 0 2px, transparent 3.5px), radial-gradient(circle at 18% 95%, color-mix(in srgb, var(--dmw-skin-accent) 82%, transparent) 0 1.5px, transparent 3px), radial-gradient(circle at 81% 5%, color-mix(in srgb, var(--dmw-skin-secondary) 78%, transparent) 0 1.5px, transparent 3px), radial-gradient(ellipse at 0% 50%, color-mix(in srgb, var(--dmw-skin-accent) 16%, transparent), transparent 24%), radial-gradient(ellipse at 100% 50%, color-mix(in srgb, var(--dmw-skin-secondary) 14%, transparent), transparent 24%); mix-blend-mode: screen; animation: dm-widget-client-mothlight-dust 4.2s ease-in-out infinite reverse; }
+  [data-dm-widget-skin="emberProtocol"]::before { background-image: radial-gradient(ellipse 18% 44% at 2% 18%, color-mix(in srgb, var(--dmw-skin-accent) 46%, transparent), transparent 70%), radial-gradient(ellipse 16% 42% at 98% 82%, color-mix(in srgb, var(--dmw-skin-secondary) 35%, transparent), transparent 70%), radial-gradient(circle at 10% 92%, color-mix(in srgb, var(--dmw-skin-accent) 72%, transparent) 0 2px, transparent 3px), radial-gradient(circle at 91% 12%, color-mix(in srgb, var(--dmw-skin-secondary) 72%, transparent) 0 2px, transparent 3px), linear-gradient(118deg, transparent 0 42%, color-mix(in srgb, var(--dmw-skin-accent) 10%, transparent) 52%, transparent 62%); clip-path: polygon(0 0, 100% 0, 100% 100%, 80% 95%, 62% 100%, 37% 94%, 0 100%); animation: dm-widget-client-mothlight-dust 5.4s ease-in-out infinite alternate !important; }
+  [data-dm-widget-skin="emberProtocol"]::after { inset: 0; background-image: radial-gradient(circle at 7% 14%, color-mix(in srgb, var(--dmw-skin-accent) 88%, white) 0 2px, transparent 3.5px), radial-gradient(circle at 94% 16%, color-mix(in srgb, var(--dmw-skin-secondary) 88%, white) 0 2px, transparent 3.5px), radial-gradient(circle at 3% 78%, color-mix(in srgb, var(--dmw-skin-accent) 74%, transparent) 0 2px, transparent 3.5px), radial-gradient(circle at 96% 84%, color-mix(in srgb, var(--dmw-skin-secondary) 74%, transparent) 0 2px, transparent 3.5px), radial-gradient(circle at 18% 95%, color-mix(in srgb, var(--dmw-skin-accent) 82%, transparent) 0 1.5px, transparent 3px), radial-gradient(circle at 81% 5%, color-mix(in srgb, var(--dmw-skin-secondary) 78%, transparent) 0 1.5px, transparent 3px), radial-gradient(ellipse at 0% 50%, color-mix(in srgb, var(--dmw-skin-accent) 16%, transparent), transparent 24%), radial-gradient(ellipse at 100% 50%, color-mix(in srgb, var(--dmw-skin-secondary) 14%, transparent), transparent 24%); mix-blend-mode: screen; animation: dm-widget-client-mothlight-dust 4.2s ease-in-out infinite reverse !important; }
 [data-dm-widget-skin="cottonCandy"] { background-image: radial-gradient(ellipse at 8% 0%, color-mix(in srgb, var(--dmw-skin-accent) 29%, transparent), transparent 42%), radial-gradient(ellipse at 96% 104%, color-mix(in srgb, var(--dmw-skin-secondary) 36%, transparent), transparent 49%), linear-gradient(135deg, var(--dmw-skin-surface), #171b39 84%) !important; }
-[data-dm-widget-skin="cottonCandy"]::before { background: linear-gradient(116deg, transparent 20%, color-mix(in srgb, var(--dmw-skin-accent) 15%, transparent) 36%, color-mix(in srgb, var(--dmw-skin-secondary) 18%, transparent) 55%, transparent 72%); filter: blur(4px); animation: dm-widget-client-ribbon 6s ease-in-out infinite alternate; }
-[data-dm-widget-skin="cottonCandy"]::after { inset: -30% -22%; background: radial-gradient(ellipse at 35% 50%, color-mix(in srgb, var(--dmw-skin-accent) 22%, transparent), transparent 40%), radial-gradient(ellipse at 74% 50%, color-mix(in srgb, var(--dmw-skin-secondary) 21%, transparent), transparent 40%); filter: blur(13px); animation: dm-widget-client-ribbon 7s ease-in-out infinite alternate-reverse; }
+[data-dm-widget-skin="cottonCandy"]::before { background: linear-gradient(116deg, transparent 20%, color-mix(in srgb, var(--dmw-skin-accent) 15%, transparent) 36%, color-mix(in srgb, var(--dmw-skin-secondary) 18%, transparent) 55%, transparent 72%); filter: blur(4px); animation: dm-widget-client-ribbon 6s ease-in-out infinite alternate !important; }
+[data-dm-widget-skin="cottonCandy"]::after { inset: -30% -22%; background: radial-gradient(ellipse at 35% 50%, color-mix(in srgb, var(--dmw-skin-accent) 22%, transparent), transparent 40%), radial-gradient(ellipse at 74% 50%, color-mix(in srgb, var(--dmw-skin-secondary) 21%, transparent), transparent 40%); filter: blur(13px); animation: dm-widget-client-ribbon 7s ease-in-out infinite alternate-reverse !important; }
 [data-dm-widget-skin="frostedGlass"] { background-image: radial-gradient(ellipse at 0% 100%, rgba(216,243,255,.18), transparent 38%), radial-gradient(ellipse at 100% 0%, rgba(117,134,169,.22), transparent 34%), linear-gradient(135deg, #18283a 0%, rgba(18,26,37,.96) 52%, #202f46 100%) !important; backdrop-filter: blur(12px) saturate(1.25); }
-[data-dm-widget-skin="frostedGlass"]::before { inset: 2px; border: 1px solid rgba(216,243,255,.28); background-image: linear-gradient(132deg, transparent 0 18%, rgba(216,243,255,.14) 19% 20%, transparent 21% 58%, rgba(216,243,255,.1) 59% 60%, transparent 61%), radial-gradient(ellipse at 0% 100%, rgba(216,243,255,.21), transparent 38%), radial-gradient(ellipse at 100% 0%, rgba(117,134,169,.22), transparent 34%), linear-gradient(0deg, rgba(255,255,255,.045), transparent); clip-path: polygon(0 0, 100% 0, 100% 100%, 83% 94%, 64% 100%, 45% 93%, 25% 100%, 0 91%); box-shadow: inset 0 0 0 3px rgba(216,243,255,.045), 0 0 15px rgba(216,243,255,.1); animation: dm-widget-client-ice-drift 8s ease-in-out infinite alternate; }
-[data-dm-widget-skin="frostedGlass"]::after { inset: 0 auto 0 -34%; width: 28%; background: linear-gradient(90deg, transparent 0%, rgba(216,243,255,.04) 16%, rgba(255,255,255,.3) 44%, rgba(216,243,255,.14) 58%, rgba(255,255,255,.05) 76%, transparent 100%); filter: blur(.2px); will-change: transform, opacity; animation: dm-widget-client-glint 7.4s cubic-bezier(.22,.72,.3,1) infinite; }
+[data-dm-widget-skin="frostedGlass"]::before { inset: 2px; border: 1px solid rgba(216,243,255,.28); background-image: linear-gradient(132deg, transparent 0 18%, rgba(216,243,255,.14) 19% 20%, transparent 21% 58%, rgba(216,243,255,.1) 59% 60%, transparent 61%), radial-gradient(ellipse at 0% 100%, rgba(216,243,255,.21), transparent 38%), radial-gradient(ellipse at 100% 0%, rgba(117,134,169,.22), transparent 34%), linear-gradient(0deg, rgba(255,255,255,.045), transparent); clip-path: polygon(0 0, 100% 0, 100% 100%, 83% 94%, 64% 100%, 45% 93%, 25% 100%, 0 91%); box-shadow: inset 0 0 0 3px rgba(216,243,255,.045), 0 0 15px rgba(216,243,255,.1); animation: dm-widget-client-ice-drift 8s ease-in-out infinite alternate !important; }
+[data-dm-widget-skin="frostedGlass"]::after { inset: 0 auto 0 -34%; width: 28%; background: linear-gradient(90deg, transparent 0%, rgba(216,243,255,.04) 16%, rgba(255,255,255,.3) 44%, rgba(216,243,255,.14) 58%, rgba(255,255,255,.05) 76%, transparent 100%); filter: blur(.2px); will-change: transform, opacity; animation: dm-widget-client-glint 7.4s cubic-bezier(.22,.72,.3,1) infinite !important; }
   [data-dm-widget-skin="championRun"] { background-image: radial-gradient(ellipse at -4% 12%, color-mix(in srgb, var(--dmw-skin-accent) 46%, transparent), transparent 36%), radial-gradient(ellipse at 104% 90%, color-mix(in srgb, var(--dmw-skin-secondary) 28%, transparent), transparent 34%), linear-gradient(90deg, color-mix(in srgb, #5f0820 80%, transparent), transparent 18% 82%, color-mix(in srgb, #5f0820 74%, transparent)), repeating-linear-gradient(104deg, transparent 0 17px, color-mix(in srgb, var(--dmw-skin-accent) 5%, transparent) 18px 20px), radial-gradient(ellipse at 50% 100%, #260d1a, var(--dmw-skin-surface) 74%) !important; border-color: color-mix(in srgb, var(--dmw-skin-secondary) 64%, var(--dmw-skin-accent)) !important; }
-  [data-dm-widget-skin="championRun"]::before { background-image: radial-gradient(ellipse at -4% 12%, color-mix(in srgb, var(--dmw-skin-accent) 56%, transparent), transparent 36%), radial-gradient(ellipse at 104% 90%, color-mix(in srgb, var(--dmw-skin-secondary) 34%, transparent), transparent 34%), linear-gradient(90deg, color-mix(in srgb, #5f0820 86%, transparent), transparent 18% 82%, color-mix(in srgb, #5f0820 78%, transparent)), repeating-linear-gradient(104deg, transparent 0 17px, color-mix(in srgb, var(--dmw-skin-accent) 6%, transparent) 18px 20px); animation: dm-widget-client-sanguine-velvet 7.2s ease-in-out infinite alternate; }
-  [data-dm-widget-skin="championRun"]::after { inset: 0; background-image: radial-gradient(circle at 4% 12%, color-mix(in srgb, var(--dmw-skin-secondary) 88%, white) 0 2px, transparent 4px), radial-gradient(circle at 96% 86%, color-mix(in srgb, var(--dmw-skin-accent) 82%, transparent) 0 2px, transparent 4px), radial-gradient(circle at 8% 78%, color-mix(in srgb, var(--dmw-skin-accent) 72%, transparent) 0 1.5px, transparent 3px), radial-gradient(circle at 91% 22%, color-mix(in srgb, var(--dmw-skin-secondary) 74%, transparent) 0 1.5px, transparent 3px), radial-gradient(ellipse at 50% 100%, color-mix(in srgb, #7e092b 42%, transparent), transparent 58%); mix-blend-mode: screen; animation: dm-widget-client-sanguine-velvet 5.9s ease-in-out infinite reverse; }
+  [data-dm-widget-skin="championRun"]::before { background-image: radial-gradient(ellipse at -4% 12%, color-mix(in srgb, var(--dmw-skin-accent) 56%, transparent), transparent 36%), radial-gradient(ellipse at 104% 90%, color-mix(in srgb, var(--dmw-skin-secondary) 34%, transparent), transparent 34%), linear-gradient(90deg, color-mix(in srgb, #5f0820 86%, transparent), transparent 18% 82%, color-mix(in srgb, #5f0820 78%, transparent)), repeating-linear-gradient(104deg, transparent 0 17px, color-mix(in srgb, var(--dmw-skin-accent) 6%, transparent) 18px 20px); animation: dm-widget-client-sanguine-velvet 7.2s ease-in-out infinite alternate !important; }
+  [data-dm-widget-skin="championRun"]::after { inset: 0; background-image: radial-gradient(circle at 4% 12%, color-mix(in srgb, var(--dmw-skin-secondary) 88%, white) 0 2px, transparent 4px), radial-gradient(circle at 96% 86%, color-mix(in srgb, var(--dmw-skin-accent) 82%, transparent) 0 2px, transparent 4px), radial-gradient(circle at 8% 78%, color-mix(in srgb, var(--dmw-skin-accent) 72%, transparent) 0 1.5px, transparent 3px), radial-gradient(circle at 91% 22%, color-mix(in srgb, var(--dmw-skin-secondary) 74%, white) 0 1.5px, transparent 3px), radial-gradient(ellipse at 50% 100%, color-mix(in srgb, #7e092b 42%, transparent), transparent 58%); mix-blend-mode: screen; animation: dm-widget-client-sanguine-velvet 5.9s ease-in-out infinite reverse !important; }
 [data-dm-widget-skin="deepSpace"] { background-image: radial-gradient(ellipse at 64% 58%, color-mix(in srgb, var(--dmw-skin-secondary) 13%, transparent), transparent 30%), radial-gradient(ellipse at 28% 14%, color-mix(in srgb, #707bff 16%, transparent), transparent 36%), linear-gradient(145deg, #060914 12%, #0c1530 61%, #050711) !important; }
-[data-dm-widget-skin="deepSpace"]::before { background-image: radial-gradient(circle at 8% 18%, #f8fbff 0 1px, transparent 1.8px), radial-gradient(circle at 21% 72%, var(--dmw-skin-accent) 0 1px, transparent 1.8px), radial-gradient(circle at 34% 31%, #fff 0 1.3px, transparent 2px), radial-gradient(circle at 47% 82%, var(--dmw-skin-secondary) 0 1px, transparent 1.8px), radial-gradient(circle at 58% 16%, #dce6ff 0 1px, transparent 1.8px), radial-gradient(circle at 69% 56%, #fff 0 1.2px, transparent 2px), radial-gradient(circle at 82% 21%, var(--dmw-skin-secondary) 0 1px, transparent 1.8px), radial-gradient(circle at 93% 74%, var(--dmw-skin-accent) 0 1px, transparent 1.8px), radial-gradient(circle at 77% 90%, #fff 0 1px, transparent 1.7px); animation: dm-widget-client-starfield 7s ease-in-out infinite; }
-[data-dm-widget-skin="deepSpace"]::after { inset: 4% -8% auto auto; width: 66%; aspect-ratio: 1; border: 1px solid color-mix(in srgb, var(--dmw-skin-secondary) 66%, transparent); border-radius: 50%; box-shadow: 0 0 22px color-mix(in srgb, var(--dmw-skin-secondary) 18%, transparent), 0 0 0 11px color-mix(in srgb, var(--dmw-skin-accent) 5%, transparent), inset 0 0 20px color-mix(in srgb, var(--dmw-skin-accent) 10%, transparent); background: conic-gradient(from 4deg, transparent 0 21deg, color-mix(in srgb, var(--dmw-skin-accent) 50%, transparent) 22deg 24deg, transparent 25deg 76deg, color-mix(in srgb, var(--dmw-skin-secondary) 48%, transparent) 77deg 80deg, transparent 81deg 142deg); -webkit-mask: radial-gradient(circle, transparent 0 54%, #000 55% 58%, transparent 59%); mask: radial-gradient(circle, transparent 0 54%, #000 55% 58%, transparent 59%); animation: dm-widget-client-night-orbit 22s linear infinite; }
+[data-dm-widget-skin="deepSpace"]::before { background-image: radial-gradient(circle at 8% 18%, #f8fbff 0 1px, transparent 1.8px), radial-gradient(circle at 21% 72%, var(--dmw-skin-accent) 0 1px, transparent 1.8px), radial-gradient(circle at 34% 31%, #fff 0 1.3px, transparent 2px), radial-gradient(circle at 47% 82%, var(--dmw-skin-secondary) 0 1px, transparent 1.8px), radial-gradient(circle at 58% 16%, #dce6ff 0 1px, transparent 1.8px), radial-gradient(circle at 69% 56%, #fff 0 1.2px, transparent 2px), radial-gradient(circle at 82% 21%, var(--dmw-skin-secondary) 0 1px, transparent 1.8px), radial-gradient(circle at 93% 74%, var(--dmw-skin-accent) 0 1px, transparent 1.8px), radial-gradient(circle at 77% 90%, #fff 0 1px, transparent 1.7px); animation: dm-widget-client-starfield 7s ease-in-out infinite !important; }
+[data-dm-widget-skin="deepSpace"]::after { inset: 4% -8% auto auto; width: 66%; aspect-ratio: 1; border: 1px solid color-mix(in srgb, var(--dmw-skin-secondary) 66%, transparent); border-radius: 50%; box-shadow: 0 0 22px color-mix(in srgb, var(--dmw-skin-secondary) 18%, transparent), 0 0 0 11px color-mix(in srgb, var(--dmw-skin-accent) 5%, transparent), inset 0 0 20px color-mix(in srgb, var(--dmw-skin-accent) 10%, transparent); background: conic-gradient(from 4deg, transparent 0 21deg, color-mix(in srgb, var(--dmw-skin-accent) 50%, transparent) 22deg 24deg, transparent 25deg 76deg, color-mix(in srgb, var(--dmw-skin-secondary) 48%, transparent) 77deg 80deg, transparent 81deg 142deg); -webkit-mask: radial-gradient(circle, transparent 0 54%, #000 55% 58%, transparent 59%); mask: radial-gradient(circle, transparent 0 54%, #000 55% 58%, transparent 59%); animation: dm-widget-client-night-orbit 22s linear infinite !important; }
 [data-dm-widget-skin="voidBloom"] { background-image: radial-gradient(ellipse at 82% 18%, color-mix(in srgb, var(--dmw-skin-accent) 35%, transparent), transparent 33%), radial-gradient(ellipse at 88% 92%, color-mix(in srgb, var(--dmw-skin-secondary) 25%, transparent), transparent 42%), linear-gradient(135deg, #170e24, #101b2a 88%) !important; }
 [data-dm-widget-skin="voidBloom"]::before { background-image: radial-gradient(ellipse at 8% 76%, rgba(115,62,165,.23), transparent 38%), radial-gradient(circle at 76% 20%, color-mix(in srgb, var(--dmw-skin-accent) 35%, transparent) 0 1px, transparent 2px), radial-gradient(circle at 88% 73%, color-mix(in srgb, var(--dmw-skin-secondary) 32%, transparent) 0 1px, transparent 2px); }
-[data-dm-widget-skin="voidBloom"]::after { inset: 7% 5% auto auto; width: 40%; aspect-ratio: 1; border-radius: 50%; background: radial-gradient(circle, color-mix(in srgb, var(--dmw-skin-secondary) 35%, transparent), color-mix(in srgb, var(--dmw-skin-accent) 24%, transparent) 43%, transparent 72%); filter: blur(8px); animation: dm-widget-client-bloom 3.8s ease-in-out infinite; }
+[data-dm-widget-skin="voidBloom"]::after { inset: 7% 5% auto auto; width: 40%; aspect-ratio: 1; border-radius: 50%; background: radial-gradient(circle, color-mix(in srgb, var(--dmw-skin-secondary) 35%, transparent), color-mix(in srgb, var(--dmw-skin-accent) 24%, transparent) 43%, transparent 72%); filter: blur(8px); animation: dm-widget-client-bloom 3.8s ease-in-out infinite !important; }
 [data-dm-widget-skin="pixelOverdrive"] { background-image: radial-gradient(ellipse at 0% 0%, color-mix(in srgb, var(--dmw-skin-accent) 26%, transparent), transparent 32%), radial-gradient(ellipse at 100% 100%, color-mix(in srgb, var(--dmw-skin-secondary) 22%, transparent), transparent 32%), linear-gradient(116deg, #0c0d1a, #151327 54%, #0b101b 100%) !important; }
-[data-dm-widget-skin="pixelOverdrive"]::before { inset: 3px; border: 1px solid color-mix(in srgb, var(--dmw-skin-accent) 64%, transparent); border-radius: 8px; background-image: linear-gradient(90deg, color-mix(in srgb, var(--dmw-skin-accent) 15%, transparent), transparent 14% 86%, color-mix(in srgb, var(--dmw-skin-secondary) 12%, transparent)), radial-gradient(ellipse at 0% 0%, color-mix(in srgb, var(--dmw-skin-accent) 24%, transparent), transparent 31%), radial-gradient(ellipse at 100% 100%, color-mix(in srgb, var(--dmw-skin-secondary) 21%, transparent), transparent 32%); box-shadow: inset 0 0 0 3px color-mix(in srgb, var(--dmw-skin-secondary) 5%, transparent), 0 0 14px color-mix(in srgb, var(--dmw-skin-accent) 15%, transparent); animation: dm-widget-client-hunt-lights 3.1s ease-in-out infinite; }
-[data-dm-widget-skin="pixelOverdrive"]::after { inset: 0; background-image: radial-gradient(circle at 7% 7%, color-mix(in srgb, var(--dmw-skin-secondary) 86%, white) 0 2px, transparent 3.5px), radial-gradient(circle at 20% 5%, color-mix(in srgb, var(--dmw-skin-accent) 88%, white) 0 2px, transparent 3.5px), radial-gradient(circle at 35% 7%, color-mix(in srgb, var(--dmw-skin-secondary) 78%, white) 0 2px, transparent 3.5px), radial-gradient(circle at 50% 4%, color-mix(in srgb, var(--dmw-skin-accent) 88%, white) 0 2px, transparent 3.5px), radial-gradient(circle at 66% 7%, color-mix(in srgb, var(--dmw-skin-secondary) 78%, white) 0 2px, transparent 3.5px), radial-gradient(circle at 81% 5%, color-mix(in srgb, var(--dmw-skin-accent) 88%, white) 0 2px, transparent 3.5px), radial-gradient(circle at 94% 8%, color-mix(in srgb, var(--dmw-skin-secondary) 86%, white) 0 2px, transparent 3.5px), radial-gradient(circle at 5% 93%, color-mix(in srgb, var(--dmw-skin-accent) 88%, white) 0 2px, transparent 3.5px), radial-gradient(circle at 19% 96%, color-mix(in srgb, var(--dmw-skin-secondary) 78%, white) 0 2px, transparent 3.5px), radial-gradient(circle at 34% 94%, color-mix(in srgb, var(--dmw-skin-accent) 88%, white) 0 2px, transparent 3.5px), radial-gradient(circle at 50% 97%, color-mix(in srgb, var(--dmw-skin-secondary) 86%, white) 0 2px, transparent 3.5px), radial-gradient(circle at 66% 94%, color-mix(in srgb, var(--dmw-skin-accent) 88%, white) 0 2px, transparent 3.5px), radial-gradient(circle at 82% 96%, color-mix(in srgb, var(--dmw-skin-secondary) 78%, white) 0 2px, transparent 3.5px), radial-gradient(circle at 95% 91%, color-mix(in srgb, var(--dmw-skin-accent) 88%, white) 0 2px, transparent 3.5px), radial-gradient(circle at 3% 29%, color-mix(in srgb, var(--dmw-skin-secondary) 82%, white) 0 2px, transparent 3.5px), radial-gradient(circle at 97% 30%, color-mix(in srgb, var(--dmw-skin-accent) 88%, white) 0 2px, transparent 3.5px), radial-gradient(circle at 3% 52%, color-mix(in srgb, var(--dmw-skin-accent) 78%, white) 0 2px, transparent 3.5px), radial-gradient(circle at 97% 54%, color-mix(in srgb, var(--dmw-skin-secondary) 82%, white) 0 2px, transparent 3.5px), radial-gradient(ellipse at 0% 50%, color-mix(in srgb, var(--dmw-skin-accent) 18%, transparent), transparent 24%), radial-gradient(ellipse at 100% 50%, color-mix(in srgb, var(--dmw-skin-secondary) 16%, transparent), transparent 24%); mix-blend-mode: screen; animation: dm-widget-client-hunt-lights 3.1s steps(5, end) infinite reverse; }
+[data-dm-widget-skin="pixelOverdrive"]::before { inset: 3px; border: 1px solid color-mix(in srgb, var(--dmw-skin-accent) 64%, transparent); border-radius: 8px; background-image: linear-gradient(90deg, color-mix(in srgb, var(--dmw-skin-accent) 15%, transparent), transparent 14% 86%, color-mix(in srgb, var(--dmw-skin-secondary) 12%, transparent)), radial-gradient(ellipse at 0% 0%, color-mix(in srgb, var(--dmw-skin-accent) 24%, transparent), transparent 31%), radial-gradient(ellipse at 100% 100%, color-mix(in srgb, var(--dmw-skin-secondary) 21%, transparent), transparent 32%); box-shadow: inset 0 0 0 3px color-mix(in srgb, var(--dmw-skin-secondary) 5%, transparent), 0 0 14px color-mix(in srgb, var(--dmw-skin-accent) 15%, transparent); animation: dm-widget-client-hunt-lights 3.1s ease-in-out infinite !important; }
+[data-dm-widget-skin="pixelOverdrive"]::after { inset: 0; background-image: radial-gradient(circle at 7% 7%, color-mix(in srgb, var(--dmw-skin-secondary) 86%, white) 0 2px, transparent 3.5px), radial-gradient(circle at 20% 5%, color-mix(in srgb, var(--dmw-skin-accent) 88%, white) 0 2px, transparent 3.5px), radial-gradient(circle at 35% 7%, color-mix(in srgb, var(--dmw-skin-secondary) 78%, white) 0 2px, transparent 3.5px), radial-gradient(circle at 50% 4%, color-mix(in srgb, var(--dmw-skin-accent) 88%, white) 0 2px, transparent 3.5px), radial-gradient(circle at 66% 7%, color-mix(in srgb, var(--dmw-skin-secondary) 78%, white) 0 2px, transparent 3.5px), radial-gradient(circle at 81% 5%, color-mix(in srgb, var(--dmw-skin-accent) 88%, white) 0 2px, transparent 3.5px), radial-gradient(circle at 94% 8%, color-mix(in srgb, var(--dmw-skin-secondary) 86%, white) 0 2px, transparent 3.5px), radial-gradient(circle at 5% 93%, color-mix(in srgb, var(--dmw-skin-accent) 88%, white) 0 2px, transparent 3.5px), radial-gradient(circle at 19% 96%, color-mix(in srgb, var(--dmw-skin-secondary) 78%, white) 0 2px, transparent 3.5px), radial-gradient(circle at 34% 94%, color-mix(in srgb, var(--dmw-skin-accent) 88%, white) 0 2px, transparent 3.5px), radial-gradient(circle at 50% 97%, color-mix(in srgb, var(--dmw-skin-secondary) 86%, white) 0 2px, transparent 3.5px), radial-gradient(circle at 66% 94%, color-mix(in srgb, var(--dmw-skin-accent) 88%, white) 0 2px, transparent 3.5px), radial-gradient(circle at 82% 96%, color-mix(in srgb, var(--dmw-skin-secondary) 78%, white) 0 2px, transparent 3.5px), radial-gradient(circle at 95% 91%, color-mix(in srgb, var(--dmw-skin-accent) 88%, white) 0 2px, transparent 3.5px), radial-gradient(circle at 3% 29%, color-mix(in srgb, var(--dmw-skin-secondary) 82%, white) 0 2px, transparent 3.5px), radial-gradient(circle at 97% 30%, color-mix(in srgb, var(--dmw-skin-accent) 88%, white) 0 2px, transparent 3.5px), radial-gradient(circle at 3% 52%, color-mix(in srgb, var(--dmw-skin-accent) 78%, white) 0 2px, transparent 3.5px), radial-gradient(circle at 97% 54%, color-mix(in srgb, var(--dmw-skin-secondary) 82%, white) 0 2px, transparent 3.5px), radial-gradient(ellipse at 0% 50%, color-mix(in srgb, var(--dmw-skin-accent) 18%, transparent), transparent 24%), radial-gradient(ellipse at 100% 50%, color-mix(in srgb, var(--dmw-skin-secondary) 16%, transparent), transparent 24%); mix-blend-mode: screen; animation: dm-widget-client-hunt-lights 3.1s steps(5, end) infinite reverse !important; }
 [data-dm-widget-skin="solarFlare"] { background-image: radial-gradient(circle at 84% 18%, #fff2bf 0 6%, color-mix(in srgb, var(--dmw-skin-accent) 80%, transparent) 7% 12%, color-mix(in srgb, var(--dmw-skin-secondary) 28%, transparent) 13% 27%, transparent 40%), repeating-conic-gradient(from 0deg at 84% 18%, color-mix(in srgb, var(--dmw-skin-accent) 32%, transparent) 0deg 2deg, transparent 3deg 14deg), linear-gradient(152deg, #24100d 0 42%, color-mix(in srgb, var(--dmw-skin-secondary) 18%, transparent) 43% 55%, #351714 56% 72%, #160d13 73%) !important; }
 [data-dm-widget-skin="solarFlare"]::before { background-image: radial-gradient(circle at 84% 18%, rgba(255,255,255,.72) 0 3%, transparent 4% 9%, color-mix(in srgb, var(--dmw-skin-accent) 24%, transparent) 10% 15%, transparent 16% 34%), repeating-conic-gradient(from 0deg at 84% 18%, color-mix(in srgb, var(--dmw-skin-accent) 28%, transparent) 0deg 2deg, transparent 3deg 14deg), linear-gradient(152deg, transparent 0 42%, color-mix(in srgb, var(--dmw-skin-secondary) 18%, transparent) 43% 55%, transparent 56%); clip-path: polygon(0 0, 100% 0, 100% 100%, 13% 100%, 21% 77%, 0 64%); }
-[data-dm-widget-skin="solarFlare"]::after { inset: -61% -56%; background: repeating-conic-gradient(from 2deg at 50% 50%, transparent 0deg 8deg, color-mix(in srgb, var(--dmw-skin-accent) 46%, transparent) 9deg 12deg, transparent 13deg 22deg); -webkit-mask: radial-gradient(circle, transparent 27%, #000 34%, #000 54%, transparent 64%); mask: radial-gradient(circle, transparent 27%, #000 34%, #000 54%, transparent 64%); animation: dm-widget-client-sun-crown 23s linear infinite; }
+[data-dm-widget-skin="solarFlare"]::after { inset: -61% -56%; background: repeating-conic-gradient(from 2deg at 50% 50%, transparent 0deg 8deg, color-mix(in srgb, var(--dmw-skin-accent) 46%, transparent) 9deg 12deg, transparent 13deg 22deg); -webkit-mask: radial-gradient(circle, transparent 27%, #000 34%, #000 54%, transparent 64%); mask: radial-gradient(circle, transparent 27%, #000 34%, #000 54%, transparent 64%); animation: dm-widget-client-sun-crown 23s linear infinite !important; }
 [data-dm-widget-motion-paused="true"]::before, [data-dm-widget-motion-paused="true"]::after { animation-play-state: paused !important; }
 /* Discord remounts the Rich Presence card as its elapsed-time text changes.
  * Keep only that card's cosmetic layers on the renderer clock so a remount
@@ -1991,7 +1931,7 @@ const WIDGET_CLIENT_SKIN_CSS = `
 [data-dm-widget-surface-root="true"]::before,
 [data-dm-widget-surface-root="true"]::after { content: ""; position: absolute; pointer-events: none; border-radius: inherit; }
 [data-dm-widget-surface-root="true"]::before { z-index: 0; inset: 0; opacity: .62; background-repeat: no-repeat; }
-[data-dm-widget-surface-root="true"]::after { z-index: 0; inset: 0; background: linear-gradient(112deg, transparent 25%, color-mix(in srgb, var(--dmw-surface-accent) 17%, transparent) 50%, color-mix(in srgb, var(--dmw-surface-secondary) 13%, transparent) 68%, transparent 82%); will-change: transform, opacity; animation: dm-widget-client-surface-drift 7.5s ease-in-out infinite alternate; }
+[data-dm-widget-surface-root="true"]::after { z-index: 0; inset: 0; background: linear-gradient(112deg, transparent 25%, color-mix(in srgb, var(--dmw-surface-accent) 17%, transparent) 50%, color-mix(in srgb, var(--dmw-surface-secondary) 13%, transparent) 68%, transparent 82%); will-change: transform, opacity; animation: dm-widget-client-surface-drift 7.5s ease-in-out infinite alternate !important; }
 [data-dm-widget-surface-root="true"] > * { position: relative; z-index: 1; }
 [data-dm-widget-surface-skin="neonCircuit"] { background-image: linear-gradient(120deg, color-mix(in srgb, var(--dmw-surface-surface) 94%, #132c35), color-mix(in srgb, var(--dmw-surface-accent) 7%, var(--dmw-surface-surface)) 55%, color-mix(in srgb, var(--dmw-surface-secondary) 9%, var(--dmw-surface-surface))) !important; }
 [data-dm-widget-surface-skin="neonCircuit"]::before { background-image: repeating-linear-gradient(135deg, transparent 0 20px, color-mix(in srgb, var(--dmw-surface-accent) 8%, transparent) 21px 22px), radial-gradient(circle at 94% 10%, color-mix(in srgb, var(--dmw-surface-secondary) 28%, transparent), transparent 35%); }
@@ -2005,14 +1945,31 @@ const WIDGET_CLIENT_SKIN_CSS = `
 [data-dm-widget-surface-skin="voidBloom"] { background-image: radial-gradient(ellipse at 82% 18%, color-mix(in srgb, var(--dmw-surface-accent) 28%, transparent), transparent 34%), radial-gradient(ellipse at 88% 92%, color-mix(in srgb, var(--dmw-surface-secondary) 21%, transparent), transparent 42%), linear-gradient(135deg, #170e24, #101b2a) !important; }
 [data-dm-widget-surface-skin="pixelOverdrive"] { background-image: linear-gradient(90deg, color-mix(in srgb, var(--dmw-surface-accent) 10%, var(--dmw-surface-surface)), var(--dmw-surface-surface) 50%, color-mix(in srgb, var(--dmw-surface-secondary) 9%, var(--dmw-surface-surface))) !important; }
 [data-dm-widget-surface-skin="solarFlare"] { background-image: radial-gradient(circle at 88% 18%, color-mix(in srgb, var(--dmw-surface-accent) 48%, transparent), transparent 26%), linear-gradient(152deg, #24100d, var(--dmw-surface-surface) 68%, #351714) !important; }
-[data-dm-widget-surface-motion="none"]::after { animation: none !important; opacity: .12; }
-[data-dm-widget-surface-motion="orbit"]::after { animation-duration: 18s; }
-[data-dm-widget-surface-motion="solar"]::after { animation-duration: 20s; }
-[data-dm-widget-surface-motion="pursuit"]::after { animation-duration: 3.8s; }
-[data-dm-widget-surface-motion-paused="true"]::after { animation-play-state: paused !important; }
-@media (prefers-reduced-motion: reduce) {
-    [data-dm-widget-surface-root="true"]::after { animation: none !important; }
+/* Discord's current DM header applies a more-specific background: none
+ * declaration than the generic surface rule above. Keep a copy of each
+ * surface gradient in a custom property, then repaint only title/header
+ * hosts with a deliberately higher-specificity selector. This preserves the
+ * selected skin instead of flattening every header to the ember palette. */
+[data-dm-widget-surface-skin="neonCircuit"] { --dmw-surface-background: linear-gradient(120deg, color-mix(in srgb, var(--dmw-surface-surface) 94%, #132c35), color-mix(in srgb, var(--dmw-surface-accent) 7%, var(--dmw-surface-surface)) 55%, color-mix(in srgb, var(--dmw-surface-secondary) 9%, var(--dmw-surface-surface))); }
+[data-dm-widget-surface-skin="emberProtocol"] { --dmw-surface-background: radial-gradient(ellipse at 4% 100%, color-mix(in srgb, var(--dmw-surface-accent) 22%, transparent), transparent 46%), radial-gradient(ellipse at 96% 0%, color-mix(in srgb, var(--dmw-surface-secondary) 18%, transparent), transparent 40%), linear-gradient(115deg, #101819, #1b2923 55%, #100f18); }
+[data-dm-widget-surface-skin="cottonCandy"] { --dmw-surface-background: radial-gradient(ellipse at 8% 0%, color-mix(in srgb, var(--dmw-surface-accent) 22%, transparent), transparent 45%), radial-gradient(ellipse at 98% 100%, color-mix(in srgb, var(--dmw-surface-secondary) 25%, transparent), transparent 48%), linear-gradient(135deg, var(--dmw-surface-surface), #171b39); }
+[data-dm-widget-surface-skin="frostedGlass"] { --dmw-surface-background: linear-gradient(135deg, color-mix(in srgb, var(--dmw-surface-surface) 94%, #d8f3ff), #1c2b3f 72%); }
+[data-dm-widget-surface-skin="championRun"] { --dmw-surface-background: radial-gradient(ellipse at 0% 10%, color-mix(in srgb, var(--dmw-surface-accent) 26%, transparent), transparent 38%), linear-gradient(90deg, #3a0c22, var(--dmw-surface-surface) 50%, #2d101d); }
+[data-dm-widget-surface-skin="deepSpace"] { --dmw-surface-background: radial-gradient(circle at 84% 18%, color-mix(in srgb, var(--dmw-surface-secondary) 26%, transparent), transparent 30%), linear-gradient(145deg, #060914, #0c1530 62%, #050711); }
+[data-dm-widget-surface-skin="voidBloom"] { --dmw-surface-background: radial-gradient(ellipse at 82% 18%, color-mix(in srgb, var(--dmw-surface-accent) 28%, transparent), transparent 34%), radial-gradient(ellipse at 88% 92%, color-mix(in srgb, var(--dmw-surface-secondary) 21%, transparent), transparent 42%), linear-gradient(135deg, #170e24, #101b2a); }
+[data-dm-widget-surface-skin="pixelOverdrive"] { --dmw-surface-background: linear-gradient(90deg, color-mix(in srgb, var(--dmw-surface-accent) 10%, var(--dmw-surface-surface)), var(--dmw-surface-surface) 50%, color-mix(in srgb, var(--dmw-surface-secondary) 9%, var(--dmw-surface-surface))); }
+[data-dm-widget-surface-skin="solarFlare"] { --dmw-surface-background: radial-gradient(circle at 88% 18%, color-mix(in srgb, var(--dmw-surface-accent) 48%, transparent), transparent 26%), linear-gradient(152deg, #24100d, var(--dmw-surface-surface) 68%, #351714); }
+[data-dm-widget-surface-root="true"][data-dm-widget-surface-skin][class*="title_"],
+[data-dm-widget-surface-root="true"][data-dm-widget-surface-skin][class*="headerBar"],
+[data-dm-widget-surface-root="true"][data-dm-widget-surface-skin][class*="chatHeader"] {
+    background-color: var(--dmw-surface-surface) !important;
+    background-image: var(--dmw-surface-background) !important;
 }
+[data-dm-widget-surface-motion="none"]::after { animation: none !important; opacity: .12; }
+[data-dm-widget-surface-motion="orbit"]::after { animation-duration: 18s !important; }
+[data-dm-widget-surface-motion="solar"]::after { animation-duration: 20s !important; }
+[data-dm-widget-surface-motion="pursuit"]::after { animation-duration: 3.8s !important; }
+[data-dm-widget-surface-motion-paused="true"]::after { animation-play-state: paused !important; }
 `;
 
 type WidgetSkinSnapshot = {
@@ -2112,26 +2069,18 @@ const attachedWidgetHints = new Map<string, string[]>();
 // the viewer's first widget for the profile owner's widget and paint the
 // viewer's selected skin onto somebody else's card.
 type VisibleWidgetStyleRecord = {
-    appId: string;
-    ownerKey: string;
-    ownerId: string | null;
     preset: WidgetStylePreset;
     updatedAt: number;
     checkedAt: number;
     hints: string[];
 };
 type VisibleWidgetStyleMissRecord = {
-    appId: string;
-    ownerKey: string;
-    ownerId: string | null;
     checkedAt: number;
     firstMissedAt: number;
     hints: string[];
 };
 const visibleWidgetStyles = new Map<string, VisibleWidgetStyleRecord>();
 const visibleWidgetStyleMisses = new Map<string, VisibleWidgetStyleMissRecord>();
-const visibleWidgetSurfaceKeys = new WeakMap<HTMLElement, string>();
-let visibleWidgetSurfaceSerial = 0;
 const VISIBLE_WIDGET_STYLE_STALE_GRACE_MS = 120_000;
 const ATTACHED_WIDGET_EMPTY_GRACE_MS = 120_000;
 const visibleWidgetStyleRequests = new Map<string, Promise<void>>();
@@ -2150,21 +2099,6 @@ const OWNED_WIDGET_MARKER_REPAIR_INTERVAL_MS = 15 * 60_000;
 let ownedWidgetMarkerRepairAccountId = "";
 let ownedWidgetMarkerRepairAt = 0;
 let ownedWidgetMarkerRepairPromise: Promise<void> | null = null;
-
-function visibleWidgetOwnerKey(surface: HTMLElement | null): string {
-    const ownerId = widgetProfileOwnerId(surface);
-    if (ownerId) return `owner:${ownerId}`;
-    if (!surface) return "no-surface";
-    const existing = visibleWidgetSurfaceKeys.get(surface);
-    if (existing) return existing;
-    const key = `surface:${++visibleWidgetSurfaceSerial}`;
-    visibleWidgetSurfaceKeys.set(surface, key);
-    return key;
-}
-
-function visibleWidgetCacheKey(appId: string, ownerKey: string): string {
-    return `${ownerKey}|${appId}`;
-}
 
 function attachedWidgetProfileIsFresh(): boolean {
     const accountId = String(UserStore.getCurrentUser()?.id ?? "");
@@ -2684,7 +2618,6 @@ async function refreshAttachedWidgetStyles(force = false): Promise<void> {
         const nextStyles = new Map<string, WidgetStylePreset>();
         const nextSlots = new Map<string, string>();
         const nextHints = new Map<string, string[]>();
-        const ownerStyleBootstrapCandidates: OwnerWidgetStyleBootstrap[] = [];
         for (const appId of ids) {
             if (String(UserStore.getCurrentUser()?.id ?? "") !== accountId || activeSlotsAccountId !== accountId) return;
             const hasStoredSlot = stored.has(appId);
@@ -2713,23 +2646,6 @@ async function refreshAttachedWidgetStyles(force = false): Promise<void> {
             const current = getSlot(slotKey);
             const sameLocalApp = current.appId === appId;
             const localUpdatedAt = Number(current.widgetStyleUpdatedAt ?? 0);
-            const localPreset = presetForSlot(slotKey);
-            const ownerLocalStyleIsCandidate = sameLocalApp
-                && current.widgetStyleSource !== "remote"
-                && (!remoteStyle
-                    || remoteStyle.updatedAt < localUpdatedAt
-                    || (remoteStyle.updatedAt === localUpdatedAt
-                        && current.widgetStyleSource === "local"
-                        && remoteStyle.style !== localPreset.id));
-            if (ownerLocalStyleIsCandidate) {
-                ownerStyleBootstrapCandidates.push({
-                    appId,
-                    slotKey,
-                    accountId,
-                    preset: localPreset,
-                    updatedAt: localUpdatedAt
-                });
-            }
             const remoteWins = !!remoteStyle && (!sameLocalApp
                 || (remoteStyle.updatedAt > 0 && remoteStyle.updatedAt >= localUpdatedAt)
                 || (remoteStyle.updatedAt === 0 && sameLocalApp && current.widgetStyleSource !== "local"));
@@ -2775,7 +2691,6 @@ async function refreshAttachedWidgetStyles(force = false): Promise<void> {
         for (const [appId, labels] of nextHints) attachedWidgetHints.set(appId, labels);
         attachedWidgetProfileAccountId = accountId;
         attachedWidgetProfileVerifiedAt = Date.now();
-        queueOwnerWidgetStyleMarkerSync(ownerStyleBootstrapCandidates);
     })();
     attachedWidgetRefreshPromise = task;
     try {
@@ -2856,7 +2771,11 @@ function updateAttachedWidgetStylesForSlot(slotKey: string, preset: WidgetStyleP
 function knownWidgetStyles(): Map<string, WidgetStylePreset> {
     const out = new Map<string, WidgetStylePreset>();
     for (const [appId, preset] of attachedWidgetStyles) out.set(appId, preset);
-    if (attachedWidgetProfileIsFresh()) return out;
+    // A fresh reconciliation can be temporarily empty while the public
+    // marker is unavailable or still being repaired. Keep the local slot
+    // preset as the signed-in profile's deterministic fallback; foreign
+    // profile surfaces still reject this map in widgetStylesForSurface().
+    if (attachedWidgetProfileIsFresh() && out.size) return out;
     for (const [slotKey, identity] of Object.entries(slots.get())) {
         if (!SNOWFLAKE.test(identity.appId)) continue;
         const preset = presetForSlot(slotKey);
@@ -2883,7 +2802,11 @@ function knownWidgetHints(): Map<string, string[]> {
         if (current.length) out.set(appId, current);
     };
     for (const [appId, labels] of attachedWidgetHints) add(appId, labels);
-    if (attachedWidgetProfileIsFresh()) return out;
+    // A fresh profile reconciliation can know the selected app/style while
+    // still not carrying its display labels. Keep the local slot labels as a
+    // discovery fallback in that case so native Discord Playing cards are not
+    // rejected before the style application path gets a chance to run.
+    if (attachedWidgetProfileIsFresh() && out.size) return out;
     for (const [slotKey, identity] of Object.entries(slots.get())) {
         if (!SNOWFLAKE.test(identity.appId)) continue;
         add(identity.appId, [
@@ -2905,68 +2828,59 @@ const WIDGET_APPLICATION_ID_ATTRIBUTES = [
     "application_id"
 ];
 
-function visibleProfileWidgetStyles(ownerKey?: string, ownerId?: string | null): Map<string, WidgetStylePreset> {
+function visibleProfileWidgetStyles(): Map<string, WidgetStylePreset> {
     const out = new Map<string, WidgetStylePreset>();
     const now = Date.now();
-    for (const [cacheKey, record] of visibleWidgetStyles) {
-        if (!SNOWFLAKE.test(record.appId)) continue;
-        if (ownerKey && (!record.ownerId
-            || (record.ownerKey !== ownerKey && record.ownerId !== ownerId))) continue;
+    for (const [appId, record] of visibleWidgetStyles) {
+        if (!SNOWFLAKE.test(appId)) continue;
         const fresh = now - record.checkedAt <= VISIBLE_WIDGET_STYLE_CACHE_MS;
-        const miss = visibleWidgetStyleMisses.get(cacheKey);
+        const miss = visibleWidgetStyleMisses.get(appId);
         const staleGrace = miss && now - miss.firstMissedAt <= VISIBLE_WIDGET_STYLE_STALE_GRACE_MS;
-        const hydrationPending = visibleWidgetStyleRequests.has(cacheKey);
+        const hydrationPending = visibleWidgetStyleRequests.has(appId);
         if (!fresh && !staleGrace && !hydrationPending) continue;
         // This map is deliberately remote-only. A profile card belongs to the
         // account being viewed, so a viewer's local selection is never an
         // acceptable fallback while the owner's published marker is loading,
         // missing, or unreadable. Missing markers leave the card native.
-        out.set(record.appId, record.preset);
+        out.set(appId, record.preset);
     }
     return out;
 }
 
-function visibleProfileWidgetHints(
-    local: Map<string, string[]>,
-    ownerKey?: string,
-    ownerId?: string | null
-): Map<string, string[]> {
+function visibleProfileWidgetHints(local: Map<string, string[]>): Map<string, string[]> {
     const out = new Map<string, string[]>();
     for (const [appId, labels] of local) out.set(appId, Array.from(new Set(labels)));
     const now = Date.now();
-    for (const [, miss] of visibleWidgetStyleMisses) {
-        if (!SNOWFLAKE.test(miss.appId) || !miss.hints.length) continue;
-        if (ownerKey && miss.ownerKey !== ownerKey && (!miss.ownerId || miss.ownerId !== ownerId)) continue;
-        const current = out.get(miss.appId) ?? [];
+    for (const [appId, miss] of visibleWidgetStyleMisses) {
+        if (!SNOWFLAKE.test(appId) || !miss.hints.length) continue;
+        const current = out.get(appId) ?? [];
         for (const label of miss.hints) {
             const clean = String(label ?? "").trim();
             if (clean.length >= 3 && !current.includes(clean)) current.push(clean);
         }
-        if (current.length) out.set(miss.appId, current);
+        if (current.length) out.set(appId, current);
     }
-    for (const [cacheKey, record] of visibleWidgetStyles) {
-        if (!SNOWFLAKE.test(record.appId)) continue;
-        if (ownerKey && (!record.ownerId
-            || (record.ownerKey !== ownerKey && record.ownerId !== ownerId))) continue;
+    for (const [appId, record] of visibleWidgetStyles) {
+        if (!SNOWFLAKE.test(appId)) continue;
         const fresh = now - record.checkedAt <= VISIBLE_WIDGET_STYLE_CACHE_MS;
-        const miss = visibleWidgetStyleMisses.get(cacheKey);
+        const miss = visibleWidgetStyleMisses.get(appId);
         const staleGrace = miss && now - miss.firstMissedAt <= VISIBLE_WIDGET_STYLE_STALE_GRACE_MS;
-        const hydrationPending = visibleWidgetStyleRequests.has(cacheKey);
+        const hydrationPending = visibleWidgetStyleRequests.has(appId);
         if (!fresh && !staleGrace && !hydrationPending) continue;
-        const current = out.get(record.appId) ?? [];
+        const current = out.get(appId) ?? [];
         for (const label of record.hints) {
             const clean = String(label ?? "").trim();
             if (clean.length >= 3 && !current.includes(clean)) current.push(clean);
         }
-        if (current.length) out.set(record.appId, current);
+        if (current.length) out.set(appId, current);
     }
     return out;
 }
 
-function rememberVisibleWidgetStyle(cacheKey: string, record: VisibleWidgetStyleRecord): void {
-    visibleWidgetStyles.delete(cacheKey);
-    visibleWidgetStyles.set(cacheKey, record);
-    visibleWidgetStyleMisses.delete(cacheKey);
+function rememberVisibleWidgetStyle(appId: string, record: VisibleWidgetStyleRecord): void {
+    visibleWidgetStyles.delete(appId);
+    visibleWidgetStyles.set(appId, record);
+    visibleWidgetStyleMisses.delete(appId);
     while (visibleWidgetStyles.size > VISIBLE_WIDGET_STYLE_MAX) {
         const oldest = visibleWidgetStyles.keys().next().value;
         if (typeof oldest !== "string") break;
@@ -2974,23 +2888,18 @@ function rememberVisibleWidgetStyle(cacheKey: string, record: VisibleWidgetStyle
     }
 }
 
-function rememberVisibleWidgetStyleMiss(
-    cacheKey: string,
-    request: Pick<VisibleWidgetStyleMissRecord, "appId" | "ownerKey" | "ownerId">,
-    hints: string[] = []
-): void {
+function rememberVisibleWidgetStyleMiss(appId: string, hints: string[] = []): void {
     // Do not throw away the last verified owner style on a network/React
     // timing miss. Keep it available for a bounded grace period, then allow a
     // genuinely removed marker to settle back to native Discord styling.
-    const previous = visibleWidgetStyleMisses.get(cacheKey);
+    const previous = visibleWidgetStyleMisses.get(appId);
     const now = Date.now();
     const firstMissedAt = previous && now - previous.firstMissedAt <= VISIBLE_WIDGET_STYLE_STALE_GRACE_MS
         ? previous.firstMissedAt
         : now;
     const cleanHints = Array.from(new Set(hints.map(label => String(label ?? "").trim()).filter(label => label.length >= 3)));
-    visibleWidgetStyleMisses.delete(cacheKey);
-    visibleWidgetStyleMisses.set(cacheKey, {
-        ...request,
+    visibleWidgetStyleMisses.delete(appId);
+    visibleWidgetStyleMisses.set(appId, {
         checkedAt: now,
         firstMissedAt,
         hints: cleanHints.length ? cleanHints : (previous?.hints ?? [])
@@ -3002,36 +2911,22 @@ function rememberVisibleWidgetStyleMiss(
     }
 }
 
-type VisibleWidgetStyleHydrationRequest = {
-    appId: string;
-    ownerKey: string;
-    ownerId: string | null;
-};
-
-function queueVisibleWidgetStyleHydration(requests: Iterable<VisibleWidgetStyleHydrationRequest>): void {
+function queueVisibleWidgetStyleHydration(appIds: Iterable<string>): void {
     const now = Date.now();
-    const deduped = new Map<string, VisibleWidgetStyleHydrationRequest>();
-    for (const request of requests) {
-        if (SNOWFLAKE.test(request.appId)) deduped.set(visibleWidgetCacheKey(request.appId, request.ownerKey), request);
-    }
-    const pending = Array.from(deduped.entries()).slice(0, VISIBLE_WIDGET_STYLE_BATCH_MAX);
-    for (const [cacheKey, request] of pending) {
-        const { appId, ownerKey, ownerId } = request;
-        const cached = visibleWidgetStyles.get(cacheKey);
+    const pending = Array.from(new Set(Array.from(appIds).filter(appId => SNOWFLAKE.test(appId)))).slice(0, VISIBLE_WIDGET_STYLE_BATCH_MAX);
+    for (const appId of pending) {
+        const cached = visibleWidgetStyles.get(appId);
         if (cached && now - cached.checkedAt <= VISIBLE_WIDGET_STYLE_CACHE_MS) continue;
-        const missAt = visibleWidgetStyleMisses.get(cacheKey)?.checkedAt ?? 0;
+        const missAt = visibleWidgetStyleMisses.get(appId)?.checkedAt ?? 0;
         if (missAt && now - missAt <= VISIBLE_WIDGET_STYLE_MISS_RETRY_MS) continue;
-        if (visibleWidgetStyleRequests.has(cacheKey)) continue;
+        if (visibleWidgetStyleRequests.has(appId)) continue;
 
         const task = apiGet(`/applications/${appId}`).then(application => {
             const remoteStyle = remoteWidgetStyleFromApplication(application);
             if (remoteStyle) {
                 const remotePreset = WIDGET_STYLE_PRESETS.find(item => item.id === remoteStyle.style) ?? WIDGET_STYLE_PRESETS[0];
                 const appName = String(application?.name ?? application?.application?.name ?? "").trim();
-                rememberVisibleWidgetStyle(cacheKey, {
-                    appId,
-                    ownerKey,
-                    ownerId,
+                rememberVisibleWidgetStyle(appId, {
                     preset: presetWithLayouts(remotePreset, remoteStyle.topLayout, remoteStyle.bottomLayout),
                     updatedAt: remoteStyle.updatedAt,
                     checkedAt: Date.now(),
@@ -3042,7 +2937,7 @@ function queueVisibleWidgetStyleHydration(requests: Iterable<VisibleWidgetStyleH
                 // to this client. Retry later; viewed profile cards remain
                 // native until the owner's marker is readable.
                 const appName = String(application?.name ?? application?.application?.name ?? "").trim();
-                rememberVisibleWidgetStyleMiss(cacheKey, { appId, ownerKey, ownerId }, appName ? [appName] : []);
+                rememberVisibleWidgetStyleMiss(appId, appName ? [appName] : []);
             }
             widgetApplicationCacheEpoch++;
             scheduleWidgetSkinProfileFastScan();
@@ -3051,14 +2946,14 @@ function queueVisibleWidgetStyleHydration(requests: Iterable<VisibleWidgetStyleH
             // An unreadable marker is retried later. Do not borrow the
             // viewer's skin for a foreign profile because that makes two
             // accounts appear to share one widget configuration.
-            rememberVisibleWidgetStyleMiss(cacheKey, { appId, ownerKey, ownerId });
+            rememberVisibleWidgetStyleMiss(appId);
             widgetApplicationCacheEpoch++;
             scheduleWidgetSkinProfileFastScan();
             scheduleWidgetSkinScan(true);
         }).finally(() => {
-            visibleWidgetStyleRequests.delete(cacheKey);
+            visibleWidgetStyleRequests.delete(appId);
         });
-        visibleWidgetStyleRequests.set(cacheKey, task);
+        visibleWidgetStyleRequests.set(appId, task);
     }
 }
 
@@ -3073,6 +2968,38 @@ function explicitWidgetApplicationId(element: Element, known: Set<string>, allow
         const value = applicationIdCandidate(element.getAttribute(attribute), known, allowUnknown);
         if (value) return value;
     }
+    return null;
+}
+
+// Some full-Board releases encode the application id in a list-item or
+// accessibility payload instead of a dedicated data-application-id
+// attribute. Only inspect attribute names that explicitly describe an app,
+// application, widget, or application list item; never treat a generic
+// data-user-id/data-id as a widget owner.
+function visibleWidgetApplicationIdFromAttribute(name: string, value: unknown): string | null {
+    const attributeName = String(name ?? "").toLowerCase();
+    const normalizedName = attributeName.replace(/[^a-z]/g, "").replace(/^(?:data|aria)/, "");
+    const applicationNamed = normalizedName === "applicationid"
+        || normalizedName === "appid"
+        || normalizedName === "widgetid"
+        || normalizedName === "application"
+        || normalizedName === "app"
+        || normalizedName === "widget"
+        || normalizedName === "listitemid";
+    if (!applicationNamed) return null;
+    const raw = String(value ?? "").trim();
+    if (SNOWFLAKE.test(raw)) return raw;
+    const match = raw.match(/(?:^|[^a-z])(?:application|app|widget)[^0-9]{0,32}(\d{17,20})(?:$|[^0-9])/i);
+    return match?.[1] && SNOWFLAKE.test(match[1]) ? match[1] : null;
+}
+
+function visibleWidgetApplicationIdFromNode(element: Element): string | null {
+    try {
+        for (const attribute of Array.from(element.attributes)) {
+            const id = visibleWidgetApplicationIdFromAttribute(attribute.name, attribute.value);
+            if (id) return id;
+        }
+    } catch { /* ignore a node that is being removed */ }
     return null;
 }
 
@@ -3093,6 +3020,8 @@ function domApplicationId(element: Element, known: Set<string>, allowUnknown = f
     for (const node of nodes) {
         const explicit = explicitWidgetApplicationId(node, known, allowUnknown);
         if (explicit) return explicit;
+        const payload = visibleWidgetApplicationIdFromNode(node);
+        if (payload && (allowUnknown || known.has(payload))) return payload;
         // Board releases have also put the snowflake in an aria label or a
         // versioned data payload. Comparing every attribute value is cheaper
         // and more reliable than guessing each new attribute name.
@@ -3160,6 +3089,8 @@ function visibleWidgetApplicationId(element: HTMLElement): string | null {
     const empty = new Set<string>();
     const direct = explicitWidgetApplicationId(element, empty, true);
     if (direct) return direct;
+    const directPayload = visibleWidgetApplicationIdFromNode(element);
+    if (directPayload) return directPayload;
     try {
         const selector = WIDGET_APPLICATION_ID_ATTRIBUTES.map(attribute => `[${attribute}]`).join(",");
         const ids = new Set<string>();
@@ -3169,11 +3100,26 @@ function visibleWidgetApplicationId(element: HTMLElement): string | null {
             if (ids.size > 1) return null;
         }
         if (ids.size === 1) return ids.values().next().value ?? null;
+
+        // The Board's list-item wrapper can carry the app id while the
+        // visible card itself has no explicit application attribute. Keep the
+        // search bounded to the candidate subtree and require an
+        // application-shaped attribute name before accepting a snowflake.
+        const payloadIds = new Set<string>();
+        const payloadNodes = [element, ...Array.from(element.querySelectorAll("*")).slice(0, 96)];
+        for (const node of payloadNodes) {
+            const id = visibleWidgetApplicationIdFromNode(node);
+            if (id) payloadIds.add(id);
+            if (payloadIds.size > 1) return null;
+        }
+        if (payloadIds.size === 1) return payloadIds.values().next().value ?? null;
     } catch { /* ignore a tearing/partially-mounted profile card */ }
     const directReact = reactApplicationId(element, empty, 450, 8, true);
     if (directReact) return directReact;
     for (let current: HTMLElement | null = element.parentElement, depth = 0; current && depth < WIDGET_CARD_MAX_ANCESTOR_DEPTH; depth++, current = current.parentElement) {
-        const id = explicitWidgetApplicationId(current, empty, true) ?? reactApplicationId(current, empty, 240, 6, true);
+        const id = explicitWidgetApplicationId(current, empty, true)
+            ?? visibleWidgetApplicationIdFromNode(current)
+            ?? reactApplicationId(current, empty, 240, 6, true);
         if (id) return id;
     }
     return null;
@@ -3212,7 +3158,8 @@ const WIDGET_SURFACE_SELECTOR = [
     '[class*="Popout"]',
     '[class*="board"]',
     '[class*="Board"]',
-    '[role="dialog"]'
+    '[role="dialog"]',
+    '[role="complementary"]'
 ].join(",");
 
 // A profile card can be rendered by either account's Discord client. Never
@@ -3227,8 +3174,6 @@ const WIDGET_OWNER_ATTRIBUTES = [
     "data-profile-user-id",
     "data-profile-userid",
     "data-dm-flair-avatar-user-id",
-    "data-dm-flair-profile-owner-id",
-    "data-dm-flair-banner-user-id",
     "data-dm-flair-banner-owner-id",
     "data-dm-flair-theme-owner-id"
 ];
@@ -3244,6 +3189,8 @@ function widgetOwnerIdFromNode(node: Element): string | null {
         if (id) return id;
     }
     const idText = node.getAttribute("id") ?? "";
+    const profileHeadingMatch = idText.match(/(?:user-profile-sidebar-heading|user-profile-heading|profile-sidebar-heading|profile-heading)[-_:](\d{17,20})$/i);
+    if (profileHeadingMatch) return validWidgetOwnerId(profileHeadingMatch[1]);
     const idMatch = idText.match(/(?:user|profile)[-_:]?(\d{17,20})/i);
     if (idMatch) return validWidgetOwnerId(idMatch[1]);
     const href = node.getAttribute("href") ?? "";
@@ -3311,13 +3258,24 @@ function widgetProfileOwnerId(surface: HTMLElement | null): string | null {
 
 function widgetSurfaceForCard(card: HTMLElement): HTMLElement | null {
     const surfaces: HTMLElement[] = [];
-    for (let current: HTMLElement | null = card.parentElement, depth = 0; current && depth < 10; depth++, current = current.parentElement) {
+    for (let current: HTMLElement | null = card.parentElement, depth = 0; current && depth < 18; depth++, current = current.parentElement) {
         if (current.matches(WIDGET_SURFACE_SELECTOR)) surfaces.push(current);
     }
-    // Prefer the nearest surface that actually carries the profile owner. A
-    // Board card is often nested inside an outer dialog whose owner marker is
-    // added one React commit later; choosing a bare inner wrapper there made
-    // the renderer fall back to the viewer's local map or native styling.
+    // Use one stable owner-bearing boundary for every card in a profile
+    // composition. The Playing card and the attached widget often sit in
+    // different nested wrappers; choosing the nearest owner-bearing wrapper
+    // separately made their style maps look unrelated even though they belong
+    // to the same profile. Prefer the outermost wrapper that still resolves to
+    // the same owner, while retaining the nearest one when the outer shell is
+    // still settling and has no owner yet.
+    const ownerBearing = surfaces
+        .map(surface => ({ surface, ownerId: widgetProfileOwnerId(surface) }))
+        .filter(item => !!item.ownerId);
+    const ownerId = ownerBearing[0]?.ownerId;
+    if (ownerId) {
+        return [...ownerBearing].reverse().find(item => item.ownerId === ownerId)?.surface
+            ?? ownerBearing[0].surface;
+    }
     return surfaces.find(surface => !!widgetProfileOwnerId(surface))
         ?? surfaces.find(surface => surface.getAttribute("role") === "dialog")
         ?? surfaces[0]
@@ -3329,6 +3287,9 @@ function widgetSurfaceLooksProfileOwned(surface: HTMLElement | null): boolean {
     const className = typeof surface.className === "string" ? surface.className : "";
     const role = surface.getAttribute("role") ?? "";
     const semantic = `${className} ${role} ${surface.getAttribute("aria-label") ?? ""}`;
+    const hasProfileHeading = Boolean(surface.querySelector(
+        '[id^="user-profile-sidebar-heading-"], [id^="user-profile-heading-"], [id^="profile-sidebar-heading-"]'
+    ));
     // Discord's compact user/profile popout has shipped with hashed class
     // names that contain none of the words below. Its stable boundary is the
     // dialog role. Treating that surface as profile-owned is important: a
@@ -3336,10 +3297,14 @@ function widgetSurfaceLooksProfileOwned(surface: HTMLElement | null): boolean {
     // different account while the owner's published marker is hydrating.
     const ownerSelector = WIDGET_OWNER_ATTRIBUTES.map(attribute => `[${attribute}]`).join(",");
     const hasExplicitOwner = surface.matches(ownerSelector) || Boolean(surface.querySelector(ownerSelector));
-    return role === "dialog" || hasExplicitOwner || /profile|popout|user.?card|account.?popout|user.?profile|board/i.test(semantic);
+    return role === "dialog"
+        || hasExplicitOwner
+        || (role === "complementary" && (hasProfileHeading || /profile/i.test(semantic)))
+        || /profile|popout|user.?card|account.?popout|user.?profile|board/i.test(semantic);
 }
 
 function widgetStylesForSurface(
+    remote: Map<string, WidgetStylePreset>,
     local: Map<string, WidgetStylePreset>,
     surface: HTMLElement | null
 ): Map<string, WidgetStylePreset> {
@@ -3350,8 +3315,8 @@ function widgetStylesForSurface(
     // profile. This prevents DiggyT's local Fort skin from appearing on
     // DiggyAI while still making the viewer's own profile render immediately.
     if (!widgetSurfaceLooksProfileOwned(surface)) return new Map(local);
+    const out = new Map(remote);
     const ownerId = widgetProfileOwnerId(surface);
-    const out = new Map(visibleProfileWidgetStyles(visibleWidgetOwnerKey(surface), ownerId));
     const currentId = validWidgetOwnerId(UserStore.getCurrentUser()?.id);
     if (ownerId && currentId && ownerId === currentId) {
         for (const [appId, preset] of local) out.set(appId, preset);
@@ -3364,14 +3329,9 @@ function widgetHintsForSurface(
     surface: HTMLElement | null
 ): Map<string, string[]> {
     if (!widgetSurfaceLooksProfileOwned(surface)) return new Map(local);
-    const ownerKey = visibleWidgetOwnerKey(surface);
     const ownerId = widgetProfileOwnerId(surface);
     const currentId = validWidgetOwnerId(UserStore.getCurrentUser()?.id);
-    return visibleProfileWidgetHints(
-        ownerId && currentId && ownerId === currentId ? local : new Map(),
-        ownerKey,
-        ownerId
-    );
+    return visibleProfileWidgetHints(ownerId && currentId && ownerId === currentId ? local : new Map());
 }
 // The compact account popout and profile modal can contain a branded Playing
 // card after enough ordinary profile nodes that the general surface-card
@@ -3381,6 +3341,7 @@ function widgetHintsForSurface(
 const PLAYING_CARD_SELECTOR = '[class*="card__"], [class*="card_"], article, [role="article"]';
 const PLAYING_CARD_PROFILE_SURFACE_SELECTOR = [
     '[role="dialog"]',
+    '[role="complementary"]',
     '[class*="accountPopout"]',
     '[class*="userProfile"]',
     '[class*="profilePopout"]',
@@ -3394,9 +3355,17 @@ const PLAYING_CARD_PROFILE_SURFACE_SELECTOR = [
 const WIDGET_SURFACE_SKIN_SELECTOR = [
     '[class*="channel__"]',
     '[class*="channel_"]',
+    '[class*="channelName__"]',
+    '[class*="channelName_"]',
+    'li[class*="channel"]',
+    'li[class*="channel"] > div[class*="interactive"]',
     '[class*="accountPopoutButtonWrapper"]',
+    '[class*="accountPanel"]',
     'div[class*="hoverableContainer__"]',
-    'h1[class*="title__"]'
+    'div[class*="hoverableContainer_"]',
+    '[class*="title__"]',
+    '[class*="title_"]',
+    '[class*="chatHeader"]'
 ].join(",");
 const WIDGET_SURFACE_SKIN_MAX_ROOTS = 12;
 const WIDGET_CARD_MAX_ANCESTOR_DEPTH = 20;
@@ -3426,8 +3395,13 @@ function isOpenDiscordConversationPath(path = window.location.pathname): boolean
 
 function isDiscordChannelRow(element: HTMLElement): boolean {
     const className = typeof element.className === "string" ? element.className : "";
+    if (!/channel/i.test(className)) return false;
+    // Discord has shipped both <li> and div/a channel rows. A descendant DM
+    // link is the reliable discriminator for the latter; channelName children
+    // are intentionally excluded so we keep the skin on the row container.
     return element.tagName.toUpperCase() === "LI"
-        && /(?:^|[\s_-])channel(?:__|_)/i.test(className);
+        || /channel(?:__|_)/i.test(className)
+        || !!element.querySelector('a[href^="/channels/@me/"]');
 }
 
 function activeDiscordConversationPath(): string {
@@ -3438,9 +3412,15 @@ function activeDiscordConversationPath(): string {
 function discordConversationRowMatchesPath(element: HTMLElement, path: string): boolean {
     if (!isDiscordChannelRow(element)) return false;
     const className = typeof element.className === "string" ? element.className : "";
-    if (!/(?:^|[\s_-])dm(?:__|_)/i.test(className) || !path) return false;
+    if (!path) return false;
     const href = element.querySelector<HTMLAnchorElement>('a[href^="/channels/@me/"]')?.getAttribute("href") ?? "";
-    return !!href && discordSurfacePath(href) === path;
+    if (!href || discordSurfacePath(href) !== path) return false;
+    // Older rows expose a DM token, while newer rows only expose the private
+    // channel link. Either is safe here because the exact active route must
+    // still match before the surface can be styled.
+    return /(?:^|[\s_-])dm(?:__|_)/i.test(className)
+        || /private|channel(?:__|_)/i.test(className)
+        || element.tagName.toUpperCase() === "LI";
 }
 
 function visibleDiscordConversationRow(element: HTMLElement): boolean {
@@ -3477,7 +3457,7 @@ function activeDiscordConversationRow(): HTMLElement | null {
     if (cached?.path === path && cached.row?.isConnected && discordConversationRowMatchesPath(cached.row, path)) return cached.row;
     const candidates: HTMLElement[] = [];
     try {
-        for (const row of Array.from(document.querySelectorAll<HTMLElement>('li[class*="channel__"], li[class*="channel_"]'))) {
+        for (const row of Array.from(document.querySelectorAll<HTMLElement>('[class*="channel__"], [class*="channel_"], [class*="private"], li[class*="channel"]'))) {
             if (discordConversationRowMatchesPath(row, path)) candidates.push(row);
         }
     } catch { /* ignore a row tree that is being replaced */ }
@@ -3491,22 +3471,43 @@ function isOpenDiscordConversationRow(element: HTMLElement): boolean {
     return activeDiscordConversationRow() === element;
 }
 
+function activeDiscordConversationVisualRoot(row = activeDiscordConversationRow()): HTMLElement | null {
+    if (!row) return null;
+    // Discord keeps the route/link on the LI but paints the selected state on
+    // its nested interactive div. Skin the painted node when it exists so the
+    // stock selected background cannot cover the animated surface layer.
+    return row.querySelector<HTMLElement>([
+        '[class*="interactiveSelected_"]',
+        '[class*="interactiveSelected__"]',
+        '[aria-current="page"]',
+        '[aria-selected="true"]',
+        '[data-is-selected="true"]',
+        '[class*="selected_"]'
+    ].join(",")) ?? row;
+}
+
 function isDiscordAccountPanel(element: HTMLElement): boolean {
     const className = typeof element.className === "string" ? element.className : "";
-    return /accountPopoutButtonWrapper/i.test(className);
+    return /accountPopoutButtonWrapper|accountPanel/i.test(className);
 }
 
 function isOpenDiscordConversationHeader(element: HTMLElement): boolean {
     if (!isOpenDiscordConversationPath()) return false;
     const className = typeof element.className === "string" ? element.className : "";
-    const inChatHeader = element.closest<HTMLElement>('section[class*="title_"]');
-    if (!inChatHeader) return false;
-    if (/hoverableContainer__/i.test(className)) return true;
-    return element.tagName.toUpperCase() === "H1" && /(?:^|[\s_-])title(?:__|_)/i.test(className);
+    const titleLike = /(?:^|[\s_-])title(?:__|_|$)/i.test(className);
+    const inChatHeader = element.closest<HTMLElement>('section[class*="title"], header[class*="title"], [class*="chatHeader"], [class*="headerBar"], [class*="channelName"]');
+    if (!inChatHeader && !titleLike) return false;
+    if (/hoverableContainer|chatHeader|headerBar/i.test(className)) return true;
+    // The current DM header commonly uses a div.title__… host for the name.
+    // Keep the title/channel-name class as the final guard so this does not
+    // turn ordinary message text into a surface root.
+    return titleLike || element.tagName.toUpperCase() === "H1";
 }
 
 function discordSurfaceSkinTarget(element: HTMLElement): boolean {
-    return isOpenDiscordConversationRow(element)
+    const activeRow = activeDiscordConversationRow();
+    const activeVisual = activeDiscordConversationVisualRoot(activeRow);
+    return (activeVisual ? element === activeVisual : element === activeRow)
         || isDiscordAccountPanel(element)
         || isOpenDiscordConversationHeader(element);
 }
@@ -3530,7 +3531,8 @@ function discordSurfaceSkinBlocked(element: HTMLElement): boolean {
 function discordSurfaceSkinPriority(element: HTMLElement): number {
     if (isDiscordAccountPanel(element)) return 4;
     if (isOpenDiscordConversationHeader(element)) return 3;
-    if (isOpenDiscordConversationRow(element)) return 2;
+    if (element === activeDiscordConversationVisualRoot()) return 2;
+    if (isOpenDiscordConversationRow(element)) return 1;
     return 1;
 }
 
@@ -4004,7 +4006,7 @@ function scanVisibleProfileWidgetCards(): number {
                 addCandidate(explicitCandidates, node, WIDGET_SKIN_PROFILE_EXPLICIT_CANDIDATE_MAX);
             }
             for (const candidate of Array.from(surface.querySelectorAll<HTMLElement>(WIDGET_CARD_SELECTOR)).slice(0, 64)) {
-                if (isDiscordmaxxerPlayingCard(candidate)) {
+                if (isWidgetPlayingCard(candidate, initialHintLabels)) {
                     addCandidate(playingCandidates, candidate, WIDGET_SKIN_PROFILE_CARD_CANDIDATE_MAX);
                     continue;
                 }
@@ -4013,7 +4015,7 @@ function scanVisibleProfileWidgetCards(): number {
             }
         }
     } catch { /* ignore a profile surface that is being replaced */ }
-    const discovered = new Map<string, VisibleWidgetStyleHydrationRequest>();
+    const discovered = new Set<string>();
     for (const candidate of [...explicitCandidates, ...hintedCardCandidates].slice(0, WIDGET_SKIN_PROFILE_MATCH_MAX)) {
         const appId = visibleWidgetApplicationId(candidate);
         // A profile opened for another account can use the same application id
@@ -4021,17 +4023,9 @@ function scanVisibleProfileWidgetCards(): number {
         // it is not proof that this visible card belongs to the viewer. Always
         // hydrate the read-only remote marker for visible profile cards so the
         // owner's published skin can replace a same-id local entry.
-        if (!appId) continue;
-        const surface = widgetSurfaceForCard(candidate);
-        if (!widgetSurfaceLooksProfileOwned(surface)) continue;
-        const ownerKey = visibleWidgetOwnerKey(surface);
-        discovered.set(visibleWidgetCacheKey(appId, ownerKey), {
-            appId,
-            ownerKey,
-            ownerId: widgetProfileOwnerId(surface)
-        });
+        if (appId) discovered.add(appId);
     }
-    queueVisibleWidgetStyleHydration(discovered.values());
+    queueVisibleWidgetStyleHydration(discovered);
     const active = visibleProfileWidgetStyles();
     const ordered = [...explicitCandidates, ...hintedCardCandidates];
     // Keep the local map in the fast path for the viewer's own profile and
@@ -4044,7 +4038,7 @@ function scanVisibleProfileWidgetCards(): number {
     let applied = 0;
     for (const candidate of ordered.slice(0, WIDGET_SKIN_PROFILE_MATCH_MAX)) {
         const surface = widgetSurfaceForCard(candidate);
-        const effectiveActive = widgetStylesForSurface(localActive, surface);
+        const effectiveActive = widgetStylesForSurface(active, localActive, surface);
         const effectiveHints = widgetHintsForSurface(localHints, surface);
         const match = widgetApplicationMatch(candidate, new Set(effectiveActive.keys()), effectiveHints);
         if (!match) continue;
@@ -4073,10 +4067,10 @@ function scanVisibleProfileWidgetCards(): number {
         applied++;
     }
 
-    const playingCard = selectPlayingCard(playingCandidates);
+    const playingCard = selectPlayingCard(playingCandidates, initialHintLabels);
     const playingScope = playingCard ? widgetSurfaceForCard(playingCard) : null;
-    const playingActive = widgetStylesForSurface(localActive, playingScope);
-    const playingPreset = playingCard ? playingCardPreset(playingActive, seen, playingScope) : null;
+    const playingActive = widgetStylesForSurface(active, localActive, playingScope);
+    const playingPreset = playingCard ? playingCardPreset(playingActive, seen, playingScope, initialHintLabels) : null;
     if (playingCard && playingPreset && !seen.has(playingCard)) {
         if (playingCard.dataset.dmWidgetSurfaceRoot === "true") restoreSurfaceSkin(playingCard);
         applyWidgetSkin(playingCard, playingPreset, DISCORDMAXXER_PLAYING_APP_ID);
@@ -4174,7 +4168,7 @@ function applyWidgetSkin(root: HTMLElement, preset: WidgetStylePreset, appId: st
     widgetSkinLastSeenAt.set(root, Date.now());
 }
 
-function isDiscordmaxxerPlayingCard(element: HTMLElement): boolean {
+function widgetPlayingCardShape(element: HTMLElement): boolean {
     if (!widgetCardLike(element)) return false;
     const className = typeof element.className === "string" ? element.className : "";
     const role = element.getAttribute("role") ?? "";
@@ -4182,13 +4176,55 @@ function isDiscordmaxxerPlayingCard(element: HTMLElement): boolean {
     if (!semanticCard && !/(?:^|[\s_-])card(?:(?:__|_)[A-Za-z0-9]+|[A-Z][A-Za-z0-9]*|$)/i.test(className)) return false;
     const rect = element.getBoundingClientRect();
     if (rect.width < 180 || rect.height < 70 || rect.width > 520 || rect.height > 260) return false;
+    return true;
+}
+
+function widgetPlayingLabelRemainder(text: string): string | null {
+    const normalized = String(text ?? "").replace(/\s+/g, " ").trim().slice(0, 900);
+    const match = normalized.match(/(?:^|\s)playing/i);
+    if (!match || match.index === undefined) return null;
+    const remainder = normalized.slice(match.index + match[0].length);
+    // React text nodes are normally separated, but some Discord activity
+    // layouts concatenate them as `PlayingVALORANT`. Accept that form only
+    // when the next token looks like a real title, not an arbitrary word
+    // containing the substring "playing".
+    if (!remainder || /^[\s:·•|\/-]/.test(remainder) || /^[A-Z][A-Za-z0-9_-]{2,}/.test(remainder)) return remainder.trim();
+    return null;
+}
+
+function isDiscordmaxxerPlayingCard(element: HTMLElement): boolean {
+    if (!widgetPlayingCardShape(element)) return false;
     const text = String(element.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 900);
     // The branded Rich Presence has remained stable across the Discord
     // layouts we support: a Playing label, the Discordmaxxer activity, and
     // the maxxtopia link. Requiring all three keeps ordinary game cards out.
-    return /(?:^|\s)playing(?:\s|app|$)/i.test(text)
+    return widgetPlayingLabelRemainder(text) !== null
         && /discordmaxxer|discmaxxer/i.test(text)
         && /maxxtopia\.com/i.test(text);
+}
+
+function isWidgetPlayingCard(element: HTMLElement, appHints: string[] = []): boolean {
+    if (isDiscordmaxxerPlayingCard(element)) return true;
+    if (!widgetPlayingCardShape(element) || !appHints.length) return false;
+    const text = String(element.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 900);
+    // Native Discord activity cards do not contain the Discordmaxxer brand.
+    // Require both the native Playing label and a known app label so an
+    // unrelated article/card in a profile surface cannot inherit a widget skin.
+    const playingRemainder = widgetPlayingLabelRemainder(text);
+    return playingRemainder !== null
+        && (widgetTextMatchesHints(text, appHints)
+            || widgetTextMatchesHints(playingRemainder, appHints)
+            // Compact Discord labels can be `Val`/`Fort` while the native
+            // activity card spells out the full game name. Keep this alias
+            // limited to the two supported widget slots; do not relax the
+            // general hint matcher, which correctly rejects arbitrary
+            // substrings such as `Val` inside unrelated words.
+            || appHints.some(label => {
+                const clean = label.trim().toLowerCase();
+                if (clean === "val") return /\bvalorant\b/i.test(playingRemainder);
+                if (clean === "fort") return /\bfortnite\b/i.test(playingRemainder);
+                return false;
+            }));
 }
 
 function clearWidgetSkinPlayingCardHosts(): void {
@@ -4212,7 +4248,7 @@ function syncWidgetSkinPlayingCardHosts(root: HTMLElement | null): void {
         return;
     }
     if (rootRect.width < 1 || rootRect.height < 1) return;
-    // The selected root is intentionally the smallest branded card. Discord
+    // The selected root is intentionally the smallest activity card. Discord
     // sometimes puts the actual hover paint on one or two card-like parents,
     // so mark only nearby visual ancestors and stop before the profile shell.
     let current = root.parentElement;
@@ -4236,8 +4272,8 @@ function syncWidgetSkinPlayingCardHosts(root: HTMLElement | null): void {
     widgetSkinPlayingCardHostRoot = root;
 }
 
-function visibleDiscordmaxxerPlayingCard(element: HTMLElement): boolean {
-    if (!element.isConnected || !isDiscordmaxxerPlayingCard(element)) return false;
+function visibleWidgetPlayingCard(element: HTMLElement, appHints: string[] = []): boolean {
+    if (!element.isConnected || !isWidgetPlayingCard(element, appHints)) return false;
     try {
         const rect = element.getBoundingClientRect();
         if (rect.right <= 0 || rect.bottom <= 0 || rect.left >= window.innerWidth || rect.top >= window.innerHeight) return false;
@@ -4283,15 +4319,15 @@ function visibleDiscordmaxxerPlayingCard(element: HTMLElement): boolean {
     }
 }
 
-function selectPlayingCard(candidates: HTMLElement[]): HTMLElement | null {
+function selectPlayingCard(candidates: HTMLElement[], appHints: string[] = []): HTMLElement | null {
     // Discord can leave the previous profile card connected while it commits
     // the next timer value. Prefer the already-rendered visible root so the
     // skin is not moved between nested ARTICLE/DIV candidates on every pass.
     const candidateSet = new Set(candidates);
     if (widgetSkinPlayingCardRoot
-        && visibleDiscordmaxxerPlayingCard(widgetSkinPlayingCardRoot)
+        && visibleWidgetPlayingCard(widgetSkinPlayingCardRoot, appHints)
         && (!candidates.length || candidateSet.has(widgetSkinPlayingCardRoot))) return widgetSkinPlayingCardRoot;
-    const visibleCandidates = candidates.filter(visibleDiscordmaxxerPlayingCard);
+    const visibleCandidates = candidates.filter(candidate => visibleWidgetPlayingCard(candidate, appHints));
     visibleCandidates.sort((left, right) => {
         // Discord's Rich Presence markup normally contains a semantic
         // ARTICLE wrapper plus an inner `card__*` paint root with the same
@@ -4313,8 +4349,21 @@ function selectPlayingCard(candidates: HTMLElement[]): HTMLElement | null {
     return widgetSkinPlayingCardRoot;
 }
 
-function playingCardPreset(active: Map<string, WidgetStylePreset>, seen: Set<HTMLElement>, scope: HTMLElement | null = null): WidgetStylePreset | null {
-    if (!active.size) return null;
+function playingCardPreset(
+    active: Map<string, WidgetStylePreset>,
+    seen: Set<HTMLElement>,
+    scope: HTMLElement | null = null,
+    appHints: string[] = []
+): WidgetStylePreset | null {
+    const presetFromStyledRoot = (root: HTMLElement | null): WidgetStylePreset | null => {
+        if (!root?.isConnected || root.dataset.dmWidgetAppId === DISCORDMAXXER_PLAYING_APP_ID) return null;
+        const appId = root.dataset.dmWidgetAppId ?? "";
+        const remotePreset = appId ? active.get(appId) : undefined;
+        const styleId = root.dataset.dmWidgetSkin ?? "";
+        const basePreset = remotePreset ?? WIDGET_STYLE_PRESETS.find(preset => preset.id === styleId);
+        if (!basePreset) return null;
+        return presetWithLayouts(basePreset, root.dataset.dmWidgetTopLayout, root.dataset.dmWidgetBottomLayout);
+    };
     // A Playing card has no Social SDK application id of its own. It may only
     // inherit from a widget card in the same visible profile surface. The old
     // first-entry fallback made the viewer's own style bleed into another
@@ -4327,8 +4376,7 @@ function playingCardPreset(active: Map<string, WidgetStylePreset>, seen: Set<HTM
     // global gallery value. This preserves the original “same skin” look even
     // when Val and Fortnite have different slot selections.
     for (const root of Array.from(scopedSeen)) {
-        const appId = root.dataset.dmWidgetAppId ?? "";
-        const preset = appId ? active.get(appId) : undefined;
+        const preset = presetFromStyledRoot(root);
         if (preset) return preset;
     }
     // If the Playing card survived a timer update, keep its current preset
@@ -4339,17 +4387,19 @@ function playingCardPreset(active: Map<string, WidgetStylePreset>, seen: Set<HTM
         && (!scope || scope.contains(widgetSkinPlayingCardRoot))
         ? widgetSkinPlayingCardRoot.dataset.dmWidgetSkin ?? ""
         : "";
-    const currentPlayingPreset = currentPlayingStyle
-        ? Array.from(active.values()).find(preset => preset.id === currentPlayingStyle)
+    const currentPlayingBase = currentPlayingStyle
+        ? WIDGET_STYLE_PRESETS.find(preset => preset.id === currentPlayingStyle) ?? active.values().next().value
+        : undefined;
+    const currentPlayingPreset = currentPlayingBase
+        ? presetWithLayouts(currentPlayingBase, widgetSkinPlayingCardRoot?.dataset.dmWidgetTopLayout, widgetSkinPlayingCardRoot?.dataset.dmWidgetBottomLayout)
         : undefined;
     if (currentPlayingPreset) return currentPlayingPreset;
     for (const root of Array.from(widgetSkinRoots.keys()).reverse()) {
         if (!root.isConnected || root.dataset.dmWidgetAppId === DISCORDMAXXER_PLAYING_APP_ID) continue;
         if (scope && !scope.contains(root)) continue;
         const rect = root.getBoundingClientRect();
-        const appId = root.dataset.dmWidgetAppId ?? "";
-        if (rect.width >= 20 && rect.height >= 12 && appId) {
-            const preset = active.get(appId);
+        if (rect.width >= 20 && rect.height >= 12) {
+            const preset = presetFromStyledRoot(root);
             if (preset) return preset;
         }
     }
@@ -4361,9 +4411,9 @@ function playingCardPreset(active: Map<string, WidgetStylePreset>, seen: Set<HTM
     if (scope) {
         try {
             for (const candidate of Array.from(scope.querySelectorAll<HTMLElement>(WIDGET_CARD_SELECTOR)).slice(0, 96)) {
-                if (isDiscordmaxxerPlayingCard(candidate)) continue;
+                if (isWidgetPlayingCard(candidate, appHints)) continue;
                 const appId = visibleWidgetApplicationId(candidate);
-                const preset = appId ? active.get(appId) : undefined;
+                const preset = (appId ? active.get(appId) : undefined) ?? presetFromStyledRoot(candidate);
                 if (preset) return preset;
             }
         } catch { /* Discord may recycle the profile tree during this scan. */ }
@@ -4528,19 +4578,19 @@ function scanWidgetSkinCards(budgetMs = 120): number {
             // leave the account-popout Rich Presence card skinless.
             const shouldProbeDirectPlayingCard = !widgetSkinPlayingCardRoot
                 || !widgetSkinPlayingCardRoot.isConnected
-                || !visibleDiscordmaxxerPlayingCard(widgetSkinPlayingCardRoot);
+                || !visibleWidgetPlayingCard(widgetSkinPlayingCardRoot, discoveryLabels);
             let directPlayingCandidates: HTMLElement[] = [];
             if (shouldProbeDirectPlayingCard && Date.now() - lastPlayingCardDirectProbeAt >= PLAYING_CARD_DIRECT_PROBE_INTERVAL_MS) {
                 lastPlayingCardDirectProbeAt = Date.now();
                 directPlayingCandidates = queryPlayingCardProfileSurfaces(180)
-                    .filter(candidate => isDiscordmaxxerPlayingCard(candidate));
+                    .filter(candidate => isWidgetPlayingCard(candidate, discoveryLabels));
             }
             const explicitSelector = WIDGET_APPLICATION_ID_ATTRIBUTES.map(attribute => `[${attribute}]`).join(",");
             addCandidates(query(explicitSelector, 240));
             const surfaceCards = queryWithinSurfaces(WIDGET_CARD_SELECTOR, 520);
             // The current Discord profile layout can expose the Playing card
             // as a plain ARTICLE/DIV outside the bounded surface query's
-            // first batch. Keep one cheap, exact fallback for this branded
+            // first batch. Keep one cheap, exact fallback for this activity
             // card only; do not restore the old document-wide card sweep that
             // caused renderer stalls and false-positive Friends/Active Now
             // skins.
@@ -4548,7 +4598,7 @@ function scanWidgetSkinCards(budgetMs = 120): number {
                 // Keep a bounded fallback for layouts that do not expose a
                 // profile container at all.
                 directPlayingCandidates = query(PLAYING_CARD_SELECTOR, 240)
-                    .filter(candidate => isDiscordmaxxerPlayingCard(candidate));
+                    .filter(candidate => isWidgetPlayingCard(candidate, discoveryLabels));
             }
             const hintedSurfaceCards = surfaceCards.filter(candidate => {
                 try { return widgetTextMatchesHints(String(candidate.textContent ?? ""), discoveryLabels); }
@@ -4561,24 +4611,6 @@ function scanWidgetSkinCards(budgetMs = 120): number {
             // on normal reconciliation passes; the global fallback is only
             // needed while the surface selector is still settling.
             if (surfaceCards.length === 0) addCandidates(query(WIDGET_CARD_SELECTOR, 240));
-            const hydrationRequests = new Map<string, VisibleWidgetStyleHydrationRequest>();
-            for (const candidate of Array.from(new Set([
-                ...orderedCandidates,
-                ...surfaceCards,
-                ...directPlayingCandidates
-            ]))) {
-                const appId = visibleWidgetApplicationId(candidate);
-                if (!appId) continue;
-                const surface = widgetSurfaceForCard(candidate);
-                if (!widgetSurfaceLooksProfileOwned(surface)) continue;
-                const ownerKey = visibleWidgetOwnerKey(surface);
-                hydrationRequests.set(visibleWidgetCacheKey(appId, ownerKey), {
-                    appId,
-                    ownerKey,
-                    ownerId: widgetProfileOwnerId(surface)
-                });
-            }
-            queueVisibleWidgetStyleHydration(hydrationRequests.values());
             const inspect = (candidates: Iterable<HTMLElement>, limit: number) => {
                 let inspected = 0;
                 for (const candidate of candidates) {
@@ -4587,9 +4619,9 @@ function scanWidgetSkinCards(budgetMs = 120): number {
                     // not let a React application-id/text hint claim a
                     // nested Playing-card host first, because that bypasses
                     // the shared timeline and replacement watcher.
-                    if (isDiscordmaxxerPlayingCard(candidate)) continue;
+                    if (isWidgetPlayingCard(candidate, discoveryLabels)) continue;
                     const surface = widgetSurfaceForCard(candidate);
-                    const effectiveActive = widgetStylesForSurface(localActive, surface);
+                    const effectiveActive = widgetStylesForSurface(active, localActive, surface);
                     const effectiveHints = widgetHintsForSurface(localHints, surface);
                     const match = widgetApplicationMatch(candidate, new Set(effectiveActive.keys()), effectiveHints);
                     const preset = match ? effectiveActive.get(match.appId) : undefined;
@@ -4615,18 +4647,19 @@ function scanWidgetSkinCards(budgetMs = 120): number {
                 }
             };
             inspect(orderedCandidates, 620);
-            // The compact profile also contains Discordmaxxer's Rich Presence
-            // “Playing” card. It has no attached Social SDK app id, so handle
-            // that one branded card explicitly after the guarded app scan.
+            // The compact profile can also contain a native Discord activity
+            // “Playing” card. It has no reliable widget application id of its
+            // own, so handle the explicitly matched activity card after the
+            // guarded app scan and inherit the same-surface widget style.
             const playingCandidates = Array.from(new Set([
                 ...surfaceCards,
                 ...orderedCandidates,
                 ...directPlayingCandidates
-            ])).filter(candidate => isDiscordmaxxerPlayingCard(candidate));
-            const playingCard = selectPlayingCard(playingCandidates);
+            ])).filter(candidate => isWidgetPlayingCard(candidate, discoveryLabels));
+            const playingCard = selectPlayingCard(playingCandidates, discoveryLabels);
             const playingScope = playingCard ? widgetSurfaceForCard(playingCard) : null;
-            const playingActive = widgetStylesForSurface(localActive, playingScope);
-            const playingPreset = playingCard ? playingCardPreset(playingActive, seen, playingScope) : null;
+            const playingActive = widgetStylesForSurface(active, localActive, playingScope);
+            const playingPreset = playingCard ? playingCardPreset(playingActive, seen, playingScope, discoveryLabels) : null;
             if (playingCard && playingPreset && !seen.has(playingCard)) {
                 if (playingCard.dataset.dmWidgetSurfaceRoot === "true") restoreSurfaceSkin(playingCard);
                 seen.add(playingCard);
@@ -4672,12 +4705,8 @@ function scanWidgetSkinCards(budgetMs = 120): number {
             else if (!root.isConnected) restoreWidgetSkin(root);
             else if (!seen.has(root)) {
                 const appId = root.dataset.dmWidgetAppId ?? "";
-                const surface = widgetSurfaceForCard(root);
-                const cacheKey = appId.length > 0 && widgetSurfaceLooksProfileOwned(surface)
-                    ? visibleWidgetCacheKey(appId, visibleWidgetOwnerKey(surface))
-                    : "";
-                const waiting = cacheKey.length > 0 && visibleWidgetStyleRequests.has(cacheKey);
-                const missed = cacheKey.length > 0 && visibleWidgetStyleMisses.has(cacheKey);
+                const waiting = appId.length > 0 && visibleWidgetStyleRequests.has(appId);
+                const missed = appId.length > 0 && visibleWidgetStyleMisses.has(appId);
                 const lastSeenAt = widgetSkinLastSeenAt.get(root) ?? 0;
                 const grace = waiting || missed ? 18_000 : 12_000;
                 // A complete scan can still miss a card while Discord is
@@ -4892,7 +4921,7 @@ function widgetSkinSurfaceNeedsScan(): boolean {
                     || !widgetCardLike(candidate) || widgetCardContainerLike(candidate)) continue;
                 const rect = candidate.getBoundingClientRect();
                 if (rect.width < 120 || rect.height < 40 || rect.bottom <= 0 || rect.right <= 0) continue;
-                if (isDiscordmaxxerPlayingCard(candidate)) return true;
+                if (isWidgetPlayingCard(candidate, hintLabels)) return true;
                 const text = String(candidate.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 1200);
                 if (widgetTextMatchesHints(text, hintLabels)) return true;
             }
@@ -5054,10 +5083,11 @@ function widgetSkinProfileTriggerLike(target: EventTarget | null): boolean {
 
 function widgetSkinConversationTriggerLike(target: EventTarget | null): boolean {
     if (!(target instanceof Element)) return false;
-    const row = target.closest<HTMLElement>("li");
+    const row = target.closest<HTMLElement>('li, [class*="channel__"], [class*="channel_"], [class*="private"]');
     if (!row || !isDiscordChannelRow(row)) return false;
     const className = typeof row.className === "string" ? row.className : "";
-    return /(?:^|[\s_-])dm(?:__|_)/i.test(className);
+    return /(?:^|[\s_-])dm(?:__|_)/i.test(className)
+        || !!row.querySelector('a[href^="/channels/@me/"]');
 }
 
 function disconnectWidgetSkinProfileMountObserver(): void {
@@ -5133,8 +5163,10 @@ function queueWidgetSkinProfileScan(): void {
 
 function isWidgetPreviewMotionPaused(): boolean {
     const runtime = (globalThis as any).__dmTournamentModeActive;
-    if (typeof runtime === "boolean") return runtime;
-    return (globalThis as any).Vencord?.PlainSettings?.plugins?.TournamentMode?.manuallyActive === true;
+    // Only trust the live module-owned mirror. The hidden setting is persisted
+    // across reloads and is intentionally not authoritative for the current
+    // renderer session.
+    return runtime === true;
 }
 
 function splitWidgetStat(raw: string): { label: string; value: string; } | null {

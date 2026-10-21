@@ -178,7 +178,7 @@ function VotesPanel() {
                 background: "linear-gradient(135deg, rgba(255,170,0,0.06), rgba(255,170,0,0.02))",
                 border: "1px solid rgba(255,170,0,0.18)"
             }}>
-                <div style={{ fontSize: "14px", fontWeight: 700, color: "#FFD27A", marginBottom: "6px" }}>
+                <div style={{ fontSize: "14px", fontWeight: 700, color: "#FFE5A8", marginBottom: "6px" }}>
                     🔒 Plugin Votes — MAXXER++ only
                 </div>
                 <div style={{ fontSize: "12.5px", color: "#bcc3d3", lineHeight: 1.5 }}>
@@ -240,7 +240,7 @@ function VotesPanel() {
                 background: "rgba(255,170,0,0.05)",
                 border: "1px solid rgba(255,170,0,0.18)"
             }}>
-                <strong style={{ color: "#FFD27A" }}>★ MAXXER++ — Plugin Votes</strong>
+                    <strong style={{ color: "#FFE5A8" }}>★ MAXXER++ — Plugin Votes</strong>
                 <br />
                 Vote for the next feature you would actually use. You may vote for multiple ideas, but only once per idea per rig (HWID-bound). The top candidate is prioritized for the next release.
                 {!loading && (
@@ -289,7 +289,7 @@ function VotesPanel() {
                             <div style={{
                                 fontSize: "12.5px",
                                 fontWeight: 700,
-                                color: hasVoted ? "#55FF55" : "#FFD27A",
+                                color: hasVoted ? "#55FF55" : "#FFE5A8",
                                 fontFamily: "ui-monospace, Consolas, monospace",
                                 whiteSpace: "nowrap"
                             }}>
@@ -299,7 +299,7 @@ function VotesPanel() {
                         <div style={{ fontSize: "12px", color: "#a0a6b4", lineHeight: 1.4 }}>
                             {c.blurb}
                         </div>
-                        <div style={{ fontSize: "11px", color: hasVoted ? "#55FF55" : "#FFD27A", marginTop: "6px", letterSpacing: "0.04em" }}>
+                        <div style={{ fontSize: "11px", color: hasVoted ? "#55FF55" : "#FFE5A8", marginTop: "6px", letterSpacing: "0.04em" }}>
                             {isPending ? "Submitting…" : hasVoted ? "✓ Voted" : "Click to vote →"}
                         </div>
                     </button>

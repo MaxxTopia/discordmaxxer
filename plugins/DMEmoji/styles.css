@@ -1,0 +1,113 @@
+.dmemoji-settings,
+.dmemoji-modal {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.dmemoji-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.dmemoji-toolbar > div:first-child {
+    min-width: 0;
+    flex: 1;
+}
+
+.dmemoji-toolbar h1,
+.dmemoji-toolbar h2,
+.dmemoji-toolbar h3 {
+    margin-bottom: 4px;
+}
+
+.dmemoji-hidden-input {
+    display: none;
+}
+
+.dmemoji-status {
+    color: var(--text-positive, #57f287);
+}
+
+.dmemoji-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+    gap: 10px;
+}
+
+.dmemoji-entry {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+    padding: 10px;
+    border: 1px solid color-mix(in srgb, var(--brand-experiment, #5865f2) 35%, transparent);
+    border-radius: 12px;
+    background: color-mix(in srgb, var(--background-secondary, #2b2d31) 84%, transparent);
+}
+
+.dmemoji-preview-wrap {
+    width: 52px;
+    height: 52px;
+    flex: 0 0 52px;
+    overflow: hidden;
+    border-radius: 50%;
+    border: 2px solid color-mix(in srgb, var(--brand-experiment, #5865f2) 72%, transparent);
+    background: var(--background-tertiary, #1e1f22);
+}
+
+.dmemoji-preview {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.dmemoji-preview-missing {
+    display: grid;
+    place-items: center;
+    color: var(--text-muted, #949ba4);
+    font-weight: 700;
+}
+
+.dmemoji-entry-body {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 5px;
+    min-width: 0;
+    flex: 1;
+}
+
+.dmemoji-entry-body strong {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.dmemoji-meta,
+.dmemoji-footnote {
+    color: var(--text-muted, #949ba4);
+    font-size: 12px;
+}
+
+.dmemoji-native-input {
+    width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+    padding: 6px 8px;
+    border: 1px solid var(--background-modifier-accent, #4e5058);
+    border-radius: 6px;
+    color: var(--text-normal, #dbdee1);
+    background: var(--background-tertiary, #1e1f22);
+    font-size: 12px;
+}
+
+.dmemoji-entry-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+}

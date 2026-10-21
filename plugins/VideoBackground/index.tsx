@@ -21,7 +21,7 @@ import { definePluginSettings } from "@api/Settings";
 import { managedStyleRootNode } from "@api/Styles";
 import { createAndAppendStyle } from "@utils/css";
 import definePlugin, { OptionType } from "@utils/types";
-import { Button, React, Toasts } from "@webpack/common";
+import { Button, React, showToast, Toasts } from "@webpack/common";
 
 import { makePersistentValue } from "../_dm-shared/persist";
 import { getMyTier, Tier, TIER_LABELS } from "../_dm-shared/vip";
@@ -398,21 +398,11 @@ function refresh() {
             const sourceLabel = wasBlob
                 ? "(local file)"
                 : brokenUrl ? `"${brokenUrl.slice(0, 40)}${brokenUrl.length > 40 ? "…" : ""}"` : "";
-            Toasts.show({
-                message: `🛑 Video background — ${codeLabels[code] ?? "error"}. Cleared broken source ${sourceLabel}. Pick a new URL in VideoBackground settings or hit "Test with sample".`,
-                type: Toasts.Type.FAILURE,
-                id: Toasts.genId(),
-                options: { duration: 8000, position: Toasts.Position.TOP }
-            });
+            toast(`🛑 Video background — ${codeLabels[code] ?? "error"}. Cleared broken source ${sourceLabel}. Pick a new URL in VideoBackground settings or hit "Test with sample".`, Toasts.Type.FAILURE, 8000);
             return;
         }
 
-        Toasts.show({
-            message: `Video failed: ${codeLabels[code ?? -1] ?? "unknown"}. Open devtools (Ctrl+Shift+I) for details.`,
-            type: Toasts.Type.FAILURE,
-            id: Toasts.genId(),
-            options: { duration: 6000, position: Toasts.Position.TOP }
-        });
+        toast(`Video failed: ${codeLabels[code ?? -1] ?? "unknown"}. Open devtools (Ctrl+Shift+I) for details.`, Toasts.Type.FAILURE, 6000);
     };
 
     // Hold paused while TournamentMode is active — don't spin the GPU mid-match.
@@ -421,12 +411,7 @@ function refresh() {
     if (isTournamentModeActive()) {
         videoEl.pause();
         console.log("[VideoBackground] TournamentMode active — holding video paused to free GPU");
-        Toasts.show({
-            message: "🎮 TournamentMode is on, so the video background is paused to free GPU. Turn TM off to see it.",
-            type: Toasts.Type.MESSAGE,
-            id: Toasts.genId(),
-            options: { duration: 6000, position: Toasts.Position.TOP }
-        });
+        toast("🎮 TournamentMode is on, so the video background is paused to free GPU. Turn TM off to see it.", Toasts.Type.MESSAGE, 6000);
         return;
     }
 
@@ -439,12 +424,7 @@ function refresh() {
         logCoverageDiagnostic();
     }).catch(e => {
         console.warn("[VideoBackground] play() rejected:", e);
-        Toasts.show({
-            message: `Play blocked — try toggling the plugin off+on once. ${e?.message ?? ""}`,
-            type: Toasts.Type.FAILURE,
-            id: Toasts.genId(),
-            options: { duration: 4000, position: Toasts.Position.TOP }
-        });
+        toast(`Play blocked — try toggling the plugin off+on once. ${e?.message ?? ""}`, Toasts.Type.FAILURE, 4000);
     });
 }
 
@@ -455,6 +435,9 @@ function refresh() {
 const LOCAL_FILE_KEY = "dm-video-bg-file";
 // Guard the store: a huge file would bloat IndexedDB for a background loop.
 const MAX_PERSIST_BYTES = 200 * 1024 * 1024;
+
+type VideoStatusKind = "success" | "info" | "error";
+type VideoStatusReporter = (message: string, kind: VideoStatusKind) => void;
 
 async function restoreLocalFile() {
     try {
@@ -470,7 +453,7 @@ async function restoreLocalFile() {
     }
 }
 
-function pickLocalFile() {
+function pickLocalFile(report?: VideoStatusReporter) {
     const input = document.createElement("input");
     input.type = "file";
     input.accept = "video/*";
@@ -486,26 +469,22 @@ function pickLocalFile() {
             );
         } else {
             DataStore.del(LOCAL_FILE_KEY).catch(() => {});
-            toast(
+            const message =
                 `That video is ${(file.size / 1_048_576).toFixed(0)}MB — too big to remember between restarts. ` +
-                "It'll play now; paste a direct .mp4 URL to make it stick.",
-                Toasts.Type.MESSAGE,
-                8000
-            );
+                "It'll play now; paste a direct .mp4 URL to make it stick.";
+            toast(message, Toasts.Type.MESSAGE, 8000);
+            report?.(message, "info");
         }
-        Toasts.show({
-            message: `🎬 Loaded local video: ${file.name} (${(file.size / 1_048_576).toFixed(1)} MB)`,
-            type: Toasts.Type.SUCCESS,
-            id: Toasts.genId(),
-            options: { duration: 3000, position: Toasts.Position.TOP }
-        });
+        const loadedMessage = `🎬 Loaded local video: ${file.name} (${(file.size / 1_048_576).toFixed(1)} MB)`;
+        toast(loadedMessage, Toasts.Type.SUCCESS);
+        report?.(loadedMessage, "success");
         if (!settings.store.enable) settings.store.enable = true;
         refresh();
     };
     input.click();
 }
 
-function clearLocalFile() {
+function clearLocalFile(report?: VideoStatusReporter) {
     if (localBlobUrl) {
         URL.revokeObjectURL(localBlobUrl);
         localBlobUrl = null;
@@ -514,48 +493,81 @@ function clearLocalFile() {
     // would silently come back on the next start.
     DataStore.del(LOCAL_FILE_KEY).catch(() => {});
     refresh();
+    const message = "Local video upload cleared.";
+    toast(message, Toasts.Type.MESSAGE);
+    report?.(message, "info");
 }
 
 function VideoControls() {
+    const [status, setStatus] = React.useState<{ message: string; kind: VideoStatusKind } | null>(null);
+    const report: VideoStatusReporter = (message, kind) => setStatus({ message, kind });
+    const statusColor = status?.kind === "error"
+        ? "#f38ba8"
+        : status?.kind === "success"
+            ? "#86efac"
+            : "var(--text-muted)";
+
     return (
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 8 }}>
-            <Button onClick={pickLocalFile} size={Button.Sizes.SMALL}>
-                📁 Upload local video
-            </Button>
-            <Button onClick={clearLocalFile} size={Button.Sizes.SMALL} color={Button.Colors.RED}>
-                ✕ Clear upload
-            </Button>
-            <Button
-                size={Button.Sizes.SMALL}
-                color={Button.Colors.GREEN}
-                onClick={() => {
-                    if (localBlobUrl) {
-                        URL.revokeObjectURL(localBlobUrl);
-                        localBlobUrl = null;
-                    }
-                    settings.store.videoUrl = SAMPLE_VIDEO_URL;
-                    if (!settings.store.enable) settings.store.enable = true;
-                    refresh();
-                    Toasts.show({
-                        message: "🎬 Sample video applied — Big Buck Bunny",
-                        type: Toasts.Type.SUCCESS,
-                        id: Toasts.genId(),
-                        options: { duration: 3000, position: Toasts.Position.TOP }
-                    });
-                }}
-            >
-                🎬 Test with sample
-            </Button>
+        <div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 8 }}>
+                <Button onClick={() => pickLocalFile(report)} size={Button.Sizes.SMALL}>
+                    📁 Upload local video
+                </Button>
+                <Button onClick={() => clearLocalFile(report)} size={Button.Sizes.SMALL} color={Button.Colors.RED}>
+                    ✕ Clear upload
+                </Button>
+                <Button
+                    size={Button.Sizes.SMALL}
+                    color={Button.Colors.GREEN}
+                    onClick={() => {
+                        if (localBlobUrl) {
+                            URL.revokeObjectURL(localBlobUrl);
+                            localBlobUrl = null;
+                        }
+                        settings.store.videoUrl = SAMPLE_VIDEO_URL;
+                        if (!settings.store.enable) settings.store.enable = true;
+                        refresh();
+                        const message = "🎬 Sample video applied — Big Buck Bunny";
+                        toast(message, Toasts.Type.SUCCESS);
+                        report(message, "success");
+                    }}
+                >
+                    🎬 Test with sample
+                </Button>
+            </div>
+            {status && (
+                <div role="status" aria-live="polite" style={{
+                    marginTop: 8,
+                    padding: "7px 9px",
+                    borderRadius: 6,
+                    border: "1px solid var(--background-modifier-accent)",
+                    color: statusColor,
+                    fontSize: 12,
+                    lineHeight: 1.35,
+                    background: "var(--background-secondary-alt)"
+                }}>
+                    {status.message}
+                </div>
+            )}
         </div>
     );
 }
 
 function toast(message: string, type: any = Toasts.Type.MESSAGE, durationMs = 3000) {
-    Toasts.show({
-        message, type,
-        id: Toasts.genId(),
-        options: { duration: durationMs, position: Toasts.Position.TOP }
-    });
+    try {
+        showToast(message, type, { duration: durationMs });
+    } catch (error) {
+        console.warn("[VideoBackground] status toast failed:", error);
+        try {
+            Toasts.show({
+                message, type,
+                id: Toasts.genId(),
+                options: { duration: durationMs, position: Toasts.Position.TOP }
+            });
+        } catch (fallbackError) {
+            console.warn("[VideoBackground] legacy toast fallback failed:", fallbackError);
+        }
+    }
 }
 
 function SavedSlotsPanel() {

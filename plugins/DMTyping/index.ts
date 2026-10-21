@@ -53,7 +53,7 @@ const TIER_COLORS: Record<Tier, string> = {
     [Tier.FREE]: "",
     [Tier.MAXXER]: "#55FF55",
     [Tier.MAXXER_PLUS]: "#55FFFF",
-    [Tier.MAXXER_PLUS_PLUS]: "#FFAA00"
+    [Tier.MAXXER_PLUS_PLUS]: "#F3D27A"
 };
 
 const TYPING_PREFIX_CSS = `
@@ -69,7 +69,7 @@ const TYPING_PREFIX_CSS = `
     }
     .${PREFIX_CLASS}--MAXXER          { color: #55FF55; }
     .${PREFIX_CLASS}--MAXXER_PLUS     { color: #55FFFF; }
-    .${PREFIX_CLASS}--MAXXER_PLUS_PLUS { color: #FFAA00; }
+    .${PREFIX_CLASS}--MAXXER_PLUS_PLUS { color: #F3D27A; }
 `;
 
 let style: HTMLStyleElement | null = null;
