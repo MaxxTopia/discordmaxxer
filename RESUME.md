@@ -37,6 +37,18 @@ unavailable. Confirm the performance options still apply and that no duplicate
 Hub toast appears. Public v0.7.103 is unchanged until Diggy explicitly
 authorizes the next push/release.
 
+## 2026-10-21 v0.7.106 published — cross-client widget skin rendering
+
+v0.7.106 is publicly published from tag `v0.7.106`.
+User-visible repair: Fixed cross-client widget skin rendering so other
+Discordmaxxer users viewing your profile see your chosen widget skins (such
+as deepSpace / neonCircuit gradient borders and layouts). The visible widget
+hydration path in DMWidget now queries Discord's public RPC endpoint
+(`/applications/{id}/rpc`) rather than the owner-only developer endpoint
+(`/applications/{id}`), preventing 403 Forbidden errors when non-owners view
+widgets. Also fixed an inverted boolean filter in `visibleProfileWidgetStyles`
+and `visibleProfileWidgetHints`.
+
 ## 2026-10-21 v0.7.105 published — hotfix: restore widget skin gradient frames
 
 v0.7.105 is publicly published from commit `4fb3c13`, with tag `v0.7.105`.

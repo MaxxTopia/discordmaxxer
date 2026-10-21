@@ -449,6 +449,15 @@ const apiPost = async (url: string, body: any): Promise<any> => (await RestAPI.p
 const apiPatch = async (url: string, body: any): Promise<any> => (await RestAPI.patch({ url, body })).body;
 const apiPut = async (url: string, body: any): Promise<any> => (await RestAPI.put({ url, body })).body;
 
+async function fetchApplicationMetadata(appId: string): Promise<any> {
+    if (!SNOWFLAKE.test(appId)) return null;
+    try {
+        return await apiGet(`/applications/${appId}/rpc`);
+    } catch {
+        return await apiGet(`/applications/${appId}`);
+    }
+}
+
 function socialSdkBody(appName: string) {
     return {
         name: appName || "widget", business_email: "widget@maxxtopia.com", game_or_studio_name: appName || "widget",
@@ -841,12 +850,12 @@ async function syncRemoteWidgetStyle(appId: string, slotKey: string, accountId: 
     if (!isCurrentWidgetStylePublishRequest(slotKey, accountId, request)) return false;
     if (!SNOWFLAKE.test(appId)) return false;
     try {
-        const application = await apiGet(`/applications/${appId}`);
+        const application = await fetchApplicationMetadata(appId);
         const currentDescription = applicationDescription(application);
         if (currentDescription === null) return false;
         if (!isCurrentWidgetStylePublishRequest(slotKey, accountId, request)) return false;
         const latest = getSlot(slotKey);
-        if (latest.widgetStyle !== preset.id || latest.widgetStyleUpdatedAt !== updatedAt) return false;
+        if (latest.widgetStyle !== preset.id || (latest.widgetStyleUpdatedAt ?? 0) !== updatedAt) return false;
         const description = remoteWidgetDescriptionFor(currentDescription, preset, updatedAt);
         if (!description) return false;
         if (description !== currentDescription) {
@@ -856,7 +865,7 @@ async function syncRemoteWidgetStyle(appId: string, slotKey: string, accountId: 
         // Confirm the marker through the same read path used by another install.
         // A successful PATCH alone is not enough: Discord can accept a request
         // while returning a stale/partial application object to the client.
-        const confirmedApplication = await apiGet(`/applications/${appId}`);
+        const confirmedApplication = await fetchApplicationMetadata(appId);
         if (!isCurrentWidgetStylePublishRequest(slotKey, accountId, request)) return false;
         const confirmed = remoteWidgetStyleFromApplication(confirmedApplication);
         return confirmed?.style === preset.id && confirmed.updatedAt === updatedAt;
@@ -890,7 +899,7 @@ async function syncMissingOwnerWidgetStyleMarker(candidate: OwnerWidgetStyleBoot
     if (lastAttempt && Date.now() - lastAttempt < OWNER_WIDGET_STYLE_BOOTSTRAP_RETRY_MS) return;
     ownerWidgetStyleBootstrapAt.set(key, Date.now());
     try {
-        const application = await apiGet(`/applications/${appId}`);
+        const application = await fetchApplicationMetadata(appId);
         if (String(UserStore.getCurrentUser()?.id ?? "") !== accountId || activeSlotsAccountId !== accountId) return;
         const remoteStyle = remoteWidgetStyleFromApplication(application);
         if (remoteStyle && remoteStyle.updatedAt > updatedAt) return;
@@ -903,7 +912,7 @@ async function syncMissingOwnerWidgetStyleMarker(candidate: OwnerWidgetStyleBoot
         const description = remoteWidgetDescriptionFor(currentDescription, preset, updatedAt);
         if (!description || description === currentDescription) return;
         await apiPatch(`/applications/${appId}`, { description });
-        const confirmedApplication = await apiGet(`/applications/${appId}`);
+        const confirmedApplication = await fetchApplicationMetadata(appId);
         const confirmed = remoteWidgetStyleFromApplication(confirmedApplication);
         if (!confirmed || confirmed.style !== preset.id || confirmed.updatedAt !== updatedAt) {
             ownerWidgetStyleBootstrapAt.set(key, Date.now() - OWNER_WIDGET_STYLE_BOOTSTRAP_RETRY_MS + 30_000);
@@ -2690,7 +2699,7 @@ async function refreshAttachedWidgetStyles(force = false): Promise<void> {
             const hasStoredSlot = stored.has(appId);
             let slotKey = stored.get(appId) ?? "";
             let application: any = null;
-            try { application = await apiGet(`/applications/${appId}`); } catch { /* a private app may reject metadata */ }
+            try { application = await fetchApplicationMetadata(appId); } catch { /* a private app may reject metadata */ }
             if (String(UserStore.getCurrentUser()?.id ?? "") !== accountId || activeSlotsAccountId !== accountId) return;
             if (!slotKey) slotKey = inferWidgetSlot(application);
             const remoteStyle = remoteWidgetStyleFromApplication(application);
@@ -2910,8 +2919,7 @@ function visibleProfileWidgetStyles(ownerKey?: string, ownerId?: string | null):
     const now = Date.now();
     for (const [cacheKey, record] of visibleWidgetStyles) {
         if (!SNOWFLAKE.test(record.appId)) continue;
-        if (ownerKey && (!record.ownerId
-            || (record.ownerKey !== ownerKey && record.ownerId !== ownerId))) continue;
+        if (ownerKey && record.ownerKey !== ownerKey && (record.ownerId && ownerId && record.ownerId !== ownerId)) continue;
         const fresh = now - record.checkedAt <= VISIBLE_WIDGET_STYLE_CACHE_MS;
         const miss = visibleWidgetStyleMisses.get(cacheKey);
         const staleGrace = miss && now - miss.firstMissedAt <= VISIBLE_WIDGET_STYLE_STALE_GRACE_MS;
@@ -2936,7 +2944,7 @@ function visibleProfileWidgetHints(
     const now = Date.now();
     for (const [, miss] of visibleWidgetStyleMisses) {
         if (!SNOWFLAKE.test(miss.appId) || !miss.hints.length) continue;
-        if (ownerKey && miss.ownerKey !== ownerKey && (!miss.ownerId || miss.ownerId !== ownerId)) continue;
+        if (ownerKey && miss.ownerKey !== ownerKey && (miss.ownerId && ownerId && miss.ownerId !== ownerId)) continue;
         const current = out.get(miss.appId) ?? [];
         for (const label of miss.hints) {
             const clean = String(label ?? "").trim();
@@ -2946,8 +2954,7 @@ function visibleProfileWidgetHints(
     }
     for (const [cacheKey, record] of visibleWidgetStyles) {
         if (!SNOWFLAKE.test(record.appId)) continue;
-        if (ownerKey && (!record.ownerId
-            || (record.ownerKey !== ownerKey && record.ownerId !== ownerId))) continue;
+        if (ownerKey && record.ownerKey !== ownerKey && (record.ownerId && ownerId && record.ownerId !== ownerId)) continue;
         const fresh = now - record.checkedAt <= VISIBLE_WIDGET_STYLE_CACHE_MS;
         const miss = visibleWidgetStyleMisses.get(cacheKey);
         const staleGrace = miss && now - miss.firstMissedAt <= VISIBLE_WIDGET_STYLE_STALE_GRACE_MS;
@@ -3023,7 +3030,7 @@ function queueVisibleWidgetStyleHydration(requests: Iterable<VisibleWidgetStyleH
         if (missAt && now - missAt <= VISIBLE_WIDGET_STYLE_MISS_RETRY_MS) continue;
         if (visibleWidgetStyleRequests.has(cacheKey)) continue;
 
-        const task = apiGet(`/applications/${appId}`).then(application => {
+        const task = fetchApplicationMetadata(appId).then(application => {
             const remoteStyle = remoteWidgetStyleFromApplication(application);
             if (remoteStyle) {
                 const remotePreset = WIDGET_STYLE_PRESETS.find(item => item.id === remoteStyle.style) ?? WIDGET_STYLE_PRESETS[0];
