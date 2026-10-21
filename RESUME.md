@@ -37,6 +37,26 @@ unavailable. Confirm the performance options still apply and that no duplicate
 Hub toast appears. Public v0.7.103 is unchanged until Diggy explicitly
 authorizes the next push/release.
 
+## 2026-10-21 v0.7.104 published — profile flair controls, widget skins, and tournament mode
+
+v0.7.104 is publicly published from commit `3033319`, with tag `v0.7.104`.
+The public Release workflow `39663713395` passed. The release has the x64
+installer, x64/ARM64 ZIPs, blockmap, readable release notes, and `latest.yml`;
+the public updater manifest reports `version: 0.7.104` and points to
+`Discordmaxxer-Setup-0.7.104.exe`.
+
+User-visible repair: DMProfileFlair controls overhaul (text selection and cursor
+jumping fixed, circular animated thumbnails for recent picks, clickable empty
+preview window, file picker and drag/drop upload, automated upload/import
+validation through the live VIP worker, inline preflight feedback, crop/fit/scale/
+effects/playback speed controls, manual claim code moved to bottom, deprecated
+vanilla message bridge removed). DMWidget now recognizes native Playing activity
+cards (e.g. Valorant) to inherit widget skins, with live Tournament Mode mirror
+synchronization to prevent card animation freeze. Tournament Mode status banner
+and VideoBackground status toasts are reliable. DMTierFlair and VIP page update
+MAXXER++ palette to champagne gold and deep wine red. Playlistmaxxing rich presence
+shows music.maxxtopia.com with live track hydration. Welcome tour preview GIF trimmed.
+
 ## 2026-10-19 v0.7.103 published — account-scoped profile media repair
 
 v0.7.103 is publicly published from commit `b5dcc70`, with tag `v0.7.103`.
