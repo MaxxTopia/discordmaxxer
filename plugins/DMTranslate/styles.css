@@ -1,0 +1,107 @@
+.dm-translate-modal {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    padding: 4px 0 8px 0;
+}
+
+.dm-translate-box {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    background: var(--background-secondary, #2b2d31);
+    border: 1px solid color-mix(in srgb, var(--brand-experiment, #5865f2) 35%, transparent);
+    border-radius: 8px;
+    padding: 12px;
+}
+
+.dm-translate-box.dm-translate-box-result {
+    border-color: color-mix(in srgb, var(--brand-experiment, #5865f2) 65%, transparent);
+    background: color-mix(in srgb, var(--brand-experiment, #5865f2) 10%, var(--background-secondary, #2b2d31));
+}
+
+.dm-translate-box-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 2px;
+}
+
+.dm-translate-label {
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+    color: var(--text-muted, #949ba4);
+    letter-spacing: 0.5px;
+}
+
+.dm-translate-text {
+    font-size: 14px;
+    line-height: 1.45;
+    color: var(--text-normal, #dbdee1);
+    word-break: break-word;
+    white-space: pre-wrap;
+    user-select: text;
+}
+
+.dm-translate-meta {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 12px;
+    color: var(--text-muted, #949ba4);
+    padding: 0 4px;
+}
+
+.dm-translate-accessory {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 6px;
+    padding: 8px 12px;
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--brand-experiment, #5865f2) 12%, var(--background-secondary, #2b2d31));
+    border-left: 3px solid var(--brand-experiment, #5865f2);
+    font-size: 13.5px;
+    line-height: 1.4;
+    max-width: 95%;
+}
+
+.dm-translate-accessory-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-muted, #949ba4);
+}
+
+.dm-translate-accessory-body {
+    color: var(--text-normal, #dbdee1);
+    word-break: break-word;
+    white-space: pre-wrap;
+    user-select: text;
+}
+
+.dm-translate-accessory-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 2px;
+}
+
+.dm-translate-link-btn {
+    background: none;
+    border: none;
+    color: var(--text-link, #00a8fc);
+    font-size: 11px;
+    cursor: pointer;
+    padding: 0;
+    text-decoration: underline;
+    opacity: 0.85;
+    transition: opacity 0.15s ease;
+}
+
+.dm-translate-link-btn:hover {
+    opacity: 1;
+}

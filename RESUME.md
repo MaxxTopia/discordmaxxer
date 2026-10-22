@@ -1,5 +1,15 @@
 # Discordmaxxer — RESUME
 
+## 2026-10-21 v0.7.109 published — DMTranslate overhaul with universal auto-detection & multi-engine fallback
+
+v0.7.109 is publicly published from tag `v0.7.109`.
+User-visible repairs:
+- DMTranslate universal auto-detection: right-clicking any message in Japanese, Chinese, Russian, Spanish, French, German, Korean, Arabic, etc. auto-detects the source language and translates to English (or user-chosen target language).
+- Multi-engine resilience: primary Google Translate single endpoint with automatic failover to Google PA, MyMemory, and optional DeepL API.
+- Replaced broken `Alerts.show` with stable `ModalRoot` / `ModalHeader` / `ModalContent` / `ModalCloseButton` translation dialog with copy-to-clipboard buttons and `ErrorBoundary` isolation.
+- Added native inline translation accessories underneath translated messages with quick `Copy` and `Dismiss` actions.
+- Added `DMTranslate` to automated build verification.
+
 ## 2026-10-21 v0.7.108 published — DMEmoji crash repair and modal modernization
 
 v0.7.108 is publicly published from tag `v0.7.108`.
