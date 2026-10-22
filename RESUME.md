@@ -1,5 +1,21 @@
 # Discordmaxxer — RESUME
 
+## 2026-10-22 v0.7.111 published — DMCursor animation restoration & performance overhaul
+
+v0.7.111 is publicly published from tag `v0.7.111`.
+User-visible repairs:
+- Restored full anime cursor animations across all skins:
+  - Sharingan: 3-tomoe center rotation around center pupil (with native SVG transform + CSS fallback), restored pupil element, and pulsing chakra.
+  - Rinnegan: rippling phased purple rings and rotating chakra dots around outer circumference.
+  - Rasengan: visible multi-layered swirling chakra storm with multi-directional high-speed rotation.
+  - Chidori: high-voltage crackling electric lightning arcing around pulsating core.
+  - Stiiizy: pulsing LED with lightweight, isolated smoke particle trails.
+- Performance and snappiness improvements:
+  - Buffered mousemove handler directly to requestAnimationFrame, eliminating main thread stutter and CPU spikes from 1000Hz+ high polling rate gaming mice.
+  - Isolated smoke particle elements inside a dedicated container, completely shielding Discord's and plugins' MutationObservers from waking up during movement.
+  - Removed universal `html.anime-cursor-active *` selector to eliminate style recalculation lag across Discord's 20,000+ DOM nodes.
+  - Streamlined GPU drop-shadow filters into single-pass hardware glows, cutting GPU compositor load.
+
 ## 2026-10-21 v0.7.110 published — DMWidget conversation header skin overhaul for short names & unified avatar capsule
 
 v0.7.110 is publicly published from tag `v0.7.110`.
