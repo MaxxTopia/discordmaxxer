@@ -182,7 +182,8 @@ function fetchOnce(
                 // Keep the request range-aware while sending a standard browser user-agent
                 // so animated banners can be fetched reliably.
                 headers: {
-                    "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+                    "user-agent":
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
                     accept: "*/*",
                     ...(rangeHeader ? { range: rangeHeader } : {})
                 }
