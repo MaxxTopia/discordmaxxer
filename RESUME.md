@@ -1,5 +1,15 @@
 # Discordmaxxer — RESUME
 
+## 2026-10-21 v0.7.110 published — DMWidget conversation header skin overhaul for short names & unified avatar capsule
+
+v0.7.110 is publicly published from tag `v0.7.110`.
+User-visible repairs:
+- Lowered conversation header skinning visibility filter thresholds (minimum width 10px, height 12px) in `visibleSurfaceSkinTarget`, enabling short recipient names (2-5 characters like "Al", "Ed", "Bob") to receive widget skins reliably instead of failing detection.
+- Fixed `isHeaderAvatarElement` avatar sibling detection in 1-on-1 DMs by removing fragile text length constraints that conflicted with Discord accessibility/status labels inside avatar wrappers.
+- Enhanced `syncHeaderAvatarSurface` offset geometry and gap calculations, dynamically applying `--dmw-avatar-offset` and `--dmw-avatar-pad` to create a unified capsule enclosing both avatar and username.
+- Fixed edge clipping on medium-length names by resolving parent container `overflow: hidden` constraints via CSS `:has()` and runtime ancestor style un-clipping.
+- Maintained group DM and server channel compatibility without double-offsetting embedded channel icons.
+
 ## 2026-10-21 v0.7.109 published — DMTranslate overhaul with universal auto-detection & multi-engine fallback
 
 v0.7.109 is publicly published from tag `v0.7.109`.

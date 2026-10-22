@@ -2025,21 +2025,33 @@ const WIDGET_CLIENT_SKIN_CSS = `
 [data-dm-widget-header-avatar="true"] {
     position: relative !important;
     z-index: 2 !important;
+    pointer-events: auto !important;
+    flex-shrink: 0 !important;
 }
 [data-dm-widget-header-with-avatar="true"] {
     display: inline-flex !important;
     align-items: center !important;
-    min-height: 32px !important;
+    min-height: 34px !important;
     box-sizing: border-box !important;
-    margin-left: calc(-1 * var(--dmw-avatar-offset, 38px)) !important;
-    padding-left: var(--dmw-avatar-pad, 40px) !important;
-    padding-right: 12px !important;
-    padding-top: 3px !important;
-    padding-bottom: 3px !important;
+    margin-left: calc(-1 * var(--dmw-avatar-offset, 40px)) !important;
+    padding-left: var(--dmw-avatar-pad, 42px) !important;
+    padding-right: 14px !important;
+    padding-top: 4px !important;
+    padding-bottom: 4px !important;
     line-height: normal !important;
+    overflow: visible !important;
+    flex-shrink: 0 !important;
+    width: auto !important;
+    max-width: none !important;
+    border-radius: 12px !important;
 }
 [data-dm-widget-header-with-avatar="true"] > * {
     margin: 0 !important;
+    overflow: visible !important;
+}
+:has(> [data-dm-widget-header-with-avatar="true"]),
+:has(> * > [data-dm-widget-header-with-avatar="true"]) {
+    overflow: visible !important;
 }
 `;
 
@@ -3427,8 +3439,9 @@ const WIDGET_SURFACE_SKIN_SELECTOR = [
     '[class*="channel__"]',
     '[class*="channel_"]',
     '[class*="accountPopoutButtonWrapper"]',
-    'div[class*="hoverableContainer__"]',
-    'h1[class*="title__"]'
+    '[class*="hoverableContainer"]',
+    'h1[class*="title"]',
+    'h2[class*="title"]'
 ].join(",");
 const WIDGET_SURFACE_SKIN_MAX_ROOTS = 12;
 const WIDGET_CARD_MAX_ANCESTOR_DEPTH = 20;
@@ -3531,24 +3544,40 @@ function isDiscordAccountPanel(element: HTMLElement): boolean {
 function isOpenDiscordConversationHeader(element: HTMLElement): boolean {
     if (!isOpenDiscordConversationPath()) return false;
     const className = typeof element.className === "string" ? element.className : "";
-    const inChatHeader = element.closest<HTMLElement>('section[class*="title_"]');
+    const inChatHeader = element.closest<HTMLElement>('section[class*="title"], header, [class*="chatHeader"], [class*="headerBar"], [class*="titleWrapper"]');
     if (!inChatHeader) return false;
-    if (/hoverableContainer__/i.test(className)) return true;
-    return element.tagName.toUpperCase() === "H1" && /(?:^|[\s_-])title(?:__|_)/i.test(className);
+    if (/(?:^|[\s_-])hoverableContainer(?:__|_|-|$)/i.test(className) || className.includes("hoverableContainer")) return true;
+    const tagName = element.tagName.toUpperCase();
+    return (tagName === "H1" || tagName === "H2") && (/(?:^|[\s_-])title(?:__|_|-|$)/i.test(className) || className.toLowerCase().includes("title"));
 }
 
 function isHeaderAvatarElement(element: HTMLElement): boolean {
     const className = typeof element.className === "string" ? element.className : "";
     if (/hoverableContainer|chatHeader|headerBar/i.test(className)) return false;
-    if (element.tagName.toUpperCase() === "H1" || element.tagName.toUpperCase() === "SECTION") return false;
+    const tagName = element.tagName.toUpperCase();
+    if (tagName === "H1" || tagName === "H2" || tagName === "SECTION" || tagName === "HEADER") return false;
 
-    // An avatar container has either no text or at most a 1-2 char fallback initial
+    const hasAvatarMedia = Boolean(
+        element.querySelector('svg foreignObject, img[class*="avatar"], img[src*="avatars"], svg[class*="mask"]')
+        || (tagName === "IMG" && (className.includes("avatar") || (element.getAttribute("src")?.includes("avatars") ?? false)))
+    );
+    const hasAvatarClass = /(?:^|[\s_-])(?:avatar|clickableAvatar|avatarWrapper)(?:(?:__|_|-)[A-Za-z0-9]+|$)/i.test(className)
+        || (/(?:^|[\s_-])wrapper(?:(?:__|_|-)[A-Za-z0-9]+|$)/i.test(className) && hasAvatarMedia);
+    const hasAvatarRole = element.getAttribute("role") === "img";
+
+    if (hasAvatarMedia || hasAvatarClass || hasAvatarRole) {
+        try {
+            const rect = element.getBoundingClientRect();
+            if (rect.width > 80 || rect.height > 80) return false;
+        } catch { /* ignore */ }
+        return true;
+    }
+
+    // Fallback: 1-2 char fallback initial avatar
     const text = String(element.textContent ?? "").trim();
-    if (text.length > 2) return false;
-
-    if (/(?:^|[\s_-])(?:avatar|clickableAvatar|avatarWrapper|wrapper)(?:(?:__|_|-)[A-Za-z0-9]+|$)/i.test(className)) return true;
-    if (element.querySelector('svg foreignObject, img[class*="avatar"], img[src*="avatars"], svg[class*="mask"]')) return true;
-    if (element.getAttribute("role") === "img") return true;
+    if (text.length > 0 && text.length <= 2 && /(?:^|[\s_-])wrapper(?:(?:__|_|-)[A-Za-z0-9]+|$)/i.test(className)) {
+        return true;
+    }
     return false;
 }
 
@@ -3573,8 +3602,10 @@ function findHeaderAvatarSibling(titleElement: HTMLElement): HTMLElement | null 
 
 function syncHeaderAvatarSurface(root: HTMLElement): void {
     if (!isOpenDiscordConversationHeader(root)) return;
-    const className = typeof root.className === "string" ? root.className : "";
-    if (/hoverableContainer/i.test(className)) return;
+    // If the element already contains an avatar or icon inside it (like in group chats), no need for sibling negative margin
+    if (root.querySelector('img[src*="avatars"], [class*="avatar"], [class*="iconWrapper"], svg[class*="mask"]')) {
+        return;
+    }
 
     const avatar = findHeaderAvatarSibling(root);
     if (!avatar) return;
@@ -3590,8 +3621,13 @@ function syncHeaderAvatarSurface(root: HTMLElement): void {
         const rootRect = root.getBoundingClientRect();
         if (rootRect.width > 0 && avatarRect.width > 0 && rootRect.left > avatarRect.right) {
             const measuredGap = Math.round(rootRect.left - avatarRect.right);
-            if (measuredGap >= 2 && measuredGap <= 24) gap = measuredGap;
+            if (measuredGap >= 2 && measuredGap <= 24) {
+                gap = measuredGap;
+                root.dataset.dmWidgetAvatarGap = String(gap);
+            }
         }
+    } else if (root.dataset.dmWidgetAvatarGap) {
+        gap = Number(root.dataset.dmWidgetAvatarGap) || 8;
     }
 
     const offset = Math.round(leftPad + avatarWidth + gap);
@@ -3602,6 +3638,14 @@ function syncHeaderAvatarSurface(root: HTMLElement): void {
     const padVal = `${pad}px`;
     if (root.style.getPropertyValue("--dmw-avatar-offset") !== offsetVal) root.style.setProperty("--dmw-avatar-offset", offsetVal);
     if (root.style.getPropertyValue("--dmw-avatar-pad") !== padVal) root.style.setProperty("--dmw-avatar-pad", padVal);
+
+    let parent = root.parentElement;
+    while (parent && parent.tagName.toUpperCase() !== "SECTION" && parent.tagName.toUpperCase() !== "HEADER") {
+        if (parent.style.overflow !== "visible") {
+            parent.style.setProperty("overflow", "visible", "important");
+        }
+        parent = parent.parentElement;
+    }
 }
 
 function discordSurfaceSkinTarget(element: HTMLElement): boolean {
@@ -3645,8 +3689,8 @@ function visibleSurfaceSkinTarget(element: HTMLElement): boolean {
     try {
         const rect = element.getBoundingClientRect();
         const compactConversationName = isOpenDiscordConversationHeader(element);
-        const minimumWidth = compactConversationName ? 32 : 80;
-        const minimumHeight = compactConversationName ? 18 : 24;
+        const minimumWidth = compactConversationName ? 10 : 80;
+        const minimumHeight = compactConversationName ? 12 : 24;
         if (rect.width < minimumWidth || rect.height < minimumHeight || rect.right <= 0 || rect.bottom <= 0 || rect.left >= window.innerWidth || rect.top >= window.innerHeight) return false;
         const computed = window.getComputedStyle(element);
         return computed.display !== "none" && computed.visibility !== "hidden" && Number(computed.opacity) > 0;
@@ -3960,6 +4004,7 @@ function restoreSurfaceSkin(root: HTMLElement): void {
         for (const attr of SURFACE_SKIN_ATTRS) root.removeAttribute(attr);
         for (const name of SURFACE_SKIN_VARS) root.style.removeProperty(name);
         delete root.dataset.dmWidgetHeaderWithAvatar;
+        delete root.dataset.dmWidgetAvatarGap;
         root.style.removeProperty("--dmw-avatar-offset");
         root.style.removeProperty("--dmw-avatar-pad");
         return;
@@ -3973,6 +4018,7 @@ function restoreSurfaceSkin(root: HTMLElement): void {
         if (!value.value) root.style.removeProperty(name); else root.style.setProperty(name, value.value, value.priority);
     }
     delete root.dataset.dmWidgetHeaderWithAvatar;
+    delete root.dataset.dmWidgetAvatarGap;
     root.style.removeProperty("--dmw-avatar-offset");
     root.style.removeProperty("--dmw-avatar-pad");
     surfaceSkinRoots.delete(root);
@@ -4984,7 +5030,9 @@ function widgetSkinSurfaceNeedsScan(): boolean {
                 if (hasHigherOrEqualSurfaceSkinAncestor(candidate)) continue;
                 if (candidate.dataset.dmWidgetSurfaceSkin !== surfacePreset.id
                     || candidate.dataset.dmWidgetSurfaceMotionPaused !== (isWidgetPreviewMotionPaused() ? "true" : "false")
-                    || (isOpenDiscordConversationHeader(candidate) && !/hoverableContainer/i.test(candidate.className) && !!findHeaderAvatarSibling(candidate) !== (candidate.dataset.dmWidgetHeaderWithAvatar === "true"))) return true;
+                    || (isOpenDiscordConversationHeader(candidate)
+                        && !candidate.querySelector('img[src*="avatars"], [class*="avatar"], [class*="iconWrapper"], svg[class*="mask"]')
+                        && !!findHeaderAvatarSibling(candidate) !== (candidate.dataset.dmWidgetHeaderWithAvatar === "true"))) return true;
             }
         }
         if (!active.size && !remoteActive.size) return false;
