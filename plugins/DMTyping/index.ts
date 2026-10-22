@@ -125,6 +125,8 @@ function toCamel(dataAttr: string): string {
 }
 
 function scanRoot(root: ParentNode = document) {
+    if (root instanceof Element && root.closest?.(".vc-settings-tab, [class*='standardSidebarView']")) return;
+    if (root === document && document.querySelector("[class*='standardSidebarView']")) return;
     root.querySelectorAll<HTMLElement>(".vc-typing-user").forEach(decorateTypingUser);
 }
 
@@ -132,6 +134,9 @@ function startObserver() {
     if (observer) return;
     observer = new MutationObserver(mutations => {
         for (const m of mutations) {
+            if ((m.target as Element)?.closest?.(".vc-settings-tab, [class*='standardSidebarView']")) {
+                continue;
+            }
             for (const node of m.addedNodes) {
                 if (!(node instanceof Element)) continue;
                 if (node.classList?.contains("vc-typing-user")) {

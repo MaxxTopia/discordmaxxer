@@ -1,51 +1,55 @@
+/*
+ * Discordmaxxer — Playlistmaxxing Rich Presence plugin
+ * Copyright (c) 2026 Diggy
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ *
+ * Broadcasts "Listening to music.maxxtopia.com" on your Discord profile with
+ * the live song title, artist, live progress bar, and album artwork when
+ * broadcasting from Playlistmaxxing (music.maxxtopia.com) via Streammaxxing.
+ */
+
 import { definePluginSettings } from "@api/Settings";
 import definePlugin, { OptionType } from "@utils/types";
 import { ApplicationAssetUtils, FluxDispatcher } from "@webpack/common";
 
-/* Playlistmaxxing rich presence.
-   Shows "Listening to Playlistmaxxing" on your Discord profile (green LISTENING
-   status, like Spotify). Static by default; if the streammaxxing hub is running
-   and you've hit Broadcast in the web app, it live-upgrades to the current song
-   (title / artist / album art / progress). The live path is best-effort ??? Discord
-   runs over https, so a plain http://127.0.0.1 feed can be blocked; when it is,
-   the static "Listening to Playlistmaxxing" badge still shows. */
-
 const SOCKET_ID = "Playlistmaxxing";
-const APP_ID = "1502451778426372116"; // Maxxtopia / discordmaxxer Discord application
+const APP_ID = "1502451778426372116"; // Discordmaxxer asset resolver app
 const SOURCE_LABEL = "music.maxxtopia.com";
 const NAME = SOURCE_LABEL;
-const BUTTON_LABEL = "Listen along";
-const BUTTON_URL = "https://music.maxxtopia.com";
+const URL = "https://music.maxxtopia.com";
 const HUB_EVENTS = "http://127.0.0.1:4747/events";
 const HUB_SNAPSHOT = "http://127.0.0.1:4747/nowplaying";
-const REFRESH_MS = 60_000;
+const POLL_INTERVAL_MS = 4_000;
 const ACTIVITY_TYPE_LISTENING = 2;
 
-type Song = { title?: string; artist?: string; art?: string; durationMs?: number; progressMs?: number; playing?: boolean; };
+type Song = {
+    title?: string;
+    artist?: string;
+    art?: string;
+    source?: string;
+    durationMs?: number;
+    progressMs?: number;
+    playing?: boolean;
+};
 
 let current: Song | null = null;
-let timer: ReturnType<typeof setInterval> | null = null;
+let pollTimer: ReturnType<typeof setInterval> | null = null;
 let es: EventSource | null = null;
 let refreshGeneration = 0;
+let lastHeartbeat = 0;
 const assetCache = new Map<string, string>();
 
 const settings = definePluginSettings({
     liveSync: {
         type: OptionType.BOOLEAN,
-        description: "Live-sync the song you're playing in Playlistmaxxing (needs streammaxxing running + Broadcast on in the web app).",
+        description: "Live-sync the song you're playing in Playlistmaxxing (Broadcast on in web app + streammaxxing running).",
         default: true,
         onChange: () => reconnect()
     },
-    showButton: {
-        type: OptionType.BOOLEAN,
-        description: "Show a \"Listen along\" button that opens music.maxxtopia.com.",
-        default: true,
-        onChange: () => refresh()
-    },
     showWhenIdle: {
         type: OptionType.BOOLEAN,
-        description: "Keep showing \"Listening to Playlistmaxxing\" even when no song is detected.",
-        default: true,
+        description: "Keep showing presence even when no song is playing (off by default so it only appears when actively listening).",
+        default: false,
         onChange: () => refresh()
     }
 });
@@ -56,11 +60,11 @@ async function resolveAsset(url?: string): Promise<string | undefined> {
     if (cached) return cached;
     try {
         const ids = await ApplicationAssetUtils.fetchAssetIds(APP_ID, [url]);
-        const id = ids?.[0];
-        if (id) assetCache.set(url, id);
+        const id = ids?.[0] || url;
+        assetCache.set(url, id);
         return id;
     } catch {
-        return undefined;
+        return url;
     }
 }
 
@@ -72,31 +76,38 @@ async function buildActivity(): Promise<any | null> {
     const s = settings.store;
     const song = current;
     if (!song && !s.showWhenIdle) return null;
+    if (song && !song.playing && !s.showWhenIdle) return null;
 
     const assets: Record<string, string> = {};
     if (song?.art) {
         const id = await resolveAsset(song.art);
-        if (id) { assets.large_image = id; assets.large_text = song.title || NAME; }
+        if (id) {
+            assets.large_image = id;
+            assets.large_text = song.title ? `${song.title}${song.artist ? ` by ${song.artist}` : ""}` : NAME;
+        }
     }
 
-    let timestamps: { start: number; end?: number; } | undefined;
+    let timestamps: { start: number; end?: number } | undefined;
     if (song?.playing && song.durationMs && song.durationMs > 0) {
         const start = Date.now() - (song.progressMs || 0);
         timestamps = { start, end: start + song.durationMs };
+    } else if (song?.playing) {
+        timestamps = { start: Date.now() - (song.progressMs || 0) };
     }
 
-    const sourceState = song?.artist ? `${song.artist} ??? ${SOURCE_LABEL}` : SOURCE_LABEL;
+    const details = song?.title || "Every platform. One playlist.";
+    const state = song?.artist ? `${song.artist} • ${SOURCE_LABEL}` : SOURCE_LABEL;
+
     return {
-        application_id: APP_ID,
         name: NAME,
         type: ACTIVITY_TYPE_LISTENING,
-        details: song ? (song.title || "Now playing") : "Every platform. One playlist.",
-        state: sourceState,
-        flags: 1, // INSTANCE ??? keeps the entry stable
+        details,
+        state,
+        flags: 1, // INSTANCE — keeps the entry stable
         assets: Object.keys(assets).length ? assets : undefined,
         timestamps,
-        buttons: s.showButton ? [BUTTON_LABEL] : undefined,
-        metadata: s.showButton ? { button_urls: [BUTTON_URL] } : undefined
+        details_url: URL,
+        state_url: URL
     };
 }
 
@@ -104,16 +115,15 @@ async function refresh() {
     const generation = ++refreshGeneration;
     try {
         const activity = await buildActivity();
-        // Artwork asset resolution is asynchronous. Do not let an older song
-        // finish later and overwrite a newer track's presence.
         if (generation === refreshGeneration) setActivity(activity);
     } catch { /* ignore */ }
 }
 
 function applyNowPlaying(d: any) {
     if (!d || d.t !== "nowplaying") return;
-    if (d.kind === "idle") {
+    if (d.kind === "idle" || d.is_playing === false) {
         current = null;
+        lastHeartbeat = 0;
         void refresh();
         return;
     }
@@ -122,10 +132,12 @@ function applyNowPlaying(d: any) {
         title: d.title,
         artist: d.artist,
         art: d.art_url,
+        source: d.source,
         durationMs: Number(d.duration_ms) || 0,
         progressMs: Number(d.progress_ms) || 0,
         playing: d.is_playing !== false
     };
+    lastHeartbeat = Date.now();
     void refresh();
 }
 
@@ -133,10 +145,21 @@ async function syncSnapshot() {
     if (!settings.store.liveSync) return;
     try {
         const response = await fetch(HUB_SNAPSHOT, { cache: "no-store" });
-        if (!response.ok) return;
+        if (!response.ok) {
+            handleHubDisconnect();
+            return;
+        }
         applyNowPlaying(await response.json());
     } catch {
-        // The static presence remains useful when Streammaxxing is not running.
+        handleHubDisconnect();
+    }
+}
+
+function handleHubDisconnect() {
+    // If we were playing but haven't had a heartbeat in 15 seconds, clear the activity
+    if (current && Date.now() - lastHeartbeat > 15_000 && !settings.store.showWhenIdle) {
+        current = null;
+        void refresh();
     }
 }
 
@@ -154,8 +177,8 @@ function connect() {
             try { d = JSON.parse(e.data); } catch { return; }
             applyNowPlaying(d);
         };
-        es.onerror = () => { /* hub unreachable / blocked ??? keep the static badge */ };
-    } catch { /* EventSource unavailable ??? static only */ }
+        es.onerror = () => { /* EventSource auto-reconnects */ };
+    } catch { /* EventSource unavailable */ }
 }
 
 function reconnect() {
@@ -165,20 +188,20 @@ function reconnect() {
 
 export default definePlugin({
     name: "PlaylistmaxxingPresence",
-    description: "Shows \"Listening to music.maxxtopia.com\" on your Discord ??? live-syncs the current song when you Broadcast from Playlistmaxxing.",
+    description: "Shows \"Listening to music.maxxtopia.com\" on your Discord — live-syncs the current song, artist, and album art when you Broadcast from Playlistmaxxing.",
     authors: [{ name: "Diggy", id: 0n }],
     enabledByDefault: true,
     settings,
 
     start() {
         void syncSnapshot().finally(() => refresh());
-        timer = setInterval(refresh, REFRESH_MS);
+        pollTimer = setInterval(syncSnapshot, POLL_INTERVAL_MS);
         connect();
     },
 
     stop() {
-        if (timer) clearInterval(timer);
-        timer = null;
+        if (pollTimer) clearInterval(pollTimer);
+        pollTimer = null;
         disconnect();
         setActivity(null);
     }

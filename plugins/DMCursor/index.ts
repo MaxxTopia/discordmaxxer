@@ -46,8 +46,8 @@ function lockedLabel(label: string, tier: Tier): string {
 
 const CURSOR_SVGS: Record<CursorSkin, string> = {
     sharingan: `<svg width="32" height="32" viewBox="0 0 40 40">
-        <circle cx="20" cy="20" r="16" fill="none" stroke="#cc0000" stroke-width="2.5" class="sharingan-outer"/>
-        <circle cx="20" cy="20" r="15" fill="#8B0000" opacity="0.8"/>
+        <circle cx="20" cy="20" r="16" fill="none" stroke="#cc0000" stroke-width="2.5" class="sharingan-outer-ring"/>
+        <circle cx="20" cy="20" r="15" fill="#8B0000" opacity="0.8" class="sharingan-pupil-bg"/>
         <circle cx="20" cy="20" r="10" fill="none" stroke="#000" stroke-width="1.5"/>
         <circle cx="20" cy="20" r="4" fill="#000"/>
         <g class="sharingan-tomoe">
@@ -61,18 +61,18 @@ const CURSOR_SVGS: Record<CursorSkin, string> = {
     </svg>`,
     rinnegan: `<svg width="34" height="34" viewBox="0 0 42 42">
         <circle cx="21" cy="21" r="18" fill="#2d0a4e" stroke="#7b2d8e" stroke-width="2"/>
-        <circle cx="21" cy="21" r="15" fill="none" stroke="#9b4dca" stroke-width="1.2" opacity="0.8"/>
-        <circle cx="21" cy="21" r="12" fill="none" stroke="#9b4dca" stroke-width="1.2" opacity="0.7"/>
-        <circle cx="21" cy="21" r="9" fill="none" stroke="#9b4dca" stroke-width="1.2" opacity="0.6"/>
-        <circle cx="21" cy="21" r="6" fill="none" stroke="#9b4dca" stroke-width="1.2" opacity="0.5"/>
+        <circle cx="21" cy="21" r="15" fill="none" stroke="#9b4dca" stroke-width="1.3" class="rinnegan-ring rinnegan-ring-1"/>
+        <circle cx="21" cy="21" r="12" fill="none" stroke="#9b4dca" stroke-width="1.3" class="rinnegan-ring rinnegan-ring-2"/>
+        <circle cx="21" cy="21" r="9" fill="none" stroke="#9b4dca" stroke-width="1.3" class="rinnegan-ring rinnegan-ring-3"/>
+        <circle cx="21" cy="21" r="6" fill="none" stroke="#9b4dca" stroke-width="1.3" class="rinnegan-ring rinnegan-ring-4"/>
         <circle cx="21" cy="21" r="3" fill="#1a0030"/>
         <circle cx="21" cy="21" r="1.5" fill="#000"/>
-        <circle cx="21" cy="6" r="1.5" fill="#000" class="rinnegan-dot"/>
-        <circle cx="33" cy="15" r="1.5" fill="#000" class="rinnegan-dot"/>
-        <circle cx="33" cy="27" r="1.5" fill="#000" class="rinnegan-dot"/>
-        <circle cx="21" cy="36" r="1.5" fill="#000" class="rinnegan-dot"/>
-        <circle cx="9" cy="27" r="1.5" fill="#000" class="rinnegan-dot"/>
-        <circle cx="9" cy="15" r="1.5" fill="#000" class="rinnegan-dot"/>
+        <circle cx="21" cy="6" r="1.8" fill="#000" class="rinnegan-dot"/>
+        <circle cx="33" cy="15" r="1.8" fill="#000" class="rinnegan-dot"/>
+        <circle cx="33" cy="27" r="1.8" fill="#000" class="rinnegan-dot"/>
+        <circle cx="21" cy="36" r="1.8" fill="#000" class="rinnegan-dot"/>
+        <circle cx="9" cy="27" r="1.8" fill="#000" class="rinnegan-dot"/>
+        <circle cx="9" cy="15" r="1.8" fill="#000" class="rinnegan-dot"/>
     </svg>`,
     rasengan: `<svg width="32" height="32" viewBox="0 0 40 40">
         <circle cx="20" cy="20" r="6" fill="rgba(120,180,255,0.9)" class="rasengan-core-svg"/>
@@ -117,58 +117,64 @@ const CURSOR_SVGS: Record<CursorSkin, string> = {
 const CURSOR_CSS = `
     html.anime-cursor-active,
     html.anime-cursor-active body,
-    html.anime-cursor-active *,
-    html.anime-cursor-active *::before,
-    html.anime-cursor-active *::after { cursor: none !important; }
+    html.anime-cursor-active * { cursor: none !important; }
     .anime-cursor {
         position: fixed;
-        transform: translate(-50%, -50%);
+        top: 0;
+        left: 0;
+        transform: translate3d(-100px, -100px, 0) translate(-50%, -50%);
         pointer-events: none;
         z-index: 2147483647;
+        will-change: transform;
+        backface-visibility: hidden;
+        contain: layout style paint;
     }
-    .anime-cursor--rinnegan { filter: drop-shadow(0 0 8px rgba(155,77,202,0.7)) drop-shadow(0 0 16px rgba(123,45,142,0.4)); }
-    .anime-cursor--rinnegan svg { animation: dmCursorRotateSlow 8s linear infinite; }
-    .anime-cursor--rinnegan svg circle:nth-child(3) { animation: dmCursorRing 2s ease-in-out infinite; }
-    .anime-cursor--rinnegan svg circle:nth-child(4) { animation: dmCursorRing 2s ease-in-out infinite 0.3s; }
-    .anime-cursor--rinnegan svg circle:nth-child(5) { animation: dmCursorRing 2s ease-in-out infinite 0.6s; }
-    .anime-cursor--rinnegan svg circle:nth-child(6) { animation: dmCursorRing 2s ease-in-out infinite 0.9s; }
+    .anime-cursor--rinnegan { filter: drop-shadow(0 0 10px rgba(155,77,202,0.85)); }
+    .anime-cursor--rinnegan svg { transform-origin: 21px 21px; animation: dmCursorRotateSlow 8s linear infinite; will-change: transform; }
+    .rinnegan-ring-1 { animation: dmCursorRing 2s ease-in-out infinite; }
+    .rinnegan-ring-2 { animation: dmCursorRing 2s ease-in-out infinite 0.3s; }
+    .rinnegan-ring-3 { animation: dmCursorRing 2s ease-in-out infinite 0.6s; }
+    .rinnegan-ring-4 { animation: dmCursorRing 2s ease-in-out infinite 0.9s; }
     .rinnegan-dot { animation: dmCursorRinneganDot 1.5s ease-in-out infinite alternate; }
-    .anime-cursor--sharingan { filter: drop-shadow(0 0 6px rgba(200,0,0,0.6)) drop-shadow(0 0 12px rgba(150,0,0,0.3)); }
-    .sharingan-outer { animation: dmCursorPulseRed 2s ease-in-out infinite alternate; }
-    .sharingan-tomoe { transform-origin: 20px 20px; animation: dmCursorSpin 1.5s linear infinite; }
-    .anime-cursor--rasengan { filter: drop-shadow(0 0 8px rgba(100,160,255,0.7)) drop-shadow(0 0 16px rgba(60,120,255,0.4)); }
+    .anime-cursor--sharingan { filter: drop-shadow(0 0 8px rgba(220,0,0,0.85)); }
+    .sharingan-pupil-bg { animation: dmCursorPulseRed 2s ease-in-out infinite alternate; }
+    .sharingan-outer-ring { animation: dmCursorPulseRing 2s ease-in-out infinite alternate; }
+    .sharingan-tomoe { transform-origin: 20px 20px; animation: dmCursorSpin 1.5s linear infinite; will-change: transform; }
+    .anime-cursor--rasengan { filter: drop-shadow(0 0 10px rgba(100,160,255,0.85)); }
     .rasengan-core-svg { animation: dmCursorPulseBlue 1s ease-in-out infinite alternate; }
-    .rasengan-ring-1 { transform-origin: 20px 20px; animation: dmCursorSpin 0.8s linear infinite; }
-    .rasengan-ring-2 { transform-origin: 20px 20px; animation: dmCursorSpin 1.2s linear infinite reverse; }
-    .rasengan-ring-3 { transform-origin: 20px 20px; animation: dmCursorSpin 0.5s linear infinite; }
-    .anime-cursor--chidori { filter: drop-shadow(0 0 8px rgba(79,195,247,0.7)); }
+    .rasengan-ring-1 { transform-origin: 20px 20px; animation: dmCursorSpin 0.8s linear infinite; will-change: transform; }
+    .rasengan-ring-2 { transform-origin: 20px 20px; animation: dmCursorSpin 1.2s linear infinite reverse; will-change: transform; }
+    .rasengan-ring-3 { transform-origin: 20px 20px; animation: dmCursorSpin 0.5s linear infinite; will-change: transform; }
+    .anime-cursor--chidori { filter: drop-shadow(0 0 8px rgba(79,195,247,0.8)); }
     .chidori-bolt { animation: dmCursorFlicker 0.3s steps(2) infinite; }
-    .anime-cursor--stiiizy { filter: drop-shadow(0 0 4px rgba(74,222,128,0.4)); }
+    .anime-cursor--stiiizy { filter: drop-shadow(0 0 4px rgba(74,222,128,0.5)); }
     .stiiizy-led { animation: dmCursorStiiizyLed 2s ease-in-out infinite; }
-    .anime-cursor--dragonsword { filter: drop-shadow(0 0 4px rgba(200,150,50,0.5)); }
+    .anime-cursor--dragonsword { filter: drop-shadow(0 0 5px rgba(200,150,50,0.6)); }
     .stiiizy-smoke {
         position: fixed;
         width: var(--smoke-size, 12px);
         height: var(--smoke-size, 12px);
         border-radius: 50%;
-        background: radial-gradient(circle, rgba(255,255,255,0.55), rgba(245,245,245,0.3), rgba(230,230,230,0.1), transparent);
+        background: radial-gradient(circle, rgba(255,255,255,0.6), rgba(245,245,245,0.35), rgba(230,230,230,0.1), transparent);
         pointer-events: none;
         z-index: 2147483646;
-        animation: dmCursorSmokeDrift 1.5s ease-out forwards;
+        will-change: transform, opacity;
+        animation: dmCursorSmokeDrift 1.2s ease-out forwards;
     }
     @keyframes dmCursorSpin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
     @keyframes dmCursorRotateSlow { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-    @keyframes dmCursorPulseRed { 0% { fill: #8B0000; filter: brightness(0.8); } 100% { fill: #cc0000; filter: brightness(1.3); } }
-    @keyframes dmCursorPulseBlue { 0% { fill: rgba(100,160,255,0.7); } 100% { fill: rgba(160,210,255,1); } }
-    @keyframes dmCursorRing { 0%, 100% { stroke-opacity: 0.4; stroke-width: 1.2; } 50% { stroke-opacity: 1; stroke-width: 2; } }
-    @keyframes dmCursorRinneganDot { 0% { r: 1.5; fill: #000; } 100% { r: 2; fill: #6b2fa0; } }
+    @keyframes dmCursorPulseRed { 0% { fill: #7a0000; } 100% { fill: #b80000; } }
+    @keyframes dmCursorPulseRing { 0% { stroke: #990000; opacity: 0.7; } 100% { stroke: #ff1a1a; opacity: 1; } }
+    @keyframes dmCursorPulseBlue { 0% { fill: rgba(100,160,255,0.7); opacity: 0.8; } 100% { fill: rgba(160,210,255,1); opacity: 1; } }
+    @keyframes dmCursorRing { 0%, 100% { opacity: 0.4; } 50% { opacity: 0.95; } }
+    @keyframes dmCursorRinneganDot { 0% { fill: #000; opacity: 0.7; } 100% { fill: #8a3dc2; opacity: 1; } }
     @keyframes dmCursorFlicker { 0% { opacity: 1; } 50% { opacity: 0.3; } 100% { opacity: 1; } }
     @keyframes dmCursorStiiizyLed { 0%, 100% { fill: #4ade80; opacity: 1; } 50% { fill: #22c55e; opacity: 0.5; } }
     @keyframes dmCursorSmokeDrift {
-        0%   { transform: translate(0, 0) scale(0.3); opacity: 0.7; filter: blur(1px); }
-        30%  { transform: translate(calc(var(--smoke-dx, 0px) * 0.3), calc(var(--smoke-dy, -20px) * 0.3)) scale(0.8); opacity: 0.55; filter: blur(2px); }
-        60%  { transform: translate(calc(var(--smoke-dx, 0px) * 0.6), calc(var(--smoke-dy, -20px) * 0.6)) scale(1.4); opacity: 0.3; filter: blur(3px); }
-        100% { transform: translate(var(--smoke-dx, 0px), var(--smoke-dy, -30px)) scale(2.5); opacity: 0; filter: blur(5px); }
+        0%   { transform: translate(0, 0) scale(0.3); opacity: 0.7; }
+        30%  { transform: translate(calc(var(--smoke-dx, 0px) * 0.3), calc(var(--smoke-dy, -20px) * 0.3)) scale(0.8); opacity: 0.55; }
+        60%  { transform: translate(calc(var(--smoke-dx, 0px) * 0.6), calc(var(--smoke-dy, -20px) * 0.6)) scale(1.4); opacity: 0.3; }
+        100% { transform: translate(var(--smoke-dx, 0px), var(--smoke-dy, -30px)) scale(2.5); opacity: 0; }
     }
 `;
 
@@ -179,6 +185,18 @@ let mousemoveHandler: ((e: MouseEvent) => void) | null = null;
 let fullscreenHandler: (() => void) | null = null;
 let lastX = -100;
 let lastY = -100;
+let rafId: number | null = null;
+let pendingX = -100;
+let pendingY = -100;
+let lastSmokeTime = 0;
+let lastSmokeX = -100;
+let lastSmokeY = -100;
+
+function updateCursorPosition() {
+    rafId = null;
+    if (!cursorEl) return;
+    cursorEl.style.transform = `translate3d(${pendingX}px, ${pendingY}px, 0) translate(-50%, -50%)`;
+}
 
 const settings = definePluginSettings({
     skin: {
@@ -246,34 +264,44 @@ function applySkin(skin: CursorSkin | "off") {
     cursorEl = document.createElement("div");
     cursorEl.id = CURSOR_ID;
     cursorEl.className = `anime-cursor anime-cursor--${skin}`;
-    cursorEl.style.left = "-100px";
-    cursorEl.style.top = "-100px";
+    cursorEl.style.transform = `translate3d(${lastX}px, ${lastY}px, 0) translate(-50%, -50%)`;
     cursorEl.innerHTML = CURSOR_SVGS[skin];
     document.body.appendChild(cursorEl);
 
     mousemoveHandler = (e: MouseEvent) => {
-        if (!cursorEl) return;
+        pendingX = e.clientX;
+        pendingY = e.clientY;
         lastX = e.clientX;
         lastY = e.clientY;
-        cursorEl.style.left = e.clientX + "px";
-        cursorEl.style.top = e.clientY + "px";
 
-        // Stiiizy: smoke trail. Append to the cursor's parent (fullscreen
-        // element when active, otherwise body) so trails don't fall behind
-        // the top-layer fullscreen content.
-        if (skin === "stiiizy" && Math.random() > 0.35) {
-            const smoke = document.createElement("div");
-            smoke.className = "stiiizy-smoke";
-            smoke.style.left = e.clientX + (Math.random() * 6 - 3) + "px";
-            smoke.style.top = e.clientY - 22 + "px";
-            smoke.style.setProperty("--smoke-dx", Math.random() * 24 - 12 + "px");
-            smoke.style.setProperty("--smoke-dy", -25 - Math.random() * 35 + "px");
-            smoke.style.setProperty("--smoke-size", 10 + Math.random() * 16 + "px");
-            (cursorEl.parentElement ?? document.body).appendChild(smoke);
-            setTimeout(() => smoke.remove(), 1500);
+        if (rafId === null) {
+            rafId = requestAnimationFrame(updateCursorPosition);
+        }
+
+        // Stiiizy: smoke trail. Rate-limited by distance and time so 1000Hz gaming
+        // mice don't spawn hundreds of unthrottled DOM nodes per second.
+        if (skin === "stiiizy" && cursorEl) {
+            const now = performance.now();
+            const dx = e.clientX - lastSmokeX;
+            const dy = e.clientY - lastSmokeY;
+            if (now - lastSmokeTime > 40 && (dx * dx + dy * dy > 100)) {
+                lastSmokeTime = now;
+                lastSmokeX = e.clientX;
+                lastSmokeY = e.clientY;
+
+                const smoke = document.createElement("div");
+                smoke.className = "stiiizy-smoke";
+                smoke.style.left = e.clientX + (Math.random() * 6 - 3) + "px";
+                smoke.style.top = e.clientY - 22 + "px";
+                smoke.style.setProperty("--smoke-dx", Math.random() * 24 - 12 + "px");
+                smoke.style.setProperty("--smoke-dy", -25 - Math.random() * 35 + "px");
+                smoke.style.setProperty("--smoke-size", 10 + Math.random() * 16 + "px");
+                (cursorEl.parentElement ?? document.body).appendChild(smoke);
+                setTimeout(() => smoke.remove(), 1200);
+            }
         }
     };
-    window.addEventListener("mousemove", mousemoveHandler);
+    window.addEventListener("mousemove", mousemoveHandler, { passive: true });
 
     // Fullscreen API moves the fullscreen element into the browser's top
     // layer. Anything outside that element (including a cursor div on
@@ -288,13 +316,16 @@ function applySkin(skin: CursorSkin | "off") {
         if (!cursorEl) return;
         const target = document.fullscreenElement ?? document.body;
         if (cursorEl.parentElement !== target) target.appendChild(cursorEl);
-        cursorEl.style.left = lastX + "px";
-        cursorEl.style.top = lastY + "px";
+        cursorEl.style.transform = `translate3d(${lastX}px, ${lastY}px, 0) translate(-50%, -50%)`;
     };
     document.addEventListener("fullscreenchange", fullscreenHandler);
 }
 
 function teardownTracking() {
+    if (rafId !== null) {
+        cancelAnimationFrame(rafId);
+        rafId = null;
+    }
     if (mousemoveHandler) {
         window.removeEventListener("mousemove", mousemoveHandler);
         mousemoveHandler = null;

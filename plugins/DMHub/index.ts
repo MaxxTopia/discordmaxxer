@@ -689,6 +689,7 @@ let injectRaf = 0;
 // overhead during chat scroll / calls.
 function scheduleInject() {
     if (injectScheduled) return;
+    if (document.getElementById(FAB_ID)?.isConnected) return;
     injectScheduled = true;
     injectRaf = requestAnimationFrame(() => {
         injectScheduled = false;

@@ -53,6 +53,8 @@ import { isIP, type LookupFunction } from "net";
 const MAX_PROXY_BYTES = 50 * 1024 * 1024;
 // Cap redirect chains — each hop is re-validated against the private-IP block.
 const MAX_REDIRECTS = 4;
+const FAILURE_COOLDOWN_MS = 30_000;
+const failureCache = new Map<string, { error: string; expiresAt: number }>();
 
 /** True if an IP literal falls in a loopback / private / link-local / ULA /
  *  CGNAT / multicast / reserved range we must never let the main process
@@ -174,13 +176,13 @@ function fetchOnce(
                 path: (parsed.pathname || "/") + parsed.search,
                 method: "GET",
                 lookup: pinnedLookup,
-                // Catbox accepts the same media URL from a browser/curl, but
-                // resets Node's otherwise-valid request when it has no normal
-                // client headers. Keep the request range-aware while sending
-                // a small, honest media-proxy identity so animated banners
-                // can be fetched cross-PC too.
+                timeout: 10000,
+                // Catbox and other CDNs accept the same media URL from a browser/curl, but
+                // reset or reject requests lacking a standard browser client identity.
+                // Keep the request range-aware while sending a standard browser user-agent
+                // so animated banners can be fetched reliably.
                 headers: {
-                    "user-agent": "Discordmaxxer/0.7 media-proxy",
+                    "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
                     accept: "*/*",
                     ...(rangeHeader ? { range: rangeHeader } : {})
                 }
@@ -208,6 +210,9 @@ function fetchOnce(
                 res.on("error", (e: Error) => reject(e));
             }
         );
+        req.on("timeout", () => {
+            req.destroy(new Error("upstream timeout"));
+        });
         req.on("error", e => reject(e));
         req.end();
     });
@@ -274,6 +279,10 @@ app.whenReady().then(() => {
         if (targetErr) {
             return new Response(targetErr, { status: targetErr === "target host is not allowed" ? 403 : 400 });
         }
+        const cachedFailure = failureCache.get(target);
+        if (cachedFailure && Date.now() < cachedFailure.expiresAt) {
+            return new Response(`upstream error (cooldown): ${cachedFailure.error}`, { status: 502 });
+        }
         try {
             // Fetch via net.request with manual redirect validation + byte cap
             // (see fetchValidated). Each redirect hop is re-checked against the
@@ -299,6 +308,7 @@ app.whenReady().then(() => {
             // Allow ranged playback + mark cross-origin OK for any downstream check.
             respHeaders.set("accept-ranges", "bytes");
             respHeaders.set("cross-origin-resource-policy", "cross-origin");
+            failureCache.delete(target);
             // Buffer is a valid Response body at runtime; the cast bridges the
             // Node typed-array generic (Uint8Array<ArrayBufferLike>) vs the DOM
             // BodyInit lib type — a TS 5.7 generic-mismatch, not a real concern.
@@ -307,8 +317,10 @@ app.whenReady().then(() => {
                 headers: respHeaders
             });
         } catch (e: any) {
-            console.warn("[dm-media] proxy failed:", target.slice(0, 100), e?.message ?? e);
-            return new Response(`upstream error: ${e?.message ?? "unknown"}`, { status: 502 });
+            const msg = e?.message ?? "unknown";
+            failureCache.set(target, { error: msg, expiresAt: Date.now() + FAILURE_COOLDOWN_MS });
+            console.warn("[dm-media] proxy failed:", target.slice(0, 100), msg);
+            return new Response(`upstream error: ${msg}`, { status: 502 });
         }
     });
 });

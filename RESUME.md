@@ -1,5 +1,16 @@
 # Discordmaxxer — RESUME
 
+## 2026-10-21 v0.7.107 published — settings/plugin performance overhaul, media proxy stability, DMCursor fluidity, DMWidget conversation header skins
+
+v0.7.107 is publicly published from tag `v0.7.107`.
+User-visible repairs:
+- Settings & Plugins tab performance: CSS render containment on plugin cards (skipping offscreen card layout/paint), scoped useSettings listener, MutationObserver isolation away from Settings layers, and eliminated forced synchronous getBoundingClientRect() reflows.
+- Media proxy stability: 30-second failure cache, 10-second socket timeout, Chrome browser User-Agent, and profile flair cooldown eliminating runaway socket hangup retry loops and memory exhaustion.
+- DMCursor fluidity: requestAnimationFrame batching and translate3d GPU acceleration eliminating cursor lag and jitter when moving fast across Discord.
+- DMWidget conversation header skins: 1-on-1 DM headers wrap both recipient avatar and username together seamlessly.
+- PlaylistmaxxingPresence: live rich presence synchronization for song title, artist, album artwork, and "Listening on music.maxxtopia.com".
+
+
 ## 2026-10-19 unpublished Tournament Mode toast repair
 
 The current public release remains v0.7.103. This is a local, unpublished

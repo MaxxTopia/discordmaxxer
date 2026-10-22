@@ -257,6 +257,23 @@ const PATCHES = [
         replace: 'dev: "Developer build of Discordmaxxer"'
     },
 
+    // ── Q2. Plugins tab rendering performance ──
+    // Unvirtualized 250+ plugin grid creates 3000+ DOM nodes. content-visibility: auto
+    // lets Chromium skip style/layout/paint for offscreen cards, boosting frame rate.
+    {
+        file: "src/components/settings/AddonCard.css",
+        find: ".vc-addon-card {\n    background-color: var(--card-background-default);",
+        replace: ".vc-addon-card {\n    content-visibility: auto;\n    contain-intrinsic-size: 0 100px;\n    background-color: var(--card-background-default);"
+    },
+    // useSettings() without paths registers a global settings change listener that
+    // re-renders all 250 cards on any setting write anywhere in the app. Scope to plugins.*
+    // with a static paths array so identity is preserved across renders.
+    {
+        file: "src/components/settings/tabs/plugins/index.tsx",
+        find: "function PluginSettings() {\n    const settings = useSettings();",
+        replace: "const PLUGIN_SETTINGS_PATHS = [\"plugins.*\"] as any;\n\nfunction PluginSettings() {\n    const settings = useSettings(PLUGIN_SETTINGS_PATHS);"
+    },
+
     // ── R. CSP manager + theme CSP error card ──
     {
         file: "src/main/csp/manager.ts",

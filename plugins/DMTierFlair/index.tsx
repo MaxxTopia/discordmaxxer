@@ -425,6 +425,8 @@ function tagElement(el: Element) {
 }
 
 function scanRoot(root: ParentNode = document) {
+    if (root instanceof Element && root.closest?.(".vc-settings-tab, [class*='standardSidebarView']")) return;
+    if (root === document && document.querySelector("[class*='standardSidebarView']")) return;
     // tagElement is now idempotent per-userId, so we can scan all rows (not
     // just untagged ones) and recycled rows still get corrected.
     root.querySelectorAll("[data-user-id]").forEach(tagElement);
@@ -434,6 +436,9 @@ function startObserver() {
     if (observer) return;
     observer = new MutationObserver(mutations => {
         for (const m of mutations) {
+            if ((m.target as Element)?.closest?.(".vc-settings-tab, [class*='standardSidebarView']")) {
+                continue;
+            }
             if (m.type === "attributes") {
                 // A recycled row whose data-user-id changed in place.
                 if (m.target instanceof Element) tagElement(m.target);

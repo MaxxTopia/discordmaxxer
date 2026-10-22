@@ -2993,6 +2993,8 @@ function findAllProfileBanners(): HTMLElement[] {
         const el = c as HTMLElement;
         const wrapper = el.parentElement?.closest<HTMLElement>('[class*="banner_"]');
         if (!isProfileBannerWrapper(el) && wrapper && isProfileBannerWrapper(wrapper)) return;
+        if (el.closest?.(".vc-settings-tab, [class*='standardSidebarView']")) return;
+        if (el.offsetWidth < 200 || el.offsetHeight < 50) return;
         const r = el.getBoundingClientRect();
         // Real profile banners are ≥200px wide and ≥50px tall. Smaller hits
         // are typically status icons or decorative graphics.
@@ -3401,6 +3403,9 @@ function applyBannerPresentation(banner: HTMLElement, flair?: ProfilePresentatio
     else delete banner.dataset.dmFlairMediaEffect;
 }
 
+const failedRemoteBannerUrls = new Map<string, number>();
+const REMOTE_BANNER_FAILURE_COOLDOWN_MS = 30_000;
+
 function applyBanner(banner: HTMLElement, url: string, flair?: ProfilePresentation, ownerId?: string) {
     // Presentation is updated before the idempotency check so a tier upgrade or
     // a changed owner preference repaints the current media without refetching
@@ -3408,6 +3413,7 @@ function applyBanner(banner: HTMLElement, url: string, flair?: ProfilePresentati
     // rendering, so FREE media is never downgraded.
     applyBannerPresentation(banner, flair);
     if (ownerId) banner.dataset.dmFlairBannerOwnerId = ownerId;
+    if (failedRemoteBannerUrls.has(url) && Date.now() - (failedRemoteBannerUrls.get(url) ?? 0) < REMOTE_BANNER_FAILURE_COOLDOWN_MS) return;
     const failedUrl = banner.dataset.dmFlairBannerFailedUrl;
     const failedAt = Number(banner.dataset.dmFlairBannerFailedAt ?? 0);
     const isVideo = isVideoUrl(url);
@@ -3454,6 +3460,7 @@ function applyBanner(banner: HTMLElement, url: string, flair?: ProfilePresentati
             media.remove();
             return;
         }
+        failedRemoteBannerUrls.delete(url);
         delete banner.dataset.dmFlairBannerLoadingUrl;
         delete banner.dataset.dmFlairBannerFailedUrl;
         delete banner.dataset.dmFlairBannerFailedAt;
@@ -3470,6 +3477,7 @@ function applyBanner(banner: HTMLElement, url: string, flair?: ProfilePresentati
     };
     const fail = () => {
         console.warn("[DMProfileFlair] Remote banner could not be loaded; restored the native banner.", url);
+        failedRemoteBannerUrls.set(url, Date.now());
         clearBanner(banner, url);
     };
 
@@ -3703,6 +3711,8 @@ function clearAppliedAvatars() {
 }
 
 function scanForPopouts(_root: ParentNode = document) {
+    if (document.hidden) return;
+    if (document.querySelector("[class*='standardSidebarView']")) return;
     const me = UserStore.getCurrentUser?.();
     const tmActive = isTournamentModeActive();
     const rosterReady = isRosterReady();
@@ -3861,6 +3871,7 @@ let scanScheduled = false;
 // re-trigger an endless rescan loop.
 function scheduleScan() {
     if (document.hidden || scanScheduled) return;
+    if (document.querySelector("[class*='standardSidebarView']")) return;
     scanScheduled = true;
     requestAnimationFrame(() => {
         scanScheduled = false;
@@ -3873,7 +3884,13 @@ function startObserver() {
     document.addEventListener("visibilitychange", onVisibilityChange);
     window.addEventListener("focus", onRosterFocus);
     removeRosterListener = onRosterChange(scheduleScan);
-    observer = new MutationObserver(scheduleScan);
+    observer = new MutationObserver(mutations => {
+        const relevant = mutations.some(m => {
+            const target = m.target as Element | null;
+            return !target?.closest?.(".vc-settings-tab, [class*='standardSidebarView']");
+        });
+        if (relevant) scheduleScan();
+    });
     observer.observe(document.body, { childList: true, subtree: true });
     scanForPopouts(document);
     // Low-frequency safety net for changes the childList observer can't see
