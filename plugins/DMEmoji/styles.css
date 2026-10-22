@@ -5,6 +5,68 @@
     gap: 12px;
 }
 
+.dmemoji-modal-root {
+    max-height: 85vh;
+}
+
+.dmemoji-modal-header {
+    padding: 16px 20px 8px 20px;
+}
+
+.dmemoji-modal-header-inner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+}
+
+.dmemoji-modal-content {
+    padding: 0 20px 20px 20px;
+    max-height: 70vh;
+    overflow-y: auto;
+}
+
+.dmemoji-close-btn {
+    background: transparent;
+    border: none;
+    color: var(--interactive-normal, #b5bac1);
+    font-size: 18px;
+    cursor: pointer;
+    padding: 4px 8px;
+    border-radius: 4px;
+    line-height: 1;
+    transition: color 0.15s ease, background 0.15s ease;
+}
+
+.dmemoji-close-btn:hover {
+    color: var(--interactive-active, #ffffff);
+    background: var(--background-modifier-hover, rgba(255, 255, 255, 0.07));
+}
+
+.dmemoji-standalone-modal-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.7);
+    z-index: 1000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.dmemoji-standalone-modal-shell {
+    background: var(--background-primary, #313338);
+    border-radius: 8px;
+    box-shadow: var(--elevation-high, 0 8px 16px rgba(0, 0, 0, 0.24));
+    width: 540px;
+    max-width: 90vw;
+    max-height: 85vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    padding: 16px;
+    box-sizing: border-box;
+}
+
 .dmemoji-toolbar {
     display: flex;
     align-items: center;
@@ -33,7 +95,7 @@
 
 .dmemoji-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
     gap: 10px;
 }
 
@@ -49,12 +111,12 @@
 }
 
 .dmemoji-preview-wrap {
-    width: 52px;
-    height: 52px;
-    flex: 0 0 52px;
+    width: 48px;
+    height: 48px;
+    flex: 0 0 48px;
     overflow: hidden;
-    border-radius: 50%;
-    border: 2px solid color-mix(in srgb, var(--brand-experiment, #5865f2) 72%, transparent);
+    border-radius: 8px;
+    border: 1px solid color-mix(in srgb, var(--brand-experiment, #5865f2) 50%, transparent);
     background: var(--background-tertiary, #1e1f22);
 }
 

@@ -75,6 +75,7 @@ const PLUGINS_DEFAULT_ON: string[] = [
     "DMVoiceKeybinds", // GLOBAL mute/deafen hotkeys that work in a fullscreen game (Ctrl+Alt+M / Ctrl+Alt+D)
     "DMVoiceGuard", // safeguard: surfaces a banner when voice silently fails (e.g. Discord change the build can't handle)
     "DMTranslate", // right-click any message -> translate; no helper app or download
+    "DMEmoji", // local animated emoji library & chat attachment button
     "DMBeta", // MAXXER++ perk: opt-in beta channel for prerelease GitHub tags
     "DMVotes" // MAXXER++ perk: panel for voting on candidate features (polls in #vip-chat)
 ];

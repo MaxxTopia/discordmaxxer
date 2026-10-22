@@ -1,5 +1,14 @@
 # Discordmaxxer — RESUME
 
+## 2026-10-21 v0.7.108 published — DMEmoji crash repair and modal modernization
+
+v0.7.108 is publicly published from tag `v0.7.108`.
+User-visible repairs:
+- Fixed client crash when clicking "Open DMEmoji" from the chat composer bar. Replaced Discord's broken mangled `Modal` with stable `ModalRoot`, `ModalHeader`, `ModalContent`, and `ModalCloseButton` primitives.
+- Isolated modal rendering with `ErrorBoundary` and fallback standalone modal dialog to eliminate unhandled render exceptions.
+- Enhanced IndexedDB emoji deserialization in `getEmojiFile()` supporting Blob, File, ArrayBuffer, and ArrayBufferView.
+- Added `DMEmoji` to default enabled plugins and automated build verification.
+
 ## 2026-10-21 v0.7.107 published — settings/plugin performance overhaul, media proxy stability, DMCursor fluidity, DMWidget conversation header skins
 
 v0.7.107 is publicly published from tag `v0.7.107`.
