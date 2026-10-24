@@ -98,6 +98,12 @@ const PERF_CSS = `
     .dm-cursor-smoke-container {
         display: none !important;
     }
+    /* DMWidget skins and surfaces in Tournament Mode — freeze animation loops to 0% CPU */
+    [data-dm-widget-skin]::before,
+    [data-dm-widget-skin]::after,
+    [data-dm-widget-surface-root="true"]::after {
+        animation-play-state: paused !important;
+    }
 `;
 
 const settings = definePluginSettings({

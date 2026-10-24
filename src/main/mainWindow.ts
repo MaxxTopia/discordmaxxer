@@ -28,6 +28,7 @@ import { createAboutWindow } from "./about";
 import { initArRPC } from "./arrpc";
 import { CommandLine } from "./cli";
 import { BrowserUserAgent, DEFAULT_HEIGHT, DEFAULT_WIDTH, MIN_HEIGHT, MIN_WIDTH } from "./constants";
+import { isVoiceActive } from "./discordmaxxerPerf";
 import { AppEvents } from "./events";
 import { darwinURL } from "./index";
 import { sendRendererCommand } from "./ipcCommands";
@@ -185,10 +186,30 @@ function initWindowBoundsListeners(win: BrowserWindow) {
         State.store.minimized = win.isMinimized();
     };
 
+    const onMinimizeOrHide = () => {
+        saveState();
+        if (!isVoiceActive()) {
+            win.webContents.setBackgroundThrottling(true);
+            try {
+                win.webContents.session.clearCodeCaches({});
+            } catch {
+                // best effort
+            }
+        }
+    };
+
+    const onRestoreOrShow = () => {
+        saveState();
+        win.webContents.setBackgroundThrottling(false);
+    };
+
     win.on("maximize", saveState);
-    win.on("minimize", saveState);
+    win.on("minimize", onMinimizeOrHide);
+    win.on("hide", onMinimizeOrHide);
     win.on("unmaximize", saveState);
-    win.on("restore", saveState);
+    win.on("restore", onRestoreOrShow);
+    win.on("show", onRestoreOrShow);
+    win.on("focus", onRestoreOrShow);
 
     const saveBounds = () => {
         if (win.isMaximized()) return;

@@ -1853,7 +1853,7 @@ const WIDGET_CLIENT_SKIN_CSS = `
   @keyframes dm-widget-client-mothlight-dust { 0%, 100% { transform: translate3d(-2%, 1%, 0) scale(.96); opacity: .42; } 50% { transform: translate3d(3%, -2%, 0) scale(1.05); opacity: .94; } }
 @keyframes dm-widget-client-sun-crown { from { transform: rotate(0deg) scale(.96); opacity: .44; } to { transform: rotate(360deg) scale(1.04); opacity: .92; } }
 [data-dm-widget-skin] { position: relative !important; isolation: isolate; overflow: hidden !important; border-radius: 12px !important; border: 1px solid color-mix(in srgb, var(--dmw-skin-accent) 62%, transparent) !important; box-shadow: 0 0 0 1px color-mix(in srgb, var(--dmw-skin-accent) 16%, transparent), 0 8px 24px color-mix(in srgb, var(--dmw-skin-accent) 18%, transparent), inset 0 0 24px color-mix(in srgb, var(--dmw-skin-accent) 10%, transparent); background-color: var(--dmw-skin-surface) !important; }
-[data-dm-widget-skin]::before, [data-dm-widget-skin]::after { content: ""; position: absolute; pointer-events: none; border-radius: inherit; }
+[data-dm-widget-skin]::before, [data-dm-widget-skin]::after { content: ""; position: absolute; pointer-events: none; border-radius: inherit; will-change: transform, opacity; transform: translateZ(0); }
 [data-dm-widget-skin]::before { z-index: 0; inset: 0; background-repeat: no-repeat; }
 [data-dm-widget-skin]::after { z-index: 2; inset: 0; }
 [data-dm-widget-skin] > * { position: relative; z-index: 1; }
@@ -1884,7 +1884,9 @@ const WIDGET_CLIENT_SKIN_CSS = `
 [data-dm-widget-skin="solarFlare"] { background-image: radial-gradient(circle at 84% 18%, #fff2bf 0 6%, color-mix(in srgb, var(--dmw-skin-accent) 80%, transparent) 7% 12%, color-mix(in srgb, var(--dmw-skin-secondary) 28%, transparent) 13% 27%, transparent 40%), repeating-conic-gradient(from 0deg at 84% 18%, color-mix(in srgb, var(--dmw-skin-accent) 32%, transparent) 0deg 2deg, transparent 3deg 14deg), linear-gradient(152deg, #24100d 0 42%, color-mix(in srgb, var(--dmw-skin-secondary) 18%, transparent) 43% 55%, #351714 56% 72%, #160d13 73%) !important; }
 [data-dm-widget-skin="solarFlare"]::before { background-image: radial-gradient(circle at 84% 18%, rgba(255,255,255,.72) 0 3%, transparent 4% 9%, color-mix(in srgb, var(--dmw-skin-accent) 24%, transparent) 10% 15%, transparent 16% 34%), repeating-conic-gradient(from 0deg at 84% 18%, color-mix(in srgb, var(--dmw-skin-accent) 28%, transparent) 0deg 2deg, transparent 3deg 14deg), linear-gradient(152deg, transparent 0 42%, color-mix(in srgb, var(--dmw-skin-secondary) 18%, transparent) 43% 55%, transparent 56%); clip-path: polygon(0 0, 100% 0, 100% 100%, 13% 100%, 21% 77%, 0 64%); }
 [data-dm-widget-skin="solarFlare"]::after { inset: -61% -56%; background: repeating-conic-gradient(from 2deg at 50% 50%, transparent 0deg 8deg, color-mix(in srgb, var(--dmw-skin-accent) 46%, transparent) 9deg 12deg, transparent 13deg 22deg); -webkit-mask: radial-gradient(circle, transparent 27%, #000 34%, #000 54%, transparent 64%); mask: radial-gradient(circle, transparent 27%, #000 34%, #000 54%, transparent 64%); animation: dm-widget-client-sun-crown 23s linear infinite; }
-[data-dm-widget-motion-paused="true"]::before, [data-dm-widget-motion-paused="true"]::after { animation-play-state: paused !important; }
+[data-dm-widget-motion-paused="true"]::before, [data-dm-widget-motion-paused="true"]::after,
+:root:not(:focus-within) [data-dm-widget-skin]::before, :root:not(:focus-within) [data-dm-widget-skin]::after,
+:root:not(:focus-within) [data-dm-widget-surface-root="true"]::after { animation-play-state: paused !important; }
 /* Discord remounts the Rich Presence card as its elapsed-time text changes.
  * Keep only that card's cosmetic layers on the renderer clock so a remount
  * resumes the same phase instead of flashing back to animation frame zero. */

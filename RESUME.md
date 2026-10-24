@@ -1,5 +1,21 @@
 # Discordmaxxer — RESUME
 
+## 2026-10-24 v0.7.113 published — Resource efficiency overhaul & background throttling
+
+v0.7.113 is publicly published from tag `v0.7.113`.
+Architectural optimizations:
+- DMCursor Pure GPU Hardware Acceleration & Idle Freezing:
+  - Replaced CPU SMIL `<animateTransform>` tags in Sharingan, Rinnegan, and Rasengan SVG skins with pure GPU compositor `@keyframes` (`transform-origin` & `transform-box: view-box`), stopping V8 from recalculating SVG layout tree geometry on every frame.
+  - Added stationary pointer activity detection (pausing cursor animations when pointer is stationary for >2.5s) and window focus tracking (`blur`, `focus`, `mouseenter`, `mouseleave`), freezing cursor animations to 0% CPU whenever the user is reading chat, gaming, or unfocused.
+- DMWidget GPU Compositor Layer Promotion & Focus Pause:
+  - Promoted `[data-dm-widget-skin]::before` and `::after` to dedicated GPU compositor layers via `will-change: transform, opacity; transform: translateZ(0);`, eliminating software repaint reflows during skin glow cycles.
+  - Added `:root:not(:focus-within)` animation freeze so widget cosmetic loops immediately sleep to 0% CPU whenever Discord is unfocused.
+- TournamentMode Full Freeze Integration:
+  - Extended TournamentMode's `PERF_CSS` to immediately pause all custom DMWidget skin and surface animations alongside anime cursor rotations, guaranteeing zero background cosmetic rendering overhead during competitive matches.
+- Voice-Aware Background Throttling & V8 RAM Trim:
+  - Exported `isVoiceActive()` from `discordmaxxerPerf` and wired dynamic `webContents.setBackgroundThrottling(allowed)` across all windows on window minimize/hide and voice channel state transitions.
+  - While minimized outside of voice calls, Discordmaxxer automatically throttles background JS timers and flushes V8 in-memory bytecode caches, safely sleeping background CPU without compromising voice/screenshare fidelity when in calls.
+
 ## 2026-10-24 v0.7.112 published — DMWidget game card skinning, settings performance, DMCursor showroom & Quests trim
 
 v0.7.112 is publicly published from tag `v0.7.112`.

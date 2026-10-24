@@ -92,6 +92,10 @@ const state: PerfState = {
 // the renderer + GPU at NORMAL priority so voice/stream encode isn't starved.
 let voiceActive = false;
 
+export function isVoiceActive(): boolean {
+    return voiceActive;
+}
+
 function setAllRendererFrameRates(fps: number) {
     // NOTE: no-op on windowed BrowserWindows (setFrameRate needs offscreen
     // rendering). Kept best-effort; intentionally NOT surfaced as a perf win.
@@ -240,6 +244,23 @@ handle(IpcEvents.DM_SET_VOICE_ACTIVE, (_e, active: boolean) => {
     const next = !!active;
     if (next === voiceActive) return { reapplied: false };
     voiceActive = next;
+
+    if (voiceActive) {
+        // Voice active: protect audio/stream by disabling background throttling immediately
+        for (const win of BrowserWindow.getAllWindows()) {
+            if (!win.isDestroyed()) {
+                win.webContents.setBackgroundThrottling(false);
+            }
+        }
+    } else {
+        // Voice inactive: sleep minimized or hidden windows to save CPU
+        for (const win of BrowserWindow.getAllWindows()) {
+            if (!win.isDestroyed() && (win.isMinimized() || !win.isVisible())) {
+                win.webContents.setBackgroundThrottling(true);
+            }
+        }
+    }
+
     const reapplied = state.on ? applyProcessPriorities() : false;
     if (reapplied) console.log(`[Discordmaxxer] voiceActive=${voiceActive} — re-balanced priorities`);
     return { reapplied };

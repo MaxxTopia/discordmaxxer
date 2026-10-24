@@ -51,7 +51,6 @@ const CURSOR_SVGS: Record<CursorSkin, string> = {
         <circle cx="20" cy="20" r="10" fill="none" stroke="#000" stroke-width="1.5"/>
         <circle cx="20" cy="20" r="3.5" fill="#000"/>
         <g class="sharingan-tomoe">
-            <animateTransform attributeName="transform" type="rotate" from="0 20 20" to="360 20 20" dur="2.2s" repeatCount="indefinite"/>
             <circle cx="20" cy="9" r="2.5" fill="#000"/>
             <path d="M20 9 Q24 12 20 14" fill="#000" opacity="0.85"/>
             <circle cx="29.5" cy="25.5" r="2.5" fill="#000"/>
@@ -69,7 +68,6 @@ const CURSOR_SVGS: Record<CursorSkin, string> = {
         <circle cx="21" cy="21" r="3" fill="#1a0030"/>
         <circle cx="21" cy="21" r="1.5" fill="#000"/>
         <g class="rinnegan-dots">
-            <animateTransform attributeName="transform" type="rotate" from="0 21 21" to="360 21 21" dur="14s" repeatCount="indefinite"/>
             <circle cx="21" cy="6" r="1.8" fill="#000" class="rinnegan-dot"/>
             <circle cx="33" cy="15" r="1.8" fill="#000" class="rinnegan-dot"/>
             <circle cx="33" cy="27" r="1.8" fill="#000" class="rinnegan-dot"/>
@@ -82,15 +80,12 @@ const CURSOR_SVGS: Record<CursorSkin, string> = {
         <circle cx="20" cy="20" r="6" fill="rgba(140,200,255,0.95)" class="rasengan-core-svg"/>
         <circle cx="20" cy="20" r="6" fill="none" stroke="rgba(220,240,255,0.9)" stroke-width="1.2"/>
         <g class="rasengan-spin-1">
-            <animateTransform attributeName="transform" type="rotate" from="0 20 20" to="360 20 20" dur="0.8s" repeatCount="indefinite"/>
             <circle cx="20" cy="20" r="10" fill="none" stroke="rgba(120,185,255,0.7)" stroke-width="1.5" stroke-dasharray="14 6" class="rasengan-ring-1"/>
         </g>
         <g class="rasengan-spin-2">
-            <animateTransform attributeName="transform" type="rotate" from="360 20 20" to="0 20 20" dur="1.2s" repeatCount="indefinite"/>
             <circle cx="20" cy="20" r="14" fill="none" stroke="rgba(90,160,255,0.6)" stroke-width="1.3" stroke-dasharray="8 4 16 4" class="rasengan-ring-2"/>
         </g>
         <g class="rasengan-spin-3">
-            <animateTransform attributeName="transform" type="rotate" from="0 20 20" to="360 20 20" dur="0.6s" repeatCount="indefinite"/>
             <circle cx="20" cy="20" r="17" fill="none" stroke="rgba(60,130,255,0.45)" stroke-width="1" stroke-dasharray="16 8" class="rasengan-ring-3"/>
         </g>
     </svg>`,
@@ -163,19 +158,51 @@ const CURSOR_CSS = `
     .anime-cursor * {
         pointer-events: none !important;
     }
+    .anime-cursor--idle *,
+    .anime-cursor--idle svg *,
+    html.dm-cursor-unfocused .anime-cursor *,
+    :root:not(:focus-within) .anime-cursor * {
+        animation-play-state: paused !important;
+    }
+
     .anime-cursor--sharingan { filter: drop-shadow(0 0 6px rgba(220, 0, 0, 0.75)); }
     .sharingan-pupil-bg { animation: dmCursorPulseRed 2s ease-in-out infinite alternate; }
     .sharingan-outer-ring { animation: dmCursorPulseRing 2s ease-in-out infinite alternate; }
+    .sharingan-tomoe {
+        transform-box: view-box;
+        transform-origin: 20px 20px;
+        animation: dmCursorSpin 6s linear infinite;
+    }
 
     .anime-cursor--rinnegan { filter: drop-shadow(0 0 6px rgba(155, 77, 202, 0.75)); }
     .rinnegan-ring-1 { animation: dmCursorRinneganRing 2s ease-in-out infinite; }
     .rinnegan-ring-2 { animation: dmCursorRinneganRing 2s ease-in-out infinite 0.35s; }
     .rinnegan-ring-3 { animation: dmCursorRinneganRing 2s ease-in-out infinite 0.7s; }
     .rinnegan-ring-4 { animation: dmCursorRinneganRing 2s ease-in-out infinite 1.05s; }
+    .rinnegan-dots {
+        transform-box: view-box;
+        transform-origin: 21px 21px;
+        animation: dmCursorSpin 20s linear infinite;
+    }
     .rinnegan-dot { animation: dmCursorRinneganDot 1.8s ease-in-out infinite alternate; }
 
     .anime-cursor--rasengan { filter: drop-shadow(0 0 8px rgba(100, 160, 255, 0.8)); }
     .rasengan-core-svg { animation: dmCursorPulseBlue 1s ease-in-out infinite alternate; }
+    .rasengan-spin-1 {
+        transform-box: view-box;
+        transform-origin: 20px 20px;
+        animation: dmCursorSpin 1.2s linear infinite;
+    }
+    .rasengan-spin-2 {
+        transform-box: view-box;
+        transform-origin: 20px 20px;
+        animation: dmCursorSpinReverse 0.8s linear infinite;
+    }
+    .rasengan-spin-3 {
+        transform-box: view-box;
+        transform-origin: 20px 20px;
+        animation: dmCursorSpin 2s linear infinite;
+    }
 
     .anime-cursor--chidori { filter: drop-shadow(0 0 6px rgba(79, 195, 247, 0.8)); }
     .chidori-core { transform-origin: 22px 22px; animation: dmCursorChidoriCore 0.4s ease-in-out infinite alternate; }
@@ -204,6 +231,7 @@ const CURSOR_CSS = `
     }
 
     @keyframes dmCursorSpin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+    @keyframes dmCursorSpinReverse { from { transform: rotate(360deg); } to { transform: rotate(0deg); } }
     @keyframes dmCursorRotateSlow { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
     @keyframes dmCursorPulseRed { 0% { fill: #6b0000; } 100% { fill: #c00000; } }
     @keyframes dmCursorPulseRing { 0% { stroke: #990000; opacity: 0.7; } 100% { stroke: #ff1a1a; opacity: 1; } }
@@ -235,6 +263,11 @@ let style: HTMLStyleElement;
 let mousemoveHandler: ((e: MouseEvent) => void) | null = null;
 let mouseRafId = 0;
 let fullscreenHandler: (() => void) | null = null;
+let idleTimer: ReturnType<typeof setTimeout> | null = null;
+let blurHandler: (() => void) | null = null;
+let focusHandler: (() => void) | null = null;
+let mouseLeaveHandler: (() => void) | null = null;
+let mouseEnterHandler: (() => void) | null = null;
 let lastX = -100;
 let lastY = -100;
 let lastSmokeTime = 0;
@@ -346,9 +379,46 @@ function applySkin(skin: CursorSkin | "off") {
     cursorEl.innerHTML = CURSOR_SVGS[skin];
     document.body.appendChild(cursorEl);
 
+    const setIdle = (idle: boolean) => {
+        if (!cursorEl) return;
+        if (idle) {
+            cursorEl.classList.add("anime-cursor--idle");
+        } else {
+            cursorEl.classList.remove("anime-cursor--idle");
+        }
+    };
+
+    const kickActivity = () => {
+        setIdle(false);
+        if (idleTimer) clearTimeout(idleTimer);
+        idleTimer = setTimeout(() => setIdle(true), 2500);
+    };
+
+    blurHandler = () => {
+        setIdle(true);
+        document.documentElement.classList.add("dm-cursor-unfocused");
+    };
+    focusHandler = () => {
+        document.documentElement.classList.remove("dm-cursor-unfocused");
+        kickActivity();
+    };
+    mouseLeaveHandler = () => {
+        setIdle(true);
+    };
+    mouseEnterHandler = () => {
+        kickActivity();
+    };
+
+    window.addEventListener("blur", blurHandler);
+    window.addEventListener("focus", focusHandler);
+    document.addEventListener("mouseleave", mouseLeaveHandler);
+    document.addEventListener("mouseenter", mouseEnterHandler);
+    kickActivity();
+
     mousemoveHandler = (e: MouseEvent) => {
         lastX = e.clientX;
         lastY = e.clientY;
+        kickActivity();
         if (!mouseRafId) {
             mouseRafId = requestAnimationFrame(() => {
                 mouseRafId = 0;
@@ -378,6 +448,27 @@ function applySkin(skin: CursorSkin | "off") {
 
 function teardownTracking() {
     activeSkin = "off";
+    if (idleTimer) {
+        clearTimeout(idleTimer);
+        idleTimer = null;
+    }
+    if (blurHandler) {
+        window.removeEventListener("blur", blurHandler);
+        blurHandler = null;
+    }
+    if (focusHandler) {
+        window.removeEventListener("focus", focusHandler);
+        focusHandler = null;
+    }
+    if (mouseLeaveHandler) {
+        document.removeEventListener("mouseleave", mouseLeaveHandler);
+        mouseLeaveHandler = null;
+    }
+    if (mouseEnterHandler) {
+        document.removeEventListener("mouseenter", mouseEnterHandler);
+        mouseEnterHandler = null;
+    }
+    document.documentElement.classList.remove("dm-cursor-unfocused");
     if (mouseRafId) {
         cancelAnimationFrame(mouseRafId);
         mouseRafId = 0;

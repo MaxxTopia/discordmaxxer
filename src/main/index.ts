@@ -85,7 +85,8 @@ function init() {
     // https://github.com/electron/electron/issues/2822
     // https://github.com/GoogleChrome/chrome-launcher/blob/5a27dd574d47a75fec0fb50f7b774ebf8a9791ba/docs/chrome-flags-for-tools.md#task-throttling
     app.commandLine.appendSwitch("disable-renderer-backgrounding");
-    app.commandLine.appendSwitch("disable-background-timer-throttling");
+    // Background timer throttling is managed conditionally via webContents.setBackgroundThrottling
+    // (disabled when active or in voice; enabled when minimized without active voice).
     app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
     if (process.platform === "win32") {
         disabledFeatures.add("CalculateNativeWinOcclusion");
