@@ -1011,14 +1011,15 @@ function hasNameClass(element: HTMLElement): boolean {
 
 function isVisibleLeafName(element: HTMLElement): boolean {
     if (!element.isConnected || (!hasNameClass(element) && !isExactProfileNameCandidate(element))) return false;
-    if (element.closest<HTMLElement>(`#${ROOT_ID}, [${IGNORE_ATTR}], input, textarea, [contenteditable="true"]`)) return false;
+    if (element.closest<HTMLElement>(`#${ROOT_ID}, [${IGNORE_ATTR}], input, textarea, [contenteditable="true"], .vc-settings-tab, [class*='standardSidebarView']`)) return false;
     if (element.getAttribute("aria-hidden") === "true") return false;
     if (element.children.length > 0 && element.querySelector<HTMLElement>(candidateSelector())) return false;
 
     const text = element.textContent?.trim() ?? "";
     if (!text || text.length > 64 || /\r|\n/.test(text)) return false;
-    const rect = element.getBoundingClientRect();
-    return rect.width > 0 && rect.height > 0;
+    return (element as any).checkVisibility
+        ? (element as any).checkVisibility({ checkOpacity: false, checkVisibilityCSS: true })
+        : (element.offsetWidth > 0 && element.offsetHeight > 0);
 }
 
 function shouldApply(element: HTMLElement): { surface: Surface } | null {
@@ -1041,10 +1042,22 @@ function clearTarget(element: HTMLElement) {
 }
 
 function applyTarget(element: HTMLElement, surface: Surface, profile: StyleProfile) {
-    element.setAttribute(TARGET_ATTR, escapeAttributeValue(getPresetId()));
+    const presetId = escapeAttributeValue(getPresetId());
+    const motion = motionAllowed() ? profile.motion : "none";
+    const ornament = (profile.ornament && profile.ornament !== "none") ? profile.ornament : null;
+
+    if (element.getAttribute(TARGET_ATTR) === presetId
+        && element.getAttribute(SURFACE_ATTR) === surface
+        && element.getAttribute(MOTION_ATTR) === motion
+        && (ornament ? element.getAttribute(ORNAMENT_ATTR) === ornament : !element.hasAttribute(ORNAMENT_ATTR))
+        && element.style.getPropertyValue("--dm-name-primary") === profile.primary) {
+        return;
+    }
+
+    element.setAttribute(TARGET_ATTR, presetId);
     element.setAttribute(SURFACE_ATTR, surface);
-    element.setAttribute(MOTION_ATTR, motionAllowed() ? profile.motion : "none");
-    if (profile.ornament && profile.ornament !== "none") element.setAttribute(ORNAMENT_ATTR, profile.ornament);
+    element.setAttribute(MOTION_ATTR, motion);
+    if (ornament) element.setAttribute(ORNAMENT_ATTR, ornament);
     else element.removeAttribute(ORNAMENT_ATTR);
     element.style.setProperty("--dm-name-primary", profile.primary);
     element.style.setProperty("--dm-name-secondary", profile.secondary);
@@ -1057,11 +1070,17 @@ function candidateSelector(): string {
 }
 
 function scanRoot(root: ParentNode) {
+    if (root instanceof Element && root.closest?.(".vc-settings-tab, [class*='standardSidebarView']")) return;
+    if (root === document && document.querySelector("[class*='standardSidebarView']")) return;
+
     const profile = getProfile();
+    const seen = new Set<HTMLElement>();
     const candidates: HTMLElement[] = [];
     const addCandidates = (elements: Iterable<HTMLElement>) => {
         for (const element of elements) {
-            if (!candidates.includes(element)) candidates.push(element);
+            if (seen.has(element) || element.closest?.(".vc-settings-tab, [class*='standardSidebarView']")) continue;
+            seen.add(element);
+            candidates.push(element);
         }
     };
     if (root instanceof HTMLElement && root.matches(candidateSelector())) candidates.push(root);
@@ -1077,10 +1096,7 @@ function scanRoot(root: ParentNode) {
         for (const surface of surfaces) addCandidates(surface.querySelectorAll<HTMLElement>(PROFILE_NAME_FALLBACK_SEL));
     } catch { /* Discord may replace a profile portal during this scan. */ }
 
-    const seen = new Set<HTMLElement>();
     for (const element of candidates) {
-        if (seen.has(element)) continue;
-        seen.add(element);
         const result = shouldApply(element);
         if (result) applyTarget(element, result.surface, profile);
         else if (element.hasAttribute(TARGET_ATTR)) clearTarget(element);
@@ -1092,12 +1108,17 @@ function scanRoot(root: ParentNode) {
     });
 }
 
+let lastScanTime = 0;
+
 function scheduleScan() {
     if (scanRaf || !document.body) return;
-    scanRaf = requestAnimationFrame(() => {
+    const now = performance.now();
+    const delay = Math.max(0, 100 - (now - lastScanTime));
+    scanRaf = window.setTimeout(() => {
         scanRaf = 0;
+        lastScanTime = performance.now();
         scanRoot(document);
-    });
+    }, delay) as any;
 }
 
 function syncMotionState() {
@@ -1124,20 +1145,29 @@ function refresh() {
 function startObserver() {
     if (observer || !document.body) return;
     observer = new MutationObserver(mutations => {
-        if (mutations.some(m => m.type === "childList"
-            || m.attributeName === "class"
-            || m.attributeName === "data-user-id"
-            || m.attributeName === "data-userid"
-            || m.attributeName === "data-profile-user-id"
-            || m.attributeName === "data-profile-userid"
-            || m.attributeName === "role"
-            || m.attributeName === "aria-label"
-            || m.attributeName === "data-dm-flair-theme-applied"
-            || m.attributeName === "data-dm-flair-banner-applied"
-            || m.attributeName === "data-dm-flair-banner-owner-id"
-            || m.attributeName === "data-dm-flair-theme-owner-id")) {
-            scheduleScan();
+        let hasRelevant = false;
+        for (const m of mutations) {
+            const target = m.target as Element | null;
+            if (target?.closest?.(".vc-settings-tab, [class*='standardSidebarView']")) {
+                continue;
+            }
+            if (m.type === "childList"
+                || m.attributeName === "class"
+                || m.attributeName === "data-user-id"
+                || m.attributeName === "data-userid"
+                || m.attributeName === "data-profile-user-id"
+                || m.attributeName === "data-profile-userid"
+                || m.attributeName === "role"
+                || m.attributeName === "aria-label"
+                || m.attributeName === "data-dm-flair-theme-applied"
+                || m.attributeName === "data-dm-flair-banner-applied"
+                || m.attributeName === "data-dm-flair-banner-owner-id"
+                || m.attributeName === "data-dm-flair-theme-owner-id") {
+                hasRelevant = true;
+                break;
+            }
         }
+        if (hasRelevant) scheduleScan();
     });
     observer.observe(document.body, {
         childList: true,
@@ -1147,14 +1177,19 @@ function startObserver() {
     });
     scanRoot(document);
     syncMotionState();
-    motionTimer = setInterval(syncMotionState, 1200);
+    window.addEventListener("discordmaxxer:tournament-mode-changed", syncMotionState);
+    motionTimer = setInterval(() => {
+        if (document.hidden) return;
+        syncMotionState();
+    }, 10_000);
 }
 
 function stopObserver() {
+    window.removeEventListener("discordmaxxer:tournament-mode-changed", syncMotionState);
     observer?.disconnect();
     observer = null;
     if (scanRaf) {
-        cancelAnimationFrame(scanRaf);
+        clearTimeout(scanRaf);
         scanRaf = 0;
     }
     if (motionTimer) {

@@ -447,7 +447,9 @@ function startObserver() {
             for (const node of m.addedNodes) {
                 if (!(node instanceof Element)) continue;
                 if (node.hasAttribute("data-user-id")) tagElement(node);
-                scanRoot(node);
+                if (node.firstElementChild) {
+                    node.querySelectorAll("[data-user-id]").forEach(tagElement);
+                }
             }
         }
     });
@@ -463,7 +465,12 @@ function startObserver() {
     // Low-frequency rescan so rows tagged before the async roster load (or after
     // a manual "Refresh roster") self-correct. The stamped key makes this a
     // cheap no-op when nothing changed.
-    if (!rescanTimer) rescanTimer = setInterval(() => scanRoot(document), 5000);
+    if (!rescanTimer) {
+        rescanTimer = setInterval(() => {
+            if (document.hidden) return;
+            scanRoot(document);
+        }, 5000);
+    }
 }
 
 function refreshTierFlairSurface() {

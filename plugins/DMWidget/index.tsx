@@ -1897,9 +1897,9 @@ const WIDGET_CLIENT_SKIN_CSS = `
  * Keep the card's idle and pointer states visually identical without touching
  * other activity cards or the click/keyboard interaction itself.
  */
-[data-dm-widget-card-root="true"][data-dm-widget-playing-card="true"],
-[data-dm-widget-card-root="true"][data-dm-widget-playing-card="true"]:hover,
-[data-dm-widget-card-root="true"][data-dm-widget-playing-card="true"]:focus-within {
+[data-dm-widget-card-root="true"],
+[data-dm-widget-card-root="true"]:hover,
+[data-dm-widget-card-root="true"]:focus-within {
     background-color: var(--dmw-skin-surface) !important;
     border-color: color-mix(in srgb, var(--dmw-skin-accent) 62%, transparent) !important;
     box-shadow: 0 0 0 1px color-mix(in srgb, var(--dmw-skin-accent) 16%, transparent), 0 8px 24px color-mix(in srgb, var(--dmw-skin-accent) 18%, transparent), inset 0 0 24px color-mix(in srgb, var(--dmw-skin-accent) 10%, transparent) !important;
@@ -1928,33 +1928,36 @@ const WIDGET_CLIENT_SKIN_CSS = `
     transform: none !important;
     transition: none !important;
 }
-:is([data-dm-widget-card-root="true"][data-dm-widget-playing-card="true"], [data-dm-widget-playing-card-host="true"]) :is(
+:is([data-dm-widget-card-root="true"], [data-dm-widget-playing-card-host="true"]) :is(
     [class*="overlay"], [class*="Overlay"],
     [class*="innerContainer"], [class*="InnerContainer"],
     [class*="container"], [class*="Container"],
     [class*="wrapper"], [class*="Wrapper"],
     [class*="body"], [class*="Body"],
     [class*="activity"], [class*="Activity"],
-    [class*="interactive"], [class*="Interactive"]
-):not([data-dm-widget-card-root="true"][data-dm-widget-playing-card="true"]),
-:is([data-dm-widget-card-root="true"][data-dm-widget-playing-card="true"], [data-dm-widget-playing-card-host="true"]) :is(
+    [class*="interactive"], [class*="Interactive"],
+    [class*="content"], [class*="Content"]
+):not([data-dm-widget-card-root="true"]):not(button):not([role="button"]):not([class*="button"]):not([class*="Button"]),
+:is([data-dm-widget-card-root="true"], [data-dm-widget-playing-card-host="true"]) :is(
     [class*="overlay"], [class*="Overlay"],
     [class*="innerContainer"], [class*="InnerContainer"],
     [class*="container"], [class*="Container"],
     [class*="wrapper"], [class*="Wrapper"],
     [class*="body"], [class*="Body"],
     [class*="activity"], [class*="Activity"],
-    [class*="interactive"], [class*="Interactive"]
-):not([data-dm-widget-card-root="true"][data-dm-widget-playing-card="true"]):hover,
-:is([data-dm-widget-card-root="true"][data-dm-widget-playing-card="true"], [data-dm-widget-playing-card-host="true"]) :is(
+    [class*="interactive"], [class*="Interactive"],
+    [class*="content"], [class*="Content"]
+):not([data-dm-widget-card-root="true"]):not(button):not([role="button"]):not([class*="button"]):not([class*="Button"]):hover,
+:is([data-dm-widget-card-root="true"], [data-dm-widget-playing-card-host="true"]) :is(
     [class*="overlay"], [class*="Overlay"],
     [class*="innerContainer"], [class*="InnerContainer"],
     [class*="container"], [class*="Container"],
     [class*="wrapper"], [class*="Wrapper"],
     [class*="body"], [class*="Body"],
     [class*="activity"], [class*="Activity"],
-    [class*="interactive"], [class*="Interactive"]
-):not([data-dm-widget-card-root="true"][data-dm-widget-playing-card="true"]):focus-within {
+    [class*="interactive"], [class*="Interactive"],
+    [class*="content"], [class*="Content"]
+):not([data-dm-widget-card-root="true"]):not(button):not([role="button"]):not([class*="button"]):not([class*="Button"]):focus-within {
     background-color: transparent !important;
     background-image: none !important;
     box-shadow: none !important;
@@ -1964,12 +1967,12 @@ const WIDGET_CLIENT_SKIN_CSS = `
     transform: none !important;
     transition: none !important;
 }
-:is([data-dm-widget-card-root="true"][data-dm-widget-playing-card="true"], [data-dm-widget-playing-card-host="true"]) :is(
+:is([data-dm-widget-card-root="true"], [data-dm-widget-playing-card-host="true"]) :is(
     [class*="overlay"], [class*="Overlay"], [class*="hover"], [class*="Hover"], [class*="interactive"], [class*="Interactive"]
-):not([data-dm-widget-card-root="true"][data-dm-widget-playing-card="true"])::before,
-:is([data-dm-widget-card-root="true"][data-dm-widget-playing-card="true"], [data-dm-widget-playing-card-host="true"]) :is(
+):not([data-dm-widget-card-root="true"]):not(button):not([role="button"]):not([class*="button"]):not([class*="Button"])::before,
+:is([data-dm-widget-card-root="true"], [data-dm-widget-playing-card-host="true"]) :is(
     [class*="overlay"], [class*="Overlay"], [class*="hover"], [class*="Hover"], [class*="interactive"], [class*="Interactive"]
-):not([data-dm-widget-card-root="true"][data-dm-widget-playing-card="true"])::after {
+):not([data-dm-widget-card-root="true"]):not(button):not([role="button"]):not([class*="button"]):not([class*="Button"])::after {
     background: transparent !important;
     box-shadow: none !important;
     filter: none !important;
@@ -2032,6 +2035,7 @@ const WIDGET_CLIENT_SKIN_CSS = `
     display: inline-flex !important;
     align-items: center !important;
     min-height: 34px !important;
+    min-width: calc(var(--dmw-avatar-pad, 44px) + 56px) !important;
     box-sizing: border-box !important;
     margin-left: calc(-1 * var(--dmw-avatar-offset, 40px)) !important;
     padding-left: var(--dmw-avatar-pad, 42px) !important;
@@ -2048,10 +2052,11 @@ const WIDGET_CLIENT_SKIN_CSS = `
 [data-dm-widget-header-with-avatar="true"] > * {
     margin: 0 !important;
     overflow: visible !important;
+    white-space: nowrap !important;
 }
-:has(> [data-dm-widget-header-with-avatar="true"]),
-:has(> * > [data-dm-widget-header-with-avatar="true"]) {
+[data-dm-widget-parent-overflow="true"] {
     overflow: visible !important;
+    min-width: max-content !important;
 }
 `;
 
@@ -3613,18 +3618,16 @@ function syncHeaderAvatarSurface(root: HTMLElement): void {
     avatar.dataset.dmWidgetHeaderAvatar = "true";
 
     const avatarRect = avatar.getBoundingClientRect();
-    const avatarWidth = avatarRect.width > 0 && avatarRect.width <= 64 ? avatarRect.width : 24;
+    const avatarWidth = avatarRect.width >= 16 && avatarRect.width <= 64 ? avatarRect.width : 32;
     const leftPad = 6;
     let gap = 8;
 
-    if (root.dataset.dmWidgetHeaderWithAvatar !== "true") {
-        const rootRect = root.getBoundingClientRect();
-        if (rootRect.width > 0 && avatarRect.width > 0 && rootRect.left > avatarRect.right) {
-            const measuredGap = Math.round(rootRect.left - avatarRect.right);
-            if (measuredGap >= 2 && measuredGap <= 24) {
-                gap = measuredGap;
-                root.dataset.dmWidgetAvatarGap = String(gap);
-            }
+    const rootRect = root.getBoundingClientRect();
+    if (rootRect.width > 0 && avatarRect.width > 0 && rootRect.left > avatarRect.right) {
+        const measuredGap = Math.round(rootRect.left - avatarRect.right);
+        if (measuredGap >= 2 && measuredGap <= 24) {
+            gap = measuredGap;
+            root.dataset.dmWidgetAvatarGap = String(gap);
         }
     } else if (root.dataset.dmWidgetAvatarGap) {
         gap = Number(root.dataset.dmWidgetAvatarGap) || 8;
@@ -3644,6 +3647,7 @@ function syncHeaderAvatarSurface(root: HTMLElement): void {
         if (parent.style.overflow !== "visible") {
             parent.style.setProperty("overflow", "visible", "important");
         }
+        parent.dataset.dmWidgetParentOverflow = "true";
         parent = parent.parentElement;
     }
 }
@@ -4021,6 +4025,11 @@ function restoreSurfaceSkin(root: HTMLElement): void {
     delete root.dataset.dmWidgetAvatarGap;
     root.style.removeProperty("--dmw-avatar-offset");
     root.style.removeProperty("--dmw-avatar-pad");
+    let p = root.parentElement;
+    while (p && p.tagName.toUpperCase() !== "SECTION" && p.tagName.toUpperCase() !== "HEADER") {
+        delete p.dataset.dmWidgetParentOverflow;
+        p = p.parentElement;
+    }
     surfaceSkinRoots.delete(root);
 }
 
@@ -4109,6 +4118,7 @@ function profileMountMutationRelevant(records: MutationRecord[]): boolean {
     for (const record of records.slice(0, 80)) {
         if (record.type !== "childList") continue;
         const target = record.target instanceof Element ? record.target : null;
+        if (target?.closest?.(".vc-settings-tab, [class*='standardSidebarView']")) continue;
         if (target?.closest(WIDGET_SURFACE_SELECTOR)) return true;
         for (const node of Array.from(record.addedNodes).slice(0, 12)) {
             if (node instanceof Element && profileMountNodeLike(node)) return true;
@@ -4308,7 +4318,11 @@ function applyWidgetSkin(root: HTMLElement, preset: WidgetStylePreset, appId: st
     if (root.dataset.dmWidgetAppId !== appId) root.dataset.dmWidgetAppId = appId;
     if (root.dataset.dmWidgetTopLayout !== preset.topLayout) root.dataset.dmWidgetTopLayout = preset.topLayout;
     if (root.dataset.dmWidgetBottomLayout !== preset.bottomLayout) root.dataset.dmWidgetBottomLayout = preset.bottomLayout;
-    if (appId === DISCORDMAXXER_PLAYING_APP_ID) {
+    const isPlayingActivity = appId === DISCORDMAXXER_PLAYING_APP_ID
+        || /(?:^|\s)playing(?:\s|app|$)/i.test(String(root.textContent ?? "").slice(0, 300))
+        || Boolean(root.closest?.('[class*="activity"], [class*="Activity"], [role="article"], article'))
+        || /(?:^|[\s_-])(?:activity|interactive)/i.test(root.className || "");
+    if (isPlayingActivity) {
         if (root.dataset.dmWidgetPlayingCard !== "true") root.dataset.dmWidgetPlayingCard = "true";
         // The Rich Presence card is routinely replaced by Discord while its
         // timer changes. A negative delay based on the renderer's monotonic
@@ -4320,6 +4334,7 @@ function applyWidgetSkin(root: HTMLElement, preset: WidgetStylePreset, appId: st
             const delay = `-${elapsed.toFixed(3)}ms`;
             if (root.style.getPropertyValue("--dmw-skin-animation-delay") !== delay) root.style.setProperty("--dmw-skin-animation-delay", delay);
         }
+        syncWidgetSkinPlayingCardHosts(root);
     } else {
         if (root.hasAttribute("data-dm-widget-playing-card")) root.removeAttribute("data-dm-widget-playing-card");
         if (root.style.getPropertyValue("--dmw-skin-animation-delay")) root.style.removeProperty("--dmw-skin-animation-delay");
@@ -4349,18 +4364,19 @@ function isDiscordmaxxerPlayingCard(element: HTMLElement): boolean {
 
 function clearWidgetSkinPlayingCardHosts(): void {
     for (const host of Array.from(widgetSkinPlayingCardHosts)) {
-        if (host.isConnected) host.removeAttribute("data-dm-widget-playing-card-host");
+        if (!host.isConnected || !document.querySelector('[data-dm-widget-playing-card="true"]')) {
+            if (host.isConnected) host.removeAttribute("data-dm-widget-playing-card-host");
+            widgetSkinPlayingCardHosts.delete(host);
+        }
     }
-    widgetSkinPlayingCardHosts.clear();
-    widgetSkinPlayingCardHostRoot = null;
+    if (!document.querySelector('[data-dm-widget-playing-card="true"]')) {
+        widgetSkinPlayingCardHostRoot = null;
+    }
 }
 
 function syncWidgetSkinPlayingCardHosts(root: HTMLElement | null): void {
-    if (root === widgetSkinPlayingCardHostRoot
-        && widgetSkinPlayingCardHosts.size > 0
-        && Array.from(widgetSkinPlayingCardHosts).every(host => host.isConnected && host.getAttribute("data-dm-widget-playing-card-host") === "true")) return;
-    clearWidgetSkinPlayingCardHosts();
     if (!root?.isConnected) return;
+    clearWidgetSkinPlayingCardHosts();
     let rootRect: DOMRect;
     try {
         rootRect = root.getBoundingClientRect();
@@ -4996,6 +5012,7 @@ function widgetSkinMutationRelevant(records: MutationRecord[]): boolean {
         if (++inspectedRecords > 64) break;
         if (record.type !== "childList") continue;
         const target = record.target instanceof Element ? record.target : null;
+        if (target?.closest?.(".vc-settings-tab, [class*='standardSidebarView']")) continue;
         if (target?.closest(WIDGET_SURFACE_SELECTOR)) return true;
         for (const node of Array.from(record.addedNodes).slice(0, 8)) {
             if (!(node instanceof Element)) continue;
@@ -5124,6 +5141,7 @@ function startWidgetSkinRenderer(): void {
         // childList signal for the observer. A cheap surface-only check closes
         // that gap without scanning React fibers or touching ordinary cards.
         widgetSkinRescanTimer = window.setInterval(() => {
+            if (document.hidden) return;
             if (!widgetSkinSurfaceNeedsScan()) return;
             widgetSkinLastScanAt = 0;
             // Only reconcile when the cheap surface probe finds an unmarked
@@ -5329,11 +5347,12 @@ function WidgetStylePicker() {
     const [tournamentPaused, setTournamentPaused] = React.useState(isWidgetPreviewMotionPaused());
     const [vanillaBusy, setVanillaBusy] = React.useState(false);
     React.useEffect(() => {
-        const timer = setInterval(() => {
+        const onTmChanged = () => {
             const next = isWidgetPreviewMotionPaused();
             setTournamentPaused(current => current === next ? current : next);
-        }, 750);
-        return () => clearInterval(timer);
+        };
+        window.addEventListener("discordmaxxer:tournament-mode-changed", onTmChanged);
+        return () => window.removeEventListener("discordmaxxer:tournament-mode-changed", onTmChanged);
     }, []);
 
     React.useEffect(() => {
@@ -6190,9 +6209,15 @@ export default definePlugin({
             try { scanWidgetSkinCards(220); } catch (error) { console.warn("[DMWidget] startup widget skin scan failed:", error); }
             scheduleWidgetSkinScan(true);
         }).catch(error => console.warn("[DMWidget] startup recovery failed:", error));
-        widgetStyleRefreshTimer = window.setInterval(() => { void refreshAttachedWidgetStyles(); }, ATTACHED_WIDGET_REFRESH_INTERVAL_MS);
+        widgetStyleRefreshTimer = window.setInterval(() => {
+            if (document.hidden) return;
+            void refreshAttachedWidgetStyles();
+        }, ATTACHED_WIDGET_REFRESH_INTERVAL_MS);
         setTimeout(scheduleStatsRefresh, 20_000);
-        fnRefreshTimer = setInterval(scheduleStatsRefresh, 30 * 60_000);
+        fnRefreshTimer = setInterval(() => {
+            if (document.hidden) return;
+            scheduleStatsRefresh();
+        }, 30 * 60_000);
         // Let DMHub (or any surface) trigger a manual stats refresh — mirrors the
         // __dmReopenWelcome hook DMWelcome exposes for the hub's "Open Tour" row.
         (globalThis as any).__dmWidgetRefresh = async () => {

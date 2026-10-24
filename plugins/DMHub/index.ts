@@ -627,13 +627,7 @@ function ensurePanelRoot() {
             const applied = setSetting(plugin, key, next, entry?.noRestart);
             const label = entry?.label ?? plugin;
             if (applied) {
-                // TournamentMode owns its status toast so the async native
-                // performance bridge can report the real result. Showing a
-                // generic Hub toast here too produces duplicate notifications
-                // and can hide the useful bridge-failure message.
-                if (plugin !== "TournamentMode") {
-                    showHubToast(`${label} ${next ? "enabled" : "disabled"}.`, Toasts.Type.SUCCESS);
-                }
+                showHubToast(`${label} ${next ? "enabled" : "disabled"}.`, Toasts.Type.SUCCESS);
             } else {
                 showHubToast(`${label} was saved, but its live state could not be refreshed.`, Toasts.Type.FAILURE, 5000);
             }
@@ -700,7 +694,10 @@ function scheduleInject() {
 
 function startObserver() {
     if (observer) return;
-    observer = new MutationObserver(scheduleInject);
+    observer = new MutationObserver(() => {
+        if (document.getElementById(FAB_ID)?.isConnected) return;
+        scheduleInject();
+    });
     observer.observe(document.body, { childList: true, subtree: true });
     injectButton(); // initial pass
 }

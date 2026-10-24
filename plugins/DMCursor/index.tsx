@@ -19,7 +19,7 @@
 import { definePluginSettings } from "@api/Settings";
 import { managedStyleRootNode } from "@api/Styles";
 import { createAndAppendStyle } from "@utils/css";
-import { Toasts } from "@webpack/common";
+import { React, Toasts } from "@webpack/common";
 import definePlugin, { OptionType } from "@utils/types";
 
 import { hasTier, Tier, TIER_LABELS } from "../_dm-shared/vip";
@@ -130,24 +130,23 @@ const CURSOR_SVGS: Record<CursorSkin, string> = {
 const CURSOR_CSS = `
     html.anime-cursor-active,
     html.anime-cursor-active body,
-    html.anime-cursor-active a,
-    html.anime-cursor-active button,
-    html.anime-cursor-active input,
-    html.anime-cursor-active textarea,
-    html.anime-cursor-active [role="button"],
-    html.anime-cursor-active [class*="clickable"],
-    html.anime-cursor-active [class*="interactive"],
-    html.anime-cursor-active [class*="wrapper_"] {
+    html.anime-cursor-active * {
         cursor: none !important;
     }
     .anime-cursor {
         position: fixed;
         top: 0;
         left: 0;
+        width: 44px;
+        height: 44px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
         transform: translate3d(-100px, -100px, 0) translate(-50%, -50%);
         pointer-events: none;
         z-index: 2147483647;
         will-change: transform;
+        contain: strict;
         backface-visibility: hidden;
     }
     .dm-cursor-smoke-container {
@@ -160,13 +159,15 @@ const CURSOR_CSS = `
         z-index: 2147483646;
         overflow: hidden;
     }
+    .anime-cursor,
+    .anime-cursor * {
+        pointer-events: none !important;
+    }
     .anime-cursor--sharingan { filter: drop-shadow(0 0 6px rgba(220, 0, 0, 0.75)); }
     .sharingan-pupil-bg { animation: dmCursorPulseRed 2s ease-in-out infinite alternate; }
     .sharingan-outer-ring { animation: dmCursorPulseRing 2s ease-in-out infinite alternate; }
-    .sharingan-tomoe { transform-box: view-box; transform-origin: 50% 50%; animation: dmCursorSpin 2.2s linear infinite; }
 
     .anime-cursor--rinnegan { filter: drop-shadow(0 0 6px rgba(155, 77, 202, 0.75)); }
-    .rinnegan-dots { transform-box: view-box; transform-origin: 50% 50%; animation: dmCursorRotateSlow 14s linear infinite; }
     .rinnegan-ring-1 { animation: dmCursorRinneganRing 2s ease-in-out infinite; }
     .rinnegan-ring-2 { animation: dmCursorRinneganRing 2s ease-in-out infinite 0.35s; }
     .rinnegan-ring-3 { animation: dmCursorRinneganRing 2s ease-in-out infinite 0.7s; }
@@ -175,13 +176,10 @@ const CURSOR_CSS = `
 
     .anime-cursor--rasengan { filter: drop-shadow(0 0 8px rgba(100, 160, 255, 0.8)); }
     .rasengan-core-svg { animation: dmCursorPulseBlue 1s ease-in-out infinite alternate; }
-    .rasengan-spin-1 { transform-box: view-box; transform-origin: 50% 50%; animation: dmCursorSpin 0.8s linear infinite; }
-    .rasengan-spin-2 { transform-box: view-box; transform-origin: 50% 50%; animation: dmCursorSpin 1.2s linear infinite reverse; }
-    .rasengan-spin-3 { transform-box: view-box; transform-origin: 50% 50%; animation: dmCursorSpin 0.6s linear infinite; }
 
     .anime-cursor--chidori { filter: drop-shadow(0 0 6px rgba(79, 195, 247, 0.8)); }
-    .chidori-core { animation: dmCursorChidoriCore 0.4s ease-in-out infinite alternate; }
-    .chidori-glow { animation: dmCursorChidoriGlow 0.3s ease-in-out infinite alternate; }
+    .chidori-core { transform-origin: 22px 22px; animation: dmCursorChidoriCore 0.4s ease-in-out infinite alternate; }
+    .chidori-glow { transform-origin: 22px 22px; animation: dmCursorChidoriGlow 0.3s ease-in-out infinite alternate; }
     .chidori-bolt-1 { animation: dmCursorLightning 0.28s steps(2) infinite; }
     .chidori-bolt-2 { animation: dmCursorLightning 0.32s steps(2) infinite 0.08s; }
     .chidori-bolt-3 { animation: dmCursorLightning 0.26s steps(2) infinite 0.16s; }
@@ -235,18 +233,17 @@ let cursorEl: HTMLDivElement | null = null;
 let smokeContainer: HTMLDivElement | null = null;
 let style: HTMLStyleElement;
 let mousemoveHandler: ((e: MouseEvent) => void) | null = null;
+let mouseRafId = 0;
 let fullscreenHandler: (() => void) | null = null;
 let lastX = -100;
 let lastY = -100;
-let rafId: number | null = null;
-let pendingX = -100;
-let pendingY = -100;
 let lastSmokeTime = 0;
 let lastSmokeX = -100;
 let lastSmokeY = -100;
 
 function emitSmokeIfNeeded(x: number, y: number) {
     if (!smokeContainer) return;
+    if (Boolean((globalThis as any).__dmTournamentModeActive)) return;
     const now = performance.now();
     const dx = x - lastSmokeX;
     const dy = y - lastSmokeY;
@@ -264,16 +261,6 @@ function emitSmokeIfNeeded(x: number, y: number) {
         smoke.style.setProperty("--smoke-size", (10 + Math.random() * 14) + "px");
         smokeContainer.appendChild(smoke);
         setTimeout(() => smoke.remove(), 1000);
-    }
-}
-
-function updateCursorPosition() {
-    rafId = null;
-    if (!cursorEl) return;
-    cursorEl.style.transform = `translate3d(${pendingX}px, ${pendingY}px, 0) translate(-50%, -50%)`;
-
-    if (activeSkin === "stiiizy") {
-        emitSmokeIfNeeded(pendingX, pendingY);
     }
 }
 
@@ -351,18 +338,28 @@ function applySkin(skin: CursorSkin | "off") {
     cursorEl = document.createElement("div");
     cursorEl.id = CURSOR_ID;
     cursorEl.className = `anime-cursor anime-cursor--${skin}`;
-    cursorEl.style.transform = `translate3d(${lastX}px, ${lastY}px, 0) translate(-50%, -50%)`;
+    if (lastX >= 0 && lastY >= 0) {
+        cursorEl.style.transform = `translate3d(${lastX}px, ${lastY}px, 0) translate(-50%, -50%)`;
+    } else {
+        cursorEl.style.opacity = "0";
+    }
     cursorEl.innerHTML = CURSOR_SVGS[skin];
     document.body.appendChild(cursorEl);
 
     mousemoveHandler = (e: MouseEvent) => {
-        pendingX = e.clientX;
-        pendingY = e.clientY;
         lastX = e.clientX;
         lastY = e.clientY;
-
-        if (rafId === null) {
-            rafId = requestAnimationFrame(updateCursorPosition);
+        if (!mouseRafId) {
+            mouseRafId = requestAnimationFrame(() => {
+                mouseRafId = 0;
+                if (cursorEl) {
+                    cursorEl.style.opacity = "1";
+                    cursorEl.style.transform = `translate3d(${lastX}px, ${lastY}px, 0) translate(-50%, -50%)`;
+                }
+                if (activeSkin === "stiiizy") {
+                    emitSmokeIfNeeded(lastX, lastY);
+                }
+            });
         }
     };
     window.addEventListener("mousemove", mousemoveHandler, { passive: true });
@@ -381,9 +378,9 @@ function applySkin(skin: CursorSkin | "off") {
 
 function teardownTracking() {
     activeSkin = "off";
-    if (rafId !== null) {
-        cancelAnimationFrame(rafId);
-        rafId = null;
+    if (mouseRafId) {
+        cancelAnimationFrame(mouseRafId);
+        mouseRafId = 0;
     }
     if (mousemoveHandler) {
         window.removeEventListener("mousemove", mousemoveHandler);
@@ -399,12 +396,86 @@ function teardownTracking() {
     smokeContainer = null;
 }
 
+function CursorSettingsAbout() {
+    const currentSkin = (settings.store.skin || "off") as CursorSkin | "off";
+    const [selected, setSelected] = React.useState<CursorSkin | "off">(currentSkin);
+
+    const skins: { id: CursorSkin | "off"; name: string; tier: string }[] = [
+        { id: "off", name: "Off (Default)", tier: "Default" },
+        { id: "dragonsword", name: "Dragon Sword", tier: "FREE" },
+        { id: "sharingan", name: "Sharingan", tier: "MAXXER" },
+        { id: "rinnegan", name: "Rinnegan", tier: "MAXXER" },
+        { id: "rasengan", name: "Rasengan", tier: "MAXXER" },
+        { id: "chidori", name: "Chidori", tier: "MAXXER" },
+        { id: "stiiizy", name: "Stiiizy", tier: "MAXXER" }
+    ];
+
+    return (
+        <div style={{ marginBottom: 16 }}>
+            <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 10, color: "var(--header-primary)" }}>
+                Click Any Skin to Equip:
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(130px, 1fr))", gap: 10 }}>
+                {skins.map(s => {
+                    const isEquipped = selected === s.id;
+                    return (
+                        <div
+                            key={s.id}
+                            onClick={() => {
+                                setSelected(s.id);
+                                settings.store.skin = s.id;
+                                applySkin(s.id);
+                            }}
+                            style={{
+                                padding: "10px 12px",
+                                borderRadius: 8,
+                                border: isEquipped ? "2px solid #5865F2" : "1px solid var(--border-subtle)",
+                                background: isEquipped ? "rgba(88, 101, 242, 0.18)" : "var(--background-secondary)",
+                                cursor: "pointer",
+                                textAlign: "center",
+                                transition: "all 0.15s ease",
+                                display: "flex",
+                                flexDirection: "column",
+                                alignItems: "center",
+                                gap: 6,
+                                position: "relative"
+                            }}
+                        >
+                            <div style={{ height: 44, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                                {s.id === "off" ? (
+                                    <span style={{ fontSize: 26 }}>🖱️</span>
+                                ) : (
+                                    <div dangerouslySetInnerHTML={{ __html: CURSOR_SVGS[s.id as CursorSkin] }} />
+                                )}
+                            </div>
+                            <div style={{ fontSize: 13, fontWeight: 600, color: isEquipped ? "#5865F2" : "var(--text-normal)" }}>
+                                {s.name}
+                            </div>
+                            <span style={{
+                                fontSize: 10,
+                                fontWeight: 600,
+                                padding: "2px 6px",
+                                borderRadius: 4,
+                                background: isEquipped ? "#5865F2" : s.tier === "FREE" ? "rgba(74, 222, 128, 0.2)" : s.tier === "MAXXER" ? "rgba(168, 85, 247, 0.2)" : "rgba(255,255,255,0.1)",
+                                color: isEquipped ? "#ffffff" : s.tier === "FREE" ? "#4ade80" : s.tier === "MAXXER" ? "#c084fc" : "var(--text-muted)"
+                            }}>
+                                {isEquipped ? "✓ EQUIPPED" : s.tier}
+                            </span>
+                        </div>
+                    );
+                })}
+            </div>
+        </div>
+    );
+}
+
 export default definePlugin({
     name: "DMCursor",
     description:
         "Custom anime cursors ported from the maxxer suite (clipmaxxing/dropmap origin). Six skins — Sharingan, Rinnegan, Rasengan, Chidori, Dragon Sword, Stiiizy (smoke trail). Pick via settings; toggling the plugin off restores Discord's default cursor.",
     authors: [{ name: "Diggy", id: 0n }],
     settings,
+    settingsAboutComponent: CursorSettingsAbout,
 
     start() {
         style = createAndAppendStyle("dm-cursor-style", managedStyleRootNode);

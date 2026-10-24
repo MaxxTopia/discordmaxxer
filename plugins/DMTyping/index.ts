@@ -141,8 +141,14 @@ function startObserver() {
                 if (!(node instanceof Element)) continue;
                 if (node.classList?.contains("vc-typing-user")) {
                     decorateTypingUser(node as HTMLElement);
+                } else {
+                    const cls = typeof node.className === "string" ? node.className : "";
+                    if (cls.includes("typing") || cls.includes("chat") || node.firstElementChild) {
+                        if (cls.includes("typing") || node.querySelector?.(".vc-typing-user, [class*='typing']")) {
+                            scanRoot(node);
+                        }
+                    }
                 }
-                scanRoot(node);
             }
         }
     });

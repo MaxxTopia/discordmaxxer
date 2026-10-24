@@ -1,5 +1,26 @@
 # Discordmaxxer — RESUME
 
+## 2026-10-24 v0.7.112 published — DMWidget game card skinning, settings performance, DMCursor showroom & Quests trim
+
+v0.7.112 is publicly published from tag `v0.7.112`.
+User-visible repairs:
+- DMWidget game activity card permanent skinning:
+  - Normalized paint layers across all skinned widget card roots (`[data-dm-widget-card-root="true"]`), clearing Discord's inner activity card background fills, borders, and `::before`/`::after` overlay fills while preserving action buttons ("Connect Account").
+  - Automatically detect game activity playing cards (e.g. VALORANT, Fortnite), synchronize their particle animation timelines, and register ancestor hosts so the full skin background, glowing borders, and orbit ornament display permanently at idle without requiring cursor hover.
+- Settings & Plugins page performance & stutter elimination:
+  - Removed `content-visibility: auto` inside CSS Grid in `AddonCard.css`, eliminating dynamic row height recalculations and synchronous layout reflows on every scroll frame.
+  - Guarded `DMDisplayNameStyle` against settings tabs so leaf names are not scanned, replaced layout-measuring `offsetWidth`/`offsetHeight` with non-reflowing `checkVisibility()`, made attribute writes strictly idempotent, and throttled scan frequency.
+  - Optimized plugin card mounting (48 cards initial render <15ms + single idle mount for the rest).
+- DMCursor responsiveness, visual showroom & dropdown fix:
+  - Upgraded dropdown popout in `SelectSetting` to `SearchableSelect` with `popoutPosition="top"` and elevated `z-index: 10005` in `PluginModal.css` to prevent clipping under the modal layer.
+  - Added direct 1-click visual showroom in `DMCursor` displaying animated SVGs of all 7 skins with live equipped badges.
+  - Batched mousemove tracking to `requestAnimationFrame` and isolated `.anime-cursor` with `contain: strict; width: 44px; height: 44px;` for fluid 144Hz+ tracking with zero main thread stalling.
+- DMTrim promo & quests hiding:
+  - Inverted toggle fallback to `!== false` so uninitialized settings default to hidden.
+  - Expanded CSS selectors with scoped direct-child combinators to aggressively hide sponsored FanDuel promo alerts and bottom-panel quest docks.
+- Profile flair & identity layer stability:
+  - Retained custom animated banners, avatars, and profile gradients with zero regressions.
+
 ## 2026-10-22 v0.7.111 published — DMCursor animation restoration & performance overhaul
 
 v0.7.111 is publicly published from tag `v0.7.111`.

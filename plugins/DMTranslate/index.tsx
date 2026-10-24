@@ -16,8 +16,10 @@ import { definePluginSettings } from "@api/Settings";
 import ErrorBoundary from "@components/ErrorBoundary";
 import { copyWithToast } from "@utils/discord";
 import { ModalCloseButton, ModalContent, ModalHeader, ModalRoot, ModalSize } from "@utils/modal";
-import definePlugin, { OptionType } from "@utils/types";
+import definePlugin, { OptionType, PluginNative } from "@utils/types";
 import { Message, RenderModalProps } from "@vencord/discord-types";
+
+const getNative = () => (typeof VencordNative !== "undefined" ? VencordNative?.pluginHelpers?.DMTranslate : undefined) as PluginNative<typeof import("./native")> | undefined;
 import {
     Button,
     Forms,
@@ -231,33 +233,61 @@ async function translateViaDeepL(text: string, targetLang: string, apiKey: strin
 }
 
 async function translateText(text: string): Promise<TranslationResult> {
+    const Native = getNative();
     const targetLang = (settings.store.targetLanguage as string) || "en";
     const deeplKey = (settings.store.deeplApiKey as string)?.trim();
 
-    // Check user preferred service
+    // 1. DeepL if user selected it and provided API key
     if (settings.store.service === "deepl" && deeplKey) {
         try {
-            return await translateViaDeepL(text, targetLang, deeplKey);
+            if (Native?.translateViaDeepL) {
+                const res = await Native.translateViaDeepL(text, targetLang, deeplKey);
+                if (res.ok && res.translation) {
+                    return { translation: res.translation, sourceLanguage: res.sourceLanguage || "auto", engine: "DeepL" };
+                }
+            } else {
+                return await translateViaDeepL(text, targetLang, deeplKey);
+            }
         } catch (err) {
             console.warn("[DMTranslate] DeepL failed, falling back to Google Translate:", err);
         }
     }
 
-    // Try primary Google Single Translate
+    // 2. Primary: Google Single Translate (auto-detect, free, fastest)
     try {
-        return await translateViaGoogleSingle(text, targetLang);
+        if (Native?.translateViaGoogleSingle) {
+            const res = await Native.translateViaGoogleSingle(text, targetLang);
+            if (res.ok && res.translation) {
+                return { translation: res.translation, sourceLanguage: res.sourceLanguage || "auto", engine: "Google Translate" };
+            }
+        } else {
+            return await translateViaGoogleSingle(text, targetLang);
+        }
     } catch (err) {
         console.warn("[DMTranslate] Google Single failed, trying Google PA:", err);
     }
 
-    // Try secondary Google PA Translate
+    // 3. Secondary: Google PA Translate (Google Translate endpoint 2)
     try {
-        return await translateViaGooglePA(text, targetLang);
+        if (Native?.translateViaGooglePA) {
+            const res = await Native.translateViaGooglePA(text, targetLang);
+            if (res.ok && res.translation) {
+                return { translation: res.translation, sourceLanguage: res.sourceLanguage || "auto", engine: "Google Translate" };
+            }
+        } else {
+            return await translateViaGooglePA(text, targetLang);
+        }
     } catch (err) {
         console.warn("[DMTranslate] Google PA failed, trying MyMemory:", err);
     }
 
-    // Try tertiary MyMemory fallback
+    // 4. Tertiary: MyMemory fallback
+    if (Native?.translateViaMyMemory) {
+        const res = await Native.translateViaMyMemory(text, targetLang);
+        if (res.ok && res.translation) {
+            return { translation: res.translation, sourceLanguage: res.sourceLanguage || "auto", engine: "MyMemory" };
+        }
+    }
     return await translateViaMyMemory(text, targetLang);
 }
 

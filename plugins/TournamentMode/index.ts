@@ -90,6 +90,14 @@ const PERF_CSS = `
     [class*="speaking-"] {
         animation: none !important;
     }
+    /* Custom anime cursor animations + smoke in Tournament Mode */
+    .anime-cursor *,
+    .anime-cursor svg * {
+        animation-play-state: paused !important;
+    }
+    .dm-cursor-smoke-container {
+        display: none !important;
+    }
 `;
 
 const settings = definePluginSettings({

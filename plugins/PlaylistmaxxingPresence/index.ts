@@ -37,6 +37,7 @@ let pollTimer: ReturnType<typeof setInterval> | null = null;
 let es: EventSource | null = null;
 let refreshGeneration = 0;
 let lastHeartbeat = 0;
+let hubOfflineFailures = 0;
 const assetCache = new Map<string, string>();
 
 const settings = definePluginSettings({
@@ -143,14 +144,33 @@ function applyNowPlaying(d: any) {
 
 async function syncSnapshot() {
     if (!settings.store.liveSync) return;
+    // If SSE EventSource is OPEN, it delivers instant track updates over push.
+    // Avoid redundant HTTP fetch polling when SSE is already connected.
+    if (es && es.readyState === EventSource.OPEN) {
+        hubOfflineFailures = 0;
+        return;
+    }
+    // If Discord is minimized or in background and nothing is playing, sleep
+    if (document.hidden && !current?.playing) {
+        return;
+    }
+    // If the local Streammaxxing hub is offline (127.0.0.1:4747), back off
+    // polling to once every ~32 seconds to avoid constant rejected promise churn.
+    if (hubOfflineFailures > 2 && (hubOfflineFailures % 8 !== 0)) {
+        hubOfflineFailures++;
+        return;
+    }
     try {
         const response = await fetch(HUB_SNAPSHOT, { cache: "no-store" });
         if (!response.ok) {
+            hubOfflineFailures++;
             handleHubDisconnect();
             return;
         }
+        hubOfflineFailures = 0;
         applyNowPlaying(await response.json());
     } catch {
+        hubOfflineFailures++;
         handleHubDisconnect();
     }
 }
@@ -182,6 +202,7 @@ function connect() {
 }
 
 function reconnect() {
+    hubOfflineFailures = 0;
     connect();
     void syncSnapshot().finally(() => refresh());
 }

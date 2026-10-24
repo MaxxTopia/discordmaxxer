@@ -85,16 +85,8 @@ let localBlobUrl: string | null = null;
 // auto-clear the URL — making toggle-off then toggle-on look broken.
 let tearingDown = false;
 
-// TournamentMode integration: a full-window looping video keeps the GPU
-// decoding during a match — exactly the cost TM exists to kill (the rest of the
-// suite pauses animated content in TM; this brings VideoBackground in line). We
-// PAUSE rather than tear down, so leaving TM resumes instantly with no re-buffer,
-// and the last frame stays behind the chrome (avoids the "transparent chrome with
-// nothing behind = looks like a crash" trap). A light poll flips it back on TM
-// off. Mirrors DMProfileFlair's TM read.
-let tmPollTimer: ReturnType<typeof setInterval> | null = null;
 function isTournamentModeActive(): boolean {
-    return !!(globalThis as any).Vencord?.PlainSettings?.plugins?.TournamentMode?.manuallyActive;
+    return Boolean((globalThis as any).__dmTournamentModeActive ?? (globalThis as any).Vencord?.PlainSettings?.plugins?.TournamentMode?.manuallyActive);
 }
 function reconcileTournamentMode() {
     if (!videoEl) return;
@@ -841,14 +833,13 @@ export default definePlugin({
         // refresh() itself once it has one). This is what makes toggling the
         // plugin off and on remember your video instead of forgetting it.
         void restoreLocalFile();
-        // Poll TM state so toggling TournamentMode pauses/resumes the video
-        // without needing a settings change. Cheap (a property read); no-ops when
-        // no video is playing.
-        tmPollTimer = setInterval(reconcileTournamentMode, 1000);
+        // Listen to TournamentMode state changes directly via event instead of
+        // continuous 1-second polling intervals. Zero idle CPU cost.
+        window.addEventListener("discordmaxxer:tournament-mode-changed", reconcileTournamentMode);
     },
 
     stop() {
-        if (tmPollTimer) { clearInterval(tmPollTimer); tmPollTimer = null; }
+        window.removeEventListener("discordmaxxer:tournament-mode-changed", reconcileTournamentMode);
         tearDownVideo();
         if (localBlobUrl) {
             URL.revokeObjectURL(localBlobUrl);

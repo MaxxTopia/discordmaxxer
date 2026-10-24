@@ -3712,7 +3712,6 @@ function clearAppliedAvatars() {
 
 function scanForPopouts(_root: ParentNode = document) {
     if (document.hidden) return;
-    if (document.querySelector("[class*='standardSidebarView']")) return;
     const me = UserStore.getCurrentUser?.();
     const tmActive = isTournamentModeActive();
     const rosterReady = isRosterReady();
@@ -3871,7 +3870,6 @@ let scanScheduled = false;
 // re-trigger an endless rescan loop.
 function scheduleScan() {
     if (document.hidden || scanScheduled) return;
-    if (document.querySelector("[class*='standardSidebarView']")) return;
     scanScheduled = true;
     requestAnimationFrame(() => {
         scanScheduled = false;
@@ -3896,7 +3894,10 @@ function startObserver() {
     // Low-frequency safety net for changes the childList observer can't see
     // (e.g. an <img src> swapped in place). 2s is plenty for animated-avatar
     // surfaces and halves the steady-state polling cost vs the old 1s.
-    rescanTimer = window.setInterval(() => scanForPopouts(document), 2000);
+    rescanTimer = window.setInterval(() => {
+        if (document.hidden) return;
+        scanForPopouts(document);
+    }, 2000);
     refreshRosterForVisibleSurface();
 }
 
