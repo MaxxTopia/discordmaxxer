@@ -110,17 +110,13 @@ function setAllRendererFrameRates(fps: number) {
 
 // The target priority for a single process given the current perf + voice state.
 function priorityTargetFor(type: string, name: string, serviceName: string): number {
-    if (!state.on || !state.options.lowerProcessPriority) return PRIORITY_NORMAL;
-    // Audio + network utility: never throttle (local audio I/O + RTC transport).
-    if (type === "Utility" && PROTECTED_UTILITY_RE.test(`${name} ${serviceName}`)) {
-        return PRIORITY_NORMAL;
-    }
-    // In a voice call / streaming: keep the renderer (Opus encode/decode + NetEq
-    // run here) and the GPU (HW screenshare encode) at NORMAL too.
-    if (voiceActive && (type === "GPU" || type === "Tab")) {
-        return PRIORITY_NORMAL;
-    }
-    return PRIORITY_BELOW_NORMAL;
+    // AUDIO INTEGRITY GUARANTEE:
+    // Never drop the renderer (Tab), main process, or audio/network utility to BELOW_NORMAL.
+    // WebRTC Opus decode, NetEq jitter buffers, and audio device I/O run in these processes.
+    // Lowering process priority in Windows starves audio worker threads during gameplay,
+    // which directly causes audio buffer underruns, static, popping, and robotic audio.
+    // All media and core processes are strictly guarded at PRIORITY_NORMAL.
+    return PRIORITY_NORMAL;
 }
 
 // Set every Discordmaxxer process to its correct priority for the current
@@ -152,10 +148,7 @@ function applyProcessPriorities(): boolean {
     // Fallback: ensure our own (main) process is set even if metrics was empty.
     if (!sawMain) {
         try {
-            setPriority(
-                process.pid,
-                state.on && state.options.lowerProcessPriority ? PRIORITY_BELOW_NORMAL : PRIORITY_NORMAL
-            );
+            setPriority(process.pid, PRIORITY_NORMAL);
             count++;
         } catch {
             // ignore

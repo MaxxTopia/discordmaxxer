@@ -41,7 +41,7 @@ import { definePluginSettings } from "@api/Settings";
 import { managedStyleRootNode } from "@api/Styles";
 import { createAndAppendStyle } from "@utils/css";
 import definePlugin, { OptionType } from "@utils/types";
-import { FluxDispatcher, SelectedChannelStore, Toasts } from "@webpack/common";
+import { ChannelRTCStore, FluxDispatcher, RTCConnectionStore, SelectedChannelStore, Toasts } from "@webpack/common";
 
 const HOTKEY_ID = "discordmaxxer.TournamentMode";
 
@@ -50,12 +50,32 @@ let active = false;
 let hotkeyHandler: ((e: KeyboardEvent) => void) | null = null;
 let globalRegistered = false;
 let voiceSub: ((e: any) => void) | null = null;
+let voicePollTimer: ReturnType<typeof setInterval> | null = null;
 let statusToast: HTMLDivElement | null = null;
 let statusToastTimer: number | null = null;
 
-// Report voice-channel join/leave to the perf bridge. While Tournament Mode is
-// on, this keeps the renderer + GPU at full priority during a call/stream (the
-// WebRTC Opus encode/decode runs in the renderer) instead of starving voice.
+const VOICE_FLUX_EVENTS = [
+    "VOICE_CHANNEL_SELECT",
+    "RTC_CONNECTION_STATE",
+    "CALL_CREATE",
+    "CALL_UPDATE",
+    "VOICE_STATE_UPDATES"
+];
+
+function isVoiceOrCallActive(): boolean {
+    try {
+        if (Boolean(SelectedChannelStore?.getVoiceChannelId?.())) return true;
+        if (Boolean(RTCConnectionStore?.isConnected?.() || RTCConnectionStore?.getChannelId?.())) return true;
+        if (Boolean(ChannelRTCStore?.isConnected?.())) return true;
+        if (Boolean((globalThis as any).__dmActiveRtcConnected)) return true;
+    } catch {
+        // fail-safe
+    }
+    return false;
+}
+
+// Report voice-channel or call join/leave to the perf bridge. Protects
+// renderer + GPU priority and WebRTC Opus encoding/decoding during calls/streaming.
 function reportVoiceActive(inVoice: boolean) {
     const native = (globalThis as any).VesktopNative;
     try {
@@ -312,16 +332,41 @@ export default definePlugin({
         publishTournamentModeState();
         style = createAndAppendStyle("dm-tournament-mode", managedStyleRootNode);
 
-        // Track voice-channel state so the perf bridge can protect renderer+GPU
-        // priority during calls/streaming. Report the current state once (in case
-        // we launched already in a call), then on every join/leave.
-        try {
-            reportVoiceActive(!!SelectedChannelStore.getVoiceChannelId());
-        } catch {
-            // store may not be ready at startup — the subscription will catch up
+        // Track voice/call state so the perf bridge protects renderer WebRTC
+        // threads during calls/streaming across server voice, DMs, and Group DMs.
+        const checkVoice = () => {
+            reportVoiceActive(isVoiceOrCallActive());
+        };
+
+        checkVoice();
+        voiceSub = () => checkVoice();
+        for (const ev of VOICE_FLUX_EVENTS) {
+            try { FluxDispatcher.subscribe(ev, voiceSub); } catch {}
         }
-        voiceSub = (e: any) => reportVoiceActive(!!e?.channelId);
-        FluxDispatcher.subscribe("VOICE_CHANNEL_SELECT", voiceSub);
+        voicePollTimer = setInterval(checkVoice, 2000);
+
+        try {
+            if (typeof window !== "undefined" && window.RTCPeerConnection && !(window as any).__dmRtcPatched) {
+                (window as any).__dmRtcPatched = true;
+                const origPC = window.RTCPeerConnection;
+                window.RTCPeerConnection = class extends origPC {
+                    constructor(config?: RTCConfiguration) {
+                        super(config);
+                        this.addEventListener("connectionstatechange", () => {
+                            if (this.connectionState === "connected") {
+                                (globalThis as any).__dmActiveRtcConnected = true;
+                                reportVoiceActive(true);
+                            } else if (this.connectionState === "disconnected" || this.connectionState === "closed" || this.connectionState === "failed") {
+                                (globalThis as any).__dmActiveRtcConnected = false;
+                                setTimeout(checkVoice, 500);
+                            }
+                        });
+                    }
+                };
+            }
+        } catch {
+            // best effort
+        }
 
         if (settings.store.enabledOnStart) {
             await setActive(true);
@@ -387,12 +432,14 @@ export default definePlugin({
             await setActive(false);
         }
         if (voiceSub) {
-            try {
-                FluxDispatcher.unsubscribe("VOICE_CHANNEL_SELECT", voiceSub);
-            } catch {
-                // ignore
+            for (const ev of VOICE_FLUX_EVENTS) {
+                try { FluxDispatcher.unsubscribe(ev, voiceSub); } catch {}
             }
             voiceSub = null;
+        }
+        if (voicePollTimer) {
+            clearInterval(voicePollTimer);
+            voicePollTimer = null;
         }
         if (globalRegistered) {
             (globalThis as any).VesktopNative?.globalHotkey?.unregister?.(HOTKEY_ID);

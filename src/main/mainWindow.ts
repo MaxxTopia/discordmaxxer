@@ -188,19 +188,17 @@ function initWindowBoundsListeners(win: BrowserWindow) {
 
     const onMinimizeOrHide = () => {
         saveState();
-        if (!isVoiceActive()) {
-            win.webContents.setBackgroundThrottling(true);
-            try {
-                win.webContents.session.clearCodeCaches({});
-            } catch {
-                // best effort
-            }
+        // Never throttle background audio clocks — preserves crystal-clear WebRTC voice fidelity.
+        // Flush in-memory V8 code caches on minimize to free working set cleanly.
+        try {
+            win.webContents.session.clearCodeCaches({});
+        } catch {
+            // best effort
         }
     };
 
     const onRestoreOrShow = () => {
         saveState();
-        win.webContents.setBackgroundThrottling(false);
     };
 
     win.on("maximize", saveState);

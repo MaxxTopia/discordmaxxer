@@ -1,5 +1,18 @@
 # Discordmaxxer — RESUME
 
+## 2026-10-24 v0.7.114 published — Voice audio priority shielding & static prevention
+
+v0.7.114 is publicly published from tag `v0.7.114`.
+Voice & audio safeguards:
+- Voice & Media Process Priority Shield:
+  - Ensured the Renderer process (housing WebRTC Opus encode/decode and NetEq jitter buffer threads) and audio utility processes are strictly locked to `PRIORITY_NORMAL`.
+  - Windows scheduler can no longer starve incoming audio threads during high game CPU utilization, permanently eliminating buffer underruns, clicks, pops, and static in voice calls.
+- Universal Voice Call Detection:
+  - Expanded voice state detection to recognize 1-on-1 Direct Message calls and Group DM calls via `RTCConnectionStore`, `ChannelRTCStore`, and native `RTCPeerConnection` listeners in addition to server voice channels.
+- Background Audio Clock Protection:
+  - Maintained `--disable-background-timer-throttling` on Chromium command line so 20ms WebRTC audio packet intervals are never delayed or delivered in bursts when Discord is unfocused or on a second monitor.
+  - Guarded window minimize handlers to strictly never apply timer throttling to active audio contexts.
+
 ## 2026-10-24 v0.7.113 published — Resource efficiency overhaul & background throttling
 
 v0.7.113 is publicly published from tag `v0.7.113`.
