@@ -26,14 +26,16 @@ Verification completed in this candidate:
 Release boundary:
 - The profile-media Worker integration is pushed to `optimizationmaxxing` `main` at `f35282e` and live at `https://optmaxxing-vip.maxxtopia.workers.dev`; `/healthz` and `/readyz` returned HTTP 200.
 - The VIP page clarification is pushed to `maxxtopia` `main` at `98c891c`; Pages deployment run `41641612274` succeeded and `/discordmaxxer/vip` returned HTTP 200 with the new profile-flair explanation.
-- The client v0.7.115 source and local updater artifacts are ready, but the client commit, tag, GitHub release, and updater-feed verification are still pending.
+- The client v0.7.115 source is committed at `29247b2`; tag `v0.7.115` is published and GitHub Actions release run `41642488285` succeeded.
+- The public GitHub release contains the installer, x64/ARM64 ZIPs, blockmap, and `latest.yml`; the public updater feed returned HTTP 200 with version `0.7.115` and the expected installer name.
+- Maxxtopia release-sync run `41643124841` and Pages deploy run `41643166306` succeeded; `https://maxxtopia.com/discordmaxxer` returns HTTP 200 and points to the v0.7.115 installer.
 - The previous benchmark is for the packaged `v0.7.63` candidate; no fresh comparative benchmark has been run for this `v0.7.114`-based candidate, so no new performance claim is authorized.
 - Two-account/cross-PC recipient verification remains a user-owed acceptance test after the updater is published.
 - Human voice-call and screen-share quality observation remains unverified. The native Windows loopback test passed, but that is not a substitute for a real Discord call.
 - The local `package:win` installer has `latest.yml`, but that is not public updater proof until GitHub Actions publishes the tag release and the public feed is fetched.
 
 Next action:
-- Review and commit the exact v0.7.115 package/release-note diff, tag and push the client release, wait for GitHub Actions, then verify the public installer/latest.yml before asking Diggy to update the other PC.
+- Diggy should use the normal updater on the other PC, then test updater completion, free profile activation/upload, animated banner/avatar cross-PC rendering, Normal versus Tournament visuals, and a real voice call/screenshare. Record any failure with the exact client version and surface; do not infer benchmark parity from visual success.
 
 ## 2026-10-24 v0.7.114 published — Voice audio priority shielding & static prevention
 
