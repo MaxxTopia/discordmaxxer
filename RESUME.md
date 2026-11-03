@@ -1,5 +1,33 @@
 # Discordmaxxer — RESUME
 
+## 2026-11-03 — updater low-disk guard (local, not released)
+
+Diagnosis:
+- Diggy's attempted v0.7.120 auto-update downloaded the correct public installer, but NSIS failed while extracting `app-64.7z` into `%TEMP%` because the C: volume was full. Windows then showed the misleading "This app can't run on your PC" dialog.
+- The cached installer matched the public release checksum and its PE architecture was valid for this Windows 10 x64 machine. Running the installer after recovering temporary space completed successfully; the installed client reports `0.7.120` and was opened.
+
+Change made:
+- Added `src/main/updaterStorage.ts`, which estimates the temporary space needed by NSIS from the update asset size, applies a one-GiB floor, checks the per-user and OS temporary volumes with `statfs`, and fails open if Windows cannot inspect a path.
+- Wired the check into `src/main/updater.ts` before `electron-updater` starts downloading. A low-space result now appears in the existing updater error area with the measured free space, the recommended minimum, the temporary-extraction explanation, and a retry instruction instead of launching a generic Windows failure.
+
+Verification:
+- `pnpm test` passed ESLint and TypeScript checking.
+- `pnpm build` passed and the generated main bundle contains the new low-space guard text.
+- Direct helper check with a 211,815,221-byte installer returned the expected low-space error for C: at roughly 0.4 GB free and returned `null` for the spare E: volume.
+- `git diff --check` passed. Only `src/main/updater.ts`, `src/main/updaterStorage.ts`, and this continuity entry are intended changes.
+
+Release boundary:
+- Public release remains `v0.7.120`; no new tag, GitHub release, or live deployment has been made for this guard yet.
+- The installed public `v0.7.120` client is open. The local source/build candidate is not yet installed over it because the C: drive is still below the guard threshold and packaging would recreate the same risk.
+- The prior generated `dist` directory for this isolated worktree was moved, recoverably, to `E:\Codex-recovery\discordmaxxer-full-dev-merge-20261103c-20261103-updater-fix\dist`; no tracked source or unrelated project data was deleted.
+
+Remaining:
+- Review and commit the guard, bump to the next release version, package it on a volume with adequate temporary space, then publish only with release authorization. Verify the public manifest and installer before asking Diggy to test the updater again.
+- Diggy's separate runtime acceptance tests remain open for image context-menu stability and image enlargement in the public client.
+
+Next action:
+- Free at least one GiB on the Windows system/temp volume, then package and run the next candidate locally; use the updater dialog's low-space path as the regression test before publishing.
+
 ## 2026-11-03 — v0.7.120 candidate: shared settings modal and image viewer fixes
 
 Scope:

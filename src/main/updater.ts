@@ -4,6 +4,8 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
+import { tmpdir } from "node:os";
+
 import { app, BrowserWindow, ipcMain } from "electron";
 import { autoUpdater, UpdateInfo } from "electron-updater";
 import { join } from "path";
@@ -11,6 +13,7 @@ import { IpcEvents, UpdaterCheckResult, UpdaterIpcEvents } from "shared/IpcEvent
 import { Millis } from "shared/utils/millis";
 
 import { State } from "./settings";
+import { getUpdateStorageError } from "./updaterStorage";
 import { handle } from "./utils/ipcWrappers";
 import { makeLinksOpenExternally } from "./utils/makeLinksOpenExternally";
 import { loadView } from "./vesktopStatic";
@@ -160,6 +163,9 @@ function openUpdater(update: UpdateInfo) {
     handle(UpdaterIpcEvents.GET_DATA, () => ({ update, version: app.getVersion() }));
     handle(UpdaterIpcEvents.INSTALL, async () => {
         try {
+            const storageError = await getUpdateStorageError(update, [app.getPath("userData"), tmpdir()]);
+            if (storageError) throw new Error(storageError);
+
             await autoUpdater.downloadUpdate();
         } catch (err: any) {
             // downloadUpdate() can reject WITHOUT the 'error' event firing, and
