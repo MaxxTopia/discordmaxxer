@@ -1,6 +1,6 @@
 # Discordmaxxer — RESUME
 
-## 2026-11-03 — Shared plugin-settings crash containment (local, not released)
+## 2026-11-03 — v0.7.117 published: shared plugin-settings crash containment
 
 Diagnosis:
 - Diggy reproduced the same Discord renderer crash while opening a second plugin's settings, so the failure cannot be treated as a DMTrim-only bug.
@@ -15,17 +15,20 @@ Change made:
 Verification:
 - `pnpm overlay:vencord` passed: 92 rebrand patches applied or idempotent, 0 warnings; 29 custom plugins synced; Vencord build passed.
 - `pnpm test` passed ESLint and TypeScript.
-- `pnpm build:dev` passed.
+- `pnpm build` passed.
+- `pnpm package:dir` and `pnpm package:win` passed with output redirected to E: because C: was low on free space.
 - `node overlay-scripts/verify-build.mjs` passed source fingerprint, staged hash, required-plugin, and compiled-plugin checks.
 - `git diff --check` passed.
+- GitHub Actions release run `41687646375` passed all release steps, including Electron Builder and the Maxxtopia notification.
 
 Runtime/release boundary:
-- The public client remains v0.7.116. No commit, tag, updater asset, or live deployment was made for this repair.
-- The local dev candidate is ready for Diggy's test: open DMTrim settings and the other plugin that previously crashed. Expected behavior is either a normal settings panel or a contained plugin-settings error card; Discord must not show the global crash-recovery screen.
+- Commit `1aae8f9` and tag `v0.7.117` are pushed to `main` and the public GitHub Release is live: `https://github.com/MaxxTopia/discordmaxxer/releases/tag/v0.7.117`.
+- The public `latest.yml` returned HTTP 200 and reports version `0.7.117`; the public installer returned HTTP 200. `https://maxxtopia.com/discordmaxxer` also returned HTTP 200 after the release-sync notification.
+- Diggy can update the normal installed client without using the fresh local dev profile or logging in again. The release is source/build/deployment verified; signed-in runtime behavior is still user acceptance.
 - This protects render-time modal failures. Plugin-specific event-handler or asynchronous failures still need targeted testing if a plugin opens successfully but crashes when a control is changed.
 
 Next action:
-- Test the correct local dev build with both reproducing plugins, then decide whether to commit/package/publish. Do not call the public v0.7.116 build fixed until that runtime test passes.
+- On the normal installed client, update to v0.7.117, open DMTrim and the other plugin that previously crashed, toggle one setting in each, and right-click a received image. Confirm Discord stays open. If it still crashes, record the exact plugin/action and version; do not generalize the fix to every plugin until that runtime test passes.
 
 ## 2026-11-03 — DMTrim renderer-crash hardening (local, not released)
 
