@@ -456,6 +456,59 @@ const PATCHES = [
         find: 'href={`https://vencord.dev/plugins/${plugin.name}`}',
         replace: 'href={`https://github.com/MaxxTopia/discordmaxxer/blob/main/vencord-src/src/plugins/${plugin.name}`}'
     },
+    // Plugin settings are user-extensible and can contain malformed or
+    // version-sensitive definitions. The existing per-control boundaries are
+    // too late for failures in the modal's own hooks, metadata lookup, or
+    // settings enumeration. Keep one bad plugin from reaching Discord's
+    // renderer-wide crash handler.
+    {
+        file: "src/components/settings/tabs/plugins/PluginModal.tsx",
+        marker: "Discordmaxxer: isolate plugin settings modal failures.",
+        find:
+            '    openModal(modalProps => (\n' +
+            '        <PluginModal\n' +
+            '            {...modalProps}\n' +
+            '            plugin={plugin}\n' +
+            '            onRestartNeeded={(key: string) => onRestartNeeded?.(plugin.name, key)}\n' +
+            '        />\n' +
+            '    ));',
+        replace:
+            '    openModal(modalProps => (\n' +
+            '        <ErrorBoundary message="Could not render this plugin\'s settings. Discordmaxxer kept the rest of Discord running.">\n' +
+            '            {/* Discordmaxxer: isolate plugin settings modal failures. */}\n' +
+            '            <PluginModal\n' +
+            '                {...modalProps}\n' +
+            '                plugin={plugin}\n' +
+            '                onRestartNeeded={(key: string) => onRestartNeeded?.(plugin.name, key)}\n' +
+            '            />\n' +
+            '        </ErrorBoundary>\n' +
+            '    ));'
+    },
+    // Older/custom plugin metadata must not make the modal fail before the
+    // plugin's controls render. Treat an unknown plugin as a user plugin.
+    {
+        file: "src/components/settings/tabs/plugins/PluginModal.tsx",
+        find: "    const pluginMeta = PluginMeta[plugin.name];",
+        replace:
+            "    const pluginMeta = PluginMeta[plugin.name] ?? {\n" +
+            "        folderName: plugin.name,\n" +
+            "        userPlugin: true,\n" +
+            "    };"
+    },
+    // A stale setting type should be skipped instead of React attempting to
+    // render an undefined component and crashing the whole settings modal.
+    {
+        file: "src/components/settings/tabs/plugins/PluginModal.tsx",
+        find: "            const Component = OptionComponentMap[setting.type];\n            return (",
+        replace:
+            "            const Component = OptionComponentMap[setting.type];\n" +
+            "            if (!Component) {\n" +
+            "                console.warn(`[Discordmaxxer] Unsupported setting type in ${plugin.name}.${key}`);\n" +
+            "                return null;\n" +
+            "            }\n" +
+            "            return ("
+    },
+
     // CSP host-permission dialog title
     {
         file: "src/main/csp/manager.ts",

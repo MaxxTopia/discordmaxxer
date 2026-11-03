@@ -1,5 +1,58 @@
 # Discordmaxxer — RESUME
 
+## 2026-11-03 — Shared plugin-settings crash containment (local, not released)
+
+Diagnosis:
+- Diggy reproduced the same Discord renderer crash while opening a second plugin's settings, so the failure cannot be treated as a DMTrim-only bug.
+- `PluginModal` performed hooks, metadata lookup, settings enumeration, and custom-plugin rendering before its existing per-control error boundaries were mounted. A failure there could reach Discord's global crash-recovery screen.
+- No Windows crash-report evidence was found; the observed screen is renderer recovery. Runtime root-cause confirmation still requires testing the rebuilt client with the exact plugin surfaces.
+
+Change made:
+- Added a parent `ErrorBoundary` around every plugin settings modal through the tracked `overlay-scripts/rebrand-vencord.mjs` pipeline. A bad plugin now gets an isolated error message instead of taking down the whole renderer.
+- Added a safe fallback for missing plugin metadata, and skip/log unsupported setting types instead of rendering an undefined React component.
+- Kept the earlier DMTrim stylesheet hardening in place; this shared boundary is the broader fix for other plugins.
+
+Verification:
+- `pnpm overlay:vencord` passed: 92 rebrand patches applied or idempotent, 0 warnings; 29 custom plugins synced; Vencord build passed.
+- `pnpm test` passed ESLint and TypeScript.
+- `pnpm build:dev` passed.
+- `node overlay-scripts/verify-build.mjs` passed source fingerprint, staged hash, required-plugin, and compiled-plugin checks.
+- `git diff --check` passed.
+
+Runtime/release boundary:
+- The public client remains v0.7.116. No commit, tag, updater asset, or live deployment was made for this repair.
+- The local dev candidate is ready for Diggy's test: open DMTrim settings and the other plugin that previously crashed. Expected behavior is either a normal settings panel or a contained plugin-settings error card; Discord must not show the global crash-recovery screen.
+- This protects render-time modal failures. Plugin-specific event-handler or asynchronous failures still need targeted testing if a plugin opens successfully but crashes when a control is changed.
+
+Next action:
+- Test the correct local dev build with both reproducing plugins, then decide whether to commit/package/publish. Do not call the public v0.7.116 build fixed until that runtime test passes.
+
+## 2026-11-03 — DMTrim renderer-crash hardening (local, not released)
+
+Recovered state:
+- The public client remains v0.7.116. No new commit, tag, updater asset, or live deployment was made for this fix.
+- The source worktree was clean before this scoped change. The existing v0.7.116 release and its earlier image-menu hardening were preserved.
+
+Change made:
+- Removed the three DMTrim quest rules that used CSS relational `:has()` selectors. They were the only risky relational selectors in DMTrim and were the strongest source-level suspect for the renderer crash shown when opening DMTrim settings.
+- Kept the direct class, attribute, href, and list-item selectors so the normal DMTrim hiding behavior remains available.
+- Guarded stylesheet refreshes against a detached style node, caught refresh failures, and cleared the style reference on stop so plugin reloads cannot write into stale DOM state.
+- `pnpm overlay:vencord` synced the change into `vencord-src/src/userplugins/DMTrim` and rebuilt `vencord-dist`.
+
+Verification:
+- `pnpm test` passed ESLint and TypeScript.
+- `pnpm build:dev` passed.
+- `node overlay-scripts/verify-build.mjs` passed, including source fingerprint and staged renderer hash checks.
+- The generated DMTrim mirror contains no executable CSS `:has()` rules; the only match is the explanatory source comment.
+- Runtime reproduction in the current public client is still open. The stale DevTools endpoint was unavailable, and the screenshot alone cannot prove whether DMTrim was the sole trigger versus a broader renderer/theme interaction.
+
+User-owed test:
+- After launching a build containing this patch, open DMHub/Plugin Settings, open DMTrim, and toggle each setting once. Repeat with DMTheme and Tournament Mode in their current states. Confirm the panel opens and Discord does not enter the crash-recovery screen.
+- If it still crashes, capture the exact surface and version; the next step is to run the dev build with a live DevTools endpoint and collect the renderer exception rather than guessing.
+
+Next action:
+- Review this local patch and, only after the DMTrim settings test passes, decide whether to commit/package/publish a new release. Do not call v0.7.116 fixed for this issue until the user retests the actual client.
+
 ## 2026-11-03 — v0.7.116 published: full-dev merge and image-menu crash hardening
 
 Recovery note:

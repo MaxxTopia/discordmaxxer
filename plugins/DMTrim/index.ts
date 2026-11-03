@@ -5,7 +5,9 @@
  *
  * Hides Discord UI surfaces that don't belong in a power-user / gamer
  * client. CSS-only — no patches, no rendering changes, just `display:
- * none` on aria-label-matched selectors.
+ * none` on scoped attribute/class selectors. Keep this stylesheet free of
+ * relational `:has()` selectors: they add expensive stylesheet recalculation
+ * work and a larger crash surface while Discord is recovering or mounting UI.
  *
  * Targets:
  *   - Family Center (parental controls — irrelevant for our user base)
@@ -22,7 +24,7 @@ import { managedStyleRootNode } from "@api/Styles";
 import { createAndAppendStyle } from "@utils/css";
 import definePlugin, { OptionType } from "@utils/types";
 
-let style: HTMLStyleElement;
+let style: HTMLStyleElement | undefined;
 
 function buildCss(): string {
     const parts: string[] = [];
@@ -87,9 +89,6 @@ function buildCss(): string {
             [class*="promotedTag"],
             div[class*="container_"][class*="quest"],
             div[class*="wrapper_"][class*="quest"],
-            section[class*="panels_"] > div:has(> [class*="quest" i]),
-            section[class*="panels_"] > div:has(> [class*="promoted" i]),
-            section[class*="panels_"] > div:has(button[aria-label*="Quest" i]),
             a[href="/quest-home"],
             a[href*="/quests"],
             div[class*="questTab_"],
@@ -154,7 +153,13 @@ const settings = definePluginSettings({
 });
 
 function refresh() {
-    if (style) style.textContent = buildCss();
+    if (!style?.isConnected) return;
+
+    try {
+        style.textContent = buildCss();
+    } catch (error) {
+        console.warn("[DMTrim] Failed to refresh stylesheet", error);
+    }
 }
 
 export default definePlugin({
@@ -171,5 +176,6 @@ export default definePlugin({
 
     stop() {
         style?.remove();
+        style = undefined;
     }
 });
