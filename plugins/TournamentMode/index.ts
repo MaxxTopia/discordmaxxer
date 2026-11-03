@@ -3,17 +3,19 @@
  * Copyright (c) 2026 Diggy
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * Performance mode for competitive gaming. ONLY strips things that cost CPU,
- * GPU, or RAM — not cosmetic stuff. Designed to be safe to leave on
- * permanently: you keep your fancy plugins, you just stop wasting cycles
- * Discord doesn't need while a game is running.
+ * Performance mode for competitive gaming. The base mode pauses high-frequency
+ * decoration while preserving Discord's layout and voice path. It also releases
+ * optional paint-heavy flair/media layers; full visual polish remains available
+ * in normal mode. Designed to be safe to leave on without disabling core Discord.
  *
  * What it does:
  *   System (via VesktopNative.performanceMode bridge):
  *     1. Lower process priority to BELOW_NORMAL — game gets scheduling
  *        priority over Discord
- *     2. Cap renderer frame rate at 30 fps (down from 60) — half the
- *        compositor work, GPU freed for the game
+ *     2. Request a 30 fps renderer cap where the platform supports it. The
+ *        normal windowed Electron build currently reports this as unsupported
+ *        (setFrameRate is an offscreen-rendering API), so this is not counted
+ *        as a measured saving.
  *     3. Terminate the arRPC Rich Presence worker — saves a worker thread
  *        + IPC pipe + game-process polling
  *
@@ -23,7 +25,7 @@
  *     6. Typing-dots (.... animation, runs constantly while anyone types)
  *     7. Voice-activity speaking ring (pulses while anyone is talking)
  *
- * What it does NOT do (intentionally):
+ * What the base mode does NOT do (intentionally):
  *   - Strip CSS transitions / hover effects (GPU compositor handles them
  *     basically for free)
  *   - Hide unread badges / mention counts (cosmetic, no perf cost)
@@ -43,6 +45,8 @@ import { createAndAppendStyle } from "@utils/css";
 import definePlugin, { OptionType } from "@utils/types";
 import { ChannelRTCStore, FluxDispatcher, RTCConnectionStore, SelectedChannelStore, Toasts } from "@webpack/common";
 
+import { hideDiscordmaxxerStatusToast, showDiscordmaxxerStatusToast } from "../_dm-shared/statusToast";
+
 const HOTKEY_ID = "discordmaxxer.TournamentMode";
 
 let style: HTMLStyleElement;
@@ -51,8 +55,6 @@ let hotkeyHandler: ((e: KeyboardEvent) => void) | null = null;
 let globalRegistered = false;
 let voiceSub: ((e: any) => void) | null = null;
 let voicePollTimer: ReturnType<typeof setInterval> | null = null;
-let statusToast: HTMLDivElement | null = null;
-let statusToastTimer: number | null = null;
 
 const VOICE_FLUX_EVENTS = [
     "VOICE_CHANNEL_SELECT",
@@ -118,11 +120,81 @@ const PERF_CSS = `
     .dm-cursor-smoke-container {
         display: none !important;
     }
+    /* DMProfileCosmetics effects in Tournament Mode — pause the owned effect
+     * layer as well as its pseudo-elements. The reduced-cost profile below
+     * removes this optional finish layer from live profile surfaces. */
+    [data-dm-profile-effect-layer="true"],
+    [data-dm-profile-effect-layer="true"]::before,
+    [data-dm-profile-effect-layer="true"]::after,
+    .dm-profile-preview-effect,
+    .dm-profile-preview-effect::before,
+    .dm-profile-preview-effect::after {
+        animation-play-state: paused !important;
+    }
     /* DMWidget skins and surfaces in Tournament Mode — freeze animation loops to 0% CPU */
+    [data-dm-widget-skin],
     [data-dm-widget-skin]::before,
     [data-dm-widget-skin]::after,
+    [data-dm-widget-surface-root="true"],
+    [data-dm-widget-surface-root="true"]::before,
     [data-dm-widget-surface-root="true"]::after {
         animation-play-state: paused !important;
+    }
+    /* DMTheme flair in Tournament Mode — pause only the theme's named live
+     * effects. The palette, badges, mention styling, and layout remain. */
+    body[class*="dm-theme-"] [class*="mentionsBadge_"],
+    body[class*="dm-theme-"] [class*="numberBadge_"],
+    body[class*="dm-theme-"] [class*="typing_"] [class*="dot_"],
+    body[class*="dm-theme-"] [class*="mentioned_"] [class*="content_"],
+    body[class*="dm-theme-"] [class*="mentioned_"] [class*="content_"]::before,
+    body[class*="dm-theme-"] [class*="mentioned_"] [class*="content_"]::after {
+        animation-play-state: paused !important;
+    }
+    /* External BetterDiscord themes do not use DMTheme's marker classes.
+     * Bound their CSS animation clocks while Tournament Mode is active so a
+     * third-party theme cannot keep a full-screen gradient, glow, particle,
+     * or background animation on the GPU. This is intentionally limited to
+     * animation-play-state: colors, layout, interaction, and voice UI remain
+     * intact, and normal mode keeps the theme exactly as selected. */
+    html[data-dm-tournament-mode] *,
+    html[data-dm-tournament-mode] *::before,
+    html[data-dm-tournament-mode] *::after {
+        animation-play-state: paused !important;
+    }
+`;
+
+// Tournament's reduced-cost presentation profile. This deliberately targets
+// optional presentation layers only: Discord's content, layout, controls,
+// widget cards, profile identity, and voice UI stay mounted and usable.
+// DMTheme listens to the same marker and removes its optional flair stylesheet
+// while retaining the selected palette.
+const MINIMAL_VISUALS_CSS = `
+    /* Optional DMProfileCosmetics finish is presentation-only. Keep the
+       profile/avatar/banner content, but remove the extra effect layer. */
+    [data-dm-profile-effect-layer="true"],
+    .dm-profile-preview-effect {
+        display: none !important;
+    }
+    [data-dm-profile-effect-layer="true"]::before,
+    [data-dm-profile-effect-layer="true"]::after,
+    .dm-profile-preview-effect::before,
+    .dm-profile-preview-effect::after {
+        display: none !important;
+    }
+    /* Keep the user's widget skin and its structure, but remove optional
+       paint-heavy filters and shadows from the skin's decoration layer. */
+    [data-dm-widget-skin]::before,
+    [data-dm-widget-skin]::after,
+    [data-dm-widget-surface-root="true"]::before,
+    [data-dm-widget-surface-root="true"]::after {
+        filter: none !important;
+        box-shadow: none !important;
+    }
+    /* The video plugin removes its decoder and its transparency stylesheet in
+       this profile. This selector is a defensive visual fallback for the
+       short interval between the mode event and the plugin reconciliation. */
+    #dm-video-bg {
+        display: none !important;
     }
 `;
 
@@ -139,23 +211,47 @@ const settings = definePluginSettings({
     },
     enabledOnStart: {
         type: OptionType.BOOLEAN,
-        description: "Enable Tournament Mode automatically on Discord launch. Safe to leave on — TM only strips real-cost stuff (CPU/GPU/RAM), not cosmetic plugins.",
+        description: "Enable Tournament Mode automatically on Discord launch. The default profile keeps Discord usable while pausing optional visual work; voice and core controls stay available.",
         default: false
     },
     lowerProcessPriority: {
         type: OptionType.BOOLEAN,
         description: "Lower Discord's process priority to BELOW_NORMAL while TM is on. Frees CPU scheduling slots for your game. Recommended ON.",
-        default: true
+        default: true,
+        onChange: () => { if (active) void syncNativePerformanceMode(); }
     },
     capFrameRate: {
         type: OptionType.BOOLEAN,
-        description: "Cap renderer frame rate at 30 fps while TM is on (default 60). Halves compositor GPU load. Recommended ON.",
-        default: true
+        description: "Request a 30 FPS cap where supported. Windowed Discordmaxxer currently cannot enforce it, so this remains a future/offscreen compatibility option and is not counted as a saving.",
+        default: true,
+        onChange: () => { if (active) void syncNativePerformanceMode(); }
     },
     disableArRpc: {
         type: OptionType.BOOLEAN,
         description: "Terminate Rich Presence worker (arRPC) while TM is on. Disables 'Now Playing' detection. Set OFF if you want streamers/friends to see your game.",
-        default: true
+        default: true,
+        onChange: () => { if (active) void syncNativePerformanceMode(); }
+    },
+    minimalVisuals: {
+        type: OptionType.BOOLEAN,
+        description: "Internal compatibility setting. Tournament always removes optional theme flair, profile finish effects, widget paint-heavy decoration, and the video decoder while preserving palette, layout, content, widgets, and voice UI.",
+        default: true,
+        hidden: true,
+        onChange: () => {
+            // Older builds exposed this as an opt-out. Tournament now owns
+            // the reduced-cost profile, so a stale false value can never
+            // weaken the mode.
+            if (settings.store.minimalVisuals !== true) settings.store.minimalVisuals = true;
+            if (active) publishTournamentModeState();
+        }
+    },
+    // Retained so older settings files migrate without leaving an exposed
+    // prototype control behind.
+    minimalVisualsMigrated: {
+        type: OptionType.BOOLEAN,
+        description: "Internal Tournament Mode migration marker.",
+        default: false,
+        hidden: true
     },
     // Runtime mirror of the `active` module-level flag. Hidden from the
     // settings UI (DiscordmaxxerHub uses it to render a real toggle button
@@ -190,78 +286,8 @@ function parseHotkey(hk: string): ParsedHotkey {
     };
 }
 
-function hideTournamentStatusOverlay(): void {
-    if (statusToastTimer !== null) {
-        window.clearTimeout(statusToastTimer);
-        statusToastTimer = null;
-    }
-    statusToast?.remove();
-    statusToast = null;
-}
-
 function showTournamentToast(message: string, type: any, duration = 3200): void {
-    // Discord's native toast API is valid, but in this client/theme combination
-    // it can collapse into an empty grey marker. Keep the status readable by
-    // rendering a small plugin-owned status surface instead of depending on
-    // Discord's internal toast CSS/layout.
-    if (typeof document === "undefined") return;
-    const mount = document.body ?? document.documentElement;
-    if (!mount) return;
-
-    if (statusToastTimer !== null) {
-        window.clearTimeout(statusToastTimer);
-        statusToastTimer = null;
-    }
-
-    if (!statusToast || !statusToast.isConnected) {
-        statusToast = document.createElement("div");
-        statusToast.setAttribute("role", "status");
-        statusToast.setAttribute("aria-live", "polite");
-        statusToast.style.position = "fixed";
-        statusToast.style.top = "24px";
-        statusToast.style.right = "24px";
-        statusToast.style.zIndex = "100000";
-        statusToast.style.maxWidth = "min(440px, calc(100vw - 48px))";
-        statusToast.style.padding = "12px 16px";
-        statusToast.style.border = "1px solid rgba(255, 255, 255, 0.16)";
-        statusToast.style.borderRadius = "10px";
-        statusToast.style.boxSizing = "border-box";
-        statusToast.style.color = "#fff";
-        statusToast.style.fontFamily = "var(--font-primary, sans-serif)";
-        statusToast.style.fontSize = "14px";
-        statusToast.style.fontWeight = "600";
-        statusToast.style.lineHeight = "1.35";
-        statusToast.style.letterSpacing = "0.01em";
-        statusToast.style.boxShadow = "0 10px 28px rgba(0, 0, 0, 0.38)";
-        statusToast.style.pointerEvents = "none";
-        statusToast.style.opacity = "0";
-        statusToast.style.transform = "translateY(-8px)";
-        statusToast.style.transition = "opacity 160ms ease, transform 160ms ease";
-        mount.appendChild(statusToast);
-    }
-
-    const failure = type === Toasts.Type.FAILURE;
-    const success = type === Toasts.Type.SUCCESS;
-    statusToast.textContent = message;
-    statusToast.style.background = failure
-        ? "linear-gradient(135deg, #8e2632, #5b1824)"
-        : success
-            ? "linear-gradient(135deg, #237a58, #14513d)"
-            : "linear-gradient(135deg, #4b3c8f, #29234f)";
-    statusToast.style.borderColor = failure
-        ? "rgba(255, 130, 143, 0.7)"
-        : success
-            ? "rgba(111, 255, 194, 0.55)"
-            : "rgba(190, 176, 255, 0.55)";
-    statusToast.style.opacity = "1";
-    statusToast.style.transform = "translateY(0)";
-
-    statusToastTimer = window.setTimeout(() => {
-        if (!statusToast) return;
-        statusToast.style.opacity = "0";
-        statusToast.style.transform = "translateY(-8px)";
-        statusToastTimer = window.setTimeout(hideTournamentStatusOverlay, 180);
-    }, duration);
+    showDiscordmaxxerStatusToast(message, type, duration);
 }
 
 function publishTournamentModeState(): void {
@@ -269,18 +295,47 @@ function publishTournamentModeState(): void {
     // The setting can survive a reload while the module-level performance mode
     // has already been reset to OFF.
     (globalThis as any).__dmTournamentModeActive = active;
+    // There is intentionally no Tournament visual opt-out anymore. The
+    // regular mode is the place for full theme/effect/video presentation.
+    const minimalVisuals = active;
+    // The root marker lets Tournament Mode bound animation clocks from
+    // external BetterDiscord themes, whose class names are not ours to know.
+    // Removing the attribute on OFF keeps normal mode fully reversible.
+    document.documentElement?.toggleAttribute("data-dm-tournament-mode", active);
+    document.documentElement?.toggleAttribute("data-dm-tournament-minimal", minimalVisuals);
+    if (style) style.textContent = active
+        ? `${PERF_CSS}${minimalVisuals ? MINIMAL_VISUALS_CSS : ""}`
+        : "";
     try {
         window.dispatchEvent(new CustomEvent("discordmaxxer:tournament-mode-changed", {
-            detail: { active }
+            detail: { active, minimalVisuals }
         }));
     } catch {
         // The plugin can be stopped during renderer teardown.
     }
 }
 
+function currentPerformanceOptions() {
+    return {
+        lowerProcessPriority: settings.store.lowerProcessPriority !== false,
+        capFrameRate: settings.store.capFrameRate !== false,
+        disableArRpc: settings.store.disableArRpc !== false
+    };
+}
+
+async function syncNativePerformanceMode() {
+    const native = (globalThis as any).VesktopNative;
+    if (!native?.performanceMode?.set) return null;
+    try {
+        return await native.performanceMode.set(active, currentPerformanceOptions());
+    } catch (e) {
+        console.warn("[TournamentMode] performanceMode bridge failed:", e);
+        return null;
+    }
+}
+
 async function setActive(next: boolean) {
     active = next;
-    if (style) style.textContent = active ? PERF_CSS : "";
     publishTournamentModeState();
     // Mirror to settings so the Hub's toggle button reflects current state
     // even when the user flipped via hotkey (not via the toggle).
@@ -295,16 +350,11 @@ async function setActive(next: boolean) {
     );
 
     // System-level perf mode bridge
-    const native = (globalThis as any).VesktopNative;
     let result: any = null;
     let nativeFailed = false;
-    if (native?.performanceMode?.set) {
-        try {
-            result = await native.performanceMode.set(active);
-        } catch (e) {
-            nativeFailed = true;
-            console.warn("[TournamentMode] performanceMode bridge failed:", e);
-        }
+    if ((globalThis as any).VesktopNative?.performanceMode?.set) {
+        result = await syncNativePerformanceMode();
+        nativeFailed = result === null;
     }
 
     console.log(`[TournamentMode] ${active ? "ACTIVE" : "off"}`, result);
@@ -319,7 +369,7 @@ async function setActive(next: boolean) {
 
 export default definePlugin({
     name: "TournamentMode",
-    description: "Press Ctrl+Alt+T (configurable) to toggle a real performance mode for gaming: drops Discord's process priority, caps the renderer at 30 fps, kills Rich Presence, and pauses animated emoji/avatars/typing-dots. Safe to leave on permanently — only strips things with measurable CPU/GPU cost; cosmetic plugins stay fully active.",
+    description: "Press Ctrl+Alt+T (configurable) to toggle a voice-safe gaming mode: lowers Discord scheduling priority when enabled, disables Rich Presence polling when selected, pauses animated decoration, removes optional theme/profile effects, and releases the video decoder while preserving core content, widgets, layout, and voice UI. The windowed build does not claim an FPS cap; full visuals remain available when Tournament Mode is off.",
     authors: [{ name: "Diggy", id: 0n }],
     settings,
 
@@ -328,9 +378,22 @@ export default definePlugin({
         // not let a value persisted by an earlier renderer session freeze
         // cosmetic motion after a normal reload.
         active = false;
+        try {
+            // Tournament owns the reduced-cost profile now. Force the value
+            // true so an old opt-out saved by a previous build cannot survive.
+            settings.store.minimalVisuals = true;
+            settings.store.minimalVisualsMigrated = true;
+        } catch {
+            // Settings can be unavailable during an early plugin bootstrap.
+        }
         try { settings.store.manuallyActive = false; } catch { /* settings not init */ }
-        publishTournamentModeState();
         style = createAndAppendStyle("dm-tournament-mode", managedStyleRootNode);
+        // Create the stylesheet before startup activation publishes state. If
+        // enabledOnStart is true, setActive(true) publishes immediately; the
+        // old order created an empty style element after that publish, leaving
+        // Tournament Mode marked active but without its reduced-cost rules
+        // until the next manual toggle.
+        publishTournamentModeState();
 
         // Track voice/call state so the perf bridge protects renderer WebRTC
         // threads during calls/streaming across server voice, DMs, and Group DMs.
@@ -450,7 +513,7 @@ export default definePlugin({
             hotkeyHandler = null;
         }
         style?.remove();
-        hideTournamentStatusOverlay();
+        hideDiscordmaxxerStatusToast();
         active = false;
         // Ensure the persisted "on" mirror is cleared even if we started this
         // session inactive (enabledOnStart=false) with a stale saved value —

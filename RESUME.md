@@ -1,5 +1,37 @@
 # Discordmaxxer — RESUME
 
+## 2026-11-03 — v0.7.114 clean release candidate / conditional v0.7.115
+
+Candidate state:
+- Isolated worktree: `C:\Users\Diggy\projects\discordmaxxer-release-candidate-20261103`
+- Branch: `codex/release-v0.7.115-candidate`
+- Base: `origin/main` at `f3dbc7a5` (`v0.7.114`); the public `v0.7.114` source and tag were not changed.
+- The canonical dirty checkout and its unrelated WIP remain untouched.
+
+Reviewed candidate changes:
+- Tournament Mode now owns the reduced-cost presentation profile: it pauses animation clocks, removes optional profile finish effects, strips paint-heavy widget decoration, releases the video-background layer, and bounds third-party theme animation clocks. Normal mode restores full visual polish.
+- Removed the global Chromium background/timer/occlusion flags and replaced them with a runtime performance bridge. Tournament lowers Discord scheduling priority only while active, preserves normal Chromium idle policy otherwise, and protects voice/media/capture identities from priority changes. The windowed build does not claim an FPS cap because Electron's normal window does not expose a supported cap API.
+- TierFlair now pauses its observer, reconciliation timer, stylesheet, and badge registration in Tournament and restores them on resume.
+- Tournament status uses a shared readable status surface instead of the theme-sensitive native grey-dot toast; the IPC performance options now have one shared type.
+
+Verification completed in this candidate:
+- `pnpm test` — passed lint and TypeScript.
+- `pnpm buildWinAudio` plus `node --test packages/winaudio/test.js` — 4/4 passed; 197 loopback chunks captured at 48 kHz, stereo, 32-bit float.
+- Strict Vencord overlay — 86/86 rebrand patches applied or idempotent, 0 warnings; 28 custom plugin directories synced; Vencord build passed.
+- `pnpm build`, `node overlay-scripts/verify-build.mjs`, `pnpm verifyPlugins`, and `git diff --check` — passed. Registry counts: 55 defaults, 10 bundles, 9 featured, 242 registered IDs.
+- `pnpm package:dir` — passed; local Windows executable created at `dist\win-unpacked\discordmaxxer.exe` (225,949,696 bytes).
+- Isolated packaged runtime validator — passed with staged Vencord matching, 207 plugins registered, 65 enabled, watched plugins present/enabled, Tournament and CompactView hotkey paths toggling, and MassDelete patches wired. Badge mutation was intentionally skipped because it changes account state; the DMHub panel assertion remains a known validator/UI boundary.
+
+Release boundary:
+- No commit, tag, push, deployment, or public artifact update was made. Public `v0.7.114` remains the live release.
+- The previous benchmark is for the packaged `v0.7.63` candidate; no fresh comparative benchmark has been run for this `v0.7.114`-based candidate, so no new performance claim is authorized.
+- The coordinated shared-flair gate is still open: two-account/cross-PC recipient verification and the corresponding Worker/website review are not complete. The canonical local release draft explicitly says not to publish until that gate closes.
+- Human voice-call and screen-share quality observation remains unverified. The native Windows loopback test passed, but that is not a substitute for a real Discord call.
+- `package:dir` is a local smoke package and has no updater `app-update.yml`; a publishable `package:win`/installer and updater verification are still required for an actual release.
+
+Next action:
+- After the cross-PC/Worker/website gate is closed, bump the candidate to `v0.7.115`, add `docs/releases/v0.7.115.md`, run the documented Windows package/release workflow, then tag/push only after reviewing the exact release diff and verifying the GitHub assets/updater. Until then this is a clean, locally verified candidate—not a public release.
+
 ## 2026-10-24 v0.7.114 published — Voice audio priority shielding & static prevention
 
 v0.7.114 is publicly published from tag `v0.7.114`.

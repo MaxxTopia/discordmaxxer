@@ -87,6 +87,19 @@ export const enum IpcEvents {
     DM_UPDATER_CHECK = "DM_UPDATER_CHECK"
 }
 
+/** Runtime knobs that TournamentMode is allowed to change in the main process. */
+export interface DmPerformanceModeOptions {
+    lowerProcessPriority: boolean;
+    capFrameRate: boolean;
+    disableArRpc: boolean;
+}
+
+export interface DmPerformanceModeResult {
+    priorityChanged: boolean;
+    frameRateLimited: boolean;
+    arRpcDisabled: boolean;
+}
+
 export interface ChromeWindowOcclusionStatus {
     /** Whether Windows Chrome can keep painting while its window is covered. */
     enabled: boolean;

@@ -25,13 +25,15 @@
  *      polling. Toggles the user's existing Settings.store.arRPC flag (saved +
  *      restored on toggle off).
  *
+ *   3. Background/occlusion throttling — normal Chromium scheduling applies
+ *      while idle or minimized; a live voice/stream explicitly opts out so
+ *      WebRTC audio and capture are never background-throttled.
+ *
  *   (deferred) Renderer frame-rate cap — webContents.setFrameRate(30) only takes
  *      effect under offscreen rendering, which this app does NOT use, so on a
  *      normal windowed BrowserWindow it is a SILENT NO-OP. It is left as a
- *      harmless best-effort call but is NOT reported as a GPU saving. The real
- *      "throttle the hidden window" lever is backgroundThrottling, which is
- *      force-disabled elsewhere for voice reasons and needs a live voice test
- *      before it can be conditionally re-enabled. See AUDIT-2026-06-26.md (H3).
+ *      harmless best-effort call but is NOT reported as a GPU saving. The
+ *      background-throttling path below is the real hidden-window lever.
  *
  * Cosmetic-only changes (animation strips, badge hiding) live in the
  * TournamentMode plugin's CSS — not here. This file is system-level only,
@@ -41,7 +43,7 @@
 import { app, BrowserWindow, webContents } from "electron";
 import { setPriority } from "os";
 
-import { IpcEvents } from "../shared/IpcEvents";
+import { type DmPerformanceModeOptions, IpcEvents } from "../shared/IpcEvents";
 import { Settings } from "./settings";
 import { handle } from "./utils/ipcWrappers";
 
@@ -59,31 +61,24 @@ const FRAME_RATE_NORMAL = 60;
 // full game-CPU load is a way TournamentMode could "sacrifice audio":
 //   - Audio Service does the audio device I/O (WASAPI capture/render).
 //   - Network Service carries the RTC media (UDP) packets.
+//   - video/capture/media/WebRTC helpers can carry an active stream's media.
 // Matched against ProcessMetric.name + serviceName for type === "Utility".
-const PROTECTED_UTILITY_RE = /audio|network/i;
+const PROTECTED_UTILITY_RE = /audio|network|capture|video|media|webrtc|rtc/i;
 
 interface PerfState {
     priorArRpc: boolean | null;
     on: boolean;
-    options: PerfModeOptions;
-}
-
-interface PerfModeOptions {
     lowerProcessPriority: boolean;
     capFrameRate: boolean;
     disableArRpc: boolean;
 }
 
-const DEFAULT_OPTIONS: PerfModeOptions = {
-    lowerProcessPriority: true,
-    capFrameRate: true,
-    disableArRpc: true
-};
-
 const state: PerfState = {
     priorArRpc: null,
     on: false,
-    options: { ...DEFAULT_OPTIONS }
+    lowerProcessPriority: true,
+    capFrameRate: true,
+    disableArRpc: true
 };
 
 // Whether the user is currently in a voice channel (and therefore possibly
@@ -111,11 +106,25 @@ function setAllRendererFrameRates(fps: number) {
 // The target priority for a single process given the current perf + voice state.
 function priorityTargetFor(type: string, name: string, serviceName: string): number {
     // AUDIO INTEGRITY GUARANTEE:
-    // Never drop the renderer (Tab), main process, or audio/network utility to BELOW_NORMAL.
-    // WebRTC Opus decode, NetEq jitter buffers, and audio device I/O run in these processes.
-    // Lowering process priority in Windows starves audio worker threads during gameplay,
-    // which directly causes audio buffer underruns, static, popping, and robotic audio.
-    // All media and core processes are strictly guarded at PRIORITY_NORMAL.
+    // A call or stream keeps every core process at NORMAL. This is deliberately
+    // conservative because WebRTC Opus decode, NetEq jitter buffers, and HW
+    // screenshare encode can run inside the renderer/GPU, not only in a named
+    // utility process.
+    if (!state.on || !state.lowerProcessPriority || voiceActive) return PRIORITY_NORMAL;
+
+    const kind = String(type ?? "")
+        .trim()
+        .toLowerCase();
+    const mediaIdentity = `${name ?? ""} ${serviceName ?? ""}`;
+    if (kind === "utility" && PROTECTED_UTILITY_RE.test(mediaIdentity)) return PRIORITY_NORMAL;
+    if (PROTECTED_UTILITY_RE.test(mediaIdentity)) return PRIORITY_NORMAL;
+
+    // With no active call/stream, let the game win scheduling time from the
+    // client process tree. Browser is the Electron main process; Tab/Renderer
+    // and GPU cover the visible Discord UI and compositor. Non-media utility
+    // helpers can yield too. Unknown process types stay NORMAL by default.
+    if (kind === "browser" || kind === "tab" || kind === "renderer" || kind === "gpu") return PRIORITY_BELOW_NORMAL;
+    if (kind === "utility") return PRIORITY_BELOW_NORMAL;
     return PRIORITY_NORMAL;
 }
 
@@ -148,7 +157,7 @@ function applyProcessPriorities(): boolean {
     // Fallback: ensure our own (main) process is set even if metrics was empty.
     if (!sawMain) {
         try {
-            setPriority(process.pid, PRIORITY_NORMAL);
+            setPriority(process.pid, priorityTargetFor("Browser", "", ""));
             count++;
         } catch {
             // ignore
@@ -158,76 +167,87 @@ function applyProcessPriorities(): boolean {
     return count > 0;
 }
 
-function normalizeOptions(raw?: Partial<PerfModeOptions>): PerfModeOptions {
+/** Keep background scheduling conservative for idle windows, but never let a
+ * live call/stream lose renderer time to Chromium's background timer policy.
+ * This is intentionally independent of Tournament Mode: normal Discordmaxxer
+ * should follow Chromium's standard idle behavior too, while voice safety is
+ * a property of the active call rather than of the visual performance mode.
+ */
+function applyBackgroundThrottling(): boolean {
+    let changed = false;
+    for (const win of BrowserWindow.getAllWindows()) {
+        if (win.isDestroyed()) continue;
+        try {
+            win.webContents.setBackgroundThrottling(!voiceActive);
+            changed = true;
+        } catch {
+            // A renderer can disappear during reload; the next voice/window
+            // event will apply the policy to the replacement webContents.
+        }
+    }
+    return changed;
+}
+
+function normalizedPerformanceOptions(options?: Partial<DmPerformanceModeOptions>): DmPerformanceModeOptions {
     return {
-        lowerProcessPriority: raw?.lowerProcessPriority !== false,
-        capFrameRate: raw?.capFrameRate !== false,
-        disableArRpc: raw?.disableArRpc !== false
+        lowerProcessPriority: options?.lowerProcessPriority !== false,
+        capFrameRate: options?.capFrameRate !== false,
+        disableArRpc: options?.disableArRpc !== false
     };
 }
 
-function sameOptions(a: PerfModeOptions, b: PerfModeOptions): boolean {
-    return (
-        a.lowerProcessPriority === b.lowerProcessPriority &&
-        a.capFrameRate === b.capFrameRate &&
-        a.disableArRpc === b.disableArRpc
-    );
-}
-
-handle(IpcEvents.DM_SET_PERFORMANCE_MODE, (_e, on: boolean, requested?: Partial<PerfModeOptions>) => {
-    const nextOn = !!on;
-    const options = normalizeOptions(requested);
-    if (nextOn === state.on && (!nextOn || sameOptions(options, state.options))) {
-        return {
-            priorityChanged: false,
-            frameRateLimited: false,
-            arRpcDisabled: false,
-            lowerPriorityRequested: nextOn && options.lowerProcessPriority,
-            frameRateCapRequested: nextOn && options.capFrameRate,
-            arRpcRequested: nextOn && options.disableArRpc
-        };
-    }
-
-    state.on = nextOn;
-    state.options = options;
-    const priorityChanged = applyProcessPriorities();
-    setAllRendererFrameRates(nextOn && options.capFrameRate ? FRAME_RATE_PERF : FRAME_RATE_NORMAL);
-
-    let arRpcDisabled = false;
-    if (nextOn) {
-        if (options.disableArRpc) {
-            if (state.priorArRpc === null) state.priorArRpc = Settings.store.arRPC === true;
-            if (Settings.store.arRPC === true) {
-                Settings.store.arRPC = false; // change-listener in arrpc/index.ts handles teardown
-                arRpcDisabled = true;
-            }
-        } else if (state.priorArRpc === true) {
-            // The user turned the arRPC knob back on while TM stayed active.
+function syncArRpcPolicy(on: boolean): boolean {
+    let touched = false;
+    if (!on || !state.disableArRpc) {
+        if (state.priorArRpc === true && Settings.store.arRPC !== true) {
             Settings.store.arRPC = true;
-            arRpcDisabled = true;
-        }
-    } else {
-        if (state.priorArRpc === true) {
-            Settings.store.arRPC = true; // change-listener restarts the worker
-            arRpcDisabled = true; // semantics: "we touched arRpc"
+            touched = true;
         }
         state.priorArRpc = null;
+        return touched;
     }
 
+    if (state.priorArRpc === null) {
+        state.priorArRpc = Settings.store.arRPC === true;
+        if (state.priorArRpc) {
+            Settings.store.arRPC = false; // change-listener in arrpc/index.ts handles teardown
+            touched = true;
+        }
+    }
+    return touched;
+}
+
+handle(IpcEvents.DM_SET_PERFORMANCE_MODE, (_e, on: boolean, rawOptions?: Partial<DmPerformanceModeOptions>) => {
+    const options = normalizedPerformanceOptions(rawOptions);
+    const optionsChanged =
+        state.lowerProcessPriority !== options.lowerProcessPriority ||
+        state.capFrameRate !== options.capFrameRate ||
+        state.disableArRpc !== options.disableArRpc;
+    if (on === state.on && !optionsChanged) {
+        return { priorityChanged: false, frameRateLimited: false, arRpcDisabled: false };
+    }
+
+    const wasCapFrameRate = state.capFrameRate;
+    state.on = on;
+    state.lowerProcessPriority = options.lowerProcessPriority;
+    state.capFrameRate = options.capFrameRate;
+    state.disableArRpc = options.disableArRpc;
+    const priorityChanged = applyProcessPriorities();
+    applyBackgroundThrottling();
+    // setFrameRate is a harmless best effort, but Chromium ignores it for a
+    // normal windowed BrowserWindow. Avoid touching every webContents when the
+    // user explicitly disables the unsupported cap.
+    if (state.capFrameRate || wasCapFrameRate) setAllRendererFrameRates(on ? FRAME_RATE_PERF : FRAME_RATE_NORMAL);
+
+    const arRpcDisabled = syncArRpcPolicy(on);
+
     console.log(
-        `[Discordmaxxer] PerfMode ${on ? "ON" : "OFF"} — priority=${priorityChanged} voiceActive=${voiceActive} arRpc=${arRpcDisabled}`
+        `[Discordmaxxer] PerfMode ${on ? "ON" : "OFF"} — priority=${priorityChanged} lowerPriority=${state.lowerProcessPriority} voiceActive=${voiceActive} arRpc=${arRpcDisabled} capFrameRate=${state.capFrameRate}`
     );
 
     // frameRateLimited is intentionally always false: the cap is a no-op on
     // windowed mode, so we don't claim a GPU saving we aren't delivering.
-    return {
-        priorityChanged,
-        frameRateLimited: false,
-        arRpcDisabled,
-        lowerPriorityRequested: nextOn && options.lowerProcessPriority,
-        frameRateCapRequested: nextOn && options.capFrameRate,
-        arRpcRequested: nextOn && options.disableArRpc
-    };
+    return { priorityChanged, frameRateLimited: false, arRpcDisabled };
 });
 
 // Renderer reports voice-channel join/leave. While perf mode is on, joining a
@@ -238,21 +258,9 @@ handle(IpcEvents.DM_SET_VOICE_ACTIVE, (_e, active: boolean) => {
     if (next === voiceActive) return { reapplied: false };
     voiceActive = next;
 
-    if (voiceActive) {
-        // Voice active: protect audio/stream by disabling background throttling immediately
-        for (const win of BrowserWindow.getAllWindows()) {
-            if (!win.isDestroyed()) {
-                win.webContents.setBackgroundThrottling(false);
-            }
-        }
-    } else {
-        // Voice inactive: sleep minimized or hidden windows to save CPU
-        for (const win of BrowserWindow.getAllWindows()) {
-            if (!win.isDestroyed() && (win.isMinimized() || !win.isVisible())) {
-                win.webContents.setBackgroundThrottling(true);
-            }
-        }
-    }
+    // Voice active: keep every renderer's clocks live for WebRTC. Voice
+    // inactive: restore Chromium's standard idle/occlusion throttling.
+    applyBackgroundThrottling();
 
     const reapplied = state.on ? applyProcessPriorities() : false;
     if (reapplied) console.log(`[Discordmaxxer] voiceActive=${voiceActive} — re-balanced priorities`);
@@ -263,7 +271,6 @@ handle(IpcEvents.DM_SET_VOICE_ACTIVE, (_e, active: boolean) => {
 // set so it inherits the right class (e.g. unfocus → new-window). Best-effort:
 // if the child isn't in getAppMetrics yet, the next perf/voice event catches it.
 app.on("browser-window-created", (_e, _win: BrowserWindow) => {
-    if (!state.on) return;
-    setAllRendererFrameRates(state.options.capFrameRate ? FRAME_RATE_PERF : FRAME_RATE_NORMAL);
-    applyProcessPriorities();
+    applyBackgroundThrottling();
+    if (state.on) applyProcessPriorities();
 });

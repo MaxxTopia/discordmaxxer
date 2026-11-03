@@ -185,7 +185,7 @@ function unregisterMaxxerPlusPlusBadge() {
 
 function BadgeFinishPreview() {
     const selectedFinish = String(settings.store.badgeFinish);
-    const animated = settings.store.animatedBadgePlusPlus;
+    const animated = settings.store.animatedBadgePlusPlus && !tournamentModeActive();
 
     return (
         <div
@@ -244,6 +244,25 @@ let style: HTMLStyleElement | null = null;
 let observer: MutationObserver | null = null;
 let rescanTimer: ReturnType<typeof setInterval> | null = null;
 let tierFlairStarted = false;
+let visibilityHandler: (() => void) | null = null;
+let tournamentModeHandler: (() => void) | null = null;
+
+function tournamentModeActive(): boolean {
+    return document.documentElement?.hasAttribute("data-dm-tournament-mode") === true
+        || (globalThis as any).__dmTournamentModeActive === true;
+}
+
+function syncTierFlairStyle() {
+    if (style) style.textContent = tournamentModeActive() ? "" : buildCss();
+}
+
+function clearTierFlairTags() {
+    document.querySelectorAll<HTMLElement>("[data-dm-tier], [data-dm-founder], [data-dm-tier-for]").forEach(el => {
+        el.removeAttribute("data-dm-tier");
+        el.removeAttribute("data-dm-founder");
+        delete el.dataset.dmTierFor;
+    });
+}
 
 function buildCss() {
     const showRing = settings.store.avatarRing;
@@ -435,6 +454,7 @@ function scanRoot(root: ParentNode = document) {
 function startObserver() {
     if (observer) return;
     observer = new MutationObserver(mutations => {
+        if (document.hidden || tournamentModeActive()) return;
         for (const m of mutations) {
             if ((m.target as Element)?.closest?.(".vc-settings-tab, [class*='standardSidebarView']")) {
                 continue;
@@ -453,28 +473,72 @@ function startObserver() {
             }
         }
     });
-    // attributeFilter keeps the attribute callbacks scoped to the one
-    // attribute we care about — not a firehose of every style/class change.
-    observer.observe(document.body, {
-        childList: true,
-        subtree: true,
-        attributes: true,
-        attributeFilter: ["data-user-id"]
-    });
-    scanRoot(document);
-    // Low-frequency rescan so rows tagged before the async roster load (or after
-    // a manual "Refresh roster") self-correct. The stamped key makes this a
-    // cheap no-op when nothing changed.
-    if (!rescanTimer) {
-        rescanTimer = setInterval(() => {
-            if (document.hidden) return;
-            scanRoot(document);
-        }, 5000);
-    }
+
+    const pauseTierFlairWork = (suspendVisuals = false) => {
+        observer?.disconnect();
+        if (rescanTimer) {
+            clearInterval(rescanTimer);
+            rescanTimer = null;
+        }
+        if (!suspendVisuals) return;
+
+        // Tournament Mode must remove the expensive part of TierFlair, not
+        // merely stop its five-second reconciliation timer. The CSS contains
+        // :has(), filters, shadows, and optional animations; the badge registry
+        // can also be evaluated whenever a profile surface opens. Clearing the
+        // tags, stylesheet, and badge registrations makes the reduced-cost
+        // contract real while leaving normal mode fully reversible.
+        clearTierFlairTags();
+        unregisterFounderBadges();
+        unregisterMaxxerPlusPlusBadge();
+        if (style) style.textContent = "";
+    };
+
+    const resumeTierFlairWork = () => {
+        if (!tierFlairStarted || !observer || document.hidden || tournamentModeActive() || !document.body) return;
+        syncTierFlairStyle();
+        registerFounderBadges();
+        registerMaxxerPlusPlusBadge();
+        // Attribute filtering keeps callbacks scoped to the one attribute we
+        // care about — not a firehose of every style/class change.
+        observer.observe(document.body, {
+            childList: true,
+            subtree: true,
+            attributes: true,
+            attributeFilter: ["data-user-id"]
+        });
+        scanRoot(document);
+        // Low-frequency rescan so rows tagged before the async roster load (or
+        // after a manual "Refresh roster") self-correct. The stamped key makes
+        // this a cheap no-op when nothing changed. Tournament Mode owns the
+        // reduced-cost profile, so this optional reconciliation loop is fully
+        // stopped while it is active rather than waking every five seconds.
+        if (!rescanTimer) {
+            rescanTimer = setInterval(() => {
+                if (document.hidden || tournamentModeActive()) return;
+                scanRoot(document);
+            }, 5000);
+        }
+    };
+    visibilityHandler = () => {
+        if (document.hidden || tournamentModeActive()) {
+            pauseTierFlairWork(tournamentModeActive());
+            return;
+        }
+        resumeTierFlairWork();
+    };
+    tournamentModeHandler = () => {
+        if (tournamentModeActive()) pauseTierFlairWork(true);
+        else resumeTierFlairWork();
+    };
+    document.addEventListener("visibilitychange", visibilityHandler);
+    window.addEventListener("discordmaxxer:tournament-mode-changed", tournamentModeHandler);
+    if (document.hidden || tournamentModeActive()) pauseTierFlairWork(tournamentModeActive());
+    else resumeTierFlairWork();
 }
 
 function refreshTierFlairSurface() {
-    if (!tierFlairStarted) return;
+    if (!tierFlairStarted || document.hidden || tournamentModeActive()) return;
     // The badge registry evaluates shouldShow while a profile surface is
     // opening. Re-register after an async roster replacement so a popout that
     // opened during the initial fetch gets the newly eligible badge too.
@@ -484,17 +548,21 @@ function refreshTierFlairSurface() {
 }
 
 function stopObserver() {
+    if (visibilityHandler) {
+        document.removeEventListener("visibilitychange", visibilityHandler);
+        visibilityHandler = null;
+    }
+    if (tournamentModeHandler) {
+        window.removeEventListener("discordmaxxer:tournament-mode-changed", tournamentModeHandler);
+        tournamentModeHandler = null;
+    }
     observer?.disconnect();
     observer = null;
     if (rescanTimer) {
         clearInterval(rescanTimer);
         rescanTimer = null;
     }
-    document.querySelectorAll<HTMLElement>("[data-dm-tier], [data-dm-founder], [data-dm-tier-for]").forEach(el => {
-        el.removeAttribute("data-dm-tier");
-        el.removeAttribute("data-dm-founder");
-        delete el.dataset.dmTierFor;
-    });
+    clearTierFlairTags();
 }
 
 const settings = definePluginSettings({
@@ -502,27 +570,27 @@ const settings = definePluginSettings({
         type: OptionType.BOOLEAN,
         description: "Avatar tier ring — 1px colored outline around PFPs of Discordmaxxer users you can see in the roster.",
         default: true,
-        onChange: () => { if (style) style.textContent = buildCss(); }
+        onChange: syncTierFlairStyle
     },
     nameTint: {
         type: OptionType.BOOLEAN,
         description: "Member list name tint with glow-glimmer — names of MAXXER+ users pulse aqua, MAXXER++ shimmer champagne.",
         default: true,
-        onChange: () => { if (style) style.textContent = buildCss(); }
+        onChange: syncTierFlairStyle
     },
     popoutBanner: {
         type: OptionType.BOOLEAN,
         description: "Profile popout banner stripe — 4px tier-color stripe across the top of the popout when you open a tagged user's profile.",
         default: true,
-        onChange: () => { if (style) style.textContent = buildCss(); }
+        onChange: syncTierFlairStyle
     },
     animatedBadgePlusPlus: {
         type: OptionType.BOOLEAN,
         description: "Animate the MAXXER++ tier badge and name tint with a champagne→wine light sweep. Disable if it's distracting.",
         default: true,
         onChange: () => {
-            if (style) style.textContent = buildCss();
-            if (tierFlairStarted) {
+            syncTierFlairStyle();
+            if (tierFlairStarted && !tournamentModeActive()) {
                 unregisterMaxxerPlusPlusBadge();
                 registerMaxxerPlusPlusBadge();
             }
@@ -538,7 +606,7 @@ const settings = definePluginSettings({
             { label: "Aurora Ice", value: "aurora" }
         ],
         onChange: () => {
-            if (tierFlairStarted) {
+            if (tierFlairStarted && !tournamentModeActive()) {
                 unregisterMaxxerPlusPlusBadge();
                 registerMaxxerPlusPlusBadge();
             }
@@ -553,13 +621,13 @@ const settings = definePluginSettings({
         type: OptionType.BOOLEAN,
         description: "Voice channel name color (MAXXER++ only) — champagne tint on MAXXER++ users while in voice channels.",
         default: true,
-        onChange: () => { if (style) style.textContent = buildCss(); }
+        onChange: syncTierFlairStyle
     },
     aboutCredit: {
         type: OptionType.BOOLEAN,
         description: "About credit (MAXXER++ only) — adds a 'Discordmaxxer++ supporter' strip in MAXXER++ users' profile popouts.",
         default: true,
-        onChange: () => { if (style) style.textContent = buildCss(); }
+        onChange: syncTierFlairStyle
     },
     refreshRoster: {
         type: OptionType.COMPONENT,
@@ -602,9 +670,11 @@ export default definePlugin({
     start() {
         tierFlairStarted = true;
         style = createAndAppendStyle("dm-tier-flair", managedStyleRootNode);
-        style.textContent = buildCss();
-        registerFounderBadges();
-        registerMaxxerPlusPlusBadge();
+        syncTierFlairStyle();
+        if (!tournamentModeActive()) {
+            registerFounderBadges();
+            registerMaxxerPlusPlusBadge();
+        }
         stopRosterListener = onRosterChange(refreshTierFlairSurface);
         startObserver();
         // Hydrate immediately rather than waiting for the first tagged row to
