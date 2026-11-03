@@ -1,6 +1,6 @@
 # Discordmaxxer — RESUME
 
-## 2026-11-03 — v0.7.118 tag blocked by strict overlay; v0.7.119 correction in progress
+## 2026-11-03 — v0.7.119 published: DMHub settings crash hardening
 
 Scope:
 - Diggy reproduced the same settings-render crash from multiple plugins opened through DMHub. This was treated as a shared plugin-settings host issue, not as a DMProfileCosmetics-only defect.
@@ -17,11 +17,12 @@ Verification:
 
 Release boundary:
 - The candidate was committed as `23d7b22`, pushed to `main`, and tagged `v0.7.118` with explicit release authorization. The public workflow `41701487231` failed at the strict Vencord overlay before packaging because the pinned CI source includes `transitionState` in `PluginModal` and the new patch target did not.
-- No v0.7.118 installer, GitHub Release, or updater feed was published. Public v0.7.117 remains the live build; the correction is being prepared in the isolated candidate worktree `C:\Users\Diggy\projects\discordmaxxer-full-dev-merge-20261103c`.
+- The correction was committed as `1c8a93c`, pushed to `main`, and tagged `v0.7.119`. Release workflow `41702669795` completed successfully in 5m49s, including the pinned overlay, build, artifact verification, Electron Builder, release notes, and release notification.
+- Public release `v0.7.119` is live at `https://github.com/MaxxTopia/discordmaxxer/releases/tag/v0.7.119`. The public `latest.yml` returned HTTP 200 and declares version `0.7.119`; the installer URL returned HTTP 200. The release includes x64 and arm64 ZIPs, the Windows installer, blockmap, and updater manifest.
 - This verifies settings mounting and the shared crash path. It does not yet prove every plugin's event handlers or the separate image right-click crash path.
 
 Next action:
-- Publish the corrected v0.7.119 patch tag after the strict overlay passes. After publication, Diggy should update the normal client and repeat DMHub -> Profile Cosmetics, one other plugin, and the image right-click test.
+- Diggy should update the normal client and repeat DMHub -> Profile Cosmetics, one other plugin, and the image right-click test. Treat the right-click image crash as an explicit acceptance test; it was not silently claimed fixed by this release.
 
 ## 2026-11-03 — v0.7.117 published: shared plugin-settings crash containment
 
