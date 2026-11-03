@@ -511,9 +511,9 @@ const PATCHES = [
     {
         file: "src/components/settings/tabs/plugins/PluginModal.tsx",
         marker: "Discordmaxxer: use normalized plugin authors.",
-        find: "export default function PluginModal({ plugin, onRestartNeeded, onClose }: PluginModalProps) {\n    const pluginSettings = useSettings([`plugins.${plugin.name}.*`]).plugins[plugin.name];",
+        find: "export default function PluginModal({ plugin, onRestartNeeded, onClose, transitionState }: PluginModalProps) {\n    const pluginSettings = useSettings([`plugins.${plugin.name}.*`]).plugins[plugin.name];",
         replace:
-            "export default function PluginModal({ plugin, onRestartNeeded, onClose }: PluginModalProps) {\n" +
+            "export default function PluginModal({ plugin, onRestartNeeded, onClose, transitionState }: PluginModalProps) {\n" +
             "    // Discordmaxxer: use normalized plugin authors.\n" +
             "    const pluginAuthors = Array.isArray(plugin.authors) ? plugin.authors : EMPTY_PLUGIN_AUTHORS;\n" +
             "    const pluginSettings = useSettings([`plugins.${plugin.name}.*`]).plugins[plugin.name];"
