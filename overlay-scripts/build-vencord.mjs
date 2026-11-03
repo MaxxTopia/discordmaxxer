@@ -20,7 +20,7 @@ const __dirname = dirname(__filename);
 const PROJECT_ROOT = resolve(__dirname, "..");
 
 const PLUGINS_SRC = join(PROJECT_ROOT, "plugins");
-const VENCORD_SRC = join(PROJECT_ROOT, "vencord-src");
+const VENCORD_SRC = resolve(process.env.DISCORDMAXXER_VENCORD_SRC ?? join(PROJECT_ROOT, "vencord-src"));
 const VENCORD_USERPLUGINS = join(VENCORD_SRC, "src", "userplugins");
 const VENCORD_BUILT_DIST = join(VENCORD_SRC, "dist");
 const STAGED_DIST = join(PROJECT_ROOT, "vencord-dist");

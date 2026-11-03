@@ -1,5 +1,30 @@
 # Discordmaxxer — RESUME
 
+## 2026-11-03 — v0.7.120 candidate: shared settings modal and image viewer fixes
+
+Scope:
+- Diggy reported that clicking an image sent by another user did not enlarge it like stock Discord, and the preceding public build still crashed when opening plugin settings. Both paths were tested against the same packaged candidate.
+
+Change:
+- Hardened the shared Vencord `PluginModal` path in `overlay-scripts/rebrand-vencord.mjs`: validated plugin settings definitions and author records, memoized normalized authors so the author-loading effect does not restart on every render, replaced the brittle native contributor summary list with safe avatar primitives, and moved the shell to the stable legacy modal contract.
+- Removed the ImageZoom wrapper's click propagation stopper so Discord's native attachment click reaches the enlarged viewer while the existing zoom overlay remains available.
+- Added `overlay-scripts/vencord-source.json` and an environment-selectable source path. Both Dev and release overlays now fail fast unless they use the same pinned Vencord commit (`ef29bbeb6119cfb53d1273ed78147bcc97d91261`).
+- Bumped `package.json` to `0.7.120` and added `docs/releases/v0.7.120.md`.
+
+Verification:
+- Strict overlay from a fresh pinned Vencord checkout: 111 patches applied or idempotent, 0 warnings; all custom plugins compiled.
+- `pnpm test`, `pnpm build`, `node overlay-scripts/verify-build.mjs`, and `pnpm package:dir` passed.
+- The exact packaged candidate `dist\\win-unpacked\\discordmaxxer.exe` opened six plugin settings (DMProfileCosmetics, DMTrim, DMWidget, DMTierFlair, DMEmoji, and PlaylistmaxxingPresence) with no `.length` exception, React update-loop error, or settings fallback.
+- The exact packaged candidate opened a real Discord image attachment with a normal left-click and showed the enlarged viewer with Zoom In, Forward, Open in Browser, More, and Close controls.
+- REA inspected the shipped `dist\\win-unpacked\\resources\\app.asar` as shipped-artifact evidence. It confirmed the package identity and analyzed 19 relevant files / 35.7 MB of text; its semantic graph is partial and static, so the runtime smoke test remains the stronger behavior proof.
+
+Release boundary:
+- Public release remains `v0.7.119` until the v0.7.120 tag workflow completes. No live claim has been made for v0.7.120 yet.
+- The candidate package was tested locally with the signed-in test profile. The normal installed client and real recipient voice/screenshare behavior remain separate user acceptance checks.
+
+Next action:
+- Review the intended diff, commit the candidate, push the authorized `main` update and `v0.7.120` tag, then verify the GitHub release assets and updater manifest before asking Diggy to test the public client.
+
 ## 2026-11-03 — v0.7.119 published: DMHub settings crash hardening
 
 Scope:

@@ -16,12 +16,37 @@
  * intact. We only patch user-visible UI strings, never copyright notices.
  */
 
+import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const VENCORD_SRC = resolve(__dirname, "..", "vencord-src");
+const VENCORD_SRC = resolve(process.env.DISCORDMAXXER_VENCORD_SRC ?? join(__dirname, "..", "vencord-src"));
+const VENCORD_SOURCE_PIN = JSON.parse(readFileSync(join(__dirname, "vencord-source.json"), "utf8"));
+
+function readVencordSourceCommit() {
+    try {
+        return execFileSync("git", ["-C", VENCORD_SRC, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+    } catch {
+        const markerPath = join(VENCORD_SRC, ".discordmaxxer-source.json");
+        if (!existsSync(markerPath)) return null;
+        try {
+            return JSON.parse(readFileSync(markerPath, "utf8")).commit ?? null;
+        } catch {
+            return null;
+        }
+    }
+}
+
+const actualVencordCommit = readVencordSourceCommit();
+if (actualVencordCommit !== VENCORD_SOURCE_PIN.commit) {
+    throw new Error(
+        `[rebrand] Vencord source mismatch at ${VENCORD_SRC}. ` +
+            `Expected ${VENCORD_SOURCE_PIN.commit}, found ${actualVencordCommit ?? "missing/unpinned source"}. ` +
+            "Use the pinned Vencord checkout for both Dev and release builds."
+    );
+}
 
 const PATCHES = [
     // ── A. Settings tab title ──────────────────────────────────────────
@@ -515,8 +540,26 @@ const PATCHES = [
         replace:
             "export default function PluginModal({ plugin, onRestartNeeded, onClose, transitionState }: PluginModalProps) {\n" +
             "    // Discordmaxxer: use normalized plugin authors.\n" +
-            "    const pluginAuthors = Array.isArray(plugin.authors) ? plugin.authors : EMPTY_PLUGIN_AUTHORS;\n" +
-            "    const pluginSettings = useSettings([`plugins.${plugin.name}.*`]).plugins[plugin.name];"
+            "    const pluginAuthors = Array.isArray(plugin.authors)\n" +
+            "        ? plugin.authors.filter(author => author && typeof author === \"object\" && typeof author.name === \"string\")\n" +
+            "        : EMPTY_PLUGIN_AUTHORS;\n" +
+            "    const settingsState = useSettings([`plugins.${plugin.name}.*`]);\n" +
+            "    const pluginSettings = settingsState?.plugins?.[plugin.name] ?? {};"
+    },
+    {
+        file: "src/components/settings/tabs/plugins/PluginModal.tsx",
+        marker: "Discordmaxxer: memoize normalized plugin authors.",
+        find:
+            "    const pluginAuthors = Array.isArray(plugin.authors)\n" +
+            "        ? plugin.authors.filter(author => author && typeof author === \"object\" && typeof author.name === \"string\")\n" +
+            "        : EMPTY_PLUGIN_AUTHORS;",
+        replace:
+            "    // Discordmaxxer: memoize normalized plugin authors so the author-loading effect does not restart on every render.\n" +
+            "    const pluginAuthors = useMemo(() => (\n" +
+            "        Array.isArray(plugin.authors)\n" +
+            "            ? plugin.authors.filter(author => author && typeof author === \"object\" && typeof author.name === \"string\")\n" +
+            "            : EMPTY_PLUGIN_AUTHORS\n" +
+            "    ), [plugin.authors]);"
     },
     {
         file: "src/components/settings/tabs/plugins/PluginModal.tsx",
@@ -550,6 +593,242 @@ const PATCHES = [
         marker: "Discordmaxxer: subscribe to normalized plugin authors.",
         find: "    }, [plugin.authors]);",
         replace: "    }, [pluginAuthors]);"
+    },
+    // Discord's UserSummaryItem changed its internal virtualized-list contract
+    // across the pinned web builds. Its modal path can receive an undefined
+    // sections array and throw before the plugin settings have mounted. Keep
+    // the contributor avatars, but render them with stable primitives that do
+    // not depend on that private list implementation.
+    {
+        file: "src/components/settings/tabs/plugins/PluginModal.tsx",
+        marker: "Discordmaxxer: render plugin authors without native summary list.",
+        find:
+            "                            <UserSummaryItem\n" +
+            "                                users={authors.length ? authors : fallbackAuthors}\n" +
+            "                                guildId={undefined}\n" +
+            "                                renderIcon={false}\n" +
+            "                                max={6}\n" +
+            "                                showDefaultAvatarsForNullUsers\n" +
+            "                                renderMoreUsers={renderMoreUsers}\n" +
+            "                                renderUser={(user: User) => (\n" +
+            "                                    <Clickable\n" +
+            "                                        className={AvatarStyles.clickableAvatar}\n" +
+            "                                        onClick={() => openContributorModal(user)}\n" +
+            "                                    >\n" +
+            "                                        <img\n" +
+            "                                            className={AvatarStyles.avatar}\n" +
+            "                                            src={user.getAvatarURL(void 0, 80, true)}\n" +
+            "                                            alt={user.username}\n" +
+            "                                            title={user.username}\n" +
+            "                                        />\n" +
+            "                                    </Clickable>\n" +
+            "                                )}\n" +
+            "                            />",
+        replace:
+            "                            <div style={{ display: \"flex\", alignItems: \"center\", gap: 4 }}>\n" +
+            "                                {(authors.length ? authors : fallbackAuthors).slice(0, 6).map((user, index) => {\n" +
+            "                                    const avatarUrl = typeof user.getAvatarURL === \"function\"\n" +
+            "                                        ? user.getAvatarURL(void 0, 80, true)\n" +
+            "                                        : undefined;\n" +
+            "                                    const username = user.username ?? \"Contributor\";\n" +
+            "                                    return (\n" +
+            "                                        <Clickable\n" +
+            "                                            key={String(user.id ?? username ?? index)}\n" +
+            "                                            className={AvatarStyles.clickableAvatar}\n" +
+            "                                            onClick={() => openContributorModal(user as User)}\n" +
+            "                                        >\n" +
+            "                                            {avatarUrl ? (\n" +
+            "                                                <img\n" +
+            "                                                    className={AvatarStyles.avatar}\n" +
+            "                                                    src={avatarUrl}\n" +
+            "                                                    alt={username}\n" +
+            "                                                    title={username}\n" +
+            "                                                />\n" +
+            "                                            ) : (\n" +
+            "                                                <div\n" +
+            "                                                    className={AvatarStyles.avatar}\n" +
+            "                                                    aria-label={username}\n" +
+            "                                                    title={username}\n" +
+            "                                                    style={{ display: \"grid\", placeItems: \"center\", background: \"var(--background-secondary)\" }}\n" +
+            "                                                >\n" +
+            "                                                    ?\n" +
+            "                                                </div>\n" +
+            "                                            )}\n" +
+            "                                        </Clickable>\n" +
+            "                                    );\n" +
+            "                                })}\n" +
+            "                                {pluginAuthors.length > 6 && renderMoreUsers(\"\", 6)}\n" +
+            "                            </div>"
+    },
+    {
+        file: "src/components/settings/tabs/plugins/PluginModal.tsx",
+        marker: "Discordmaxxer: use legacy plugin settings imports.",
+        find: "Forms, Modal, openModal, React, Text, Tooltip, useEffect, useMemo, UserStore, UserSummaryItem, UserUtils, useState",
+        replace: "Forms, Modal, openModal, React, Text, Tooltip, useEffect, useMemo, UserStore, UserUtils, useState"
+    },
+    // The current Discord modal implementation internally mounts a native
+    // MasonryList. Its private `sections` contract changed in the web build
+    // used by Discordmaxxer v0.7.119, so the plugin settings modal can throw
+    // before any plugin-specific setting renders. Keep the plugin modal on
+    // Vencord's stable legacy shell; this is the same contract used by the
+    // known-good upstream implementation before the migration.
+    {
+        file: "src/components/settings/tabs/plugins/PluginModal.tsx",
+        marker: "Discordmaxxer: use legacy plugin settings modal contract.",
+        find: 'import { BaseText } from "@components/BaseText";\n',
+        replace: ""
+    },
+    {
+        file: "src/components/settings/tabs/plugins/PluginModal.tsx",
+        find: 'import { RenderModalProps, User } from "@vencord/discord-types";',
+        replace: 'import { User } from "@vencord/discord-types";'
+    },
+    {
+        file: "src/components/settings/tabs/plugins/PluginModal.tsx",
+        marker: "Discordmaxxer: use legacy plugin settings imports.",
+        find: 'import { Clickable, FluxDispatcher, Forms, Modal, openModal, React, Text, Tooltip, useEffect, useMemo, UserStore, UserUtils, useState } from "@webpack/common";',
+        replace:
+            '// Discordmaxxer: use legacy plugin settings imports.\n' +
+            'import { ModalCloseButton, ModalContent, ModalHeader, ModalProps, ModalRoot, ModalSize, openModal } from "@utils/modal";\n' +
+            'import { Clickable, FluxDispatcher, Forms, React, Text, Tooltip, useEffect, useMemo, UserStore, UserUtils, useState } from "@webpack/common";'
+    },
+    {
+        file: "src/components/settings/tabs/plugins/PluginModal.tsx",
+        find: "interface PluginModalProps extends RenderModalProps {",
+        replace: "interface PluginModalProps extends ModalProps {"
+    },
+    {
+        file: "src/components/settings/tabs/plugins/PluginModal.tsx",
+        find:
+            '        <Modal\n' +
+            '            transitionState={transitionState}\n' +
+            '            onClose={onClose}\n' +
+            '            size="lg"\n' +
+            '            title={\n' +
+            '                <div className={cl("header")}>\n' +
+            '                    <BaseText tag="h1" weight="semibold" size="lg">{plugin.name}</BaseText>\n' +
+            '                    {!pluginMeta.userPlugin && (\n' +
+            '                        <div className="vc-settings-modal-links">\n' +
+            '                            <FavoriteButton\n' +
+            '                                isFavorite={pluginSettings.isFavorite ?? false}\n' +
+            '                                onClick={() => pluginSettings.isFavorite = !pluginSettings.isFavorite}\n' +
+            '                            />\n' +
+            '                            <WebsiteButton\n' +
+            '                                text="View more info"\n' +
+            '                                href={`https://github.com/MaxxTopia/discordmaxxer/blob/main/vencord-src/src/plugins/${plugin.name}`}\n' +
+            '                            />\n' +
+            '                            <GithubButton\n' +
+            '                                text="View source code"\n' +
+            '                                href={`https://github.com/${gitRemote}/tree/main/src/plugins/${pluginMeta.folderName}`}\n' +
+            '                            />\n' +
+            '                        </div>\n' +
+            '                    )}\n' +
+            '                </div>\n' +
+            '            }\n' +
+            '            subtitle={\n' +
+            '                <div className={cl("info")}>\n' +
+            '                    <div>\n' +
+            '                        <Forms.FormText>{plugin.description}</Forms.FormText>\n' +
+            '                        {!!plugin.tags?.length && <PluginTags tags={plugin.tags} />}\n' +
+            '                    </div>\n' +
+            '                </div>\n' +
+            '            }\n' +
+            '        >',
+        replace:
+            '        <ModalRoot transitionState={transitionState} size={ModalSize.MEDIUM}>\n' +
+            '            <ModalHeader separator={false} className={Margins.bottom8}>\n' +
+            '                <div className={cl("header")}>\n' +
+            '                    <div className={cl("heading")}>\n' +
+            '                        <Text variant="heading-xl/bold" style={{ flexGrow: 1 }}>{plugin.name}</Text>\n' +
+            '                        {!pluginMeta.userPlugin && (\n' +
+            '                            <div className="vc-settings-modal-links">\n' +
+            '                                <FavoriteButton\n' +
+            '                                    isFavorite={pluginSettings.isFavorite ?? false}\n' +
+            '                                    onClick={() => pluginSettings.isFavorite = !pluginSettings.isFavorite}\n' +
+            '                                />\n' +
+            '                                <WebsiteButton\n' +
+            '                                    text="View more info"\n' +
+            '                                    href={`https://github.com/MaxxTopia/discordmaxxer/blob/main/vencord-src/src/plugins/${plugin.name}`}\n' +
+            '                                />\n' +
+            '                                <GithubButton\n' +
+            '                                    text="View source code"\n' +
+            '                                    href={`https://github.com/${gitRemote}/tree/main/src/plugins/${pluginMeta.folderName}`}\n' +
+            '                                />\n' +
+            '                            </div>\n' +
+            '                        )}\n' +
+            '                    </div>\n' +
+            '                </div>\n' +
+            '                <ModalCloseButton onClick={onClose} />\n' +
+            '            </ModalHeader>\n' +
+            '            <ModalContent>\n' +
+            '                <div className={cl("info")}>\n' +
+            '                    <div>\n' +
+            '                        <Forms.FormText>{plugin.description}</Forms.FormText>\n' +
+            '                        {!!plugin.tags?.length && <PluginTags tags={plugin.tags} />}\n' +
+            '                    </div>\n' +
+            '                </div>'
+    },
+    {
+        file: "src/components/settings/tabs/plugins/PluginModal.tsx",
+        find: "        </Modal>\n    );",
+        replace: "            </ModalContent>\n        </ModalRoot>\n    );"
+    },
+    {
+        file: "src/components/settings/tabs/plugins/PluginModal.tsx",
+        marker: "Discordmaxxer: validate plugin setting definitions.",
+        find:
+            "        const { settings } = plugin;\n" +
+            "        if (!hasSettings || !settings)\n" +
+            "            return <Forms.FormText>There are no settings for this plugin.</Forms.FormText>;\n\n" +
+            "        const options = Object.entries(settings.def).map(([key, setting]) => {",
+        replace:
+            "        const { settings } = plugin;\n" +
+            "        const definitions = settings?.def;\n" +
+            "        if (!hasSettings || !settings || !definitions || typeof definitions !== \"object\")\n" +
+            "            return <Forms.FormText>There are no settings for this plugin.</Forms.FormText>;\n\n" +
+            "        const options = Object.entries(definitions).map(([key, setting]) => {"
+    },
+    {
+        file: "src/components/settings/tabs/plugins/PluginModal.tsx",
+        marker: "Discordmaxxer: use validated plugin setting definitions.",
+        find: "                const option = plugin.settings!.def[key];",
+        replace:
+            "                // Discordmaxxer: use validated plugin setting definitions.\n" +
+            "                const option = definitions[key];"
+    },
+    {
+        file: "src/components/settings/tabs/plugins/PluginModal.tsx",
+        marker: "Discordmaxxer: isolate malformed setting visibility checks.",
+        find: "            if (isSettingHidden(settings, setting)) return null;",
+        replace:
+            "            try {\n" +
+            "                // Discordmaxxer: isolate malformed setting visibility checks.\n" +
+            "                if (isSettingHidden(settings, setting)) return null;\n" +
+            "            } catch {\n" +
+            "                return null;\n" +
+            "            }"
+    },
+    {
+        file: "src/api/PluginManager.ts",
+        marker: "Discordmaxxer: guard malformed plugin setting definitions.",
+        find:
+            "export function hasAnyVisibleSettings({ settings }: Plugin) {\n" +
+            "    return !!settings && Object.values(settings.def).some(s => !isSettingHidden(settings, s));\n" +
+            "}",
+        replace:
+            "export function hasAnyVisibleSettings({ settings }: Plugin) {\n" +
+            "    // Discordmaxxer: guard malformed plugin setting definitions.\n" +
+            "    const definitions = settings?.def;\n" +
+            "    if (!definitions || typeof definitions !== \"object\") return false;\n\n" +
+            "    return Object.values(definitions).some(setting => {\n" +
+            "        if (!setting || typeof setting !== \"object\") return false;\n" +
+            "        try {\n" +
+            "            return !isSettingHidden(settings, setting);\n" +
+            "        } catch {\n" +
+            "            return false;\n" +
+            "        }\n" +
+            "    });\n" +
+            "}"
     },
 
     // A stale setting type should be skipped instead of React attempting to
@@ -702,6 +981,12 @@ const PATCHES = [
             '    imageContextMenuPatch(children, props);\n' +
             '};\n\n' +
             'export default definePlugin({\n    name: "ImageZoom",'
+    },
+    {
+        file: "src/plugins/imageZoom/index.tsx",
+        marker: "Discordmaxxer: preserve native attachment image clicks",
+        find: '                    replace: "\'div\',{onClick:e=>e.stopPropagation(),children:$1"',
+        replace: '                    // Discordmaxxer: preserve native attachment image clicks.\n                    replace: "\'div\',{children:$1"'
     },
     {
         file: "src/plugins/imageZoom/index.tsx",
