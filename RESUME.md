@@ -1,10 +1,10 @@
 # Discordmaxxer — RESUME
 
-## 2026-11-03 — v0.7.116 full-dev merge candidate and image-menu crash hardening
+## 2026-11-03 — v0.7.116 published: full-dev merge and image-menu crash hardening
 
 Recovery note:
 - The public v0.7.115 release was cut from the clean remote branch while the canonical development checkout still contained uncommitted/untracked WIP. That was a release-process mistake; the public build therefore did not include the newer DMEmoji implementation and some later optimization work.
-- This isolated candidate starts from the v0.7.115 release evidence and ports the reviewed development source without touching the dirty canonical checkout.
+- This isolated release worktree started from the v0.7.115 release evidence and ported the reviewed development source without touching the dirty canonical checkout.
 
 Included in this candidate:
 - The full newer DMEmoji source and styles: Unicode/server emoji search, iEmoji keyboard link, native reaction support when a real Discord emoji identity is linked, local media shelf, saved-media context actions, and the mouse-click Send button.
@@ -21,7 +21,10 @@ Verification boundary:
 - Strict Vencord overlay — 89 rebrand patches applied or idempotent, 0 warnings; 29 custom plugin directories synced; Vencord build passed.
 - Windows packaging — passed with temporary and output paths relocated to E:. The complete installer, x64/ARM64 ZIPs, blockmap, and `latest.yml` are at `E:\discordmaxxer-package-0.7.116-release2`.
 - These local checks are not a substitute for Diggy's runtime test. The final user test is to right-click a normal image, GIF, and image link, open the menu repeatedly, use the ImageZoom controls, and confirm Discord remains open. Also verify DMEmoji search/reaction/attachment paths, widget/profile animation, voice, and screenshare.
-- The public tag, GitHub release, updater feed, and live deployment remain pending until the v0.7.116 commit and tag are published.
+- The first v0.7.116 tag attempt stopped safely at the release-notes gate because `docs/releases/v0.7.116.md` was missing; no partial release was created. The notes were added, the exact tag was moved to commit `0a890be`, and the corrected release workflow `41662865968` passed end-to-end.
+- GitHub Release `v0.7.116` is public at `https://github.com/MaxxTopia/discordmaxxer/releases/tag/v0.7.116` with the installer, x64/ARM64 ZIPs, blockmap, and `latest.yml`. The public updater feed returned HTTP 200 with version `0.7.116`.
+- Maxxtopia release-sync run `41663803221` succeeded and Cloudflare Pages deploy run `41663873577` succeeded. `https://maxxtopia.com/discordmaxxer` returned HTTP 200 and points to the v0.7.116 installer.
+- The source/build/release gates are complete; Diggy's updated-client runtime checks remain open for the image context menu, DMEmoji, widget/profile animation, voice, screenshare, and cross-PC rendering.
 
 ## 2026-11-03 — v0.7.115 coordinated release candidate
 
