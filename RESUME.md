@@ -1,5 +1,27 @@
 # Discordmaxxer — RESUME
 
+## 2026-11-03 — DMHub plugin-settings host verified in local candidate (not released)
+
+Scope:
+- Diggy reproduced the same settings-render crash from multiple plugins opened through DMHub. This was treated as a shared plugin-settings host issue, not as a DMProfileCosmetics-only defect.
+
+Change:
+- Hardened the shared `PluginModal` author metadata path in `overlay-scripts/rebrand-vencord.mjs`: malformed or missing author metadata now normalizes to an empty list, the author hook uses that safe list, and the overflow-author row returns nothing when there is no overflow. This removes the unsafe undefined `.length` path while retaining the existing per-plugin error boundary.
+
+Verification:
+- `pnpm overlay:vencord` passed with 0 warnings; the rebuilt staged Vencord fingerprint matched the candidate checkout.
+- `pnpm test`, `pnpm build`, `node overlay-scripts/verify-build.mjs`, `pnpm verifyPlugins`, and `git diff --check` passed.
+- The project validator connected to the candidate on port 9224 and passed inventory, DMHub visual, CompactView/Tournament hotkey, and mass-delete wiring phases with the badge phase skipped.
+- Direct candidate runtime test through DMHub opened `DMProfileCosmetics` with the live profile-cosmetics showroom, 58 action-group skins, palette/effect/intensity/speed controls, and no crash text. The same route also opened `DMDisplayNameStyle` and `DMProfileFlair` without the shared settings error.
+- A candidate screenshot was captured at `overlay-scripts/screenshots/candidate-dmprofilecosmetics-showroom.png` for visual review.
+
+Release boundary:
+- No commit, tag, push, or deployment was made for this follow-up. Public v0.7.117 remains the live build; this fix is currently only in the isolated candidate worktree `C:\Users\Diggy\projects\discordmaxxer-full-dev-merge-20261103c`.
+- This verifies settings mounting and the shared crash path. It does not yet prove every plugin's event handlers or the separate image right-click crash path.
+
+Next action:
+- Review the intended diff and, only with release authorization, commit/package/publish this candidate. After publication, Diggy should update the normal client and repeat DMHub -> Profile Cosmetics, one other plugin, and the image right-click test.
+
 ## 2026-11-03 — v0.7.117 published: shared plugin-settings crash containment
 
 Diagnosis:

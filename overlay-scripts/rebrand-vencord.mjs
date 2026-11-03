@@ -495,6 +495,63 @@ const PATCHES = [
             "        userPlugin: true,\n" +
             "    };"
     },
+    // Older/custom plugin manifests can omit authors entirely. The native
+    // modal reads that field in several places before the plugin settings
+    // component mounts, so normalize it at the boundary instead of letting
+    // one malformed manifest crash the settings renderer.
+    {
+        file: "src/components/settings/tabs/plugins/PluginModal.tsx",
+        marker: "Discordmaxxer: normalize plugin author metadata.",
+        find: "interface PluginModalProps extends RenderModalProps {",
+        replace:
+            "const EMPTY_PLUGIN_AUTHORS: Plugin[\"authors\"] = [];\n\n" +
+            "// Discordmaxxer: normalize plugin author metadata.\n" +
+            "interface PluginModalProps extends RenderModalProps {"
+    },
+    {
+        file: "src/components/settings/tabs/plugins/PluginModal.tsx",
+        marker: "Discordmaxxer: use normalized plugin authors.",
+        find: "export default function PluginModal({ plugin, onRestartNeeded, onClose }: PluginModalProps) {\n    const pluginSettings = useSettings([`plugins.${plugin.name}.*`]).plugins[plugin.name];",
+        replace:
+            "export default function PluginModal({ plugin, onRestartNeeded, onClose }: PluginModalProps) {\n" +
+            "    // Discordmaxxer: use normalized plugin authors.\n" +
+            "    const pluginAuthors = Array.isArray(plugin.authors) ? plugin.authors : EMPTY_PLUGIN_AUTHORS;\n" +
+            "    const pluginSettings = useSettings([`plugins.${plugin.name}.*`]).plugins[plugin.name];"
+    },
+    {
+        file: "src/components/settings/tabs/plugins/PluginModal.tsx",
+        marker: "Discordmaxxer: render only valid plugin author overflow.",
+        find:
+            "    function renderMoreUsers(_label: string, count: number) {\n" +
+            "        const sliceCount = plugin.authors.length - count;\n" +
+            "        const sliceStart = plugin.authors.length - sliceCount;\n" +
+            "        const sliceEnd = sliceStart + plugin.authors.length - count;\n\n" +
+            "        return (\n" +
+            "            <Tooltip text={plugin.authors.slice(sliceStart, sliceEnd).map(u => u.name).join(\", \")}",
+        replace:
+            "    function renderMoreUsers(_label: string, count: number) {\n" +
+            "        // Discordmaxxer: render only valid plugin author overflow.\n" +
+            "        const sliceCount = Math.max(pluginAuthors.length - count, 0);\n" +
+            "        if (!sliceCount) return null;\n" +
+            "\n" +
+            "        const sliceStart = pluginAuthors.length - sliceCount;\n" +
+            "        const sliceEnd = sliceStart + sliceCount;\n\n" +
+            "        return (\n" +
+            "            <Tooltip text={pluginAuthors.slice(sliceStart, sliceEnd).map(u => u.name).join(\", \")}"
+    },
+    {
+        file: "src/components/settings/tabs/plugins/PluginModal.tsx",
+        marker: "Discordmaxxer: read normalized plugin authors.",
+        find: "            for (const user of plugin.authors.slice(0, 6)) {",
+        replace: "            for (const user of pluginAuthors.slice(0, 6)) {"
+    },
+    {
+        file: "src/components/settings/tabs/plugins/PluginModal.tsx",
+        marker: "Discordmaxxer: subscribe to normalized plugin authors.",
+        find: "    }, [plugin.authors]);",
+        replace: "    }, [pluginAuthors]);"
+    },
+
     // A stale setting type should be skipped instead of React attempting to
     // render an undefined component and crashing the whole settings modal.
     {
