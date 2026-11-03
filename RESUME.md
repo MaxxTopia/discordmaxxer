@@ -1,11 +1,11 @@
 # Discordmaxxer — RESUME
 
-## 2026-11-03 — v0.7.114 clean release candidate / conditional v0.7.115
+## 2026-11-03 — v0.7.115 coordinated release candidate
 
 Candidate state:
 - Isolated worktree: `C:\Users\Diggy\projects\discordmaxxer-release-candidate-20261103`
 - Branch: `codex/release-v0.7.115-candidate`
-- Base: `origin/main` at `f3dbc7a5` (`v0.7.114`); the public `v0.7.114` source and tag were not changed.
+- Base: `origin/main` at `f3dbc7a5` (`v0.7.114`); package version is now `0.7.115`, while the public `v0.7.114` source and tag remain unchanged.
 - The canonical dirty checkout and its unrelated WIP remain untouched.
 
 Reviewed candidate changes:
@@ -20,17 +20,20 @@ Verification completed in this candidate:
 - Strict Vencord overlay — 86/86 rebrand patches applied or idempotent, 0 warnings; 28 custom plugin directories synced; Vencord build passed.
 - `pnpm build`, `node overlay-scripts/verify-build.mjs`, `pnpm verifyPlugins`, and `git diff --check` — passed. Registry counts: 55 defaults, 10 bundles, 9 featured, 242 registered IDs.
 - `pnpm package:dir` — passed; local Windows executable created at `dist\win-unpacked\discordmaxxer.exe` (225,949,696 bytes).
+- `pnpm package:win` — passed; local artifacts include `dist\Discordmaxxer-Setup-0.7.115.exe` (211,766,707 bytes), both Windows architecture ZIPs, and `dist\latest.yml` for updater validation.
 - Isolated packaged runtime validator — passed with staged Vencord matching, 207 plugins registered, 65 enabled, watched plugins present/enabled, Tournament and CompactView hotkey paths toggling, and MassDelete patches wired. Badge mutation was intentionally skipped because it changes account state; the DMHub panel assertion remains a known validator/UI boundary.
 
 Release boundary:
-- No commit, tag, push, deployment, or public artifact update was made. Public `v0.7.114` remains the live release.
+- The profile-media Worker integration is pushed to `optimizationmaxxing` `main` at `f35282e` and live at `https://optmaxxing-vip.maxxtopia.workers.dev`; `/healthz` and `/readyz` returned HTTP 200.
+- The VIP page clarification is pushed to `maxxtopia` `main` at `98c891c`; Pages deployment run `41641612274` succeeded and `/discordmaxxer/vip` returned HTTP 200 with the new profile-flair explanation.
+- The client v0.7.115 source and local updater artifacts are ready, but the client commit, tag, GitHub release, and updater-feed verification are still pending.
 - The previous benchmark is for the packaged `v0.7.63` candidate; no fresh comparative benchmark has been run for this `v0.7.114`-based candidate, so no new performance claim is authorized.
-- The coordinated shared-flair gate is still open: two-account/cross-PC recipient verification and the corresponding Worker/website review are not complete. The canonical local release draft explicitly says not to publish until that gate closes.
+- Two-account/cross-PC recipient verification remains a user-owed acceptance test after the updater is published.
 - Human voice-call and screen-share quality observation remains unverified. The native Windows loopback test passed, but that is not a substitute for a real Discord call.
-- `package:dir` is a local smoke package and has no updater `app-update.yml`; a publishable `package:win`/installer and updater verification are still required for an actual release.
+- The local `package:win` installer has `latest.yml`, but that is not public updater proof until GitHub Actions publishes the tag release and the public feed is fetched.
 
 Next action:
-- After the cross-PC/Worker/website gate is closed, bump the candidate to `v0.7.115`, add `docs/releases/v0.7.115.md`, run the documented Windows package/release workflow, then tag/push only after reviewing the exact release diff and verifying the GitHub assets/updater. Until then this is a clean, locally verified candidate—not a public release.
+- Review and commit the exact v0.7.115 package/release-note diff, tag and push the client release, wait for GitHub Actions, then verify the public installer/latest.yml before asking Diggy to update the other PC.
 
 ## 2026-10-24 v0.7.114 published — Voice audio priority shielding & static prevention
 
