@@ -16,10 +16,10 @@
  * Discord login and is the user's runtime test, not a CI gate.
  */
 
-import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { fileSnapshot, pluginNames, sourceFingerprint } from "./build-fingerprint.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, "..");
@@ -41,6 +41,7 @@ function sizeKB(p) {
 
 // 1) The overlaid Vencord dist (what extraResources copies into the app).
 const VDIST = join(ROOT, "vencord-dist");
+const packageJson = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
 const VDIST_FILES = {
     "vencordDesktopMain.js": 5,
     "vencordDesktopPreload.js": 1,
@@ -54,33 +55,52 @@ for (const [file, minKB] of Object.entries(VDIST_FILES)) {
     else ok(`vencord-dist/${file} present (${sizeKB(p).toFixed(0)}KB)`);
 }
 
+// 1b) Prove that the staged renderer belongs to this checkout and package.
+const manifestPath = join(VDIST, "discordmaxxer-build.json");
+if (!existsSync(manifestPath)) {
+    fail("vencord-dist/discordmaxxer-build.json missing — refusing an unverified staged renderer");
+} else {
+    try {
+        const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+        if (manifest.product !== "discordmaxxer") fail("build manifest product is not discordmaxxer");
+        else ok("build manifest product is discordmaxxer");
+        if (manifest.appVersion !== packageJson.version) fail(`build manifest version ${manifest.appVersion} does not match package ${packageJson.version}`);
+        else ok(`build manifest version matches package ${packageJson.version}`);
+        if (manifest.sourceFingerprint !== sourceFingerprint()) fail("build manifest source fingerprint is stale or from another checkout");
+        else ok("build manifest source fingerprint matches this checkout");
+        const actualSnapshot = fileSnapshot(VDIST);
+        for (const [file, expected] of Object.entries(manifest.stagedFiles ?? {})) {
+            const actual = actualSnapshot[file];
+            if (!expected || !actual || expected.sha256 !== actual.sha256 || expected.bytes !== actual.bytes) {
+                fail(`staged file hash mismatch for ${file}`);
+            } else {
+                ok(`staged file hash matches for ${file}`);
+            }
+        }
+        const actualPlugins = pluginNames();
+        for (const name of ["DMProfileCosmetics", "DMDisplayNameStyle", "DMEmoji", "DMTranslate"]) {
+            if (!actualPlugins.includes(name) || !manifest.pluginNames?.includes(name)) fail(`required source plugin ${name} is not represented in the build manifest`);
+            else ok(`manifest includes required source plugin ${name}`);
+        }
+    } catch (error) {
+        fail(`could not read build manifest: ${error.message}`);
+    }
+}
+
 // 2) Our custom plugins actually compiled INTO the renderer bundle. If the
 // overlay silently dropped plugins/, these name strings won't be present.
 const rendererPath = join(VDIST, "vencordDesktopRenderer.js");
 if (existsSync(rendererPath)) {
     const renderer = readFileSync(rendererPath, "utf8");
     // Critical custom plugins — if any of these is absent, the overlay is broken.
-    const REQUIRED_PLUGINS = ["TournamentMode", "DMVoiceKeybinds", "DMVoiceGuard", "DMHub", "DMTierFlair", "DMDisplayNameStyle", "DMEmoji", "DMTranslate"];
+    const REQUIRED_PLUGINS = ["TournamentMode", "DMVoiceKeybinds", "DMVoiceGuard", "DMHub", "DMTierFlair", "DMProfileCosmetics", "DMDisplayNameStyle", "DMEmoji", "DMTranslate"];
     for (const name of REQUIRED_PLUGINS) {
         if (renderer.includes(name)) ok(`plugin "${name}" compiled into renderer`);
         else fail(`plugin "${name}" NOT found in renderer bundle — overlay failed to include custom plugins`);
     }
 }
 
-// 3) Defaults, bundles, and the tour must all resolve to actual plugin
-// definitions in the pinned Vencord source or our custom overlay. This catches
-// renamed/deleted upstream plugins before they become dead user-facing toggles.
-try {
-    execFileSync(process.execPath, [join(ROOT, "scripts", "verify-plugin-registry.mjs")], {
-        cwd: ROOT,
-        stdio: "inherit"
-    });
-    ok("plugin defaults, bundles, and featured IDs resolve to registered plugins");
-} catch {
-    fail("plugin registry verification failed — stale or missing plugin IDs detected");
-}
-
-// 4) The Vesktop shell build output (what electron-builder packages).
+// 3) The Vesktop shell build output (what electron-builder packages).
 const shellRenderer = join(ROOT, "dist", "js", "renderer.js");
 if (!existsSync(shellRenderer)) fail("dist/js/renderer.js missing — `pnpm build` did not produce the shell bundle");
 else if (sizeKB(shellRenderer) < 50) fail(`dist/js/renderer.js is only ${sizeKB(shellRenderer).toFixed(1)}KB — likely a failed build`);

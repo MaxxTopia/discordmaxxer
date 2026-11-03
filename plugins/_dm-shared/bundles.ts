@@ -36,7 +36,7 @@ export const BUNDLES: Bundle[] = [
         id: "privacy",
         title: "Privacy & Anti-track",
         emoji: "🛡️",
-        blurb: "Kills Discord's analytics endpoints, strips tracking from links, stops the idle-disconnect heartbeat, and hides typing presence.",
+        blurb: "Kills Discord's analytics endpoints, strips tracking from links, and stops the idle-disconnect heartbeat.",
         plugins: [
             "NoTrack",
             "ClearURLs",

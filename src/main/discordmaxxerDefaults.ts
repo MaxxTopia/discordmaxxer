@@ -59,6 +59,7 @@ const PLUGINS_DEFAULT_ON: string[] = [
     "MassDelete",
     "DMBadge",
     "DMProfileFlair", // user-set custom banner / animated avatar / theme colors
+    "DMProfileCosmetics", // profile-popout control skin + native cosmetic-safe local effects
     "DMTheme",
     "VideoBackground",
     "DMHub",
@@ -77,7 +78,8 @@ const PLUGINS_DEFAULT_ON: string[] = [
     "DMTranslate", // right-click any message -> translate; no helper app or download
     "DMEmoji", // local animated emoji library & chat attachment button
     "DMBeta", // MAXXER++ perk: opt-in beta channel for prerelease GitHub tags
-    "DMVotes" // MAXXER++ perk: panel for voting on candidate features (polls in #vip-chat)
+    "DMVotes", // MAXXER++ perk: panel for voting on candidate features (polls in #vip-chat)
+    "PlaylistmaxxingPresence" // music.maxxtopia.com rich-presence listening card
 ];
 
 const VENCORD_DEFAULTS = {

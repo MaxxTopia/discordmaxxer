@@ -708,117 +708,81 @@ const PATCHES = [
             '    DonorBadges = {};\n' +
             '}'
     },
-    // Discordmaxxer: Vencord's current PluginModal uses the @webpack/common
-    // Modal resolver. On the Discord build we support, that resolver can be
-    // null at render time, which crashes the renderer before a plugin editor
-    // mounts. The legacy modal primitives remain available and are verified
-    // in the same client, so keep the editor on that stable API.
+
+    // ── BetterFolders: carry ID and renderer-transition safeguards into CI ──
+    // The local Vencord checkout is ignored and CI clones it from the pinned
+    // commit. Keep the folder repair in this tracked overlay so a release
+    // cannot silently fall back to the old disappearing-child behavior.
     {
-        file: "src/components/settings/tabs/plugins/PluginModal.tsx",
-        marker: "Discordmaxxer: PluginModal legacy modal compatibility",
-        find:
-            'import { RenderModalProps, User } from "@vencord/discord-types";\n' +
-            'import { findCssClassesLazy } from "@webpack";\n' +
-            'import { Clickable, FluxDispatcher, Forms, Modal, openModal, React, Text, Tooltip, useEffect, useMemo, UserStore, UserSummaryItem, UserUtils, useState } from "@webpack/common";',
+        file: "src/plugins/betterFolders/index.tsx",
+        marker: "export function normalizeFolderId",
+        find: "let lastGuildId = null as string | null;\nlet dispatchingFoldersClose = false;\n",
         replace:
-            'import { RenderModalProps, User } from "@vencord/discord-types";\n' +
-            'import { findCssClassesLazy } from "@webpack";\n' +
-            '// Discordmaxxer: PluginModal legacy modal compatibility\n' +
-            'import { ModalCloseButton, ModalContent, ModalHeader, ModalRoot, ModalSize, openModal } from "@utils/modal";\n' +
-            'import { Clickable, FluxDispatcher, Forms, React, Text, Tooltip, useEffect, useMemo, UserStore, UserSummaryItem, UserUtils, useState } from "@webpack/common";'
+            "let lastGuildId = null as string | null;\n" +
+            "let dispatchingFoldersClose = false;\n\n" +
+            "// Discordmaxxer: BetterFolders normalized ID helpers. Discord has\n" +
+            "// emitted folder/guild IDs as both numbers and strings across\n" +
+            "// client revisions; compare them at the store/React boundary.\n" +
+            "export function normalizeFolderId(value: unknown): string | null {\n" +
+            "    return value === null || value === undefined ? null : String(value);\n" +
+            "}\n\n" +
+            "export function hasFolderId(ids: Iterable<unknown> | undefined, value: unknown): boolean {\n" +
+            "    const target = normalizeFolderId(value);\n" +
+            "    if (target === null || !ids) return false;\n\n" +
+            "    for (const id of ids) {\n" +
+            "        if (normalizeFolderId(id) === target) return true;\n" +
+            "    }\n\n" +
+            "    return false;\n" +
+            "}\n"
     },
     {
-        file: "src/components/settings/tabs/plugins/PluginModal.tsx",
-        marker: "Discordmaxxer: PluginModal legacy component aliases",
-        find:
-            'const UserRecord: Constructor<Partial<User>> = proxyLazy(() => UserStore.getCurrentUser().constructor) as any;',
-        replace:
-            'const UserRecord: Constructor<Partial<User>> = proxyLazy(() => UserStore.getCurrentUser().constructor) as any;\n\n' +
-            '// Discordmaxxer: PluginModal legacy component aliases\n' +
-            '// @utils/modal exports these as `never` in newer Vencord typings even\n' +
-            '// though the runtime components are still present and stable.\n' +
-            'const LegacyModalRoot: any = ModalRoot;\n' +
-            'const LegacyModalHeader: any = ModalHeader;\n' +
-            'const LegacyModalContent: any = ModalContent;\n' +
-            'const LegacyModalCloseButton: any = ModalCloseButton;'
+        file: "src/plugins/betterFolders/index.tsx",
+        find: "return SortedGuildStore.getGuildFolders().find(folder => folder.guildIds.includes(id));",
+        replace: "return SortedGuildStore.getGuildFolders().find(folder =>\n        folder.guildIds?.some(guildId => normalizeFolderId(guildId) === normalizeFolderId(id))\n    );"
     },
     {
-        file: "src/components/settings/tabs/plugins/PluginModal.tsx",
-        marker: "Discordmaxxer: PluginModal stable legacy modal wrapper",
-        find:
-            '    return (\n' +
-            '        <Modal\n' +
-            '            transitionState={transitionState}\n' +
-            '            onClose={onClose}\n' +
-            '            size="lg"\n' +
-            '            title={\n' +
-            '                <div className={cl("header")}>\n' +
-            '                    <BaseText tag="h1" weight="semibold" size="lg">{plugin.name}</BaseText>\n' +
-            '                    {!pluginMeta.userPlugin && (\n' +
-            '                        <div className="vc-settings-modal-links">\n' +
-            '                            <FavoriteButton\n' +
-            '                                isFavorite={pluginSettings.isFavorite ?? false}\n' +
-            '                                onClick={() => pluginSettings.isFavorite = !pluginSettings.isFavorite}\n' +
-            '                            />\n' +
-            '                            <WebsiteButton\n' +
-            '                                text="View more info"\n' +
-            '                                href={`https://github.com/MaxxTopia/discordmaxxer/blob/main/vencord-src/src/plugins/${plugin.name}`}\n' +
-            '                            />\n' +
-            '                            <GithubButton\n' +
-            '                                text="View source code"\n' +
-            '                                href={`https://github.com/${gitRemote}/tree/main/src/plugins/${pluginMeta.folderName}`}\n' +
-            '                            />\n' +
-            '                        </div>\n' +
-            '                    )}\n' +
-            '                </div>\n' +
-            '            }\n' +
-            '            subtitle={\n' +
-            '                <div className={cl("info")}>\n' +
-            '                    <div>\n' +
-            '                        <Forms.FormText>{plugin.description}</Forms.FormText>\n' +
-            '                        {!!plugin.tags?.length && <PluginTags tags={plugin.tags} />}\n' +
-            '                    </div>\n' +
-            '                </div>\n' +
-            '            }\n' +
-            '        >\n' +
-            '            <div className={"vc-settings-modal-content"}>',
-        replace:
-            '    return (\n' +
-            '        <LegacyModalRoot transitionState={transitionState} size={ModalSize.MEDIUM}>\n' +
-            '            {/* Discordmaxxer: PluginModal stable legacy modal wrapper */}\n' +
-            '            <LegacyModalHeader separator={false} className={Margins.bottom8}>\n' +
-            '                <div className={cl("header")}>\n' +
-            '                    <BaseText tag="h1" weight="semibold" size="lg">{plugin.name}</BaseText>\n' +
-            '                    <LegacyModalCloseButton onClick={onClose} />\n' +
-            '                </div>\n' +
-            '            </LegacyModalHeader>\n' +
-            '            <LegacyModalContent className={"vc-settings-modal-content"}>\n' +
-            '                <div className={cl("info")}>\n' +
-            '                    <Forms.FormText>{plugin.description}</Forms.FormText>\n' +
-            '                    {!!plugin.tags?.length && <PluginTags tags={plugin.tags} />}\n' +
-            '                    {!pluginMeta.userPlugin && (\n' +
-            '                        <div className="vc-settings-modal-links">\n' +
-            '                            <FavoriteButton\n' +
-            '                                isFavorite={pluginSettings.isFavorite ?? false}\n' +
-            '                                onClick={() => pluginSettings.isFavorite = !pluginSettings.isFavorite}\n' +
-            '                            />\n' +
-            '                            <WebsiteButton\n' +
-            '                                text="View more info"\n' +
-            '                                href={`https://github.com/MaxxTopia/discordmaxxer/blob/main/vencord-src/src/plugins/${plugin.name}`}\n' +
-            '                            />\n' +
-            '                            <GithubButton\n' +
-            '                                text="View source code"\n' +
-            '                                href={`https://github.com/${gitRemote}/tree/main/src/plugins/${pluginMeta.folderName}`}\n' +
-            '                            />\n' +
-            '                        </div>\n' +
-            '                    )}\n' +
-            '                </div>\n' +
-            '                <div className={Margins.top8} />'
+        file: "src/plugins/betterFolders/index.tsx",
+        find: "if (guildFolder?.folderId) {",
+        replace: "if (guildFolder?.folderId !== null && guildFolder?.folderId !== undefined) {"
     },
     {
-        file: "src/components/settings/tabs/plugins/PluginModal.tsx",
-        find: '            </div>\n        </Modal>\n    );',
-        replace: '            </LegacyModalContent>\n        </LegacyModalRoot>\n    );'
+        file: "src/plugins/betterFolders/index.tsx",
+        find: "for (const id of expandedFolders) if (id !== data.folderId)",
+        replace: "for (const id of expandedFolders) if (!hasFolderId([id], data.folderId))"
+    },
+    {
+        file: "src/plugins/betterFolders/index.tsx",
+        marker: "Fail open during a renderer transition.",
+        find:
+            "if (\n" +
+            "            !isBetterFolders ||\n" +
+            "            node.type === \"folder\" && expandedFolderIds?.has(node.id) ||\n" +
+            "            node.type === \"guild\" && expandedFolderIds?.has(node.parentId)\n" +
+            "        ) {",
+        replace:
+            "if (\n" +
+            "            !isBetterFolders ||\n" +
+            "            // Discordmaxxer: fail open during a renderer transition.\n" +
+            "            // Missing props must not blank the dedicated sidebar.\n" +
+            "            expandedFolderIds == null ||\n" +
+            "            node.type === \"folder\" && hasFolderId(expandedFolderIds, node.id) ||\n" +
+            "            node.type === \"guild\" && hasFolderId(expandedFolderIds, node.parentId)\n" +
+            "        ) {"
+    },
+    {
+        file: "src/plugins/betterFolders/FolderSideBar.tsx",
+        find: "import { ExpandedGuildFolderStore, settings, SortedGuildStore } from \".\";",
+        replace: "import { ExpandedGuildFolderStore, hasFolderId, normalizeFolderId, settings, SortedGuildStore } from \".\";"
+    },
+    {
+        file: "src/plugins/betterFolders/FolderSideBar.tsx",
+        find:
+            "        if (expandedFolders.has(folder.folderId) && folder.guildIds?.length) {\n" +
+            "            expandedFolderIds.add(folder.folderId);",
+        replace:
+            "        const folderId = normalizeFolderId(folder.folderId);\n" +
+            "        if (folderId && hasFolderId(expandedFolders, folderId) && folder.guildIds?.length) {\n" +
+            "            expandedFolderIds.add(folderId);"
     }
 ];
 

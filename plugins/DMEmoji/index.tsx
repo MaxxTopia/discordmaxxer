@@ -1,7 +1,10 @@
 /*
  * Discordmaxxer DMEmoji
- * Local animated emoji library for chat attachments, with an optional bridge
- * to real Discord custom emoji reactions when an emoji identity is available.
+ * A fast emoji drawer for native Discord emoji plus a private local media shelf.
+ *
+ * Native Unicode and guild emoji can be inserted or used as reactions. Imported
+ * local images/GIFs remain attachments unless the user links them to a real
+ * Discord custom emoji identity.
  */
 
 import "./styles.css";
@@ -12,6 +15,7 @@ import { ChatBarButton, ChatBarButtonFactory } from "@api/ChatButtons";
 import { definePluginSettings } from "@api/Settings";
 import ErrorBoundary from "@components/ErrorBoundary";
 import { Devs } from "@utils/constants";
+import { copyWithToast, insertTextIntoChatInputBox } from "@utils/discord";
 import { ModalCloseButton, ModalContent, ModalHeader, ModalRoot, ModalSize } from "@utils/modal";
 import definePlugin, { IconComponent, OptionType } from "@utils/types";
 import { Message, RenderModalProps } from "@vencord/discord-types";
@@ -19,13 +23,16 @@ import {
     Button,
     ChannelStore,
     DraftType,
+    EmojiStore,
     Forms,
+    GuildStore,
     Menu,
     MessageActions,
     openModal,
     Toasts,
     UploadHandler,
     useEffect,
+    useMemo,
     useRef,
     useState
 } from "@webpack/common";
@@ -34,8 +41,9 @@ const RECORDS_KEY = "Discordmaxxer_DMEmoji_records";
 const FILE_KEY_PREFIX = "Discordmaxxer_DMEmoji_file_";
 const MAX_FILE_BYTES = 4 * 1024 * 1024;
 const ACCEPTED_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+const IEMOJI_KEYBOARD_URL = "https://www.iemoji.com/keyboard";
 
-// Legacy modal aliases from @utils/modal
+// Legacy modal aliases from @utils/modal.
 const LegacyModalRoot: any = ModalRoot;
 const LegacyModalHeader: any = ModalHeader;
 const LegacyModalContent: any = ModalContent;
@@ -44,11 +52,23 @@ const LegacyModalCloseButton: any = ModalCloseButton;
 type EmojiRecord = {
     id: string;
     name: string;
-    fileName: string;
-    mime: string;
-    size: number;
+    fileName?: string;
+    mime?: string;
+    size?: number;
     createdAt: number;
     discordEmojiRef?: string;
+};
+
+type NativeEmojiChoice = {
+    key: string;
+    kind: "unicode" | "custom";
+    name: string;
+    value: string;
+    id?: string;
+    animated: boolean;
+    imageUrl?: string;
+    sourceLabel: string;
+    searchText: string;
 };
 
 let emojiRecordsCache: EmojiRecord[] = [];
@@ -66,7 +86,7 @@ function safeEmojiName(fileName: string): string {
     return cleaned || "local-emoji";
 }
 
-function extensionForMime(mime: string): string {
+function extensionForMime(mime = "image/png"): string {
     if (mime === "image/gif") return "gif";
     if (mime === "image/webp") return "webp";
     if (mime === "image/jpeg") return "jpg";
@@ -74,8 +94,7 @@ function extensionForMime(mime: string): string {
 }
 
 function emojiFileName(record: EmojiRecord): string {
-    const extension = extensionForMime(record.mime);
-    return `${record.name}.${extension}`;
+    return `${record.name}.${extensionForMime(record.mime)}`;
 }
 
 async function readRecords(): Promise<EmojiRecord[]> {
@@ -189,15 +208,78 @@ async function sendEmojiAsImage(record: EmojiRecord, channelId: string, onDone?:
 }
 
 function parseDiscordEmojiRef(
-    value: string | undefined,
+    value: unknown,
     fallbackName: string
 ): { id: string; name: string; isAnimated: boolean; } | null {
-    const raw = value?.trim() ?? "";
+    // DataStore can contain records written by older DMEmoji builds. Treat a
+    // malformed optional field as an unlinked local image instead of allowing
+    // a context-menu render to throw while Discord is opening it.
+    const raw = typeof value === "string" ? value.trim() : "";
     if (!raw) return null;
     const markup = raw.match(/^<(a?):([^:>]+):(\d+)>$/);
     if (markup) return { id: markup[3], name: markup[2], isAnimated: markup[1] === "a" };
     if (!/^\d{5,25}$/.test(raw)) return null;
     return { id: raw, name: fallbackName, isAnimated: false };
+}
+
+function formatDiscordEmojiRef(choice: NativeEmojiChoice): string | undefined {
+    if (choice.kind !== "custom" || !choice.id) return undefined;
+    return `<${choice.animated ? "a" : ""}:${choice.name}:${choice.id}>`;
+}
+
+function getDiscordEmojiImageUrl(id: string, animated: boolean): string {
+    const cdnHost = (window as any).GLOBAL_ENV?.CDN_HOST || "cdn.discordapp.com";
+    return `https://${cdnHost}/emojis/${id}.${animated ? "gif" : "png"}?size=64&quality=lossless`;
+}
+
+function getNativeEmojiChoices(query: string, channelId?: string, customOnly = false): NativeEmojiChoice[] {
+    try {
+        const guildId = channelId ? ChannelStore.getChannel(channelId)?.guild_id : undefined;
+        const context = EmojiStore.getDisambiguatedEmojiContext(guildId);
+        const normalized = query.trim().replace(/^:/, "").replace(/:$/, "").toLocaleLowerCase();
+        const choices: NativeEmojiChoice[] = [];
+        const seen = new Set<string>();
+
+        for (const emoji of context.getDisambiguatedEmoji()) {
+            const isCustom = emoji.type === 1;
+            if (customOnly && !isCustom) continue;
+
+            const name = emoji.name;
+            const names = isCustom ? [emoji.name] : emoji.names;
+            const guildName = isCustom && emoji.guildId ? GuildStore.getGuild(emoji.guildId)?.name : undefined;
+            const searchText = [...names, guildName ?? ""].join(" ").toLocaleLowerCase();
+            if (normalized && !searchText.includes(normalized)) continue;
+
+            const key = isCustom ? `custom:${emoji.id}` : `unicode:${emoji.surrogates}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+
+            choices.push({
+                key,
+                kind: isCustom ? "custom" : "unicode",
+                name,
+                value: isCustom ? `<${emoji.animated ? "a" : ""}:${name}:${emoji.id}>` : emoji.surrogates,
+                id: isCustom ? emoji.id : undefined,
+                animated: isCustom ? emoji.animated : false,
+                imageUrl: isCustom ? getDiscordEmojiImageUrl(emoji.id, emoji.animated) : emoji.url,
+                sourceLabel: isCustom ? guildName || "Server emoji" : "Unicode emoji",
+                searchText
+            });
+        }
+
+        return choices
+            .sort((a, b) => {
+                if (!normalized) return a.kind === b.kind ? 0 : a.kind === "unicode" ? -1 : 1;
+                const aStarts = a.searchText.startsWith(normalized);
+                const bStarts = b.searchText.startsWith(normalized);
+                if (aStarts !== bStarts) return aStarts ? -1 : 1;
+                return a.name.localeCompare(b.name);
+            })
+            .slice(0, 72);
+    } catch (error) {
+        console.warn("[DMEmoji] Native emoji data is not ready", error);
+        return [];
+    }
 }
 
 function reactWithEmoji(message: Message, record: EmojiRecord): void {
@@ -206,7 +288,7 @@ function reactWithEmoji(message: Message, record: EmojiRecord): void {
     if (!emoji || typeof addReaction !== "function") {
         Toasts.show({
             message:
-                "This local image can be sent as an attachment, but it has no usable Discord emoji identity for reactions.",
+                "This local image is an attachment. Link it to a real Discord custom emoji before using it as a reaction.",
             id: Toasts.genId(),
             type: Toasts.Type.FAILURE
         });
@@ -226,6 +308,41 @@ function reactWithEmoji(message: Message, record: EmojiRecord): void {
     }
 }
 
+function useNativeEmojiAction(message: Message | undefined, choice: NativeEmojiChoice, onClose?: () => void): void {
+    if (message) {
+        const addReaction = (MessageActions as any)?.addReaction;
+        if (typeof addReaction !== "function") {
+            Toasts.show({
+                message: "Discord's reaction action is unavailable in this build.",
+                id: Toasts.genId(),
+                type: Toasts.Type.FAILURE
+            });
+            return;
+        }
+
+        try {
+            addReaction(message.channel_id, message.id, {
+                id: choice.kind === "custom" ? choice.id : undefined,
+                name: choice.kind === "custom" ? choice.name : choice.value,
+                animated: choice.animated
+            });
+            Toasts.show({ message: `Reacted with :${choice.name}:`, id: Toasts.genId(), type: Toasts.Type.SUCCESS });
+            onClose?.();
+        } catch (error) {
+            console.warn("[DMEmoji] Native reaction failed", error);
+            Toasts.show({
+                message: "Discord rejected that reaction. The emoji may be unavailable in this channel.",
+                id: Toasts.genId(),
+                type: Toasts.Type.FAILURE
+            });
+        }
+        return;
+    }
+
+    insertTextIntoChatInputBox(`${choice.value} `);
+    onClose?.();
+}
+
 function DMEmojiIcon({ height = 20, width = 20, className }: { height?: number; width?: number; className?: string; }) {
     return (
         <svg aria-hidden="true" role="img" width={width} height={height} className={className} viewBox="0 0 24 24">
@@ -239,6 +356,18 @@ function DMEmojiIcon({ height = 20, width = 20, className }: { height?: number; 
                 strokeLinecap="round"
                 strokeWidth="2"
             />
+        </svg>
+    );
+}
+
+function SendMessageIcon({ height = 20, width = 20, className }: { height?: number; width?: number; className?: string; }) {
+    return (
+        <svg aria-hidden="true" role="img" width={width} height={height} className={className} viewBox="0 0 24 24">
+            <path
+                d="M3.4 4.2a1 1 0 0 1 1.28-.94l16.05 5.35a1.4 1.4 0 0 1 0 2.66L4.68 16.62a1 1 0 0 1-1.28-.94l-.25-4.22 9.1-.96a.5.5 0 0 0 0-1l-9.1-.96.25-4.34Z"
+                fill="currentColor"
+            />
+            <path d="m3.15 11.5 9.1-1" fill="none" stroke="var(--background-primary, #313338)" strokeLinecap="round" strokeWidth="1.2" />
         </svg>
     );
 }
@@ -284,18 +413,208 @@ function useEmojiLibrary() {
     return { records, setRecords, previewUrls, refresh: () => setRefreshToken(value => value + 1) };
 }
 
+function NativeEmojiCard({
+    choice,
+    message,
+    onClose
+}: {
+    choice: NativeEmojiChoice;
+    message?: Message;
+    onClose?: () => void;
+}) {
+    return (
+        <div className="dmemoji-native-card">
+            <button
+                type="button"
+                className="dmemoji-native-preview"
+                onClick={() => useNativeEmojiAction(message, choice, onClose)}
+                title={message ? "React with this emoji" : "Insert this emoji"}
+            >
+                {choice.imageUrl ? (
+                    <img src={choice.imageUrl} alt={choice.name} loading="lazy" />
+                ) : (
+                    <span>{choice.value}</span>
+                )}
+            </button>
+            <div className="dmemoji-native-copy">
+                <strong>:{choice.name}:</strong>
+                <span>{choice.sourceLabel}</span>
+            </div>
+            <div className="dmemoji-native-actions">
+                <button
+                    type="button"
+                    className="dmemoji-action dmemoji-action-primary"
+                    onClick={() => useNativeEmojiAction(message, choice, onClose)}
+                >
+                    {message ? "React" : "Insert"}
+                </button>
+                <button
+                    type="button"
+                    className="dmemoji-action"
+                    onClick={() => void copyWithToast(choice.value, "Emoji copied!")}
+                    aria-label={`Copy ${choice.name}`}
+                >
+                    Copy
+                </button>
+            </div>
+        </div>
+    );
+}
+
+function LocalEmojiEntry({
+    record,
+    previewUrl,
+    channelId,
+    message,
+    modal,
+    onClose,
+    onRecordsChange,
+    onRefresh
+}: {
+    record: EmojiRecord;
+    previewUrl?: string;
+    channelId?: string;
+    message?: Message;
+    modal: boolean;
+    onClose?: () => void;
+    onRecordsChange: (records: EmojiRecord[]) => void;
+    onRefresh: () => void;
+}) {
+    const [linking, setLinking] = useState(false);
+    const [linkQuery, setLinkQuery] = useState("");
+    const native = parseDiscordEmojiRef(record.discordEmojiRef, record.name);
+    const linkChoices = useMemo(
+        () => getNativeEmojiChoices(linkQuery, channelId, true).slice(0, 10),
+        [channelId, linkQuery]
+    );
+
+    async function linkNativeEmoji(choice: NativeEmojiChoice) {
+        const ref = formatDiscordEmojiRef(choice);
+        if (!ref) return;
+        onRecordsChange(await updateEmoji(record, { discordEmojiRef: ref }));
+        setLinking(false);
+        setLinkQuery("");
+    }
+
+    return (
+        <div className="dmemoji-local-card">
+            <div className="dmemoji-preview-wrap">
+                {previewUrl ? (
+                    <img className="dmemoji-preview" src={previewUrl} alt={record.name} />
+                ) : (
+                    <div className="dmemoji-preview dmemoji-preview-missing">Missing</div>
+                )}
+            </div>
+            <div className="dmemoji-entry-body">
+                <strong>{record.name}</strong>
+                <span className="dmemoji-meta">
+                    {Math.max(1, Math.round((record.size ?? 0) / 1024))} KB {record.mime === "image/gif" || record.mime === "image/webp" ? "animated-capable" : "image"}
+                </span>
+                <span className={native ? "dmemoji-native-status" : "dmemoji-attachment-status"}>
+                    {native ? `Reaction linked to :${native.name}:` : "Local attachment only"}
+                </span>
+                <div className="dmemoji-entry-actions">
+                    {channelId && (
+                        <button
+                            type="button"
+                            className="dmemoji-action dmemoji-action-primary"
+                            onClick={() => void sendEmojiAsImage(record, channelId, onClose)}
+                        >
+                            Attach
+                        </button>
+                    )}
+                    {message && native && (
+                        <button type="button" className="dmemoji-action" onClick={() => reactWithEmoji(message, record)}>
+                            React
+                        </button>
+                    )}
+                    {!modal && (
+                        <button type="button" className="dmemoji-action" onClick={() => setLinking(value => !value)}>
+                            {native ? "Change link" : "Link reaction"}
+                        </button>
+                    )}
+                    {!modal && (
+                        <button
+                            type="button"
+                            className="dmemoji-action dmemoji-action-danger"
+                            onClick={() =>
+                                void removeEmoji(record).then(async () => {
+                                    onRecordsChange(await readRecords());
+                                    onRefresh();
+                                })
+                            }
+                        >
+                            Remove
+                        </button>
+                    )}
+                </div>
+                {!modal && linking && (
+                    <div className="dmemoji-linker">
+                        <input
+                            className="dmemoji-native-input"
+                            value={linkQuery}
+                            placeholder="Search your server emoji"
+                            onChange={event => setLinkQuery(event.currentTarget.value)}
+                        />
+                        <div className="dmemoji-link-results">
+                            {linkChoices.map(choice => (
+                                <button
+                                    type="button"
+                                    className="dmemoji-link-choice"
+                                    key={choice.key}
+                                    onClick={() => void linkNativeEmoji(choice)}
+                                >
+                                    {choice.imageUrl ? <img src={choice.imageUrl} alt="" /> : <span>{choice.value}</span>}
+                                    <span>:{choice.name}:</span>
+                                </button>
+                            ))}
+                            {!linkChoices.length && <span className="dmemoji-meta">No usable server emoji found.</span>}
+                        </div>
+                        <input
+                            className="dmemoji-native-input"
+                            value={record.discordEmojiRef ?? ""}
+                            placeholder="Or paste <:name:id>"
+                            onChange={event => {
+                                const value = event.currentTarget.value;
+                                void updateEmoji(record, { discordEmojiRef: value }).then(onRecordsChange);
+                            }}
+                        />
+                    </div>
+                )}
+            </div>
+        </div>
+    );
+}
+
 function EmojiLibrary({
     channelId,
+    message,
     onClose,
     modal = false
 }: {
     channelId?: string;
+    message?: Message;
     onClose?: () => void;
     modal?: boolean;
 }) {
     const { records, setRecords, previewUrls, refresh } = useEmojiLibrary();
     const [status, setStatus] = useState("");
+    const [query, setQuery] = useState("");
+    const [activeTab, setActiveTab] = useState<"all" | "saved" | "unicode" | "server">("all");
     const inputRef = useRef<HTMLInputElement>(null);
+
+    const normalizedQuery = query.trim().toLocaleLowerCase();
+    const filteredRecords = useMemo(
+        () => records.filter(record => !normalizedQuery || record.name.toLocaleLowerCase().includes(normalizedQuery)),
+        [normalizedQuery, records]
+    );
+    const nativeChoices = useMemo(
+        () =>
+            getNativeEmojiChoices(query, channelId, activeTab === "server").filter(choice =>
+                activeTab === "unicode" ? choice.kind === "unicode" : activeTab === "server" ? choice.kind === "custom" : true
+            ),
+        [activeTab, channelId, query]
+    );
 
     async function handleImport(file: File | undefined) {
         if (!file) return;
@@ -303,100 +622,134 @@ function EmojiLibrary({
             const record = await importEmoji(file);
             setRecords(await readRecords());
             refresh();
-            setStatus(`${record.name} added. Use its image button to place it in chat.`);
+            setStatus(`${record.name} saved locally. Use Attach to place it in chat.`);
         } catch (error) {
             setStatus(error instanceof Error ? error.message : "Could not import that image.");
         }
     }
 
+    const showSaved = activeTab === "all" || activeTab === "saved";
+    const showNative = activeTab !== "saved";
+
     return (
         <div className={modal ? "dmemoji-modal" : "dmemoji-settings"}>
-            <div className="dmemoji-toolbar">
+            <div className="dmemoji-hero">
                 <div>
-                    <Forms.FormTitle>Local emoji library</Forms.FormTitle>
-                    <Forms.FormText>
-                        Import animated or still images once, then place them into a message from the DMEmoji button.
-                    </Forms.FormText>
+                    <span className="dmemoji-kicker">DMEMOJI</span>
+                    <h2>{message ? "React with any emoji" : "Your emoji drawer"}</h2>
+                    <p>
+                        {message
+                            ? "Search Discord's native emoji and react in one click. Local files can also be linked to a real server emoji."
+                            : "Native emoji insert into the composer. Your imported images and GIFs stay private to this client until you attach them."}
+                    </p>
                 </div>
-                <Button size={Button.Sizes.SMALL} color={Button.Colors.BRAND} onClick={() => inputRef.current?.click()}>
-                    Import image
-                </Button>
+                <div className="dmemoji-hero-actions">
+                    <Button size={Button.Sizes.SMALL} color={Button.Colors.BRAND} onClick={() => inputRef.current?.click()}>
+                        Import media
+                    </Button>
+                    <button
+                        type="button"
+                        className="dmemoji-external-link"
+                        onClick={() => VencordNative.native.openExternal(IEMOJI_KEYBOARD_URL)}
+                    >
+                        Search iEmoji.com ↗
+                    </button>
+                    <input
+                        ref={inputRef}
+                        className="dmemoji-hidden-input"
+                        type="file"
+                        accept="image/png,image/jpeg,image/gif,image/webp"
+                        onChange={event => {
+                            void handleImport(event.currentTarget.files?.[0]);
+                            event.currentTarget.value = "";
+                        }}
+                    />
+                </div>
+            </div>
+
+            <div className="dmemoji-search-row">
                 <input
-                    ref={inputRef}
-                    className="dmemoji-hidden-input"
-                    type="file"
-                    accept="image/png,image/jpeg,image/gif,image/webp"
-                    onChange={event => {
-                        void handleImport(event.currentTarget.files?.[0]);
-                        event.currentTarget.value = "";
-                    }}
+                    className="dmemoji-search"
+                    type="search"
+                    value={query}
+                    placeholder="Search shrug, party, cat, or a server emoji"
+                    onChange={event => setQuery(event.currentTarget.value)}
                 />
+                <div className="dmemoji-tabs" role="tablist" aria-label="Emoji source">
+                    {(["all", "saved", "unicode", "server"] as const).map(tab => (
+                        <button
+                            type="button"
+                            key={tab}
+                            className={`dmemoji-tab ${activeTab === tab ? "is-active" : ""}`}
+                            onClick={() => setActiveTab(tab)}
+                            role="tab"
+                            aria-selected={activeTab === tab}
+                        >
+                            {tab === "all" ? "All" : tab === "saved" ? "Saved media" : tab === "unicode" ? "Unicode" : "Server emoji"}
+                        </button>
+                    ))}
+                </div>
             </div>
+
             {status && <Forms.FormText className="dmemoji-status">{status}</Forms.FormText>}
-            {!records.length && (
-                <Forms.FormText>Nothing imported yet. The file stays local to this Discordmaxxer client.</Forms.FormText>
-            )}
-            <div className="dmemoji-grid">
-                {records.map(record => (
-                    <div className="dmemoji-entry" key={record.id}>
-                        <div className="dmemoji-preview-wrap">
-                            {previewUrls[record.id] ? (
-                                <img className="dmemoji-preview" src={previewUrls[record.id]} alt={record.name} />
-                            ) : (
-                                <div className="dmemoji-preview dmemoji-preview-missing">?</div>
-                            )}
+
+            {showSaved && (
+                <section className="dmemoji-section">
+                    <div className="dmemoji-section-heading">
+                        <div>
+                            <h3>Saved media</h3>
+                            <span>Private images and GIFs you can attach to the current message.</span>
                         </div>
-                        <div className="dmemoji-entry-body">
-                            <strong>{record.name}</strong>
-                            <span className="dmemoji-meta">
-                                {Math.max(1, Math.round(record.size / 1024))} KB{" "}
-                                {record.mime === "image/gif" || record.mime === "image/webp"
-                                    ? "animated-capable"
-                                    : "image"}
-                            </span>
-                            {modal && channelId ? (
-                                <div className="dmemoji-entry-actions">
-                                    <Button
-                                        size={Button.Sizes.SMALL}
-                                        color={Button.Colors.BRAND}
-                                        onClick={() => void sendEmojiAsImage(record, channelId, onClose)}
-                                    >
-                                        Add to message
-                                    </Button>
-                                </div>
-                            ) : (
-                                <input
-                                    className="dmemoji-native-input"
-                                    value={record.discordEmojiRef ?? ""}
-                                    placeholder="Optional Discord emoji ID or <a:name:id>"
-                                    onChange={event => {
-                                        const value = event.currentTarget.value;
-                                        void updateEmoji(record, { discordEmojiRef: value }).then(setRecords);
-                                    }}
-                                />
-                            )}
-                            {!modal && (
-                                <Button
-                                    size={Button.Sizes.SMALL}
-                                    color={Button.Colors.PRIMARY}
-                                    onClick={() =>
-                                        void removeEmoji(record).then(async () => {
-                                            setRecords(await readRecords());
-                                            refresh();
-                                        })
-                                    }
-                                >
-                                    Remove
-                                </Button>
-                            )}
-                        </div>
+                        <span className="dmemoji-count">{filteredRecords.length}</span>
                     </div>
-                ))}
+                    {filteredRecords.length ? (
+                        <div className="dmemoji-grid">
+                            {filteredRecords.map(record => (
+                                <LocalEmojiEntry
+                                    key={record.id}
+                                    record={record}
+                                    previewUrl={previewUrls[record.id]}
+                                    channelId={channelId}
+                                    message={message}
+                                    modal={modal}
+                                    onClose={onClose}
+                                    onRecordsChange={setRecords}
+                                    onRefresh={refresh}
+                                />
+                            ))}
+                        </div>
+                    ) : (
+                        <div className="dmemoji-empty">Nothing saved here yet. Import a PNG, JPG, GIF, or WebP.</div>
+                    )}
+                </section>
+            )}
+
+            {showNative && (
+                <section className="dmemoji-section">
+                    <div className="dmemoji-section-heading">
+                        <div>
+                            <h3>{activeTab === "server" ? "Server emoji" : activeTab === "unicode" ? "Unicode emoji" : "Native emoji"}</h3>
+                            <span>{message ? "Click React to react to the selected message." : "Click Insert to place it in the message composer."}</span>
+                        </div>
+                        <span className="dmemoji-count">{nativeChoices.length}</span>
+                    </div>
+                    {nativeChoices.length ? (
+                        <div className="dmemoji-native-grid">
+                            {nativeChoices.map(choice => (
+                                <NativeEmojiCard key={choice.key} choice={choice} message={message} onClose={onClose} />
+                            ))}
+                        </div>
+                    ) : (
+                        <div className="dmemoji-empty">
+                            Native emoji are still loading, or nothing matched. Try “shrug” or select Server emoji.
+                        </div>
+                    )}
+                </section>
+            )}
+
+            <div className="dmemoji-footnote">
+                <strong>What can react?</strong> Unicode and real Discord server emoji can react natively. Imported local media is an attachment unless you link it to a server emoji identity; Discord does not accept an arbitrary local file as a reaction.
             </div>
-            <Forms.FormText className="dmemoji-footnote">
-                Local files are attachments, not Discord reaction identities. Add a real Discord custom emoji ID above
-                if you want the message context menu to react with it.
-            </Forms.FormText>
         </div>
     );
 }
@@ -432,12 +785,7 @@ function SafeModalContainer({
                         {LegacyModalCloseButton ? (
                             <LegacyModalCloseButton onClick={onClose} />
                         ) : (
-                            <button
-                                type="button"
-                                className="dmemoji-close-btn"
-                                onClick={onClose}
-                                aria-label="Close"
-                            >
+                            <button type="button" className="dmemoji-close-btn" onClick={onClose} aria-label="Close">
                                 ✕
                             </button>
                         )}
@@ -470,67 +818,158 @@ function SafeModalContainer({
     );
 }
 
-function EmojiPickerModal(props: RenderModalProps & { channelId: string; }) {
+function EmojiPickerModal(props: RenderModalProps & { channelId: string; message?: Message; }) {
     return (
         <ErrorBoundary message="Could not display DMEmoji picker">
             <SafeModalContainer transitionState={props.transitionState} onClose={props.onClose}>
-                <EmojiLibrary channelId={props.channelId} onClose={props.onClose} modal />
+                <EmojiLibrary channelId={props.channelId} message={props.message} onClose={props.onClose} modal />
             </SafeModalContainer>
         </ErrorBoundary>
     );
 }
 
+function isVisibleComposerElement(element: HTMLElement): boolean {
+    if (element.getAttribute("aria-hidden") === "true") return false;
+    const style = window.getComputedStyle(element);
+    const rect = element.getBoundingClientRect();
+    return style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0" && rect.width > 0 && rect.height > 0;
+}
+
+function sendCurrentMessage() {
+    const inputs = Array.from(
+        document.querySelectorAll<HTMLElement>('[role="textbox"][contenteditable="true"], [contenteditable="true"], textarea')
+    )
+        .filter(isVisibleComposerElement)
+        .map(element => {
+            const label = [element.getAttribute("aria-label"), element.getAttribute("placeholder")].filter(Boolean).join(" ").toLowerCase();
+            return { element, score: /message|chat|reply|type/.test(label) ? 10 : 0 };
+        })
+        .sort((a, b) => b.score - a.score);
+
+    const input = inputs[0]?.element;
+    if (!input) {
+        Toasts.show({ message: "Could not find the active message composer", id: Toasts.genId(), type: Toasts.Type.FAILURE });
+        return;
+    }
+
+    const composer = input.closest("form") ?? input.closest('[class*="channelTextArea"]') ?? input.parentElement;
+    const scope = composer ?? document;
+    const sendButton = Array.from(scope.querySelectorAll<HTMLElement>("#submit-button, button, [role=\"button\"]"))
+        .filter(isVisibleComposerElement)
+        .find(element => {
+            const label = [element.id, element.getAttribute("aria-label"), element.getAttribute("title")]
+                .filter(Boolean)
+                .join(" ")
+                .toLowerCase();
+            return label === "submit-button" || /send(?: message)?$/.test(label) || label.includes("send message");
+        });
+
+    if (sendButton) {
+        if (sendButton.getAttribute("aria-disabled") === "true" || (sendButton as HTMLButtonElement).disabled) {
+            Toasts.show({ message: "There is no message ready to send", id: Toasts.genId(), type: Toasts.Type.FAILURE });
+            return;
+        }
+        sendButton.click();
+        return;
+    }
+
+    const content = input instanceof HTMLTextAreaElement ? input.value : input.textContent ?? "";
+    if (!content.trim()) {
+        Toasts.show({ message: "Type a message first", id: Toasts.genId(), type: Toasts.Type.FAILURE });
+        return;
+    }
+
+    // Discord's composer handles Enter through its normal React key handler.
+    // This is only a fallback for builds whose submit button is not exposed in
+    // the DOM; it keeps mentions, attachments, and draft state in Discord's
+    // own send pipeline instead of constructing a partial Message object.
+    input.focus();
+    input.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Enter", code: "Enter", keyCode: 13, which: 13 }));
+    input.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, cancelable: true, key: "Enter", code: "Enter", keyCode: 13, which: 13 }));
+}
+
 const DMEmojiButton: ChatBarButtonFactory = ({ isAnyChat, channel }) => {
-    const { showButton } = settings.use(["showButton"]);
+    const { showButton, showSendButton } = settings.use(["showButton", "showSendButton"]);
     const channelId = channel?.id;
-    if (!isAnyChat || !showButton || !channelId) return null;
+    if (!isAnyChat || !channelId || (!showButton && !showSendButton)) return null;
     return (
-        <ChatBarButton
-            tooltip="Open DMEmoji"
-            onClick={() => {
-                try {
-                    openModal(props => <EmojiPickerModal {...props} channelId={channelId} />);
-                } catch (error) {
-                    console.error("[DMEmoji] Failed to open modal", error);
-                    Toasts.show({
-                        message: "Could not open DMEmoji picker",
-                        id: Toasts.genId(),
-                        type: Toasts.Type.FAILURE
-                    });
-                }
-            }}
-            buttonProps={{ "aria-haspopup": "dialog" }}
-        >
-            <DMEmojiIcon />
-        </ChatBarButton>
+        <>
+            {showButton && (
+                <ChatBarButton
+                    tooltip="Open DMEmoji"
+                    onClick={() => {
+                        try {
+                            openModal(props => <EmojiPickerModal {...props} channelId={channelId} />);
+                        } catch (error) {
+                            console.error("[DMEmoji] Failed to open modal", error);
+                            Toasts.show({
+                                message: "Could not open DMEmoji picker",
+                                id: Toasts.genId(),
+                                type: Toasts.Type.FAILURE
+                            });
+                        }
+                    }}
+                    buttonProps={{ "aria-haspopup": "dialog" }}
+                >
+                    <DMEmojiIcon />
+                </ChatBarButton>
+            )}
+            {showSendButton && (
+                <ChatBarButton
+                    tooltip="Send message"
+                    onClick={sendCurrentMessage}
+                    buttonProps={{ "data-dmemoji-send-button": "true" }}
+                >
+                    <SendMessageIcon />
+                </ChatBarButton>
+            )}
+        </>
     );
 };
 
 const messageContextMenuPatch: NavContextMenuPatchCallback = (children, props: { message?: Message; }) => {
     const message = props?.message;
-    if (!message || !emojiRecordsCache.length) return;
-    children.push(
-        <Menu.MenuItem id="dmemoji-message-actions" label="DMEmoji">
-            {emojiRecordsCache.map(record => {
-                const nativeEmoji = parseDiscordEmojiRef(record.discordEmojiRef, record.name);
-                return (
-                    <Menu.MenuItem id={`dmemoji-actions-${record.id}`} key={record.id} label={record.name}>
-                        <Menu.MenuItem
-                            id={`dmemoji-send-${record.id}`}
-                            label="Send as image"
-                            action={() => void sendEmojiAsImage(record, message.channel_id)}
-                        />
-                        <Menu.MenuItem
-                            id={`dmemoji-react-${record.id}`}
-                            label={nativeEmoji ? "React with native Discord emoji" : "React unavailable for local file"}
-                            disabled={!nativeEmoji}
-                            action={() => reactWithEmoji(message, record)}
-                        />
+    if (!message || !Array.isArray(children)) return;
+
+    try {
+        children.push(
+            <Menu.MenuItem id="dmemoji-message-actions" label="DMEmoji">
+                <Menu.MenuItem
+                    id="dmemoji-open-reaction-picker"
+                    label="Search and react..."
+                    action={() =>
+                        openModal(modalProps => (
+                            <EmojiPickerModal {...modalProps} channelId={message.channel_id} message={message} />
+                        ))
+                    }
+                />
+                {emojiRecordsCache.length > 0 && (
+                    <Menu.MenuItem id="dmemoji-local-actions" label="Saved media">
+                        {emojiRecordsCache.map(record => {
+                            const nativeEmoji = parseDiscordEmojiRef(record.discordEmojiRef, record.name);
+                            return (
+                                <Menu.MenuItem id={`dmemoji-actions-${record.id}`} key={record.id} label={record.name}>
+                                    <Menu.MenuItem
+                                        id={`dmemoji-send-${record.id}`}
+                                        label="Attach image"
+                                        action={() => void sendEmojiAsImage(record, message.channel_id)}
+                                    />
+                                    <Menu.MenuItem
+                                        id={`dmemoji-react-${record.id}`}
+                                        label={nativeEmoji ? "React with linked server emoji" : "Link a server emoji first"}
+                                        disabled={!nativeEmoji}
+                                        action={() => reactWithEmoji(message, record)}
+                                    />
+                                </Menu.MenuItem>
+                            );
+                        })}
                     </Menu.MenuItem>
-                );
-            })}
-        </Menu.MenuItem>
-    );
+                )}
+            </Menu.MenuItem>
+        );
+    } catch (error) {
+        console.warn("[DMEmoji] Could not add the message context menu", error);
+    }
 };
 
 const settings = definePluginSettings({
@@ -539,9 +978,14 @@ const settings = definePluginSettings({
         description: "Show the DMEmoji button beside the message composer",
         default: true
     },
+    showSendButton: {
+        type: OptionType.BOOLEAN,
+        description: "Show a mouse-click Send button beside DMEmoji",
+        default: true
+    },
     library: {
         type: OptionType.COMPONENT,
-        description: "Manage imported local emojis",
+        description: "Manage saved media and link images to native Discord emoji",
         component: () => <EmojiLibrary />
     }
 });
@@ -549,7 +993,7 @@ const settings = definePluginSettings({
 export default definePlugin({
     name: "DMEmoji",
     description:
-        "Keep a local animated emoji library, attach it to messages, and use native Discord emoji IDs for real reactions.",
+        "Search and insert Unicode/server emoji, react from a searchable picker, keep a private local media shelf, and send messages with a mouse-click button beside DMEmoji.",
     tags: ["Chat", "Emotes", "Media"],
     authors: [{ name: "Diggy", id: 0n }],
     settings,

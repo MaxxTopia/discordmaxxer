@@ -9,9 +9,10 @@
  */
 
 import { execSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { fileSnapshot, gitCommit, pluginNames, sourceFingerprint } from "./build-fingerprint.mjs";
 import "./rebrand-vencord.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -95,7 +96,29 @@ function stageDist() {
     // Vesktop's vencordLoader expects a package.json alongside the JS files
     writeFileSync(join(STAGED_DIST, "package.json"), JSON.stringify({ name: "vencord-discordmaxxer" }, null, 2));
 
-    log(`Staged ${FILES_TO_STAGE.length + 1} files at ${STAGED_DIST}`);
+    const packageJson = JSON.parse(readFileSync(join(PROJECT_ROOT, "package.json"), "utf8"));
+    const commit = gitCommit();
+    const fingerprint = sourceFingerprint();
+    writeFileSync(
+        join(STAGED_DIST, "discordmaxxer-build.json"),
+        `${JSON.stringify(
+            {
+                product: "discordmaxxer",
+                appVersion: packageJson.version,
+                buildId: `${packageJson.version}-${commit.slice(0, 12)}-${fingerprint.slice(0, 16)}`,
+                gitCommit: commit,
+                sourceFingerprint: fingerprint,
+                pluginNames: pluginNames(),
+                stagedFiles: fileSnapshot(STAGED_DIST),
+                generatedAt: new Date().toISOString(),
+            },
+            null,
+            2,
+        )}\n`,
+        "utf8",
+    );
+
+    log(`Staged ${FILES_TO_STAGE.length + 2} files at ${STAGED_DIST}`);
 }
 
 function main() {

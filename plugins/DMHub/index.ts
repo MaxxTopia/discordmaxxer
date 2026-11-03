@@ -185,6 +185,10 @@ const HUB_CSS = `
         transition: background 0.15s;
         flex-shrink: 0;
     }
+    .dm-hub-toggle:focus-visible {
+        outline: 2px solid #fbefff;
+        outline-offset: 3px;
+    }
     .dm-hub-toggle.on { background: linear-gradient(135deg, #e25bff, #4c51f7); }
     .dm-hub-toggle::after {
         content: "";
@@ -441,6 +445,36 @@ function openDMProfileFlairSettings() {
     console.warn("[DiscordmaxxerHub] DMProfileFlair settings route is unavailable");
 }
 
+function openDMProfileCosmeticsSettings() {
+    // Open the live cosmetics showroom directly from the Hub. Keep the same
+    // guarded modal/fallback behavior as the other profile controls so a
+    // partially loaded plugin registry does not turn this shortcut into a
+    // dead click.
+    try {
+        const v = vencord();
+        const plugin = v?.Plugins?.plugins?.DMProfileCosmetics;
+        if (plugin) {
+            try {
+                openPluginModal(plugin);
+                return;
+            } catch (e) {
+                console.warn("[DiscordmaxxerHub] could not open DMProfileCosmetics showroom:", e);
+            }
+        }
+
+        const settingsRouter = v?.Webpack?.Common?.SettingsRouter
+            ?? v?.Webpack?.findByProps?.("openUserSettings");
+        if (typeof settingsRouter?.openUserSettings === "function") {
+            settingsRouter.openUserSettings("vencord_plugins");
+            return;
+        }
+    } catch (e) {
+        console.warn("[DiscordmaxxerHub] could not open DMProfileCosmetics settings:", e);
+    }
+
+    console.warn("[DiscordmaxxerHub] DMProfileCosmetics settings route is unavailable");
+}
+
 function openDMDisplayNameStyleSettings() {
     const plugin = vencord()?.Plugins?.plugins?.DMDisplayNameStyle;
     if (plugin) {
@@ -486,12 +520,12 @@ function renderPanelHTML(): string {
                 <span style="font-size:10px;color:#8b6aad">hotkey</span>
             </div>`;
         }
-        const on = getSetting(t.plugin, t.settingKey);
+        const on = getSetting(t.plugin, t.settingKey!);
         const tag = t.minTier ? `<span class="dm-hub-row-tag">${TIER_LABELS[t.minTier]}</span>` : "";
         const note = t.note ? `<div class="dm-hub-info">${t.note}</div>` : "";
         return `<div class="dm-hub-row${t.minTier ? " vip" : ""}">
             <div class="dm-hub-row-label">${t.label}${tag}</div>
-            <div class="dm-hub-toggle ${on ? "on" : ""}" data-plugin="${t.plugin}" data-key="${t.settingKey}"></div>
+            <div class="dm-hub-toggle ${on ? "on" : ""}" data-plugin="${t.plugin}" data-key="${t.settingKey}" role="switch" tabindex="0" aria-checked="${on}" aria-label="${t.label}"></div>
         </div>${note}`;
     }).join("");
 
@@ -529,6 +563,11 @@ function renderPanelHTML(): string {
             <button class="dm-hub-action-btn" data-action="open-dm-display-name-style">Open</button>
         </div>
         <div class="dm-hub-info">Open the visual grid of 30 fonts, colors, finishes, and motion presets. These effects change only how profiles are rendered in Discordmaxxer.</div>
+        <div class="dm-hub-row">
+            <div class="dm-hub-row-label">✦ Open profile cosmetics showroom</div>
+            <button class="dm-hub-action-btn" data-action="open-dmprofilecosmetics">Open</button>
+        </div>
+        <div class="dm-hub-info">Preview and tune profile-popout skins, palette matching, motion effects, intensity, and speed while keeping Discord's native profile actions.</div>
         <div class="dm-hub-section">Profile flair</div>
         <div class="dm-hub-row">
             <div class="dm-hub-row-label">🎨 Customize profile flair</div>
@@ -562,6 +601,23 @@ function ensurePanelRoot() {
     panelRoot.id = PANEL_ROOT_ID;
     panelRoot.classList.add("hidden");
     document.body.appendChild(panelRoot);
+
+    const toggleQuickSetting = (t: HTMLElement) => {
+        if (!t.classList.contains("dm-hub-toggle") || t.dataset.locked) return;
+        const plugin = t.dataset.plugin!;
+        const key = t.dataset.key!;
+        const entry = QUICK_TOGGLES.find(e => e.plugin === plugin && e.settingKey === key);
+        const next = !getSetting(plugin, key);
+        const applied = setSetting(plugin, key, next, entry?.noRestart);
+        const label = entry?.label ?? plugin;
+        if (applied) {
+            showHubToast(`${label} ${next ? "enabled" : "disabled"}.`, Toasts.Type.SUCCESS);
+        } else {
+            showHubToast(`${label} was saved, but its live state could not be refreshed.`, Toasts.Type.FAILURE, 5000);
+        }
+        // Re-render after setting
+        panelRoot!.innerHTML = renderPanelHTML();
+    };
 
     panelRoot.addEventListener("click", (e: any) => {
         const t = e.target as HTMLElement;
@@ -614,26 +670,24 @@ function ensurePanelRoot() {
             openDMProfileFlairSettings();
             return;
         }
+        if (t.dataset.action === "open-dmprofilecosmetics") {
+            panelRoot!.classList.add("hidden");
+            openDMProfileCosmeticsSettings();
+            return;
+        }
         if (t.dataset.action === "open-dm-display-name-style") {
             panelRoot!.classList.add("hidden");
             openDMDisplayNameStyleSettings();
             return;
         }
-        if (t.classList.contains("dm-hub-toggle") && !t.dataset.locked) {
-            const plugin = t.dataset.plugin!;
-            const key = t.dataset.key!;
-            const next = !getSetting(plugin, key);
-            const entry = QUICK_TOGGLES.find(e => e.plugin === plugin && e.settingKey === key);
-            const applied = setSetting(plugin, key, next, entry?.noRestart);
-            const label = entry?.label ?? plugin;
-            if (applied) {
-                showHubToast(`${label} ${next ? "enabled" : "disabled"}.`, Toasts.Type.SUCCESS);
-            } else {
-                showHubToast(`${label} was saved, but its live state could not be refreshed.`, Toasts.Type.FAILURE, 5000);
-            }
-            // Re-render after setting
-            panelRoot!.innerHTML = renderPanelHTML();
-        }
+        toggleQuickSetting(t);
+    });
+
+    panelRoot.addEventListener("keydown", (e: KeyboardEvent) => {
+        const t = e.target as HTMLElement;
+        if (!t.classList.contains("dm-hub-toggle") || (e.key !== "Enter" && e.key !== " ")) return;
+        e.preventDefault();
+        toggleQuickSetting(t);
     });
 }
 

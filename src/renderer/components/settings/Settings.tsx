@@ -43,7 +43,8 @@ const SettingsOptions: Record<string, Array<BooleanSetting | SettingsComponent>>
         {
             key: "hardwareAcceleration",
             title: "Hardware Acceleration",
-            description: "Enable hardware acceleration",
+            description:
+                "Recommended for animated widget skins and lower CPU usage. Turning it off may reduce GPU memory, but uses software rendering, which can increase CPU usage and reduce visual or video smoothness. Restart Discordmaxxer after changing it.",
             defaultValue: true
         },
         {

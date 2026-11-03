@@ -81,11 +81,15 @@ function init() {
         app.commandLine.appendSwitch("disable-smooth-scrolling");
     }
 
-    // Keep Chromium's normal background/occlusion scheduling. Tournament's
-    // runtime performance bridge explicitly disables background throttling
-    // while a voice call or stream is active, then restores this idle policy.
-    // The old global switches forced hidden Discord windows to keep painting
-    // at foreground cost and made the runtime policy ineffective.
+    // Keep Chromium's normal background/occlusion scheduling. The old global
+    // disable-* switches made the renderer, timers, and occluded windows run
+    // at foreground cost even while Discordmaxxer was minimized. That also
+    // made BrowserWindow#setBackgroundThrottling(true) ineffective.
+    //
+    // Voice safety is handled at runtime by discordmaxxerPerf.ts: once a call
+    // or stream is detected it disables background throttling for the window,
+    // and restores the normal throttled policy when the call ends. This keeps
+    // WebRTC audio/RTC work live without paying that cost while idle.
 
     // work around chrome 66 disabling autoplay by default
     app.commandLine.appendSwitch("autoplay-policy", "no-user-gesture-required");

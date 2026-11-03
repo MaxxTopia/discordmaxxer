@@ -18,6 +18,8 @@ export interface Settings {
     disableSmoothScroll?: boolean;
     hardwareAcceleration?: boolean;
     hardwareVideoAcceleration?: boolean;
+    /** Retained for migration from the removed experimental smart-visuals setting. */
+    cosmeticAnimationBudget?: "full";
     arRPC?: boolean;
     appBadge?: boolean;
     enableTaskbarFlashing?: boolean;

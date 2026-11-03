@@ -26,6 +26,16 @@ function loadSettings<T extends object = any>(file: string, name: string) {
         }
     } catch {}
 
+    // Smart visuals was an experimental observer-based mode that added work
+    // without producing a reliable win in the controlled benchmark. Keep old
+    // installs on the normal full-visuals path instead of leaving them in a
+    // setting state that no longer has a public selector.
+    let migrated = false;
+    if (name === "Vesktop settings" && (settings as Record<string, unknown>).cosmeticAnimationBudget === "smart") {
+        (settings as Record<string, unknown>).cosmeticAnimationBudget = "full";
+        migrated = true;
+    }
+
     const store = new SettingsStore(settings);
     store.addGlobalChangeListener(o => {
         try {
@@ -35,6 +45,15 @@ function loadSettings<T extends object = any>(file: string, name: string) {
             console.error(`Failed to save settings to ${name}.json:`, err);
         }
     });
+
+    if (migrated) {
+        try {
+            mkdirSync(dirname(file), { recursive: true });
+            writeFileSync(file, JSON.stringify(store.plain, null, 4));
+        } catch (err) {
+            console.error(`Failed to migrate ${name}.json:`, err);
+        }
+    }
 
     return store;
 }

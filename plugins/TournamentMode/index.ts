@@ -4,9 +4,10 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
  * Performance mode for competitive gaming. The base mode pauses high-frequency
- * decoration while preserving Discord's layout and voice path. It also releases
- * optional paint-heavy flair/media layers; full visual polish remains available
- * in normal mode. Designed to be safe to leave on without disabling core Discord.
+ * decoration while preserving Discord's layout and voice path. Its default
+ * profile also releases optional paint-heavy flair/media layers; users who
+ * prefer every visual detail can keep that polish with the advanced override.
+ * Designed to be safe to leave on permanently without disabling core Discord.
  *
  * What it does:
  *   System (via VesktopNative.performanceMode bridge):
@@ -121,8 +122,8 @@ const PERF_CSS = `
         display: none !important;
     }
     /* DMProfileCosmetics effects in Tournament Mode — pause the owned effect
-     * layer as well as its pseudo-elements. The reduced-cost profile below
-     * removes this optional finish layer from live profile surfaces. */
+     * layer as well as its pseudo-elements. The preview stays visible; only
+     * the animation clock is stopped. */
     [data-dm-profile-effect-layer="true"],
     [data-dm-profile-effect-layer="true"]::before,
     [data-dm-profile-effect-layer="true"]::after,

@@ -30,6 +30,7 @@ const TARGET_ATTR = "data-dm-display-name-style";
 const SURFACE_ATTR = "data-dm-display-name-surface";
 const MOTION_ATTR = "data-dm-display-name-motion";
 const MOTION_BLOCKED_ATTR = "data-dm-display-name-motion-blocked";
+const VISIBILITY_ATTR = "data-dm-display-name-visibility";
 const ORNAMENT_ATTR = "data-dm-display-name-ornament";
 const IGNORE_ATTR = "data-dm-display-name-style-ignore";
 
@@ -594,9 +595,36 @@ const HEX_RE = /^#[0-9a-f]{6}$/i;
 
 let style: HTMLStyleElement | null = null;
 let observer: MutationObserver | null = null;
+let visibilityObserver: IntersectionObserver | null = null;
 let scanRaf = 0;
 let motionTimer: ReturnType<typeof setInterval> | null = null;
+let pendingScanRoots = new Set<ParentNode>();
+let fullScanRequested = false;
 let lastMotionAllowed: boolean | null = null;
+
+interface ScanMemo {
+    semantic: WeakMap<HTMLElement, string>;
+    profileDialog: WeakMap<HTMLElement, boolean>;
+    profileContext: WeakMap<HTMLElement, boolean>;
+    userIds: WeakMap<HTMLElement, string | null>;
+    profileNames: WeakMap<HTMLElement, Set<string>>;
+    surfaces: WeakMap<HTMLElement, Surface | null>;
+    nameClasses: WeakMap<HTMLElement, boolean>;
+}
+
+let scanMemo: ScanMemo | null = null;
+
+function createScanMemo(): ScanMemo {
+    return {
+        semantic: new WeakMap(),
+        profileDialog: new WeakMap(),
+        profileContext: new WeakMap(),
+        userIds: new WeakMap(),
+        profileNames: new WeakMap(),
+        surfaces: new WeakMap(),
+        nameClasses: new WeakMap()
+    };
+}
 
 function vencord(): any {
     return (globalThis as any).Vencord;
@@ -797,6 +825,11 @@ function cssForProfile(profile: StyleProfile): string {
         ${previewMotion("electric")} {
             animation: dm-display-name-electric 2.4s steps(1, end) infinite;
         }
+        [${TARGET_ATTR}][${VISIBILITY_ATTR}="offscreen"],
+        [${TARGET_ATTR}][${VISIBILITY_ATTR}="offscreen"]::before,
+        [${TARGET_ATTR}][${VISIBILITY_ATTR}="offscreen"]::after {
+            animation-play-state: paused !important;
+        }
         [${TARGET_ATTR}][${ORNAMENT_ATTR}="spark"][${MOTION_ATTR}="twinkle"]::after,
         [${TARGET_ATTR}][${ORNAMENT_ATTR}="spark"][${MOTION_ATTR}="electric"]::after,
         ${previewMotion("twinkle")}[data-dm-display-name-preview-ornament="spark"]::after,
@@ -839,8 +872,11 @@ function escapeAttributeValue(value: string): string {
 }
 
 function semanticText(element: HTMLElement): string {
+    if (scanMemo?.semantic.has(element)) return scanMemo.semantic.get(element)!;
     const className = typeof element.className === "string" ? element.className : "";
-    return `${className} ${element.getAttribute("aria-label") ?? ""} ${element.getAttribute("role") ?? ""}`.toLowerCase();
+    const value = `${className} ${element.getAttribute("aria-label") ?? ""} ${element.getAttribute("role") ?? ""}`.toLowerCase();
+    scanMemo?.semantic.set(element, value);
+    return value;
 }
 
 // Message author names can sit inside a DM/channel wrapper whose hashed class
@@ -855,61 +891,103 @@ const PROFILE_NAME_FALLBACK_SEL = '[class*="userText"], [class*="user-text"], [c
 const PROFILE_SEMANTIC_RE = /user.?popout|account.?popout|user.?profile|profile.?modal|profile.?header|profile.?body|profile.?card|profile.?sidebar|profile.?panel|profile.?popover|full.?profile|user.?card/;
 
 function profileDialogLooksLikeUserCard(element: HTMLElement): boolean {
-    if (element.getAttribute("role") !== "dialog") return false;
+    if (scanMemo?.profileDialog.has(element)) return scanMemo.profileDialog.get(element)!;
+    let result = false;
+    if (element.getAttribute("role") !== "dialog") {
+        scanMemo?.profileDialog.set(element, false);
+        return false;
+    }
     const semantic = semanticText(element);
-    if (PROFILE_SEMANTIC_RE.test(semantic)) return true;
+    if (PROFILE_SEMANTIC_RE.test(semantic)) {
+        scanMemo?.profileDialog.set(element, true);
+        return true;
+    }
     // Some Discord builds give the profile dialog only hashed classes. Keep
     // the fallback narrow: a user card normally has an avatar/banner or a
     // profile-specific metadata node, while settings and confirmation dialogs
     // do not. This lets generic name/heading nodes in the profile still use
     // the display-name style without styling unrelated modal copy.
-    return Boolean(element.querySelector(
+    result = Boolean(element.querySelector(
         '[data-user-id], [data-userid], [data-profile-user-id], [data-profile-userid], ' +
         '[data-dm-flair-avatar-user-id], [data-dm-flair-banner-owner-id], [data-dm-flair-theme-owner-id], ' +
         '[class*="avatar"], [class*="Avatar"], [class*="banner"], [class*="Banner"], ' +
         '[class*="memberSince"], [class*="mutual"], img[src*="/avatars/"]'
     ));
+    scanMemo?.profileDialog.set(element, result);
+    return result;
 }
 
 function isProfileLikeContext(element: HTMLElement): boolean {
+    if (scanMemo?.profileContext.has(element)) return scanMemo.profileContext.get(element)!;
+    let result = false;
     let current: HTMLElement | null = element;
     for (let depth = 0; current && depth < 12; depth++, current = current.parentElement) {
         const semantic = semanticText(current);
-        if (PROFILE_SEMANTIC_RE.test(semantic)) return true;
-        if (profileDialogLooksLikeUserCard(current)) return true;
-        if (current.matches(PROFILE_VISUAL_MARKER_SEL) || current.querySelector(PROFILE_VISUAL_MARKER_SEL)) return true;
+        if (PROFILE_SEMANTIC_RE.test(semantic)
+            || profileDialogLooksLikeUserCard(current)
+            || current.matches(PROFILE_VISUAL_MARKER_SEL)
+            || current.querySelector(PROFILE_VISUAL_MARKER_SEL)) {
+            result = true;
+            break;
+        }
     }
-    return false;
+    scanMemo?.profileContext.set(element, result);
+    return result;
 }
 
 function getSurface(element: HTMLElement): Surface | null {
+    if (scanMemo?.surfaces.has(element)) return scanMemo.surfaces.get(element)!;
     const inMessageSurface = Boolean(element.closest(MESSAGE_SURFACE_SEL));
     let sawMessage = inMessageSurface;
     let current: HTMLElement | null = element;
     let depth = 0;
     while (current && depth < 14) {
         const semantic = semanticText(current);
-        if (PROFILE_SEMANTIC_RE.test(semantic)) return "profile";
-        if (profileDialogLooksLikeUserCard(current)) return "profile";
-        if (current.matches(PROFILE_VISUAL_MARKER_SEL) || current.querySelector(PROFILE_VISUAL_MARKER_SEL)) return "profile";
+        if (PROFILE_SEMANTIC_RE.test(semantic)) {
+            scanMemo?.surfaces.set(element, "profile");
+            return "profile";
+        }
+        if (profileDialogLooksLikeUserCard(current)) {
+            scanMemo?.surfaces.set(element, "profile");
+            return "profile";
+        }
+        if (current.matches(PROFILE_VISUAL_MARKER_SEL) || current.querySelector(PROFILE_VISUAL_MARKER_SEL)) {
+            scanMemo?.surfaces.set(element, "profile");
+            return "profile";
+        }
         if (/message|chat.?content|markup|reply/.test(semantic)) sawMessage = true;
-        if (/member|guild.?member|people|friend/.test(semantic)) return "member";
-        if (/recipient|private.?channel|dm.?channel|channel.?header|dm.?header/.test(semantic)) return "dm";
-        if (/panels|user.?panel|account.?panel|account.?details/.test(semantic)) return "self";
+        if (/member|guild.?member|people|friend/.test(semantic)) {
+            scanMemo?.surfaces.set(element, "member");
+            return "member";
+        }
+        if (/recipient|private.?channel|dm.?channel|channel.?header|dm.?header/.test(semantic)) {
+            scanMemo?.surfaces.set(element, "dm");
+            return "dm";
+        }
+        if (/panels|user.?panel|account.?panel|account.?details/.test(semantic)) {
+            scanMemo?.surfaces.set(element, "self");
+            return "self";
+        }
         current = current.parentElement;
         depth++;
     }
 
-    if (sawMessage) return "message";
+    if (sawMessage) {
+        scanMemo?.surfaces.set(element, "message");
+        return "message";
+    }
 
     // A user-id root is a useful fallback for Discord surfaces whose hashed
     // class names no longer contain an obvious semantic hint.
-    return element.closest("[data-user-id], [data-userid], [data-profile-user-id], [data-profile-userid]")
+    const surface = element.closest("[data-user-id], [data-userid], [data-profile-user-id], [data-profile-userid]")
         ? (isProfileLikeContext(element) ? "profile" : "unknown")
         : null;
+    scanMemo?.surfaces.set(element, surface);
+    return surface;
 }
 
 function userIdFor(element: HTMLElement): string | null {
+    if (scanMemo?.userIds.has(element)) return scanMemo.userIds.get(element)!;
     const readNode = (node: Element): string | null => {
         for (const attribute of ["data-user-id", "data-userid", "data-profile-user-id", "data-profile-userid", "data-dm-flair-avatar-user-id"]) {
             const value = node.getAttribute(attribute) ?? "";
@@ -938,16 +1016,23 @@ function userIdFor(element: HTMLElement): string | null {
     for (let depth = 0; current && depth < 10; depth++, current = current.parentElement) ancestors.push(current);
     for (const ancestor of ancestors) {
         const direct = readNode(ancestor);
-        if (direct) return direct;
+        if (direct) {
+            scanMemo?.userIds.set(element, direct);
+            return direct;
+        }
         try {
             for (const node of Array.from(ancestor.querySelectorAll<HTMLElement>(
                 "[data-user-id], [data-userid], [data-profile-user-id], [data-profile-userid], [data-dm-flair-avatar-user-id], img"
             )).slice(0, 80)) {
                 const nested = readNode(node);
-                if (nested) return nested;
+                if (nested) {
+                    scanMemo?.userIds.set(element, nested);
+                    return nested;
+                }
             }
         } catch { /* Discord may tear down the profile while it is scanned. */ }
     }
+    scanMemo?.userIds.set(element, null);
     return null;
 }
 
@@ -956,10 +1041,19 @@ function normalizedDisplayName(value: unknown): string {
 }
 
 function profileDisplayNameValues(element: HTMLElement): Set<string> {
+    if (scanMemo?.profileNames.has(element)) return scanMemo.profileNames.get(element)!;
     const userId = userIdFor(element);
-    if (!userId) return new Set();
+    if (!userId) {
+        const empty = new Set<string>();
+        scanMemo?.profileNames.set(element, empty);
+        return empty;
+    }
     const user = (UserStore as any).getUser?.(userId) as any;
-    if (!user) return new Set();
+    if (!user) {
+        const empty = new Set<string>();
+        scanMemo?.profileNames.set(element, empty);
+        return empty;
+    }
     const values = new Set<string>();
     for (const value of [user.globalName, user.global_name, user.displayName, user.display_name, user.username, user.tag]) {
         const normalized = normalizedDisplayName(value);
@@ -968,6 +1062,7 @@ function profileDisplayNameValues(element: HTMLElement): Set<string> {
     const username = normalizedDisplayName(user.username);
     const discriminator = String(user.discriminator ?? "").trim();
     if (username && discriminator && discriminator !== "0") values.add(`${username}#${discriminator}`);
+    scanMemo?.profileNames.set(element, values);
     return values;
 }
 
@@ -998,8 +1093,9 @@ function surfaceEnabled(surface: Surface): boolean {
 }
 
 function hasNameClass(element: HTMLElement): boolean {
+    if (scanMemo?.nameClasses.has(element)) return scanMemo.nameClasses.get(element)!;
     const className = typeof element.className === "string" ? element.className.toLowerCase() : "";
-    return /username|display.?name|user.?tag/.test(className)
+    const result = /username|display.?name|user.?tag/.test(className)
         || (element.hasAttribute("data-text-variant") && Boolean(element.closest("[class*='panelTitleContainer']")))
         || (isProfileLikeContext(element) && (
             /(?:^|[-_])(?:name|title|username|display.?name|user.?text|nametag|namecontainer)(?:[-_]|$)/.test(className)
@@ -1007,6 +1103,8 @@ function hasNameClass(element: HTMLElement): boolean {
             || element.tagName === "H1"
             || element.tagName === "H2"
         ));
+    scanMemo?.nameClasses.set(element, result);
+    return result;
 }
 
 function isVisibleLeafName(element: HTMLElement): boolean {
@@ -1032,9 +1130,11 @@ function shouldApply(element: HTMLElement): { surface: Surface } | null {
 }
 
 function clearTarget(element: HTMLElement) {
+    visibilityObserver?.unobserve(element);
     element.removeAttribute(TARGET_ATTR);
     element.removeAttribute(SURFACE_ATTR);
     element.removeAttribute(MOTION_ATTR);
+    element.removeAttribute(VISIBILITY_ATTR);
     element.removeAttribute(ORNAMENT_ATTR);
     for (const name of ["--dm-name-primary", "--dm-name-secondary", "--dm-name-highlight", "--dm-name-glow"]) {
         element.style.removeProperty(name);
@@ -1051,6 +1151,7 @@ function applyTarget(element: HTMLElement, surface: Surface, profile: StyleProfi
         && element.getAttribute(MOTION_ATTR) === motion
         && (ornament ? element.getAttribute(ORNAMENT_ATTR) === ornament : !element.hasAttribute(ORNAMENT_ATTR))
         && element.style.getPropertyValue("--dm-name-primary") === profile.primary) {
+        visibilityObserver?.observe(element);
         return;
     }
 
@@ -1063,61 +1164,144 @@ function applyTarget(element: HTMLElement, surface: Surface, profile: StyleProfi
     element.style.setProperty("--dm-name-secondary", profile.secondary);
     element.style.setProperty("--dm-name-highlight", profile.highlight);
     element.style.setProperty("--dm-name-glow", profile.glow);
+    visibilityObserver?.observe(element);
 }
 
 function candidateSelector(): string {
     return "[class*='username'],[class*='displayName'],[class*='userTag'],[class*='userText'],[class*='panelTitleContainer'] [data-text-variant],[class*='nameContainer'] [class*='name'],[class*='nameTag'] [class*='title'],[class*='nameTag'] [class*='name'],[class*='userPopout'] [class*='name'],[class*='user-popout'] [class*='name'],[class*='accountPopout'] [class*='name'],[class*='account-popout'] [class*='name'],[class*='userProfile'] [class*='name'],[class*='user-profile'] [class*='name'],[class*='profileModal'] [class*='name'],[class*='profile-modal'] [class*='name'],[class*='profilePanel'] [class*='name'],[class*='profile-panel'] [class*='name'],[role='dialog'] [class*='name'],[role='dialog'] [class*='userText']";
 }
 
-function scanRoot(root: ParentNode) {
+function scanRoot(root: ParentNode, reconcileAll = root === document) {
     if (root instanceof Element && root.closest?.(".vc-settings-tab, [class*='standardSidebarView']")) return;
     if (root === document && document.querySelector("[class*='standardSidebarView']")) return;
 
-    const profile = getProfile();
-    const seen = new Set<HTMLElement>();
-    const candidates: HTMLElement[] = [];
-    const addCandidates = (elements: Iterable<HTMLElement>) => {
-        for (const element of elements) {
-            if (seen.has(element) || element.closest?.(".vc-settings-tab, [class*='standardSidebarView']")) continue;
-            seen.add(element);
-            candidates.push(element);
-        }
-    };
-    if (root instanceof HTMLElement && root.matches(candidateSelector())) candidates.push(root);
-    addCandidates(root.querySelectorAll<HTMLElement>(candidateSelector()));
-    // Discord has shipped profile popouts whose display-name node uses only a
-    // generic hashed text class. The semantic fallback is scoped to visible
-    // profile/dialog roots and still passes through shouldApply(), so it cannot
-    // style arbitrary modal headings or ordinary chat text.
+    const previousMemo = scanMemo;
+    scanMemo = createScanMemo();
     try {
-        const surfaces = root instanceof HTMLElement && root.matches(PROFILE_SURFACE_SEL)
-            ? [root]
-            : Array.from(root.querySelectorAll<HTMLElement>(PROFILE_SURFACE_SEL)).slice(0, 48);
-        for (const surface of surfaces) addCandidates(surface.querySelectorAll<HTMLElement>(PROFILE_NAME_FALLBACK_SEL));
-    } catch { /* Discord may replace a profile portal during this scan. */ }
+        const profile = getProfile();
+        const seen = new Set<HTMLElement>();
+        const candidates: HTMLElement[] = [];
+        const addCandidates = (elements: Iterable<HTMLElement>) => {
+            for (const element of elements) {
+                if (seen.has(element) || element.closest?.(".vc-settings-tab, [class*='standardSidebarView']")) continue;
+                seen.add(element);
+                candidates.push(element);
+            }
+        };
+        if (root instanceof HTMLElement && root.matches(candidateSelector())) addCandidates([root]);
+        addCandidates(root.querySelectorAll<HTMLElement>(candidateSelector()));
+        // Discord has shipped profile popouts whose display-name node uses only a
+        // generic hashed text class. The semantic fallback is scoped to visible
+        // profile/dialog roots and still passes through shouldApply(), so it cannot
+        // style arbitrary modal headings or ordinary chat text.
+        try {
+            const surfaces = root instanceof HTMLElement && root.matches(PROFILE_SURFACE_SEL)
+                ? [root]
+                : Array.from(root.querySelectorAll<HTMLElement>(PROFILE_SURFACE_SEL)).slice(0, 48);
+            for (const surface of surfaces) addCandidates(surface.querySelectorAll<HTMLElement>(PROFILE_NAME_FALLBACK_SEL));
+        } catch { /* Discord may replace a profile portal during this scan. */ }
 
-    for (const element of candidates) {
-        const result = shouldApply(element);
-        if (result) applyTarget(element, result.surface, profile);
-        else if (element.hasAttribute(TARGET_ATTR)) clearTarget(element);
+        for (const element of candidates) {
+            const result = shouldApply(element);
+            if (result) applyTarget(element, result.surface, profile);
+            else if (element.hasAttribute(TARGET_ATTR)) clearTarget(element);
+        }
+
+        if (reconcileAll) {
+            document.querySelectorAll<HTMLElement>(`[${TARGET_ATTR}]`).forEach(element => {
+                if (!shouldApply(element)) clearTarget(element);
+                else applyTarget(element, getSurface(element) ?? "unknown", profile);
+            });
+        }
+    } finally {
+        scanMemo = previousMemo;
     }
-
-    document.querySelectorAll<HTMLElement>(`[${TARGET_ATTR}]`).forEach(element => {
-        if (!shouldApply(element)) clearTarget(element);
-        else applyTarget(element, getSurface(element) ?? "unknown", profile);
-    });
 }
 
 let lastScanTime = 0;
 
-function scheduleScan() {
+function queueScanRoot(root: ParentNode) {
+    if (root === document) {
+        fullScanRequested = true;
+        pendingScanRoots.clear();
+        return;
+    }
+    if (root instanceof Element && !root.isConnected) return;
+    if (fullScanRequested) return;
+
+    for (const pending of pendingScanRoots) {
+        if (!(pending instanceof Element) || !(root instanceof Element)) continue;
+        if (pending.contains(root)) return;
+        if (root.contains(pending)) pendingScanRoots.delete(pending);
+    }
+    pendingScanRoots.add(root);
+}
+
+function canContainDisplayNameTarget(element: Element) {
+    try {
+        return element.matches(candidateSelector())
+            || element.querySelector(candidateSelector()) !== null
+            || element.matches(PROFILE_SURFACE_SEL)
+            || element.querySelector(PROFILE_SURFACE_SEL) !== null;
+    } catch {
+        return false;
+    }
+}
+
+function scanRootForMutation(mutation: MutationRecord): ParentNode | null {
+    const target = mutation.target instanceof Element
+        ? mutation.target
+        : mutation.target.parentElement;
+    if (!target || target.closest?.(".vc-settings-tab, [class*='standardSidebarView']")) return null;
+
+    if (mutation.type === "attributes") {
+        // A target can stop matching after a class/role change. Keep it in the
+        // scoped pass when we previously styled it so the old attributes are
+        // removed without falling back to a document-wide scan.
+        if (target.hasAttribute(TARGET_ATTR)
+            || target.matches(candidateSelector())
+            || target.matches(PROFILE_SURFACE_SEL)
+            || target.matches(MESSAGE_SURFACE_SEL)) return target;
+        return target.closest(PROFILE_SURFACE_SEL)
+            ?? target.closest(MESSAGE_SURFACE_SEL)
+            ?? null;
+    }
+
+    if (mutation.type !== "childList") return null;
+
+    // Hydration commonly adds an entire profile/message subtree at once. Scan
+    // that subtree only when it can actually contain a display-name target.
+    for (const node of mutation.addedNodes) {
+        if (node instanceof Element && canContainDisplayNameTarget(node)) return node;
+    }
+
+    if (target.matches(candidateSelector())
+        || target.matches(PROFILE_SURFACE_SEL)
+        || target.matches(MESSAGE_SURFACE_SEL)
+        || target.hasAttribute(TARGET_ATTR)) return target;
+    return target.closest(PROFILE_SURFACE_SEL)
+        ?? target.closest(MESSAGE_SURFACE_SEL)
+        ?? null;
+}
+
+function scheduleScan(root: ParentNode = document) {
+    queueScanRoot(root);
     if (scanRaf || !document.body) return;
     const now = performance.now();
     const delay = Math.max(0, 100 - (now - lastScanTime));
     scanRaf = window.setTimeout(() => {
         scanRaf = 0;
         lastScanTime = performance.now();
-        scanRoot(document);
+        const roots = fullScanRequested
+            ? [document]
+            : Array.from(pendingScanRoots);
+        fullScanRequested = false;
+        pendingScanRoots.clear();
+        for (const scanTarget of roots) {
+            if (scanTarget === document || !(scanTarget instanceof Element) || scanTarget.isConnected) {
+                scanRoot(scanTarget, scanTarget === document);
+            }
+        }
     }, delay) as any;
 }
 
@@ -1132,6 +1316,24 @@ function syncMotionState() {
     });
 }
 
+function onVisibilityChange() {
+    if (!document.hidden) scheduleScan(document);
+}
+
+function startVisibilityObserver() {
+    if (visibilityObserver || typeof IntersectionObserver === "undefined") return;
+    visibilityObserver = new IntersectionObserver(entries => {
+        for (const entry of entries) {
+            const element = entry.target;
+            if (!(element instanceof HTMLElement) || !element.hasAttribute(TARGET_ATTR)) {
+                visibilityObserver?.unobserve(element);
+                continue;
+            }
+            element.setAttribute(VISIBILITY_ATTR, entry.isIntersecting && entry.intersectionRatio > 0 ? "visible" : "offscreen");
+        }
+    }, { root: null, threshold: 0 });
+}
+
 function clearAllTargets() {
     document.querySelectorAll<HTMLElement>(`[${TARGET_ATTR}]`).forEach(clearTarget);
 }
@@ -1144,30 +1346,12 @@ function refresh() {
 
 function startObserver() {
     if (observer || !document.body) return;
+    startVisibilityObserver();
     observer = new MutationObserver(mutations => {
-        let hasRelevant = false;
         for (const m of mutations) {
-            const target = m.target as Element | null;
-            if (target?.closest?.(".vc-settings-tab, [class*='standardSidebarView']")) {
-                continue;
-            }
-            if (m.type === "childList"
-                || m.attributeName === "class"
-                || m.attributeName === "data-user-id"
-                || m.attributeName === "data-userid"
-                || m.attributeName === "data-profile-user-id"
-                || m.attributeName === "data-profile-userid"
-                || m.attributeName === "role"
-                || m.attributeName === "aria-label"
-                || m.attributeName === "data-dm-flair-theme-applied"
-                || m.attributeName === "data-dm-flair-banner-applied"
-                || m.attributeName === "data-dm-flair-banner-owner-id"
-                || m.attributeName === "data-dm-flair-theme-owner-id") {
-                hasRelevant = true;
-                break;
-            }
+            const root = scanRootForMutation(m);
+            if (root) scheduleScan(root);
         }
-        if (hasRelevant) scheduleScan();
     });
     observer.observe(document.body, {
         childList: true,
@@ -1175,9 +1359,11 @@ function startObserver() {
         attributes: true,
         attributeFilter: ["class", "data-user-id", "data-userid", "data-profile-user-id", "data-profile-userid", "data-dm-flair-avatar-user-id", "data-dm-flair-banner-owner-id", "data-dm-flair-theme-owner-id", "data-dm-flair-theme-applied", "data-dm-flair-banner-applied", "role", "aria-label", "aria-hidden"]
     });
-    scanRoot(document);
+    scanRoot(document, true);
     syncMotionState();
     window.addEventListener("discordmaxxer:tournament-mode-changed", syncMotionState);
+    window.addEventListener("focus", onVisibilityChange);
+    document.addEventListener("visibilitychange", onVisibilityChange);
     motionTimer = setInterval(() => {
         if (document.hidden) return;
         syncMotionState();
@@ -1186,8 +1372,12 @@ function startObserver() {
 
 function stopObserver() {
     window.removeEventListener("discordmaxxer:tournament-mode-changed", syncMotionState);
+    window.removeEventListener("focus", onVisibilityChange);
+    document.removeEventListener("visibilitychange", onVisibilityChange);
     observer?.disconnect();
     observer = null;
+    visibilityObserver?.disconnect();
+    visibilityObserver = null;
     if (scanRaf) {
         clearTimeout(scanRaf);
         scanRaf = 0;
@@ -1196,6 +1386,8 @@ function stopObserver() {
         clearInterval(motionTimer);
         motionTimer = null;
     }
+    pendingScanRoots.clear();
+    fullScanRequested = false;
     clearAllTargets();
     document.documentElement?.removeAttribute(MOTION_BLOCKED_ATTR);
     lastMotionAllowed = null;

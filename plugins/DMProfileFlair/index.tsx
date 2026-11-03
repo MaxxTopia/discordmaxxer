@@ -86,6 +86,7 @@ const localProfileMedia: Record<FlairMediaKind, LocalProfileMedia> = {
 };
 const localProfileMediaListeners = new Set<() => void>();
 let localProfileMediaHydration: Promise<void> | null = null;
+let localProfileMediaHydrationGeneration = 0;
 
 const PROFILE_FIELD_MIN_TIER: Record<keyof ProfileFlair, Tier> = {
     bannerUrl: Tier.FREE,
@@ -504,6 +505,7 @@ function getLocalProfileMedia(kind: FlairMediaKind): LocalProfileMedia {
 
 async function hydrateLocalProfileMedia(): Promise<void> {
     if (localProfileMediaHydration) return localProfileMediaHydration;
+    const hydrationGeneration = localProfileMediaHydrationGeneration;
     localProfileMediaHydration = Promise.all((Object.keys(PROFILE_LOCAL_MEDIA_KEYS) as FlairMediaKind[]).map(async kind => {
         try {
             const value = await DataStore.get<Blob>(PROFILE_LOCAL_MEDIA_KEYS[kind]);
@@ -518,6 +520,7 @@ async function hydrateLocalProfileMedia(): Promise<void> {
             const error = localProfileMediaError(kind, file);
             if (error) return;
             const metadata = await inspectLocalProfileMedia(kind, file);
+            if (hydrationGeneration !== localProfileMediaHydrationGeneration) return;
             const url = URL.createObjectURL(file);
             localProfileMedia[kind] = {
                 url,
@@ -530,8 +533,21 @@ async function hydrateLocalProfileMedia(): Promise<void> {
         } catch (error) {
             console.warn(`[DMProfileFlair] could not restore local ${kind}:`, error);
         }
-    })).then(() => notifyLocalProfileMediaListeners());
+    })).then(() => {
+        if (hydrationGeneration === localProfileMediaHydrationGeneration) notifyLocalProfileMediaListeners();
+    });
     return localProfileMediaHydration;
+}
+
+function releaseLocalProfileMediaUrls(): void {
+    localProfileMediaHydrationGeneration++;
+    localProfileMediaHydration = null;
+    for (const kind of Object.keys(PROFILE_LOCAL_MEDIA_KEYS) as FlairMediaKind[]) {
+        const previous = localProfileMedia[kind].url;
+        if (previous) URL.revokeObjectURL(previous);
+        localProfileMedia[kind] = { url: "", fileName: "", mime: "" };
+    }
+    notifyLocalProfileMediaListeners();
 }
 
 async function saveLocalProfileMedia(kind: FlairMediaKind, file: File, metadata?: ProfileMediaMetadata): Promise<void> {
@@ -770,13 +786,12 @@ async function importProfileMedia(
     throw new Error(`Media import failed after retries: ${lastError}`);
 }
 
-/** TournamentMode integration: read the plugin's manuallyActive flag through
- *  Vencord's plain-settings tree. Used to suppress animated content (banner
- *  videos + animated avatars) when the user is gaming — TM exists exactly to
- *  free up CPU/GPU, so adding animated avatar decodes back into the mix would
- *  defeat the point. */
+/** TournamentMode integration: read the live renderer flag rather than the
+ *  persisted settings mirror. The mirror can contain the previous renderer's
+ *  value during startup, which used to suppress flair until the user toggled
+ *  Tournament Mode twice. */
 export function isTournamentModeActive(): boolean {
-    return !!(globalThis as any).Vencord?.PlainSettings?.plugins?.TournamentMode?.manuallyActive;
+    return (globalThis as any).__dmTournamentModeActive === true;
 }
 
 /** Local hide list — userIds whose flair the viewer has muted. Persisted via
@@ -2791,13 +2806,30 @@ function refreshRosterForVisibleSurface(): void {
     const now = Date.now();
     if (now - lastRosterRefreshAt < ROSTER_FOCUS_REFRESH_INTERVAL_MS) return;
     lastRosterRefreshAt = now;
-    refreshRoster().catch(e => console.warn("[DMProfileFlair] focused roster refresh failed:", e));
+    void refreshRoster()
+        .then(() => {
+            // Roster hydration can finish after the first DOM scan. Repaint
+            // explicitly so startup does not depend on a later TM toggle or
+            // unrelated Discord mutation to reveal the user's flair.
+            if (!document.hidden) scheduleScan();
+        })
+        .catch(e => console.warn("[DMProfileFlair] focused roster refresh failed:", e));
 }
 
 const onVisibilityChange = () => {
-    if (!document.hidden) refreshRosterForVisibleSurface();
+    if (document.hidden) {
+        observer?.disconnect();
+        return;
+    }
+    if (observer && document.body) {
+        observer.observe(document.body, { childList: true, subtree: true });
+    }
+    refreshRosterForVisibleSurface();
 };
 const onRosterFocus = () => refreshRosterForVisibleSurface();
+const onTournamentModeChange = () => {
+    if (!document.hidden) scheduleScan();
+};
 
 
 /** True if a URL is explicitly marked or named as a video. Shared profile
@@ -2969,6 +3001,13 @@ const PROFILE_FAST_SCAN_ROOT_SELECTOR = [
     '[class*="profile-modal"]'
 ].join(", ");
 
+// During TournamentMode, animated flair is intentionally suppressed and the
+// normal 2s safety scan is already disabled. Keep the MutationObserver useful
+// for a newly mounted profile surface, but do not run a document-wide flair
+// scan for unrelated chat/list mutations. Discord produces a large amount of
+// childList churn while messages, typing indicators, and calls update.
+const PROFILE_SCAN_MUTATION_SELECTOR = `${PROFILE_FAST_SCAN_ROOT_SELECTOR}, [role="dialog"]`;
+
 const PROFILE_BANNER_SELECTOR = '[class*="banner_"], [class*="profileBanner"], [class*="userProfileBanner"]';
 
 function isProfileBannerWrapper(element: Element): boolean {
@@ -3003,6 +3042,25 @@ function findAllProfileBanners(): HTMLElement[] {
         }
     });
     return out;
+}
+
+function tournamentMutationNeedsProfileScan(mutation: MutationRecord): boolean {
+    const target = mutation.target instanceof Element ? mutation.target : null;
+    if (target?.closest?.(".vc-settings-tab, [class*='standardSidebarView']")) return false;
+    if (!isTournamentModeActive()) return true;
+
+    // A mutation inside an already-mounted profile surface can be a late
+    // identity/avatar commit, so retain the normal recovery behavior there.
+    if (target?.closest?.(PROFILE_SCAN_MUTATION_SELECTOR)) return true;
+
+    // Profile surfaces are portaled into the document. When one is mounted,
+    // the observer target is often document.body rather than the surface
+    // itself, so inspect only the added subtree instead of rescanning the page.
+    for (const node of Array.from(mutation.addedNodes)) {
+        if (!(node instanceof Element)) continue;
+        if (node.matches(PROFILE_SCAN_MUTATION_SELECTOR) || node.querySelector(PROFILE_SCAN_MUTATION_SELECTOR)) return true;
+    }
+    return false;
 }
 
 /** Find every IMG on the page whose src points at the given userId's avatar
@@ -3881,21 +3939,26 @@ function startObserver() {
     if (observer) return;
     document.addEventListener("visibilitychange", onVisibilityChange);
     window.addEventListener("focus", onRosterFocus);
+    window.addEventListener("discordmaxxer:tournament-mode-changed", onTournamentModeChange);
     removeRosterListener = onRosterChange(scheduleScan);
     observer = new MutationObserver(mutations => {
-        const relevant = mutations.some(m => {
-            const target = m.target as Element | null;
-            return !target?.closest?.(".vc-settings-tab, [class*='standardSidebarView']");
-        });
+        if (document.hidden) return;
+        const relevant = mutations.some(tournamentMutationNeedsProfileScan);
         if (relevant) scheduleScan();
     });
-    observer.observe(document.body, { childList: true, subtree: true });
-    scanForPopouts(document);
+    if (!document.hidden) {
+        observer.observe(document.body, { childList: true, subtree: true });
+        scanForPopouts(document);
+    }
     // Low-frequency safety net for changes the childList observer can't see
     // (e.g. an <img src> swapped in place). 2s is plenty for animated-avatar
     // surfaces and halves the steady-state polling cost vs the old 1s.
     rescanTimer = window.setInterval(() => {
-        if (document.hidden) return;
+        // TournamentMode already performs an immediate scan when toggled and
+        // suppresses animated media. Do not keep walking every visible profile
+        // surface while that mode is active; the observer still handles real
+        // DOM changes and the toggle event restores the normal scan path.
+        if (document.hidden || isTournamentModeActive()) return;
         scanForPopouts(document);
     }, 2000);
     refreshRosterForVisibleSurface();
@@ -3906,6 +3969,7 @@ function stopObserver() {
     removeRosterListener = null;
     document.removeEventListener("visibilitychange", onVisibilityChange);
     window.removeEventListener("focus", onRosterFocus);
+    window.removeEventListener("discordmaxxer:tournament-mode-changed", onTournamentModeChange);
     lastRosterRefreshAt = 0;
     observer?.disconnect();
     observer = null;
@@ -3983,6 +4047,7 @@ export default definePlugin({
 
     stop() {
         stopObserver();
+        releaseLocalProfileMediaUrls();
         style?.remove();
         style = null;
         // Reset the warn-once latch so toggling the plugin off+on re-surfaces

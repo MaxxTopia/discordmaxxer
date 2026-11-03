@@ -268,6 +268,7 @@ let blurHandler: (() => void) | null = null;
 let focusHandler: (() => void) | null = null;
 let mouseLeaveHandler: (() => void) | null = null;
 let mouseEnterHandler: (() => void) | null = null;
+let tournamentModeHandler: (() => void) | null = null;
 let lastX = -100;
 let lastY = -100;
 let lastSmokeTime = 0;
@@ -297,6 +298,12 @@ function emitSmokeIfNeeded(x: number, y: number) {
     }
 }
 
+function tournamentModeActive(): boolean {
+    const mirrored = (globalThis as any).Vencord?.PlainSettings?.plugins?.TournamentMode?.manuallyActive;
+    if (typeof mirrored === "boolean") return mirrored;
+    return (globalThis as Record<string, unknown>).__dmTournamentModeActive === true;
+}
+
 const settings = definePluginSettings({
     skin: {
         type: OptionType.SELECT,
@@ -323,6 +330,11 @@ function deactivate() {
 
 function applySkin(skin: CursorSkin | "off") {
     teardownTracking();
+
+    if (tournamentModeActive()) {
+        deactivate();
+        return;
+    }
 
     if (skin === "off") {
         deactivate();
@@ -571,10 +583,23 @@ export default definePlugin({
     start() {
         style = createAndAppendStyle("dm-cursor-style", managedStyleRootNode);
         style.textContent = CURSOR_CSS;
+        tournamentModeHandler = () => {
+            if (tournamentModeActive()) {
+                teardownTracking();
+                deactivate();
+            } else {
+                applySkin(settings.store.skin as CursorSkin | "off");
+            }
+        };
+        window.addEventListener("discordmaxxer:tournament-mode-changed", tournamentModeHandler);
         applySkin(settings.store.skin as CursorSkin | "off");
     },
 
     stop() {
+        if (tournamentModeHandler) {
+            window.removeEventListener("discordmaxxer:tournament-mode-changed", tournamentModeHandler);
+            tournamentModeHandler = null;
+        }
         teardownTracking();
         deactivate();
         style?.remove();

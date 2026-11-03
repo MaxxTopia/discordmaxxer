@@ -570,19 +570,19 @@ const settings = definePluginSettings({
         type: OptionType.BOOLEAN,
         description: "Avatar tier ring — 1px colored outline around PFPs of Discordmaxxer users you can see in the roster.",
         default: true,
-        onChange: syncTierFlairStyle
+         onChange: syncTierFlairStyle
     },
     nameTint: {
         type: OptionType.BOOLEAN,
         description: "Member list name tint with glow-glimmer — names of MAXXER+ users pulse aqua, MAXXER++ shimmer champagne.",
         default: true,
-        onChange: syncTierFlairStyle
+         onChange: syncTierFlairStyle
     },
     popoutBanner: {
         type: OptionType.BOOLEAN,
         description: "Profile popout banner stripe — 4px tier-color stripe across the top of the popout when you open a tagged user's profile.",
         default: true,
-        onChange: syncTierFlairStyle
+         onChange: syncTierFlairStyle
     },
     animatedBadgePlusPlus: {
         type: OptionType.BOOLEAN,

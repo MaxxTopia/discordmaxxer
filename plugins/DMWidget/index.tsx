@@ -40,7 +40,9 @@ import * as DataStore from "@api/DataStore";
 import { Button, React, RestAPI, Toasts, UserStore } from "@webpack/common";
 
 import { makePersistentValue } from "../_dm-shared/persist";
+import { WIDGET_STYLE_PRESETS, type WidgetStylePreset, widgetStylePreset } from "../_dm-shared/widgetStylePresets";
 import { DEFAULT_APP_ICONS, FN_RANK_ICONS } from "./logos";
+import { showDiscordmaxxerStatusToast } from "../_dm-shared/statusToast";
 
 const Native = VencordNative.pluginHelpers.DMWidget as PluginNative<typeof import("./native")>;
 
@@ -418,7 +420,10 @@ function toast(msg: string, type: any = Toasts.Type.SUCCESS, durationMs = 5000) 
         ? "success"
         : type === Toasts.Type.FAILURE ? "failure" : "message";
     setLastResult(msg, kind);
-    Toasts.show({ message: msg, type, id: Toasts.genId(), options: { duration: durationMs, position: Toasts.Position.TOP } });
+    // Use the same plugin-owned surface as Tournament Mode. Discord's native
+    // toast can render as an empty grey marker in some themes, which made the
+    // Apply skin action look like it did nothing.
+    showDiscordmaxxerStatusToast(msg, type, durationMs);
 }
 
 async function copyText(t: string): Promise<boolean> {
@@ -1424,22 +1429,60 @@ function importConfig(code: string): string | null {
 }
 
 // ---- settings UI -----------------------------------------------------------
-// Discord's renderer can block direct third-party image URLs. Keep one
-// native-fetched data URI per URL so the gallery and live widget preview share
-// the same reliable source, do not refetch on every settings rerender, and do
-// not lose a thumbnail after it has been loaded once.
+// Discord's renderer can block direct third-party image URLs. Keep a bounded
+// native-fetched data-URI LRU so the gallery and live widget preview share the
+// same reliable source without retaining every media file a user ever browsed.
 const previewDataCache = new Map<string, string>();
 const previewDataPending = new Map<string, Promise<string | null>>();
+const PREVIEW_DATA_CACHE_MAX_ENTRIES = 12;
+const PREVIEW_DATA_CACHE_MAX_BYTES = 32 * 1024 * 1024;
+let previewDataCacheBytes = 0;
+
+function previewDataSize(value: string): number {
+    // JS strings are UTF-16. This is deliberately a conservative accounting
+    // budget, not a claim about the browser's exact decoded-image allocation.
+    return value.length * 2;
+}
+
+function getCachedPreviewData(src: string): string | undefined {
+    const cached = previewDataCache.get(src);
+    if (cached === undefined) return undefined;
+    // Map insertion order gives us a small, predictable LRU without another
+    // collection or timer that would run while the app is idle.
+    previewDataCache.delete(src);
+    previewDataCache.set(src, cached);
+    return cached;
+}
+
+function rememberPreviewData(src: string, value: string): void {
+    const existing = previewDataCache.get(src);
+    if (existing !== undefined) previewDataCacheBytes -= previewDataSize(existing);
+    previewDataCache.delete(src);
+    previewDataCache.set(src, value);
+    previewDataCacheBytes += previewDataSize(value);
+    while (previewDataCache.size > PREVIEW_DATA_CACHE_MAX_ENTRIES || previewDataCacheBytes > PREVIEW_DATA_CACHE_MAX_BYTES) {
+        const oldest = previewDataCache.entries().next().value as [string, string] | undefined;
+        if (!oldest) break;
+        previewDataCache.delete(oldest[0]);
+        previewDataCacheBytes -= previewDataSize(oldest[1]);
+    }
+    previewDataCacheBytes = Math.max(0, previewDataCacheBytes);
+}
+
+function clearPreviewDataCache(): void {
+    previewDataCache.clear();
+    previewDataCacheBytes = 0;
+}
 
 function loadPreviewData(src: string): Promise<string | null> {
-    const cached = previewDataCache.get(src);
-    if (cached) return Promise.resolve(cached);
+    const cached = getCachedPreviewData(src);
+    if (cached !== undefined) return Promise.resolve(cached);
     const pending = previewDataPending.get(src);
     if (pending) return pending;
     const request = Native.fetchImageData(src).then(result => {
         if ("error" in result) return null;
         const resolved = `data:${result.contentType};base64,${result.dataBase64}`;
-        previewDataCache.set(src, resolved);
+        rememberPreviewData(src, resolved);
         return resolved;
     }).catch(() => null).finally(() => {
         previewDataPending.delete(src);
@@ -1451,12 +1494,12 @@ function loadPreviewData(src: string): Promise<string | null> {
 function useResolvedPreview(url: string) {
     const src = url.trim();
     const [state, setState] = React.useState(() => ({
-        previewSrc: previewDataCache.get(src) ?? "",
+        previewSrc: getCachedPreviewData(src) ?? "",
         failed: false
     }));
     React.useEffect(() => {
         let active = true;
-        const cached = previewDataCache.get(src);
+        const cached = getCachedPreviewData(src);
         setState({ previewSrc: cached ?? "", failed: false });
         if (!src) return () => { active = false; };
         if (!/^https?:\/\//i.test(src)) {
@@ -1520,39 +1563,6 @@ function PreviewImage({ url, alt, style, fallbackLabel = "Preview unavailable" }
 
 const SLOT_LABEL: Record<string, string> = { fortnite: "Fortnite", valorant: "Valorant", none: "Custom" };
 const WIDGET_STYLE_SLOT_KEYS = ["valorant", "fortnite", "none"];
-
-type WidgetStylePreset = {
-    id: string;
-    name: string;
-    mood: string;
-    glyph: string;
-    accent: string;
-    secondary: string;
-    surface: string;
-    topLayout: "hero" | "contained";
-    bottomLayout: "stats" | "progress";
-    motion: "none" | "scan" | "embers" | "aurora" | "glint" | "laurel" | "orbit" | "bloom" | "glitch" | "solar" | "blood" | "pursuit";
-    frame: "rail" | "ember" | "dream" | "glass" | "relic" | "horizon" | "bloom" | "crt" | "halo" | "velvet" | "nocturne";
-    ornament: "prism" | "cinder" | "ribbon" | "shard" | "crown" | "orbit" | "petal" | "pixel" | "flare" | "medallion" | "fang";
-};
-
-// Layout choices here map to fields in Discord's current widget schema. The
-// rest of the preset is a Discordmaxxer client skin: Discord's widget payload
-// has no CSS channel, so the renderer below applies these attributes to the
-// actual card after Discord mounts it. Stable IDs are kept for saved profiles
-// and imported DMW1 codes; names/art direction can evolve without losing a
-// user's selection.
-const WIDGET_STYLE_PRESETS: WidgetStylePreset[] = [
-    { id: "neonCircuit", name: "Prism Relay", mood: "Kinetic / chromatic", glyph: "⟡", accent: "#55f6e8", secondary: "#ff4fc8", surface: "#0b1420", topLayout: "hero", bottomLayout: "stats", motion: "scan", frame: "rail", ornament: "prism" },
-    { id: "emberProtocol", name: "Mothlight Reliquary", mood: "Nocturnal / lantern-lit", glyph: "❈", accent: "#ffd36a", secondary: "#b9f08b", surface: "#121a19", topLayout: "contained", bottomLayout: "stats", motion: "embers", frame: "ember", ornament: "cinder" },
-    { id: "cottonCandy", name: "Cotton Candy", mood: "Dream / pastel", glyph: "✧", accent: "#ff6ec7", secondary: "#4a73ff", surface: "#1a1425", topLayout: "hero", bottomLayout: "stats", motion: "aurora", frame: "dream", ornament: "ribbon" },
-    { id: "frostedGlass", name: "Frosted Glass", mood: "Glacier / refracted light", glyph: "◇", accent: "#d8f3ff", secondary: "#7586a9", surface: "#121a25", topLayout: "contained", bottomLayout: "stats", motion: "glint", frame: "glass", ornament: "shard" },
-    { id: "championRun", name: "Sanguine Court", mood: "Velvet / blood-lust", glyph: "♛", accent: "#ff526e", secondary: "#e9b36b", surface: "#150912", topLayout: "hero", bottomLayout: "progress", motion: "blood", frame: "velvet", ornament: "medallion" },
-    { id: "deepSpace", name: "Event Horizon", mood: "Starfield / nocturne", glyph: "✦", accent: "#b8cbff", secondary: "#78e0da", surface: "#060914", topLayout: "contained", bottomLayout: "progress", motion: "orbit", frame: "horizon", ornament: "orbit" },
-    { id: "voidBloom", name: "Void Bloom", mood: "Bioluminescent / alien garden", glyph: "✿", accent: "#d173ff", secondary: "#79f0cf", surface: "#170e24", topLayout: "hero", bottomLayout: "stats", motion: "bloom", frame: "bloom", ornament: "petal" },
-    { id: "pixelOverdrive", name: "Vesper Hunt", mood: "Midnight / lantern chase", glyph: "✶", accent: "#ff6a8f", secondary: "#ffd36a", surface: "#0c0d1a", topLayout: "contained", bottomLayout: "stats", motion: "pursuit", frame: "nocturne", ornament: "fang" },
-    { id: "solarFlare", name: "Solar Cathedral", mood: "Noon king / radiant", glyph: "☼", accent: "#ffe3a0", secondary: "#f06b4d", surface: "#24100d", topLayout: "hero", bottomLayout: "stats", motion: "solar", frame: "halo", ornament: "flare" }
-];
 
 const VANILLA_SKIN_ASSET_PREFIX = "vanillaSkin";
 
@@ -1852,8 +1862,8 @@ const WIDGET_CLIENT_SKIN_CSS = `
   @keyframes dm-widget-client-sanguine-velvet { 0%, 100% { transform: translate3d(-1%, .5%, 0) scale(1); opacity: .68; } 50% { transform: translate3d(1%, -.5%, 0) scale(1.035); opacity: .98; } }
   @keyframes dm-widget-client-mothlight-dust { 0%, 100% { transform: translate3d(-2%, 1%, 0) scale(.96); opacity: .42; } 50% { transform: translate3d(3%, -2%, 0) scale(1.05); opacity: .94; } }
 @keyframes dm-widget-client-sun-crown { from { transform: rotate(0deg) scale(.96); opacity: .44; } to { transform: rotate(360deg) scale(1.04); opacity: .92; } }
-[data-dm-widget-skin] { position: relative !important; isolation: isolate; overflow: hidden !important; border-radius: 12px !important; border: 1px solid color-mix(in srgb, var(--dmw-skin-accent) 62%, transparent) !important; box-shadow: 0 0 0 1px color-mix(in srgb, var(--dmw-skin-accent) 16%, transparent), 0 8px 24px color-mix(in srgb, var(--dmw-skin-accent) 18%, transparent), inset 0 0 24px color-mix(in srgb, var(--dmw-skin-accent) 10%, transparent); background-color: var(--dmw-skin-surface) !important; }
-[data-dm-widget-skin]::before, [data-dm-widget-skin]::after { content: ""; position: absolute; pointer-events: none; border-radius: inherit; will-change: transform, opacity; transform: translateZ(0); }
+[data-dm-widget-skin] { position: relative !important; isolation: isolate; contain: paint; overflow: hidden !important; border-radius: 12px !important; border: 1px solid color-mix(in srgb, var(--dmw-skin-accent) 62%, transparent) !important; box-shadow: 0 0 0 1px color-mix(in srgb, var(--dmw-skin-accent) 16%, transparent), 0 8px 24px color-mix(in srgb, var(--dmw-skin-accent) 18%, transparent), inset 0 0 24px color-mix(in srgb, var(--dmw-skin-accent) 10%, transparent); background-color: var(--dmw-skin-surface) !important; }
+[data-dm-widget-skin]::before, [data-dm-widget-skin]::after { content: ""; position: absolute; pointer-events: none; border-radius: inherit; }
 [data-dm-widget-skin]::before { z-index: 0; inset: 0; background-repeat: no-repeat; }
 [data-dm-widget-skin]::after { z-index: 2; inset: 0; }
 [data-dm-widget-skin] > * { position: relative; z-index: 1; }
@@ -1885,8 +1895,17 @@ const WIDGET_CLIENT_SKIN_CSS = `
 [data-dm-widget-skin="solarFlare"]::before { background-image: radial-gradient(circle at 84% 18%, rgba(255,255,255,.72) 0 3%, transparent 4% 9%, color-mix(in srgb, var(--dmw-skin-accent) 24%, transparent) 10% 15%, transparent 16% 34%), repeating-conic-gradient(from 0deg at 84% 18%, color-mix(in srgb, var(--dmw-skin-accent) 28%, transparent) 0deg 2deg, transparent 3deg 14deg), linear-gradient(152deg, transparent 0 42%, color-mix(in srgb, var(--dmw-skin-secondary) 18%, transparent) 43% 55%, transparent 56%); clip-path: polygon(0 0, 100% 0, 100% 100%, 13% 100%, 21% 77%, 0 64%); }
 [data-dm-widget-skin="solarFlare"]::after { inset: -61% -56%; background: repeating-conic-gradient(from 2deg at 50% 50%, transparent 0deg 8deg, color-mix(in srgb, var(--dmw-skin-accent) 46%, transparent) 9deg 12deg, transparent 13deg 22deg); -webkit-mask: radial-gradient(circle, transparent 27%, #000 34%, #000 54%, transparent 64%); mask: radial-gradient(circle, transparent 27%, #000 34%, #000 54%, transparent 64%); animation: dm-widget-client-sun-crown 23s linear infinite; }
 [data-dm-widget-motion-paused="true"]::before, [data-dm-widget-motion-paused="true"]::after,
-:root:not(:focus-within) [data-dm-widget-skin]::before, :root:not(:focus-within) [data-dm-widget-skin]::after,
+:root:not(:focus-within) [data-dm-widget-skin]:not([data-dm-widget-preview="true"])::before,
+:root:not(:focus-within) [data-dm-widget-skin]:not([data-dm-widget-preview="true"])::after,
 :root:not(:focus-within) [data-dm-widget-surface-root="true"]::after { animation-play-state: paused !important; }
+/* A card outside the viewport cannot contribute visible pixels. Keep its
+ * layout and skin intact, but stop only the compositor animation until the
+ * card comes back into view. This is deliberately a presentation-only gate;
+ * it does not detach the React subtree or touch activity/voice state. */
+[data-dm-widget-skin][data-dm-widget-offscreen="true"]::before,
+[data-dm-widget-skin][data-dm-widget-offscreen="true"]::after,
+[data-dm-widget-surface-root="true"][data-dm-widget-offscreen="true"]::before,
+[data-dm-widget-surface-root="true"][data-dm-widget-offscreen="true"]::after { animation-play-state: paused !important; }
 /* Discord remounts the Rich Presence card as its elapsed-time text changes.
  * Keep only that card's cosmetic layers on the renderer clock so a remount
  * resumes the same phase instead of flashing back to animation frame zero. */
@@ -1997,6 +2016,7 @@ const WIDGET_CLIENT_SKIN_CSS = `
 [data-dm-widget-surface-root="true"] {
     position: relative !important;
     isolation: isolate;
+    contain: paint;
     border-radius: 10px !important;
     border: 1px solid color-mix(in srgb, var(--dmw-surface-accent) 54%, transparent) !important;
     box-shadow: 0 0 0 1px color-mix(in srgb, var(--dmw-surface-accent) 12%, transparent), 0 5px 16px color-mix(in srgb, var(--dmw-surface-accent) 11%, transparent), inset 0 0 16px color-mix(in srgb, var(--dmw-surface-accent) 7%, transparent);
@@ -2005,7 +2025,7 @@ const WIDGET_CLIENT_SKIN_CSS = `
 [data-dm-widget-surface-root="true"]::before,
 [data-dm-widget-surface-root="true"]::after { content: ""; position: absolute; pointer-events: none; border-radius: inherit; }
 [data-dm-widget-surface-root="true"]::before { z-index: 0; inset: 0; opacity: .62; background-repeat: no-repeat; }
-[data-dm-widget-surface-root="true"]::after { z-index: 0; inset: 0; background: linear-gradient(112deg, transparent 25%, color-mix(in srgb, var(--dmw-surface-accent) 17%, transparent) 50%, color-mix(in srgb, var(--dmw-surface-secondary) 13%, transparent) 68%, transparent 82%); will-change: transform, opacity; animation: dm-widget-client-surface-drift 7.5s ease-in-out infinite alternate; }
+[data-dm-widget-surface-root="true"]::after { z-index: 0; inset: 0; background: linear-gradient(112deg, transparent 25%, color-mix(in srgb, var(--dmw-surface-accent) 17%, transparent) 50%, color-mix(in srgb, var(--dmw-surface-secondary) 13%, transparent) 68%, transparent 82%); animation: dm-widget-client-surface-drift 7.5s ease-in-out infinite alternate; }
 [data-dm-widget-surface-root="true"] > * { position: relative; z-index: 1; }
 [data-dm-widget-surface-skin="neonCircuit"] { background-image: linear-gradient(120deg, color-mix(in srgb, var(--dmw-surface-surface) 94%, #132c35), color-mix(in srgb, var(--dmw-surface-accent) 7%, var(--dmw-surface-surface)) 55%, color-mix(in srgb, var(--dmw-surface-secondary) 9%, var(--dmw-surface-surface))) !important; }
 [data-dm-widget-surface-skin="neonCircuit"]::before { background-image: repeating-linear-gradient(135deg, transparent 0 20px, color-mix(in srgb, var(--dmw-surface-accent) 8%, transparent) 21px 22px), radial-gradient(circle at 94% 10%, color-mix(in srgb, var(--dmw-surface-secondary) 28%, transparent), transparent 35%); }
@@ -2125,6 +2145,10 @@ let widgetSkinPlayingCardObserverReleaseTimer: number | null = null;
 let widgetSkinPlayingCardRoot: HTMLElement | null = null;
 const widgetSkinPlayingCardHosts = new Set<HTMLElement>();
 let widgetSkinPlayingCardHostRoot: HTMLElement | null = null;
+let widgetSkinVisibilityObserver: IntersectionObserver | null = null;
+const widgetSkinVisibilityRoots = new Set<HTMLElement>();
+let widgetSkinVisibilityRefreshFrame: number | null = null;
+let widgetSkinVisibilityRefreshHandler: (() => void) | null = null;
 let lastPlayingCardDirectProbeAt = 0;
 const PLAYING_CARD_DIRECT_PROBE_INTERVAL_MS = 1000;
 let widgetSkinPlayingCardTimelineStartedAt = -1;
@@ -2133,6 +2157,8 @@ let removeWidgetSkinProfileTriggerListeners: (() => void) | null = null;
 let widgetSkinTimer: number | null = null;
 let widgetSkinIdle: number | null = null;
 let widgetSkinRescanTimer: number | null = null;
+let widgetSkinMountTimer: number | null = null;
+let widgetSkinVisibilityHandler: (() => void) | null = null;
 const widgetSkinProfileScanTimers = new Set<number>();
 let widgetSkinProfileScanQueuedAt = 0;
 let widgetSkinLastScanAt = 0;
@@ -2198,6 +2224,7 @@ let attachedWidgetProfileEmptySince = 0;
 let attachedWidgetRefreshAt = 0;
 let attachedWidgetRefreshPromise: Promise<void> | null = null;
 let widgetStyleRefreshTimer: number | null = null;
+let statsWarmupTimer: number | null = null;
 const ATTACHED_WIDGET_REFRESH_INTERVAL_MS = 30_000;
 const OWNED_WIDGET_MARKER_REPAIR_INTERVAL_MS = 15 * 60_000;
 let ownedWidgetMarkerRepairAccountId = "";
@@ -2904,6 +2931,76 @@ function updateAttachedWidgetStylesForSlot(slotKey: string, preset: WidgetStyleP
         const currentId = getSlot(slotKey).appId;
         if (SNOWFLAKE.test(currentId)) attachedWidgetStyles.set(currentId, preset);
     }
+}
+
+function externalWidgetStyleSlot(): string {
+    const store = settings.store as any;
+    const requested = String(store.gameTemplate ?? "none") || "none";
+    const requestedSlot = getSlot(requested);
+    const requestedIsDeployed = SNOWFLAKE.test(requestedSlot.appId);
+    const requestedIsAttached = Array.from(attachedWidgetSlots.values()).some(slotKey => slotKey === requested);
+    if (requestedIsDeployed || requestedIsAttached) return requested;
+
+    // The cosmetics showroom can be opened from a profile surface while the
+    // DMWidget editor is still pointed at an empty/default slot. Prefer the
+    // first confirmed attached card so “use this widget skin” updates the
+    // widget the user is actually looking at instead of silently styling an
+    // unused template.
+    const attachedSlot = Array.from(attachedWidgetSlots.entries()).find(([appId]) => SNOWFLAKE.test(appId))?.[1];
+    if (attachedSlot) return attachedSlot;
+
+    // If the profile list has not hydrated yet, use a locally deployed slot
+    // as the same-PC fallback. This keeps the bridge useful without claiming
+    // that an unconfirmed slot is cross-install attached.
+    const localSlot = ["valorant", "fortnite", "none"].find(slotKey => SNOWFLAKE.test(getSlot(slotKey).appId));
+    return localSlot ?? requested;
+}
+
+/**
+ * Apply a gallery choice made by another Discordmaxxer surface.
+ *
+ * DMProfileCosmetics can show the widget language in its live showroom, but
+ * it must not maintain a second copy of the widget selection logic. This
+ * bridge deliberately follows the same slot/layout preservation rules as the
+ * DMWidget picker, then runs the same local reskin pass immediately.
+ */
+async function setWidgetStyleFromExternal(styleId: string): Promise<{ styleId: string; applied: number }> {
+    await ensureSlots();
+    const preset = widgetStylePreset(styleId);
+    const store = settings.store as any;
+    const template = externalWidgetStyleSlot();
+    const current = getSlot(template);
+    const updatedAt = Math.max(Date.now(), Number(current.widgetStyleUpdatedAt ?? 0) + 1);
+    const cachedPublished = publishedWidgetSnapshots.get(template);
+    const nextTopLayout = current.topLayout ?? cachedPublished?.topLayout ?? preset.topLayout;
+    const nextBottomLayout = current.bottomLayout ?? cachedPublished?.bottomLayout ?? preset.bottomLayout;
+    const selectedPreset = presetWithLayouts(preset, nextTopLayout, nextBottomLayout);
+
+    setSlot(template, {
+        ...current,
+        widgetStyle: preset.id,
+        widgetStyleSource: "local",
+        widgetStyleUpdatedAt: updatedAt,
+        topLayout: nextTopLayout,
+        bottomLayout: nextBottomLayout
+    });
+    store.widgetStyle = preset.id;
+    store.topLayout = nextTopLayout;
+    store.bottomLayout = nextBottomLayout;
+    updateAttachedWidgetStylesForSlot(template, selectedPreset);
+
+    // A profile/popout may already be mounted. Reconcile it now instead of
+    // waiting for Discord's next React commit or the background interval.
+    widgetApplicationCacheEpoch++;
+    widgetSkinLastScanAt = 0;
+    const applied = scanWidgetSkinCards(220);
+    scheduleWidgetSkinScan(true);
+
+    // Keep the existing widget's shared style marker in sync just like the
+    // native DMWidget picker. A remote publish failure must not undo the
+    // instant local preview/reskin, so it is intentionally best-effort here.
+    void republishSelectedWidgetStyle(template).catch(error => console.warn("[DMWidget] external widget style publish failed:", error));
+    return { styleId: preset.id, applied };
 }
 
 function knownWidgetStyles(): Map<string, WidgetStylePreset> {
@@ -3972,7 +4069,164 @@ function widgetApplicationMatch(element: HTMLElement, known: Set<string>, hints:
     return remember(null);
 }
 
+function unobserveWidgetSkinVisibility(root: HTMLElement): void {
+    widgetSkinVisibilityRoots.delete(root);
+    widgetSkinVisibilityObserver?.unobserve(root);
+    delete root.dataset.dmWidgetOffscreen;
+}
+
+function widgetSkinRootIsVisible(root: HTMLElement): boolean {
+    try {
+        const rect = root.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0
+            || rect.right <= 0 || rect.bottom <= 0
+            || rect.left >= window.innerWidth || rect.top >= window.innerHeight) return false;
+
+        // IntersectionObserver normally accounts for these clips. Keep the
+        // same small geometry check as a fallback for Discord's isolated
+        // webview world, where observer registration can be unreliable after
+        // a profile popout is hydrated or remounted.
+        for (let ancestor = root.parentElement; ancestor; ancestor = ancestor.parentElement) {
+            const computed = window.getComputedStyle(ancestor);
+            const clipsX = /^(?:hidden|clip|scroll|auto)$/.test(computed.overflowX);
+            const clipsY = /^(?:hidden|clip|scroll|auto)$/.test(computed.overflowY);
+            if (clipsX || clipsY) {
+                const clip = ancestor.getBoundingClientRect();
+                if ((clipsX && (rect.right <= clip.left || rect.left >= clip.right))
+                    || (clipsY && (rect.bottom <= clip.top || rect.top >= clip.bottom))) return false;
+            }
+            if (ancestor === document.body) break;
+        }
+        return true;
+    } catch {
+        // A React subtree can be detached between getBoundingClientRect and
+        // the ancestor walk. Keep its animation alive until the next pass.
+        return true;
+    }
+}
+
+function refreshWidgetSkinVisibilityFlags(): void {
+    widgetSkinVisibilityRefreshFrame = null;
+    if (document.hidden || isWidgetPreviewMotionPaused()) return;
+    for (const root of Array.from(widgetSkinVisibilityRoots)) {
+        if (!root.isConnected) {
+            unobserveWidgetSkinVisibility(root);
+        } else if (widgetSkinRootIsVisible(root)) {
+            delete root.dataset.dmWidgetOffscreen;
+        } else {
+            root.dataset.dmWidgetOffscreen = "true";
+        }
+    }
+}
+
+function scheduleWidgetSkinVisibilityRefresh(): void {
+    if (document.hidden || isWidgetPreviewMotionPaused() || widgetSkinVisibilityRefreshFrame !== null) return;
+    if (typeof window.requestAnimationFrame === "function") {
+        widgetSkinVisibilityRefreshFrame = window.requestAnimationFrame(refreshWidgetSkinVisibilityFlags);
+    } else {
+        widgetSkinVisibilityRefreshFrame = window.setTimeout(refreshWidgetSkinVisibilityFlags, 0);
+    }
+}
+
+function observeWidgetSkinVisibility(root: HTMLElement): void {
+    widgetSkinVisibilityRoots.add(root);
+    // Profile/Board trees can hydrate after the renderer's initial attach.
+    // Start lazily at registration time as well, so a late-mounted card is
+    // never left outside the visibility gate just because startup was hidden
+    // or Tournament Mode was still settling its settings.
+    if (!widgetSkinVisibilityObserver && !document.hidden && !isWidgetPreviewMotionPaused()) {
+        startWidgetSkinVisibilityObserver();
+    }
+    if (widgetSkinVisibilityObserver && root.isConnected) {
+        try {
+            widgetSkinVisibilityObserver.observe(root);
+        } catch {
+            // Discord can detach a React subtree between the visibility check
+            // and observe(). The geometry fallback still runs on scroll.
+        }
+    }
+    scheduleWidgetSkinVisibilityRefresh();
+    // The scan already has the card geometry in hand. Apply the first
+    // visibility decision synchronously as well as scheduling the coalesced
+    // RAF pass; this avoids leaving a newly hydrated offscreen card running
+    // until Chromium delivers its next frame or IntersectionObserver batch.
+    refreshWidgetSkinVisibilityFlags();
+}
+
+function startWidgetSkinVisibilityObserver(): void {
+    if (widgetSkinVisibilityObserver || widgetSkinVisibilityRefreshHandler) return;
+    if (typeof IntersectionObserver !== "undefined") {
+        widgetSkinVisibilityObserver = new IntersectionObserver(entries => {
+            for (const entry of entries) {
+                const root = entry.target instanceof HTMLElement ? entry.target : null;
+                if (!root || !widgetSkinVisibilityRoots.has(root)) continue;
+                if (!root.isConnected) {
+                    unobserveWidgetSkinVisibility(root);
+                } else if (entry.isIntersecting && entry.intersectionRatio > 0) {
+                    delete root.dataset.dmWidgetOffscreen;
+                } else {
+                    root.dataset.dmWidgetOffscreen = "true";
+                }
+            }
+        }, { root: null, threshold: 0 });
+    }
+    for (const root of Array.from(widgetSkinVisibilityRoots)) {
+        if (!root.isConnected) unobserveWidgetSkinVisibility(root);
+        else observeWidgetSkinVisibility(root);
+    }
+    const refresh = () => scheduleWidgetSkinVisibilityRefresh();
+    document.addEventListener("scroll", refresh, true);
+    window.addEventListener("resize", refresh);
+    window.visualViewport?.addEventListener("resize", refresh);
+    widgetSkinVisibilityRefreshHandler = () => {
+        document.removeEventListener("scroll", refresh, true);
+        window.removeEventListener("resize", refresh);
+        window.visualViewport?.removeEventListener("resize", refresh);
+        if (widgetSkinVisibilityRefreshFrame !== null) {
+            if (typeof window.cancelAnimationFrame === "function") window.cancelAnimationFrame(widgetSkinVisibilityRefreshFrame);
+            else window.clearTimeout(widgetSkinVisibilityRefreshFrame);
+            widgetSkinVisibilityRefreshFrame = null;
+        }
+        widgetSkinVisibilityRefreshHandler = null;
+    };
+    scheduleWidgetSkinVisibilityRefresh();
+}
+
+function stopWidgetSkinVisibilityObserver(): void {
+    widgetSkinVisibilityRefreshHandler?.();
+    widgetSkinVisibilityObserver?.disconnect();
+    widgetSkinVisibilityObserver = null;
+    for (const root of Array.from(widgetSkinVisibilityRoots)) delete root.dataset.dmWidgetOffscreen;
+    widgetSkinVisibilityRoots.clear();
+}
+
+function reconcileWidgetSkinVisibilityTargets(): void {
+    if (!widgetSkinVisibilityObserver && !widgetSkinVisibilityRefreshHandler
+        && !document.hidden && !isWidgetPreviewMotionPaused()) {
+        startWidgetSkinVisibilityObserver();
+    }
+    const roots = document.querySelectorAll<HTMLElement>(
+        '[data-dm-widget-card-root="true"], [data-dm-widget-surface-root="true"]'
+    );
+    for (const root of Array.from(roots).slice(0, 260)) {
+        if (!root.isConnected) continue;
+        widgetSkinVisibilityRoots.add(root);
+        if (widgetSkinVisibilityObserver) {
+            try {
+                // observe() is idempotent for a target. Re-registering here is
+                // intentional: Discord can replace a popout subtree without
+                // changing the renderer's own lifecycle state.
+                widgetSkinVisibilityObserver.observe(root);
+            } catch {
+                // Ignore a subtree that was detached during reconciliation.
+            }
+        }
+    }
+    scheduleWidgetSkinVisibilityRefresh();
+}
+
 function restoreWidgetSkin(root: HTMLElement): void {
+    unobserveWidgetSkinVisibility(root);
     const snapshot = widgetSkinRoots.get(root);
     if (!snapshot) {
         widgetSkinLastSeenAt.delete(root);
@@ -4001,6 +4255,7 @@ function clearWidgetSkinRoot(root: HTMLElement): void {
 }
 
 function restoreSurfaceSkin(root: HTMLElement): void {
+    unobserveWidgetSkinVisibility(root);
     const avatar = findHeaderAvatarSibling(root);
     if (avatar?.dataset.dmWidgetHeaderAvatar) {
         delete avatar.dataset.dmWidgetHeaderAvatar;
@@ -4036,6 +4291,7 @@ function restoreSurfaceSkin(root: HTMLElement): void {
 }
 
 function applySurfaceSkin(root: HTMLElement, preset: WidgetStylePreset): void {
+    observeWidgetSkinVisibility(root);
     syncHeaderAvatarSurface(root);
     if (!surfaceSkinRoots.has(root)) {
         const attrs: Record<string, string | null> = {};
@@ -4297,6 +4553,7 @@ function clearUnmarkedWidgetSkinTargets(): void {
 }
 
 function applyWidgetSkin(root: HTMLElement, preset: WidgetStylePreset, appId: string): void {
+    observeWidgetSkinVisibility(root);
     const alreadyTracked = widgetSkinRoots.has(root);
     const wasPlayingCard = root.dataset.dmWidgetPlayingCard === "true";
     if (!alreadyTracked) {
@@ -4875,6 +5132,7 @@ function scanWidgetSkinCards(budgetMs = 120): number {
     } else if (widgetSkinStyleElement && !document.hidden) {
         scheduleWidgetSkinScan();
     }
+    reconcileWidgetSkinVisibilityTargets();
     return applied;
 }
 
@@ -5056,10 +5314,20 @@ function widgetSkinSurfaceNeedsScan(): boolean {
         }
         if (!active.size && !remoteActive.size) return false;
         const hintLabels = Array.from(visibleProfileWidgetHints(knownWidgetHints()).values()).flat().filter(label => label.length >= 3);
+        // Keep the periodic probe cheap while the user is in ordinary Discord
+        // views. The card scan is only useful when at least one bounded widget
+        // surface is actually visible; reusing this filtered list also avoids
+        // recalculating the same layout bounds for every reconciliation pass.
         const surfaces = Array.from(document.querySelectorAll<HTMLElement>(WIDGET_SURFACE_SELECTOR)).slice(0, 24);
-        for (const surface of surfaces) {
+        const visibleSurfaces = surfaces.filter(surface => {
             const surfaceRect = surface.getBoundingClientRect();
-            if (surfaceRect.width < 80 || surfaceRect.height < 80 || surfaceRect.bottom <= 0 || surfaceRect.right <= 0) continue;
+            return surfaceRect.width >= 80
+                && surfaceRect.height >= 80
+                && surfaceRect.bottom > 0
+                && surfaceRect.right > 0;
+        });
+        if (!visibleSurfaces.length) return false;
+        for (const surface of visibleSurfaces) {
             const candidates = Array.from(surface.querySelectorAll<HTMLElement>(WIDGET_CARD_SELECTOR)).slice(0, 240);
             for (const candidate of candidates) {
                 // A marked root owns all of its nested wrappers. Do not let a
@@ -5088,6 +5356,14 @@ function updateWidgetSkinMotionPauseState(): void {
 function detachWidgetSkinBackgroundWork(): void {
     widgetSkinObserver?.disconnect();
     widgetSkinObserver = null;
+    // A renderer can be hidden while a requestAnimationFrame refresh is
+    // waiting in Chromium's background queue. Cancel both the frame and the
+    // event listeners before disconnecting the observer; otherwise the stale
+    // frame id can permanently suppress every refresh after the window
+    // becomes visible again.
+    widgetSkinVisibilityRefreshHandler?.();
+    widgetSkinVisibilityObserver?.disconnect();
+    widgetSkinVisibilityObserver = null;
     disconnectWidgetSkinProfileMountObserver();
     disconnectWidgetSkinPlayingCardObserver();
     clearWidgetSkinProfileScanTimers();
@@ -5110,7 +5386,6 @@ function startWidgetSkinRenderer(): void {
         .replace(/\[data-dm-widget-skin/g, '[data-dm-widget-card-root="true"][data-dm-widget-skin')
         .replace(/\[data-dm-widget-motion-paused/g, '[data-dm-widget-card-root="true"][data-dm-widget-motion-paused');
     (document.head || document.documentElement).appendChild(widgetSkinStyleElement);
-    document.addEventListener("visibilitychange", onWidgetSkinVisibilityChange);
     const onProfileTrigger = (event: Event) => {
         const conversationTrigger = widgetSkinConversationTriggerLike(event.target);
         if (conversationTrigger) activeDiscordConversationRowCache = null;
@@ -5128,7 +5403,8 @@ function startWidgetSkinRenderer(): void {
     };
     const detach = () => detachWidgetSkinBackgroundWork();
     const attach = () => {
-        if (run !== widgetSkinRun || widgetSkinRendererSuspended || !document.body || widgetSkinObserver) return;
+        if (run !== widgetSkinRun || document.hidden || widgetSkinRendererSuspended || !document.body || widgetSkinObserver) return;
+        startWidgetSkinVisibilityObserver();
         widgetSkinObserver = new MutationObserver(records => {
             if (widgetSkinMutationRelevant(records)) scheduleWidgetSkinScan(true);
         });
@@ -5152,11 +5428,27 @@ function startWidgetSkinRenderer(): void {
             scheduleWidgetSkinScan(true);
         }, WIDGET_SKIN_RECONCILE_INTERVAL_MS);
     };
+    const onVisibilityChange = () => {
+        // Chromium can keep delivering DOM mutations while an Electron window
+        // is backgrounded. Release the broad observers and reconciliation
+        // timer while hidden; the profile surface is re-scanned on return so
+        // no widget skin or playing-card state is lost.
+        if (document.hidden) {
+            detach();
+        } else if (!widgetSkinRendererSuspended) {
+            attach();
+        }
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    widgetSkinVisibilityHandler = () => document.removeEventListener("visibilitychange", onVisibilityChange);
     const onTournamentModeChanged = () => {
         updateWidgetSkinMotionPauseState();
         widgetSkinRendererSuspended = isWidgetPreviewMotionPaused();
-        if (widgetSkinRendererSuspended) detach();
-        else attach();
+        if (widgetSkinRendererSuspended) {
+            detach();
+        } else {
+            attach();
+        }
     };
     window.addEventListener("discordmaxxer:tournament-mode-changed", onTournamentModeChanged);
     removeTournamentModeListener = () => window.removeEventListener("discordmaxxer:tournament-mode-changed", onTournamentModeChanged);
@@ -5167,13 +5459,18 @@ function startWidgetSkinRenderer(): void {
             attach();
         }
     };
-    if (document.body) mount(); else window.setTimeout(mount, 0);
+    if (document.body) mount();
+    else widgetSkinMountTimer = window.setTimeout(() => {
+        widgetSkinMountTimer = null;
+        mount();
+    }, 0);
 }
 
 function stopWidgetSkinRenderer(): void {
     widgetSkinRun++;
     widgetSkinRendererSuspended = false;
-    document.removeEventListener("visibilitychange", onWidgetSkinVisibilityChange);
+    widgetSkinVisibilityHandler?.();
+    widgetSkinVisibilityHandler = null;
     removeWidgetSkinProfileTriggerListeners?.();
     removeWidgetSkinProfileTriggerListeners = null;
     widgetSkinProfileScanQueuedAt = 0;
@@ -5181,6 +5478,7 @@ function stopWidgetSkinRenderer(): void {
     removeTournamentModeListener = null;
     widgetSkinObserver?.disconnect();
     widgetSkinObserver = null;
+    stopWidgetSkinVisibilityObserver();
     disconnectWidgetSkinProfileMountObserver();
     disconnectWidgetSkinPlayingCardObserver();
     widgetSkinPlayingCardRoot = null;
@@ -5190,6 +5488,7 @@ function stopWidgetSkinRenderer(): void {
     if (widgetSkinTimer !== null) { clearTimeout(widgetSkinTimer); widgetSkinTimer = null; }
     cancelWidgetSkinIdle();
     if (widgetSkinRescanTimer !== null) { clearInterval(widgetSkinRescanTimer); widgetSkinRescanTimer = null; }
+    if (widgetSkinMountTimer !== null) { clearTimeout(widgetSkinMountTimer); widgetSkinMountTimer = null; }
     widgetSkinLegacyCleanupDone = false;
     widgetSkinLastScanAt = 0;
     widgetApplicationCacheEpoch++;
@@ -5209,12 +5508,9 @@ function stopWidgetSkinRenderer(): void {
     ownedWidgetMarkerRepairAt = 0;
     ownedWidgetMarkerRepairPromise = null;
     activeDiscordConversationRowCache = null;
+    clearPreviewDataCache();
     widgetSkinStyleElement?.remove();
     widgetSkinStyleElement = null;
-}
-
-function onWidgetSkinVisibilityChange(): void {
-    if (!document.hidden) scheduleWidgetSkinScan();
 }
 
 function widgetSkinProfileTriggerLike(target: EventTarget | null): boolean {
@@ -6215,7 +6511,11 @@ export default definePlugin({
             if (document.hidden) return;
             void refreshAttachedWidgetStyles();
         }, ATTACHED_WIDGET_REFRESH_INTERVAL_MS);
-        setTimeout(scheduleStatsRefresh, 20_000);
+        if (statsWarmupTimer !== null) clearTimeout(statsWarmupTimer);
+        statsWarmupTimer = window.setTimeout(() => {
+            statsWarmupTimer = null;
+            if (!document.hidden) scheduleStatsRefresh();
+        }, 20_000);
         fnRefreshTimer = setInterval(() => {
             if (document.hidden) return;
             scheduleStatsRefresh();
@@ -6252,12 +6552,18 @@ export default definePlugin({
             scheduleWidgetSkinScan();
             return applied;
         };
+        // ProfileCosmetics uses this bridge for its widget-language showroom.
+        // Keeping the setter here means both surfaces update the same slot,
+        // preserve the same layout, and run the same card renderer.
+        (globalThis as any).__dmWidgetSetStyle = (styleId: string) => setWidgetStyleFromExternal(styleId);
     },
     stop() {
         stopWidgetSkinRenderer();
         if (widgetStyleRefreshTimer !== null) { clearInterval(widgetStyleRefreshTimer); widgetStyleRefreshTimer = null; }
         if (fnRefreshTimer) { clearInterval(fnRefreshTimer); fnRefreshTimer = null; }
+        if (statsWarmupTimer !== null) { clearTimeout(statsWarmupTimer); statsWarmupTimer = null; }
         delete (globalThis as any).__dmWidgetRefresh;
         delete (globalThis as any).__dmWidgetReskin;
+        delete (globalThis as any).__dmWidgetSetStyle;
     }
 });

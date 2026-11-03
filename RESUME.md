@@ -1,5 +1,28 @@
 # Discordmaxxer — RESUME
 
+## 2026-11-03 — v0.7.116 full-dev merge candidate and image-menu crash hardening
+
+Recovery note:
+- The public v0.7.115 release was cut from the clean remote branch while the canonical development checkout still contained uncommitted/untracked WIP. That was a release-process mistake; the public build therefore did not include the newer DMEmoji implementation and some later optimization work.
+- This isolated candidate starts from the v0.7.115 release evidence and ports the reviewed development source without touching the dirty canonical checkout.
+
+Included in this candidate:
+- The full newer DMEmoji source and styles: Unicode/server emoji search, iEmoji keyboard link, native reaction support when a real Discord emoji identity is linked, local media shelf, saved-media context actions, and the mouse-click Send button.
+- The newer DMDisplayNameStyle scan/visibility memoization work so offscreen display-name surfaces stop retaining needless animation/scan work.
+- Defensive validation in DMEmoji's persisted optional emoji reference and message context-menu renderer.
+- Defensive validation in the ImageZoom image/message context-menu route: malformed props, non-image media types, invalid child arrays, and menu-construction errors now fail closed and are logged rather than taking down the renderer.
+- Package version bumped to `0.7.116`; this candidate is the intended replacement for public `v0.7.115`.
+
+Verification boundary:
+- `pnpm test` — passed ESLint and TypeScript.
+- `pnpm verifyPlugins` — passed; 57 defaults, 10 bundle IDs, and 9 featured IDs resolve to registered plugins.
+- `pnpm package:dir` — passed; the packaged x64 executable reports ProductVersion `0.7.116.0` and is retained at `E:\discordmaxxer-candidate-artifacts-20261103c\win-unpacked\discordmaxxer.exe` after moving generated output off the full C: drive.
+- `node overlay-scripts/verify-build.mjs` — passed after the final overlay; source fingerprint, staged renderer hashes, required source plugins, and compiled runtime plugins all match.
+- Strict Vencord overlay — 89 rebrand patches applied or idempotent, 0 warnings; 29 custom plugin directories synced; Vencord build passed.
+- Windows packaging — passed with temporary and output paths relocated to E:. The complete installer, x64/ARM64 ZIPs, blockmap, and `latest.yml` are at `E:\discordmaxxer-package-0.7.116-release2`.
+- These local checks are not a substitute for Diggy's runtime test. The final user test is to right-click a normal image, GIF, and image link, open the menu repeatedly, use the ImageZoom controls, and confirm Discord remains open. Also verify DMEmoji search/reaction/attachment paths, widget/profile animation, voice, and screenshare.
+- The public tag, GitHub release, updater feed, and live deployment remain pending until the v0.7.116 commit and tag are published.
+
 ## 2026-11-03 — v0.7.115 coordinated release candidate
 
 Candidate state:

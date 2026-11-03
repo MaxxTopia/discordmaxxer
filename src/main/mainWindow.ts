@@ -373,8 +373,10 @@ function buildBrowserWindowOptions(): BrowserWindowConstructorOptions {
             devTools: true,
             preload: join(__dirname, "preload.js"),
             spellcheck: true,
-            // disable renderer backgrounding to prevent the app from unloading when in the background
-            backgroundThrottling: false
+            // Use Chromium's normal idle/occlusion scheduling. The perf bridge
+            // disables this only while a voice call or stream is active so
+            // WebRTC audio stays live without keeping idle Discord fully hot.
+            backgroundThrottling: true
         },
         frame: !noFrame,
         autoHideMenuBar: enableMenu,
@@ -547,11 +549,14 @@ export async function createWindows() {
     runVencordMain();
 
     AppEvents.on("appLoaded", () => {
-        splash?.destroy();
+        try {
+            splash?.destroy();
+        } catch {}
 
-        if (!startMinimized) {
-            if (splash) mainWin!.show();
-            if (State.store.maximized && !isDeckGameMode) mainWin!.maximize();
+        if (!startMinimized && mainWin && !mainWin.isDestroyed()) {
+            mainWin.show();
+            mainWin.focus();
+            if (State.store.maximized && !isDeckGameMode) mainWin.maximize();
         }
 
         if (isDeckGameMode) {
@@ -573,6 +578,20 @@ export async function createWindows() {
     // handler exists, leaving the splash window permanently on top of a fully
     // loaded Discord renderer.
     mainWin = createMainWindow();
+
+    // Safety net: ensure the main window is visible even if Discord's network
+    // load takes longer than usual. Keep the splash recovery bounded so a
+    // transient CDN delay cannot strand the user behind an invisible window.
+    setTimeout(() => {
+        if (mainWin && !mainWin.isDestroyed() && !mainWin.isVisible() && !startMinimized) {
+            try {
+                splash?.destroy();
+            } catch {}
+            mainWin.show();
+            mainWin.focus();
+            if (State.store.maximized && !isDeckGameMode) mainWin.maximize();
+        }
+    }, 3500);
 
     mainWin.webContents.on("did-navigate", (_, url: string, responseCode: number) => {
         updateSplashMessage(""); // clear the splash message

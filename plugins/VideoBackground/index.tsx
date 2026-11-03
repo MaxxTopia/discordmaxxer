@@ -84,18 +84,84 @@ let localBlobUrl: string | null = null;
 // onerror handler would otherwise mistake for a real hard failure and
 // auto-clear the URL — making toggle-off then toggle-on look broken.
 let tearingDown = false;
+// Chromium throttles hidden tabs, but an explicitly paused decoder releases
+// its scheduling and compositor work immediately. Keep this separate from
+// TournamentMode so returning to Discord does not accidentally resume a video
+// that TournamentMode is still holding paused.
+let pausedByVisibility = false;
+// Tournament mode removes the media source entirely so Chromium can release
+// decoder/compositor resources. Keep the element alive so
+// turning the profile back off can restore the user's URL without a re-pick.
+let detachedForTournament = false;
 
 function isTournamentModeActive(): boolean {
     return Boolean((globalThis as any).__dmTournamentModeActive ?? (globalThis as any).Vencord?.PlainSettings?.plugins?.TournamentMode?.manuallyActive);
 }
+function isTournamentMinimalVisualsActive(): boolean {
+    return document.documentElement?.hasAttribute("data-dm-tournament-minimal") === true;
+}
+
+function detachForTournament() {
+    if (!videoEl || detachedForTournament) return;
+    tearingDown = true;
+    // Removing the source fires a synthetic media error in Chromium. Detach
+    // handlers first so Tournament Mode never clears a valid saved URL.
+    videoEl.onerror = null;
+    videoEl.onloadeddata = null;
+    videoEl.pause();
+    videoEl.removeAttribute("src");
+    videoEl.load();
+    detachedForTournament = true;
+    if (style) style.textContent = "";
+    queueMicrotask(() => { tearingDown = false; });
+}
+
 function reconcileTournamentMode() {
     if (!videoEl) return;
     const tm = isTournamentModeActive();
+    const minimal = isTournamentMinimalVisualsActive();
+
+    if (tm && minimal) {
+        detachForTournament();
+        return;
+    }
+
+    // A live settings change can turn the aggressive profile off while
+    // Tournament Mode remains active. Rebuild the source, then keep it paused.
+    if (detachedForTournament) {
+        detachedForTournament = false;
+        refresh();
+        return;
+    }
+
+    if (document.hidden) {
+        if (!videoEl.paused) {
+            videoEl.pause();
+            pausedByVisibility = true;
+        }
+        return;
+    }
     if (tm && !videoEl.paused) {
         videoEl.pause();
     } else if (!tm && videoEl.paused && settings.store.enable) {
         videoEl.play().catch(() => { /* autoplay policy — harmless, user can toggle */ });
     }
+}
+
+function reconcileDocumentVisibility() {
+    if (!videoEl) return;
+    if (document.hidden) {
+        if (!videoEl.paused) {
+            videoEl.pause();
+            pausedByVisibility = true;
+        }
+        return;
+    }
+    // A visible transition delegates the final decision to both TournamentMode
+    // and the plugin enable flag. This keeps hidden-window cleanup from
+    // overriding the mode's pause contract.
+    pausedByVisibility = false;
+    reconcileTournamentMode();
 }
 
 function buildCss() {
@@ -276,6 +342,7 @@ function tearDownVideo() {
         // is the primary safeguard; this keeps the flag honest as a backstop.)
         queueMicrotask(() => { tearingDown = false; });
     }
+    detachedForTournament = false;
     if (style) style.textContent = "";
 }
 
@@ -353,7 +420,27 @@ function refresh() {
     }
     videoEl = ensureVideoEl();
     console.log("[VideoBackground] refresh: video element in DOM, src =", url.slice(0, 80));
+    // A settings refresh may be the first event after Tournament Mode released
+    // the source. Treat the element as live again before applying its URL.
+    detachedForTournament = false;
     applyVideoSettings();
+
+    // In Tournament Mode the background is not merely paused: the source is
+    // detached so Chromium can release its
+    // decoder/compositor allocation. The saved URL and local file remain
+    // intact and are restored when the profile is disabled.
+    if (isTournamentModeActive() && isTournamentMinimalVisualsActive()) {
+        detachForTournament();
+        return;
+    }
+
+    // Do not start a decoder while the Electron window is backgrounded. The
+    // visibility listener will reconcile it when the window is shown again.
+    if (document.hidden) {
+        videoEl.pause();
+        pausedByVisibility = true;
+        return;
+    }
 
     // Surface the load lifecycle so the user can tell from devtools console
     // whether the video resource itself fails (CSP / CORS / 404 / format).
@@ -836,11 +923,14 @@ export default definePlugin({
         // Listen to TournamentMode state changes directly via event instead of
         // continuous 1-second polling intervals. Zero idle CPU cost.
         window.addEventListener("discordmaxxer:tournament-mode-changed", reconcileTournamentMode);
+        document.addEventListener("visibilitychange", reconcileDocumentVisibility);
     },
 
     stop() {
         window.removeEventListener("discordmaxxer:tournament-mode-changed", reconcileTournamentMode);
+        document.removeEventListener("visibilitychange", reconcileDocumentVisibility);
         tearDownVideo();
+        pausedByVisibility = false;
         if (localBlobUrl) {
             URL.revokeObjectURL(localBlobUrl);
             localBlobUrl = null;

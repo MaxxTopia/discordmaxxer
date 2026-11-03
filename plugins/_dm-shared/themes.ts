@@ -309,16 +309,161 @@ export const THEMES: Record<ThemeId, Theme> = {
 export const THEME_ORDER: ThemeId[] = ["maxxer", "val", "sonic", "dmc", "bo3", "akatsuki", "dmcdt", "eminence"];
 export const DEFAULT_THEME: ThemeId = "maxxer";
 
+export type ThemeVisibility = "balanced" | "strong" | "showcase";
+
+export type ThemeSource = "discordmaxxer" | "external";
+
+export const THEME_SOURCE_OPTIONS: Array<{
+    value: ThemeSource;
+    label: string;
+    description: string;
+}> = [
+    {
+        value: "discordmaxxer",
+        label: "Discordmaxxer palette",
+        description: "Use the selected Discordmaxxer theme and visibility mode."
+    },
+    {
+        value: "external",
+        label: "Current external theme",
+        description: "Keep your BetterDiscord/local theme and only adjust compatible visibility variables."
+    }
+];
+
+export const THEME_VISIBILITY_OPTIONS: Array<{
+    value: ThemeVisibility;
+    label: string;
+    description: string;
+}> = [
+    {
+        value: "balanced",
+        label: "Balanced",
+        description: "Keep the current contrast and overlay strength."
+    },
+    {
+        value: "strong",
+        label: "Strong",
+        description: "Lift dark surfaces and reveal more background artwork."
+    },
+    {
+        value: "showcase",
+        label: "Showcase",
+        description: "Maximum artwork visibility with high-contrast controls."
+    }
+];
+
+interface ThemeVisibilityProfile {
+    surfaceLift: number;
+    textLift: number;
+    accentBoost: number;
+}
+
+const THEME_VISIBILITY_PROFILES: Record<ThemeVisibility, ThemeVisibilityProfile> = {
+    balanced: { surfaceLift: 0, textLift: 0, accentBoost: 1 },
+    strong: { surfaceLift: 0.06, textLift: 0.08, accentBoost: 1.35 },
+    showcase: { surfaceLift: 0.12, textLift: 0.16, accentBoost: 1.7 }
+};
+
+/** Lift a dark hex surface without applying a global blur/brightness filter. */
+function mixHex(value: string, target: string, amount: number): string {
+    const sourceMatch = value.match(/^#([0-9a-f]{6})$/i);
+    const targetMatch = target.match(/^#([0-9a-f]{6})$/i);
+    if (!sourceMatch || !targetMatch || amount <= 0) return value;
+
+    const source = sourceMatch[1];
+    const destination = targetMatch[1];
+    const channel = (offset: number) => {
+        const from = Number.parseInt(source.slice(offset, offset + 2), 16);
+        const to = Number.parseInt(destination.slice(offset, offset + 2), 16);
+        return Math.round(from + (to - from) * Math.min(1, amount));
+    };
+
+    return `#${[0, 2, 4].map(channel).map(valuePart => valuePart.toString(16).padStart(2, "0")).join("")}`;
+}
+
+/** Make existing translucent accents more legible while keeping their hue. */
+function boostRgbaAlpha(value: string, factor: number): string {
+    const match = value.match(/^rgba\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*([0-9.]+)\s*\)$/i);
+    if (!match || factor <= 1) return value;
+
+    const alpha = Math.min(0.9, Number(match[4]) * factor);
+    return `rgba(${match[1]}, ${match[2]}, ${match[3]}, ${alpha.toFixed(2).replace(/0+$/, "").replace(/\.$/, "")})`;
+}
+
+function visiblePalette(palette: ThemePalette, visibility: ThemeVisibility): ThemePalette {
+    const profile = THEME_VISIBILITY_PROFILES[visibility];
+    if (profile.surfaceLift === 0 && profile.textLift === 0 && profile.accentBoost === 1) return palette;
+
+    return {
+        ...palette,
+        brandTrans: boostRgbaAlpha(palette.brandTrans, profile.accentBoost),
+        bgPrimary: mixHex(palette.bgPrimary, "#ffffff", profile.surfaceLift),
+        bgSecondary: mixHex(palette.bgSecondary, "#ffffff", profile.surfaceLift),
+        bgSecondaryAlt: mixHex(palette.bgSecondaryAlt, "#ffffff", profile.surfaceLift),
+        bgTertiary: mixHex(palette.bgTertiary, "#ffffff", profile.surfaceLift),
+        bgFloating: mixHex(palette.bgFloating, "#ffffff", profile.surfaceLift),
+        bgInput: mixHex(palette.bgInput, "#ffffff", profile.surfaceLift),
+        textMuted: mixHex(palette.textMuted, "#ffffff", profile.textLift),
+        textSubtle: mixHex(palette.textSubtle, "#ffffff", profile.textLift),
+        channelText: mixHex(palette.channelText, "#ffffff", profile.textLift),
+        border: boostRgbaAlpha(palette.border, profile.accentBoost),
+        borderGlow: boostRgbaAlpha(palette.borderGlow, profile.accentBoost)
+    };
+}
+
+/**
+ * Compatibility bridge for popular local themes that expose their darkness
+ * through named transparency variables (including NotAnotherAnimeTheme).
+ * Balanced deliberately emits nothing so existing local themes are unchanged.
+ */
+function localThemeCompatibilityCss(visibility: ThemeVisibility): string {
+    if (visibility === "balanced") return "";
+
+    const values = visibility === "strong"
+        ? { theme: "0.62", popout: "0.44", surface: "0.46", context: "0.62" }
+        : { theme: "0.42", popout: "0.28", surface: "0.30", context: "0.45" };
+
+    return `
+    :root {
+        /* Compatibility variables used by several local Discord themes. */
+        --theme-transparency: rgba(0, 0, 0, ${values.theme}) !important;
+        --small-user-popout-background-transparency: rgba(0, 0, 0, ${values.popout}) !important;
+        --big-user-popout-background-transparency: rgba(0, 0, 0, ${values.popout}) !important;
+        --message-box-transparency: rgba(0, 0, 0, ${values.surface}) !important;
+        --embed-background-transparency: rgba(0, 0, 0, ${values.surface}) !important;
+        --emoji-menu-background-color: rgba(0, 0, 0, ${values.surface}) !important;
+        --message-search-container-background-color: rgba(0, 0, 0, ${values.surface}) !important;
+        --context-menu-transparency: rgba(15, 15, 15, ${values.context}) !important;
+        --message-search-menu-background-color: rgba(0, 0, 0, ${values.context}) !important;
+    }
+    `;
+}
+
+/**
+ * Apply only the visibility bridge, leaving a BetterDiscord/local theme's
+ * palette, artwork, and component selectors in control.
+ */
+export function themeVisibilityCss(visibility: ThemeVisibility = "balanced"): string {
+    return `
+    :root {
+        --dm-theme-visibility: ${visibility};
+    }
+    ${localThemeCompatibilityCss(visibility)}
+    `;
+}
+
 /**
  * Build the full CSS-variable override for a given theme. Maps the small
  * palette to Discord's full CSS-var namespace (background-*, text-*,
  * header-*, channels-*, interactive-*, scrollbar-*, brand-*).
  */
-export function themeCss(theme: Theme): string {
-    const p = theme.palette;
+export function themeCss(theme: Theme, visibility: ThemeVisibility = "balanced"): string {
+    const p = visiblePalette(theme.palette, visibility);
     const scope = `body.${theme.bodyClass}`;
     return `
+    ${localThemeCompatibilityCss(visibility)}
     :root, body.${theme.bodyClass} {
+        --dm-theme-visibility: ${visibility};
         /* Brand — both legacy + modern Discord var systems */
         --brand-experiment: ${p.brand};
         --brand-experiment-100: ${p.brandSoft};
@@ -473,8 +618,8 @@ export function themeCss(theme: Theme): string {
  *   dmc     — gothic, sharp angled corners, bloody drips, slow ominous fades.
  *   bo3     — military stencil, blocky corners, neon orange glow, HUD typing.
  * ─────────────────────────────────────────────────────────────────── */
-export function themeFlairCss(theme: Theme): string {
-    const p = theme.palette;
+export function themeFlairCss(theme: Theme, visibility: ThemeVisibility = "balanced"): string {
+    const p = visiblePalette(theme.palette, visibility);
     const cls = theme.bodyClass;
 
     const SHARED_KEYFRAMES = `
