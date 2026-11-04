@@ -3000,12 +3000,12 @@ call audio is absent. Also test a window with no audio and stop/restart the
 share to confirm cleanup. Do not claim game-only audio from the automated
 native packet test alone.
 
-## 2026-11-04 — v0.7.122 combined release candidate
+## 2026-11-04 — v0.7.122 public release (published)
 
 Scope: keep the image-menu/enlargement repair, the DMProfileCosmetics default
 profile-gradient parity repair, and the existing strict selected-window
-screenshare-audio candidate in one next public release. This candidate is
-based on v0.7.121 and has not been published.
+screenshare-audio candidate in one public release. This release is based on
+v0.7.121.
 
 Implementation:
 - `overlay-scripts/rebrand-vencord.mjs` hardens ImageZoom for both native
@@ -3033,33 +3033,49 @@ Implementation:
 Verification completed:
 - `pnpm test` passed after the DMTrim changes; the packaged build also
   completed its TypeScript build and structural verification.
+- `node --test packages/winaudio/test.js` passed all 4 native capture tests.
 - Fresh pinned Vencord source with `DM_STRICT_REBRAND=1`: 129 patches applied,
   zero warnings; all 29 custom plugins staged.
 - A repeat overlay build from the same pinned checkout reported 129 idempotent
   skips and zero warnings.
 - `pnpm package:dir` completed for v0.7.122.
+- `pnpm package:win` completed with the pinned Vencord checkout and produced
+  the x64 and ARM64 packages, combined installer, signing output, and blockmap.
 - `node overlay-scripts/verify-build.mjs` passed, including version 0.7.122,
   source fingerprint, staged hashes, and required plugin presence.
 - The unpacked Windows executable stayed alive for an 8-second isolated smoke
   run using `--user-data-dir` and `--disable-gpu`, then was stopped; the
   signed-in client was not touched.
 - `git diff --check` passed.
+- The native strict include-mode probe received packets, but measured zero
+  amplitude from an OBS process with no known audible source. That probe is
+  inconclusive and is not being treated as Fortnite-audio proof.
 
-Release state: local release candidate only. No commit, tag, push, installer
-publication, or public updater deployment has occurred in this session.
+Release state: commit `b1207844ccf494e4ff1f9283c1497afdfa8d89f3` was pushed to
+`origin/main`; tag `v0.7.122` was pushed; and GitHub Actions release run
+`https://github.com/MaxxTopia/discordmaxxer/actions/runs/41846202083`
+completed successfully. The public release is live at
+`https://github.com/MaxxTopia/discordmaxxer/releases/tag/v0.7.122` with x64,
+ARM64, installer, blockmap, and `latest.yml` assets. The public updater route
+returned HTTP 200 and advertised version `0.7.122` with the signed installer
+path. The Maxxtopia release notification step also passed.
 
-Diggy-owed acceptance checks before publishing:
+Diggy-owed acceptance checks after publication:
 - In the signed-in client, right-click a sent image: it must not crash, and the
   normal Discord reply/forward/reaction/action menu must remain present.
 - Click the sent image itself: it must open Discord's enlarged viewer.
 - Open DMProfileCosmetics, leave the mode at Profile gradient (default), and
   compare the actual profile popout with the showroom: action rows should be
   seamless, use the exact gradient palette, and remain correctly placed.
-- If releasing the strict screenshare candidate, share a Fortnite window with
-  audio while a second listener confirms Fortnite audio is present and Discord
-  call audio is absent. A failed selected-process capture should be video-only,
-  not a system-audio fallback.
+- Confirm DMTrim removes the sponsored/reward card after a fresh client load
+  and after navigating to another channel.
+- Confirm DMEmoji's native message menu remains usable and its mouse Send
+  control sends the draft without requiring Enter.
+- Share a Fortnite window with audio while a second listener confirms Fortnite
+  audio is present and Discord call audio is absent. A failed selected-process
+  capture should be video-only, not a system-audio fallback.
 
-Next action: after those signed-in checks and explicit release approval, commit
-only the intended candidate changes, push/tag the v0.7.122 release, publish the
-installer/update metadata, and verify the public artifact and updater route.
+Next action: Diggy should update both signed-in PCs to v0.7.122 and run the
+acceptance checks above. Report the exact client version and any failing path;
+source, build, publication, and updater-route gates are already verified, while
+the visual and second-listener checks remain device-side evidence.
