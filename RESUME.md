@@ -1,6 +1,6 @@
 # Discordmaxxer — RESUME
 
-## 2026-11-04 — v0.7.124 reset/update reliability (release candidate)
+## 2026-11-04 — v0.7.124 reset/update reliability (published)
 
 Scope: fix the inherited Vesktop wording in Reset, prevent Windows watcher
 errors from crashing the main process, and keep the Discord session profile
@@ -31,18 +31,31 @@ Verification gates completed locally:
   source.
 
 Release state:
-- Source changes are ready to commit and publish; no public v0.7.124 tag or
-  release has been created yet.
+- Commit `33156079c28312e8f0dc7e90e2fc9d621292daa5` is on `origin/main` and
+  tag `v0.7.124` is public.
+- GitHub Actions release run
+  `https://github.com/MaxxTopia/discordmaxxer/actions/runs/41884097990`
+  completed successfully in 5m19s.
+- Public release:
+  `https://github.com/MaxxTopia/discordmaxxer/releases/tag/v0.7.124`.
+  It is published (not draft or prerelease) and contains the x64/ARM64 ZIPs,
+  NSIS installer, blockmap, and `latest.yml`.
+- The public `latest.yml` route returned HTTP 200 and advertises version
+  `0.7.124`; the installer route returned HTTP 200 with a 211,840,858-byte
+  payload.
 
 Remaining gates:
-- Commit and push the authorized release, wait for GitHub Actions packaging,
-  and verify the public updater manifest and installer.
 - Diggy should update an already signed-in client and confirm it stays logged
   in, then open Reset and confirm the Discordmaxxer-branded dialog. Do not
   click Reset unless intentionally testing the logout/clear behavior.
+- If testing the development build, rebuild/replace the renderer CSS and
+  confirm a watcher `EPERM` no longer crashes the app; the production build
+  intentionally omits the dev-only watcher.
 
-Next action: commit the scoped files, publish v0.7.124, and verify its public
-artifacts before handing off the signed-in device checks.
+Next action: Diggy should update the signed-in PCs and report whether login
+survives the update and whether Reset shows Discordmaxxer branding. If either
+device still starts logged out, preserve the old profile and report the exact
+session paths before changing migration logic.
 
 ## 2026-11-04 — v0.7.123 image context-menu crash fix (published)
 
