@@ -110,6 +110,7 @@ const PROFILE_SKIN_PRESETS: readonly ProfileSkinPreset[] = [
 
 const PROFILE_SKIN_MAP = new Map(PROFILE_SKIN_PRESETS.map(preset => [preset.id, preset]));
 const DEFAULT_PROFILE_SKIN = PROFILE_SKIN_PRESETS[0].id;
+const PROFILE_GRADIENT_DEFAULT_MIGRATION = "profileGradientDefaultV2Migrated";
 const PROFILE_VISUAL_SOURCE_OPTIONS: readonly ProfileVisualSource[] = ["profile", "skin", "widget"];
 const PROFILE_SKIN_FAMILIES = [
     { id: "all", label: "All" },
@@ -252,16 +253,45 @@ function initializeProfileWidgetStyleSnapshot(): void {
 
 function migrateProfileVisualSourceDefault(): void {
     const store = settings.store as Record<string, unknown>;
-    if (store.profileVisualSourceDefaultMigrated === true) return;
-
-    // The first public release of this plugin defaulted to the boxed local
-    // palette. That setting was not user-visible yet, so migrate the old
-    // default to the native profile gradient once while preserving explicit
-    // choices made after this release.
-    if (store.visualSource == null || store.visualSource === "skin") {
-        store.visualSource = "profile";
+    if (store.profileVisualSourceDefaultMigrated !== true) {
+        // The first public release of this plugin defaulted to the boxed local
+        // palette. That setting was not user-visible yet, so migrate the old
+        // default to the native profile gradient once while preserving explicit
+        // choices made after this release.
+        if (store.visualSource == null || store.visualSource === "skin") {
+            store.visualSource = "profile";
+        }
+        store.profileVisualSourceDefaultMigrated = true;
     }
-    store.profileVisualSourceDefaultMigrated = true;
+
+    // v2 makes the migration safe for clients that already recorded the first
+    // marker before the default was corrected. Only the old Aurora/skin pair
+    // is converted; an explicitly selected non-default palette or widget
+    // snapshot remains untouched.
+    if (store[PROFILE_GRADIENT_DEFAULT_MIGRATION] !== true) {
+        const storedSource = normalizeVisualSource(store.visualSource);
+        const storedSkin = String(store.skinPreset ?? DEFAULT_PROFILE_SKIN);
+        if (storedSource === "skin" && storedSkin === DEFAULT_PROFILE_SKIN) {
+            store.visualSource = "profile";
+        }
+        store[PROFILE_GRADIENT_DEFAULT_MIGRATION] = true;
+    }
+}
+
+function effectiveVisualSource(): ProfileVisualSource {
+    const source = normalizeVisualSource(readSetting("visualSource", "profile"));
+    const skinPreset = String(readSetting("skinPreset", DEFAULT_PROFILE_SKIN));
+    const store = settings.store as Record<string, unknown>;
+
+    // Settings can be read by the showroom before the plugin start hook has
+    // run. Keep the same one-time compatibility rule there so the preview and
+    // the real popout cannot disagree about what "Default" means.
+    if (store[PROFILE_GRADIENT_DEFAULT_MIGRATION] !== true && source === "skin" && skinPreset === DEFAULT_PROFILE_SKIN) {
+        store.visualSource = "profile";
+        store[PROFILE_GRADIENT_DEFAULT_MIGRATION] = true;
+        return "profile";
+    }
+    return source;
 }
 
 function widgetStyleVisual(styleId = profileWidgetStyleId()): ResolvedProfileVisual {
@@ -617,7 +647,7 @@ function reconcileSurface(surface: HTMLElement): void {
     const intensity = readSetting<EffectIntensity>("effectIntensity", "balanced");
     const effectSpeed = readSetting<EffectSpeed>("effectSpeed", "standard");
     const baseSkin = profileSkin(String(readSetting("skinPreset", DEFAULT_PROFILE_SKIN)));
-    const visualSource = normalizeVisualSource(readSetting("visualSource", "profile"));
+    const visualSource = effectiveVisualSource();
     const skin = resolveProfileVisual(baseSkin, visualSource, surface);
     const widgetStyle = visualSource === "widget" ? widgetStyleVisual(profileWidgetStyleId()).widgetStyle.id : "";
     const native = readSetting("preserveNativeCosmetics", true) && nativeCosmeticsPresent(surface);
@@ -824,12 +854,12 @@ function buildCss(): string {
          * not as two dark cards pasted on top of it. Keep the native spacing
          * and readable row separators while removing the extra frame. */
         [data-dm-profile-visual-source="profile"] [data-dm-profile-controls-shell="true"] {
-            margin: 2px 0;
-            padding: 0;
-            border: 0;
+            margin: 2px 0 !important;
+            padding: 0 !important;
+            border: 0 !important;
             border-radius: 0;
-            background: transparent;
-            box-shadow: none;
+            background: transparent !important;
+            box-shadow: none !important;
         }
         [data-dm-profile-visual-source="profile"] [data-dm-profile-controls-shell="true"]::before,
         [data-dm-profile-visual-source="profile"] [data-dm-profile-controls-shell="true"]::after {
@@ -837,20 +867,29 @@ function buildCss(): string {
             display: none;
         }
         [data-dm-profile-visual-source="profile"] [data-dm-profile-controls-shell="true"] [data-dm-profile-control] {
-            border: 0;
+            border: 0 !important;
             border-radius: 0;
-            border-left: 2px solid transparent;
-            background: transparent;
+            border-left: 2px solid transparent !important;
+            background: transparent !important;
             box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--dm-profile-skin-secondary) 24%, transparent);
+        }
+        /* If Discord changes the wrapper depth and the bounded row scan cannot
+         * find a shared shell, keep the rows themselves integrated with the
+         * profile gradient instead of falling back to stock dark tiles. */
+        [data-dm-profile-visual-source="profile"] [data-dm-profile-control] {
+            border-radius: 0;
+            border-left: 2px solid transparent !important;
+            background: transparent !important;
+            box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--dm-profile-skin-secondary) 24%, transparent) !important;
         }
         [data-dm-profile-visual-source="profile"] [data-dm-profile-controls-shell="true"] [data-dm-profile-control]:last-child {
             box-shadow: none;
         }
         [data-dm-profile-visual-source="profile"] [data-dm-profile-controls-shell="true"] [data-dm-profile-control]:hover,
         [data-dm-profile-visual-source="profile"] [data-dm-profile-controls-shell="true"] [data-dm-profile-control]:focus-visible {
-            border-left-color: color-mix(in srgb, var(--dm-control-accent) 86%, white);
-            background: linear-gradient(90deg, color-mix(in srgb, var(--dm-control-accent) 13%, transparent), transparent 72%);
-            box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--dm-profile-skin-secondary) 28%, transparent);
+            border-left-color: color-mix(in srgb, var(--dm-control-accent) 86%, white) !important;
+            background: linear-gradient(90deg, color-mix(in srgb, var(--dm-control-accent) 13%, transparent), transparent 72%) !important;
+            box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--dm-profile-skin-secondary) 28%, transparent) !important;
         }
 
         /* Widget-card language is a frame treatment, not another particle
@@ -1260,7 +1299,7 @@ function ProfileCosmeticsShowroom() {
     const previewPaused = showroomMotionPaused();
     const tournamentPaused = readSetting("pauseInTournamentMode", true) && tournamentModeActive();
     const baseSkin = profileSkin(String(live.skinPreset ?? DEFAULT_PROFILE_SKIN));
-    const visualSource = normalizeVisualSource(live.visualSource);
+    const visualSource = effectiveVisualSource();
     // Keep the surrounding profile preview on the same profile-only snapshot
     // as the widget-inspired controls below. The snapshot shares the palette
     // definitions with DMWidget but never writes DMWidget's active selection.
@@ -1744,6 +1783,12 @@ const settings = definePluginSettings({
     profileVisualSourceDefaultMigrated: {
         type: OptionType.BOOLEAN,
         description: "Internal migration marker for the profile-gradient default.",
+        default: false,
+        hidden: true
+    },
+    profileGradientDefaultV2Migrated: {
+        type: OptionType.BOOLEAN,
+        description: "Internal migration marker for the corrected default profile-gradient surface.",
         default: false,
         hidden: true
     },

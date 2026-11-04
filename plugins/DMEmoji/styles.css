@@ -106,6 +106,15 @@
     max-width: 510px;
 }
 
+.dmemoji-hero-note {
+    color: color-mix(in srgb, var(--dmemoji-cyan) 78%, var(--text-muted, #949ba4));
+    display: block;
+    font-size: 11px;
+    line-height: 1.4;
+    margin-top: 7px;
+    max-width: 560px;
+}
+
 .dmemoji-hero-actions {
     align-items: flex-end;
     display: flex;

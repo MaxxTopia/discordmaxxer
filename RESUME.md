@@ -1,5 +1,31 @@
 # Discordmaxxer — RESUME
 
+## 2026-11-03 — v0.7.121 reliability release candidate: detached cursor marker and image-menu crash guard (pending CI)
+
+Recovered state:
+- The canonical source is the isolated worktree `C:\Users\Diggy\projects\discordmaxxer-full-dev-merge-20261103c` on `codex/dev-full-merge-20261103c`, based at `87b4bcf` (`fix: guard updater against low disk space`). Its focused source edits are intentionally isolated here; the canonical dirty project was not changed.
+- The public line remains v0.7.120 until the v0.7.121 tag workflow completes. No v0.7.121 commit, tag, GitHub release, updater publication, or live deployment has been made yet.
+- C: is effectively full (0 bytes reported free during this pass). Build and packaging were performed in the isolated E: candidate `E:\Codex-recovery\discordmaxxer-build-candidate-20261103c` and its packaged app was not installed over the public client.
+
+Change:
+- DMCursor now clears its unfocused state and hides the cursor/smoke layer on blur, focus, mouse-leave, renderer visibility changes, and call/fullscreen transitions. A newly mounted cursor starts transparent and becomes visible only after a real mouse move, preventing a stale animated ring from appearing as a detached purple dot across newly opened channels. This is the source-level diagnosis for the screenshot; the real-client visual check remains open.
+- The ImageZoom overlay now recognizes the current message-menu image route only for actual image media, leaves Discord's native menu children intact, deduplicates its added group, and catches/logs menu-construction failures. This preserves native Reply, Forward, Pin, Bookmark, Reminder, Apps, Mark Unread, Copy Message Link, and reaction actions instead of replacing them. The exact packaged renderer contains the guard.
+- The same candidate includes the previously scoped DMTrim Fanduel/reward-card detector, compact static plugin authors, DMEmoji click-send fallback and custom-server/iEmoji discovery copy, and the corrected profile-gradient default migration. These were rebuilt together so the release candidate does not mix dev-only and release-only behavior.
+
+Verification:
+- Fresh pinned Vencord source at `ef29bbeb6119cfb53d1273ed78147bcc97d91261`: strict overlay reported `applied=123 skipped(idempotent)=0 warnings=0`; 29 custom plugins synced and Vencord build passed.
+- `pnpm build`, `node overlay-scripts/verify-build.mjs`, `pnpm test`, and `git diff --check` passed before the version bump. The verifier confirmed the source fingerprint, staged hashes, required plugins, and compiled TournamentMode/DMVoiceKeybinds/DMVoiceGuard/DMHub/DMTierFlair/DMProfileCosmetics/DMDisplayNameStyle/DMEmoji/DMTranslate.
+- `pnpm exec electron-builder --dir` passed. The signed packaged executable is `E:\Codex-recovery\discordmaxxer-build-candidate-20261103c\dist\win-unpacked\discordmaxxer.exe`.
+- That exact packaged executable was launched with an isolated E: user-data directory; four candidate processes remained alive after 12 seconds and were then stopped by PID. This proves package startup survivability only, not authenticated Discord behavior.
+
+Remaining / Diggy-owed acceptance:
+- In the actual updated client, join a call and move through several servers/channels; verify the detached dot never appears and that the intended DMCursor still appears after the next pointer move.
+- Right-click a received image repeatedly and verify the normal Discord context menu remains visible, then use Reply/Forward/Pin/Bookmark/Reminder/Apps/Copy Message Link and open the image normally. This runtime path is not proven by TypeScript or the startup smoke test.
+- Recheck DMTrim's Fanduel card, DMDisplayNameStyle's compact Authors section, DMEmoji mouse-send, and the profile-cosmetics Default gradient after the same client update.
+
+Next action:
+- Rebuild and verify the v0.7.121 candidate, review the intended diff, then push the authorized main update and v0.7.121 tag. Verify the GitHub release assets and updater manifest separately before asking Diggy to test the public client.
+
 ## 2026-11-03 — updater low-disk guard (local, not released)
 
 Diagnosis:

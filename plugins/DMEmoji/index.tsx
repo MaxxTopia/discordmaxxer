@@ -15,7 +15,7 @@ import { ChatBarButton, ChatBarButtonFactory } from "@api/ChatButtons";
 import { definePluginSettings } from "@api/Settings";
 import ErrorBoundary from "@components/ErrorBoundary";
 import { Devs } from "@utils/constants";
-import { copyWithToast, insertTextIntoChatInputBox } from "@utils/discord";
+import { copyWithToast, insertTextIntoChatInputBox, sendMessage } from "@utils/discord";
 import { ModalCloseButton, ModalContent, ModalHeader, ModalRoot, ModalSize } from "@utils/modal";
 import definePlugin, { IconComponent, OptionType } from "@utils/types";
 import { Message, RenderModalProps } from "@vencord/discord-types";
@@ -29,6 +29,8 @@ import {
     Menu,
     MessageActions,
     openModal,
+    PendingReplyStore,
+    SelectedChannelStore,
     Toasts,
     UploadHandler,
     useEffect,
@@ -275,7 +277,9 @@ function getNativeEmojiChoices(query: string, channelId?: string, customOnly = f
                 if (aStarts !== bStarts) return aStarts ? -1 : 1;
                 return a.name.localeCompare(b.name);
             })
-            .slice(0, 72);
+            // Some accounts can access hundreds of server emoji. Keep the
+            // drawer useful without rendering an unbounded Discord catalog.
+            .slice(0, 240);
     } catch (error) {
         console.warn("[DMEmoji] Native emoji data is not ready", error);
         return [];
@@ -600,7 +604,7 @@ function EmojiLibrary({
     const { records, setRecords, previewUrls, refresh } = useEmojiLibrary();
     const [status, setStatus] = useState("");
     const [query, setQuery] = useState("");
-    const [activeTab, setActiveTab] = useState<"all" | "saved" | "unicode" | "server">("all");
+    const [activeTab, setActiveTab] = useState<"all" | "saved" | "unicode" | "custom">("all");
     const inputRef = useRef<HTMLInputElement>(null);
 
     const normalizedQuery = query.trim().toLocaleLowerCase();
@@ -610,8 +614,8 @@ function EmojiLibrary({
     );
     const nativeChoices = useMemo(
         () =>
-            getNativeEmojiChoices(query, channelId, activeTab === "server").filter(choice =>
-                activeTab === "unicode" ? choice.kind === "unicode" : activeTab === "server" ? choice.kind === "custom" : true
+            getNativeEmojiChoices(query, channelId, activeTab === "custom").filter(choice =>
+                activeTab === "unicode" ? choice.kind === "unicode" : activeTab === "custom" ? choice.kind === "custom" : true
             ),
         [activeTab, channelId, query]
     );
@@ -642,6 +646,9 @@ function EmojiLibrary({
                             ? "Search Discord's native emoji and react in one click. Local files can also be linked to a real server emoji."
                             : "Native emoji insert into the composer. Your imported images and GIFs stay private to this client until you attach them."}
                     </p>
+                    <span className="dmemoji-hero-note">
+                        Custom emoji lists up to 240 server emoji available to this account. Browse iEmoji for a larger discovery catalog; only real Discord server emoji can be native reactions.
+                    </span>
                 </div>
                 <div className="dmemoji-hero-actions">
                     <Button size={Button.Sizes.SMALL} color={Button.Colors.BRAND} onClick={() => inputRef.current?.click()}>
@@ -652,7 +659,7 @@ function EmojiLibrary({
                         className="dmemoji-external-link"
                         onClick={() => VencordNative.native.openExternal(IEMOJI_KEYBOARD_URL)}
                     >
-                        Search iEmoji.com ↗
+                        Browse iEmoji library ↗
                     </button>
                     <input
                         ref={inputRef}
@@ -676,7 +683,7 @@ function EmojiLibrary({
                     onChange={event => setQuery(event.currentTarget.value)}
                 />
                 <div className="dmemoji-tabs" role="tablist" aria-label="Emoji source">
-                    {(["all", "saved", "unicode", "server"] as const).map(tab => (
+                    {(["all", "saved", "unicode", "custom"] as const).map(tab => (
                         <button
                             type="button"
                             key={tab}
@@ -685,7 +692,7 @@ function EmojiLibrary({
                             role="tab"
                             aria-selected={activeTab === tab}
                         >
-                            {tab === "all" ? "All" : tab === "saved" ? "Saved media" : tab === "unicode" ? "Unicode" : "Server emoji"}
+                            {tab === "all" ? "All" : tab === "saved" ? "Saved media" : tab === "unicode" ? "Unicode" : "Custom emoji"}
                         </button>
                     ))}
                 </div>
@@ -728,8 +735,14 @@ function EmojiLibrary({
                 <section className="dmemoji-section">
                     <div className="dmemoji-section-heading">
                         <div>
-                            <h3>{activeTab === "server" ? "Server emoji" : activeTab === "unicode" ? "Unicode emoji" : "Native emoji"}</h3>
-                            <span>{message ? "Click React to react to the selected message." : "Click Insert to place it in the message composer."}</span>
+                            <h3>{activeTab === "custom" ? "Custom server emoji" : activeTab === "unicode" ? "Unicode emoji" : "Native emoji"}</h3>
+                            <span>
+                                {activeTab === "custom"
+                                    ? "These are real Discord emoji from servers your account can use."
+                                    : message
+                                      ? "Click React to react to the selected message."
+                                      : "Click Insert to place it in the message composer."}
+                            </span>
                         </div>
                         <span className="dmemoji-count">{nativeChoices.length}</span>
                     </div>
@@ -741,7 +754,7 @@ function EmojiLibrary({
                         </div>
                     ) : (
                         <div className="dmemoji-empty">
-                            Native emoji are still loading, or nothing matched. Try “shrug” or select Server emoji.
+                            Native emoji are still loading, or nothing matched. Try “shrug” or select Custom emoji.
                         </div>
                     )}
                 </section>
@@ -835,7 +848,44 @@ function isVisibleComposerElement(element: HTMLElement): boolean {
     return style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0" && rect.width > 0 && rect.height > 0;
 }
 
-function sendCurrentMessage() {
+function composerText(input: HTMLElement): string {
+    if (input instanceof HTMLTextAreaElement) return input.value;
+    return (input.innerText ?? input.textContent ?? "").replace(/\u200b/g, "");
+}
+
+function findComposerSubmitButton(input: HTMLElement): HTMLElement | undefined {
+    const scopes = [
+        input.closest("form"),
+        input.closest('[class*="channelTextArea" i]'),
+        input.parentElement,
+        document
+    ].filter((scope, index, all): scope is Document | HTMLElement => Boolean(scope) && all.indexOf(scope) === index);
+    const seen = new Set<HTMLElement>();
+
+    for (const scope of scopes) {
+        const candidates = Array.from(scope.querySelectorAll<HTMLElement>('button, [role="button"], input[type="submit"]'));
+        for (const element of candidates) {
+            if (seen.has(element) || element.hasAttribute("data-dmemoji-send-button") || !isVisibleComposerElement(element)) continue;
+            seen.add(element);
+            const label = [element.id, element.getAttribute("aria-label"), element.getAttribute("title"), element.getAttribute("data-testid")]
+                .filter(Boolean)
+                .join(" ")
+                .toLowerCase();
+            if (
+                element.id === "submit-button" ||
+                element.getAttribute("type") === "submit" ||
+                label.includes("submit-button") ||
+                /\bsend(?: message)?\b/.test(label)
+            ) {
+                return element;
+            }
+        }
+    }
+
+    return undefined;
+}
+
+async function sendCurrentMessage() {
     const inputs = Array.from(
         document.querySelectorAll<HTMLElement>('[role="textbox"][contenteditable="true"], [contenteditable="true"], textarea')
     )
@@ -852,17 +902,7 @@ function sendCurrentMessage() {
         return;
     }
 
-    const composer = input.closest("form") ?? input.closest('[class*="channelTextArea"]') ?? input.parentElement;
-    const scope = composer ?? document;
-    const sendButton = Array.from(scope.querySelectorAll<HTMLElement>("#submit-button, button, [role=\"button\"]"))
-        .filter(isVisibleComposerElement)
-        .find(element => {
-            const label = [element.id, element.getAttribute("aria-label"), element.getAttribute("title")]
-                .filter(Boolean)
-                .join(" ")
-                .toLowerCase();
-            return label === "submit-button" || /send(?: message)?$/.test(label) || label.includes("send message");
-        });
+    const sendButton = findComposerSubmitButton(input);
 
     if (sendButton) {
         if (sendButton.getAttribute("aria-disabled") === "true" || (sendButton as HTMLButtonElement).disabled) {
@@ -873,19 +913,37 @@ function sendCurrentMessage() {
         return;
     }
 
-    const content = input instanceof HTMLTextAreaElement ? input.value : input.textContent ?? "";
+    const composer = input.closest("form");
+    if (composer && typeof composer.requestSubmit === "function") {
+        composer.requestSubmit();
+        return;
+    }
+
+    const content = composerText(input);
     if (!content.trim()) {
         Toasts.show({ message: "Type a message first", id: Toasts.genId(), type: Toasts.Type.FAILURE });
         return;
     }
 
-    // Discord's composer handles Enter through its normal React key handler.
-    // This is only a fallback for builds whose submit button is not exposed in
-    // the DOM; it keeps mentions, attachments, and draft state in Discord's
-    // own send pipeline instead of constructing a partial Message object.
-    input.focus();
-    input.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Enter", code: "Enter", keyCode: 13, which: 13 }));
-    input.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, cancelable: true, key: "Enter", code: "Enter", keyCode: 13, which: 13 }));
+    // Some Discord builds expose neither the submit button nor a form. A
+    // synthetic KeyboardEvent does not reliably reach React's internal
+    // composer handler, so use Discord's own send pipeline as the final
+    // fallback. This preserves the normal channel and pending-reply route.
+    const channelId = SelectedChannelStore.getChannelId();
+    if (!channelId) {
+        Toasts.show({ message: "Could not find the active message channel", id: Toasts.genId(), type: Toasts.Type.FAILURE });
+        return;
+    }
+
+    try {
+        const pendingReply = PendingReplyStore.getPendingReply(channelId);
+        const replyOptions = pendingReply ? MessageActions.getSendMessageOptionsForReply(pendingReply) : undefined;
+        await sendMessage(channelId, { content }, true, replyOptions);
+        Toasts.show({ message: "Message sent", id: Toasts.genId(), type: Toasts.Type.SUCCESS });
+    } catch (error) {
+        console.error("[DMEmoji] Could not send message", error);
+        Toasts.show({ message: "Discord could not send that message", id: Toasts.genId(), type: Toasts.Type.FAILURE });
+    }
 }
 
 const DMEmojiButton: ChatBarButtonFactory = ({ isAnyChat, channel }) => {
@@ -917,7 +975,7 @@ const DMEmojiButton: ChatBarButtonFactory = ({ isAnyChat, channel }) => {
             {showSendButton && (
                 <ChatBarButton
                     tooltip="Send message"
-                    onClick={sendCurrentMessage}
+                    onClick={() => void sendCurrentMessage()}
                     buttonProps={{ "data-dmemoji-send-button": "true" }}
                 >
                     <SendMessageIcon />

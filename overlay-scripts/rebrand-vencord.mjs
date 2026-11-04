@@ -925,7 +925,7 @@ const PATCHES = [
             '// Discordmaxxer: ImageZoom menu route helpers\n' +
             'function isImageContext(props: any) {\n' +
             '    const mediaType = props?.mediaItem?.contentType ?? props?.mediaItem?.originalContentType;\n' +
-            '    if (mediaType) return mediaType.startsWith("image/");\n' +
+            '    if (typeof mediaType === "string" && mediaType) return mediaType.startsWith("image/");\n' +
             '    return props?.target?.tagName === "IMG";\n' +
             '}\n\n' +
             'function stopImageSliderKey(e: any) {\n' +
@@ -945,7 +945,9 @@ const PATCHES = [
             '        </div>\n' +
             '    );\n' +
             '}\n\n' +
-            'const imageContextMenuPatch: NavContextMenuPatchCallback = (children, props) => {'
+            'const imageContextMenuPatch: NavContextMenuPatchCallback = (children, props) => {\n' +
+            '    if (!props || typeof props !== "object" || !Array.isArray(children)) return;\n' +
+            '    try {'
     },
     {
         file: "src/plugins/imageZoom/index.tsx",
@@ -972,12 +974,16 @@ const PATCHES = [
     {
         file: "src/plugins/imageZoom/index.tsx",
         marker: "Discordmaxxer: ImageZoom message-menu route",
-        find: '};\n\nexport default definePlugin({\n    name: "ImageZoom",',
+        find: '    );\n};\n\nexport default definePlugin({\n    name: "ImageZoom",',
         replace:
+            '    );\n' +
+            '    } catch (error) {\n' +
+            '        new Logger("ImageZoom").error("Failed to add image controls to native context menu", error);\n' +
+            '    }\n' +
             '};\n\n' +
             '// Discordmaxxer: ImageZoom message-menu route\n' +
             'const messageContextMenuPatch: NavContextMenuPatchCallback = (children, props) => {\n' +
-            '    if (!isImageContext(props)) return;\n' +
+            '    if (!props || typeof props !== "object" || !Array.isArray(children) || !isImageContext(props)) return;\n' +
             '    imageContextMenuPatch(children, props);\n' +
             '};\n\n' +
             'export default definePlugin({\n    name: "ImageZoom",'
@@ -1178,6 +1184,189 @@ const PATCHES = [
             "        const folderId = normalizeFolderId(folder.folderId);\n" +
             "        if (folderId && hasFolderId(expandedFolders, folderId) && folder.guildIds?.length) {\n" +
             "            expandedFolderIds.add(folderId);"
+    }
+    ,
+    // Plugin info modals must not construct Discord User records just to show
+    // authors. The native summary/avatar path is both visually oversized in
+    // this client and unsafe for plugin manifests with partial author data;
+    // static metadata chips are compact, non-interactive, and cannot open the
+    // contributor modal crash path.
+    {
+        file: "src/components/settings/tabs/plugins/PluginModal.tsx",
+        marker: "Discordmaxxer: compact static plugin authors.",
+        find:
+            "                            <div style={{ display: \"flex\", alignItems: \"center\", gap: 4 }}>\n" +
+            "                                {(authors.length ? authors : fallbackAuthors).slice(0, 6).map((user, index) => {\n" +
+            "                                    const avatarUrl = typeof user.getAvatarURL === \"function\"\n" +
+            "                                        ? user.getAvatarURL(void 0, 80, true)\n" +
+            "                                        : undefined;\n" +
+            "                                    const username = user.username ?? \"Contributor\";\n" +
+            "                                    return (\n" +
+            "                                        <Clickable\n" +
+            "                                            key={String(user.id ?? username ?? index)}\n" +
+            "                                            className={AvatarStyles.clickableAvatar}\n" +
+            "                                            onClick={() => openContributorModal(user as User)}\n" +
+            "                                        >\n" +
+            "                                            {avatarUrl ? (\n" +
+            "                                                <img\n" +
+            "                                                    className={AvatarStyles.avatar}\n" +
+            "                                                    src={avatarUrl}\n" +
+            "                                                    alt={username}\n" +
+            "                                                    title={username}\n" +
+            "                                                />\n" +
+            "                                            ) : (\n" +
+            "                                                <div\n" +
+            "                                                    className={AvatarStyles.avatar}\n" +
+            "                                                    aria-label={username}\n" +
+            "                                                    title={username}\n" +
+            "                                                    style={{ display: \"grid\", placeItems: \"center\", background: \"var(--background-secondary)\" }}\n" +
+            "                                                >\n" +
+            "                                                    ?\n" +
+            "                                                </div>\n" +
+            "                                            )}\n" +
+            "                                        </Clickable>\n" +
+            "                                    );\n" +
+            "                                })}\n" +
+            "                                {pluginAuthors.length > 6 && renderMoreUsers(\"\", 6)}\n" +
+            "                            </div>",
+        replace:
+            "                            {/* Discordmaxxer: compact static plugin authors. */}\n" +
+            "                            <div\n" +
+            "                                aria-label={`Plugin authors: ${pluginAuthors.map(author => author.name).join(\", \") || \"Discordmaxxer team\"}`}\n" +
+            "                                style={{ display: \"flex\", flexWrap: \"wrap\", alignItems: \"center\", gap: 6, maxWidth: \"100%\" }}\n" +
+            "                            >\n" +
+            "                                {pluginAuthors.length ? pluginAuthors.slice(0, 8).map((author, index) => {\n" +
+            "                                    const name = author.name.trim();\n" +
+            "                                    return (\n" +
+            "                                        <span\n" +
+            "                                            key={name + \"-\" + index}\n" +
+            "                                            title={name}\n" +
+            "                                            style={{ display: \"inline-flex\", alignItems: \"center\", maxWidth: \"100%\", padding: \"4px 8px\", borderRadius: 9999, background: \"var(--background-secondary-alt)\", color: \"var(--text-normal)\", fontSize: 12, lineHeight: \"16px\", whiteSpace: \"nowrap\", overflow: \"hidden\", textOverflow: \"ellipsis\" }}\n" +
+            "                                        >\n" +
+            "                                            {name}\n" +
+            "                                        </span>\n" +
+            "                                    );\n" +
+            "                                }) : (\n" +
+            "                                    <span style={{ padding: \"4px 8px\", borderRadius: 9999, background: \"var(--background-secondary-alt)\", color: \"var(--text-muted)\", fontSize: 12 }}>Discordmaxxer team</span>\n" +
+            "                                )}\n" +
+            "                                {pluginAuthors.length > 8 && (\n" +
+            "                                    <span style={{ padding: \"4px 8px\", borderRadius: 9999, background: \"var(--background-secondary-alt)\", color: \"var(--text-muted)\", fontSize: 12 }}>+{pluginAuthors.length - 8}</span>\n" +
+            "                                )}\n" +
+            "                            </div>"
+    },
+    {
+        file: "src/components/settings/tabs/plugins/PluginModal.tsx",
+        marker: "Discordmaxxer: remove unsafe plugin author construction.",
+        find:
+            "const AvatarStyles = findCssClassesLazy(\"moreUsers\", \"avatar\", \"clickableAvatar\");\n" +
+            "const UserRecord: Constructor<Partial<User>> = proxyLazy(() => UserStore.getCurrentUser().constructor) as any;\n\n",
+        replace: ""
+    },
+    {
+        file: "src/components/settings/tabs/plugins/PluginModal.tsx",
+        marker: "Discordmaxxer: remove dummy plugin author records.",
+        find:
+            "function makeDummyUser(user: { username: string; id?: string; avatar?: string; }) {\n" +
+            "    const newUser = new UserRecord({\n" +
+            "        username: user.username,\n" +
+            "        id: user.id ?? generateId(),\n" +
+            "        avatar: user.avatar,\n" +
+            "        /** To stop discord making unwanted requests... */\n" +
+            "        bot: true,\n" +
+            "    });\n\n" +
+            "    FluxDispatcher.dispatch({\n" +
+            "        type: \"USER_UPDATE\",\n" +
+            "        user: newUser,\n" +
+            "    });\n\n" +
+            "    return newUser;\n" +
+            "}\n\n",
+        replace: ""
+    },
+    {
+        file: "src/components/settings/tabs/plugins/PluginModal.tsx",
+        marker: "Discordmaxxer: remove async plugin author loading.",
+        find:
+            "    // avoid layout shift by showing dummy users while loading users\n" +
+            "    const fallbackAuthors = useMemo(() => [makeDummyUser({ username: \"Loading...\", id: \"-1465912127305809920\" })], []);\n" +
+            "    const [authors, setAuthors] = useState<Partial<User>[]>([]);\n\n" +
+            "    useEffect(() => {\n" +
+            "        (async () => {\n" +
+            "            for (const user of pluginAuthors.slice(0, 6)) {\n" +
+            "                try {\n" +
+            "                    const author = user.id\n" +
+            "                        ? await UserUtils.getUser(String(user.id))\n" +
+            "                            .catch(() => makeDummyUser({ username: user.name }))\n" +
+            "                        : makeDummyUser({ username: user.name });\n\n" +
+            "                    setAuthors(a => [...a, author]);\n" +
+            "                } catch (e) {\n" +
+            "                    continue;\n" +
+            "                }\n" +
+            "            }\n" +
+            "        })();\n" +
+            "    }, [pluginAuthors]);\n\n",
+        replace: ""
+    },
+    {
+        file: "src/components/settings/tabs/plugins/PluginModal.tsx",
+        marker: "Discordmaxxer: remove plugin author overflow renderer.",
+        find:
+            "    function renderMoreUsers(_label: string, count: number) {\n" +
+            "        // Discordmaxxer: render only valid plugin author overflow.\n" +
+            "        const sliceCount = Math.max(pluginAuthors.length - count, 0);\n" +
+            "        if (!sliceCount) return null;\n\n" +
+            "        const sliceStart = pluginAuthors.length - sliceCount;\n" +
+            "        const sliceEnd = sliceStart + sliceCount;\n\n" +
+            "        return (\n" +
+            "            <Tooltip text={pluginAuthors.slice(sliceStart, sliceEnd).map(u => u.name).join(\", \")}>\n" +
+            "                {({ onMouseEnter, onMouseLeave }) => (\n" +
+            "                    <div\n" +
+            "                        className={AvatarStyles.moreUsers}\n" +
+            "                        onMouseEnter={onMouseEnter}\n" +
+            "                        onMouseLeave={onMouseLeave}\n" +
+            "                    >\n" +
+            "                        +{sliceCount}\n" +
+            "                    </div>\n" +
+            "                )}\n" +
+            "            </Tooltip>\n" +
+            "        );\n" +
+            "    }\n\n",
+        replace: ""
+    },
+    {
+        file: "src/components/settings/tabs/plugins/PluginModal.tsx",
+        find: 'import { openContributorModal } from "./ContributorModal";\n',
+        replace: ""
+    },
+    {
+        file: "src/components/settings/tabs/plugins/PluginModal.tsx",
+        marker: "Discordmaxxer: remove remaining unsafe author imports.",
+        find: 'import { generateId } from "@api/Commands";\n',
+        replace: ""
+    },
+    {
+        file: "src/components/settings/tabs/plugins/PluginModal.tsx",
+        find: 'import { proxyLazy } from "@utils/lazy";\n',
+        replace: ""
+    },
+    {
+        file: "src/components/settings/tabs/plugins/PluginModal.tsx",
+        find: 'import { User } from "@vencord/discord-types";\n',
+        replace: ""
+    },
+    {
+        file: "src/components/settings/tabs/plugins/PluginModal.tsx",
+        find: 'import { findCssClassesLazy } from "@webpack";\n',
+        replace: ""
+    },
+    {
+        file: "src/components/settings/tabs/plugins/PluginModal.tsx",
+        find: 'import { Clickable, FluxDispatcher, Forms, React, Text, Tooltip, useEffect, useMemo, UserStore, UserUtils, useState } from "@webpack/common";\n',
+        replace: 'import { Forms, React, Text, useEffect, useMemo } from "@webpack/common";\n'
+    },
+    {
+        file: "src/components/settings/tabs/plugins/PluginModal.tsx",
+        find: 'import { Constructor } from "type-fest";\n',
+        replace: ""
     }
 ];
 

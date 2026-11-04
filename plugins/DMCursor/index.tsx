@@ -266,6 +266,7 @@ let fullscreenHandler: (() => void) | null = null;
 let idleTimer: ReturnType<typeof setTimeout> | null = null;
 let blurHandler: (() => void) | null = null;
 let focusHandler: (() => void) | null = null;
+let visibilityHandler: (() => void) | null = null;
 let mouseLeaveHandler: (() => void) | null = null;
 let mouseEnterHandler: (() => void) | null = null;
 let tournamentModeHandler: (() => void) | null = null;
@@ -324,6 +325,7 @@ const settings = definePluginSettings({
 
 function deactivate() {
     document.documentElement.classList.remove("anime-cursor-active");
+    document.documentElement.classList.remove("dm-cursor-unfocused");
     document.documentElement.style.removeProperty("cursor");
     document.body?.style.removeProperty("cursor");
 }
@@ -383,10 +385,12 @@ function applySkin(skin: CursorSkin | "off") {
     cursorEl = document.createElement("div");
     cursorEl.id = CURSOR_ID;
     cursorEl.className = `anime-cursor anime-cursor--${skin}`;
+    // Never paint at the last pointer coordinate during startup, renderer
+    // reload, or a call/fullscreen transition. Wait for a real mousemove so
+    // the cursor cannot appear as a detached ring on a newly mounted page.
+    cursorEl.style.opacity = "0";
     if (lastX >= 0 && lastY >= 0) {
         cursorEl.style.transform = `translate3d(${lastX}px, ${lastY}px, 0) translate(-50%, -50%)`;
-    } else {
-        cursorEl.style.opacity = "0";
     }
     cursorEl.innerHTML = CURSOR_SVGS[skin];
     document.body.appendChild(cursorEl);
@@ -406,30 +410,52 @@ function applySkin(skin: CursorSkin | "off") {
         idleTimer = setTimeout(() => setIdle(true), 2500);
     };
 
+    const hideCursorUntilPointerMoves = () => {
+        if (cursorEl) cursorEl.style.opacity = "0";
+        if (smokeContainer) smokeContainer.style.visibility = "hidden";
+    };
+
+    const showCursorForPointer = () => {
+        if (smokeContainer) smokeContainer.style.visibility = "visible";
+    };
+
     blurHandler = () => {
         setIdle(true);
         document.documentElement.classList.add("dm-cursor-unfocused");
+        hideCursorUntilPointerMoves();
     };
     focusHandler = () => {
         document.documentElement.classList.remove("dm-cursor-unfocused");
-        kickActivity();
+        // Do not resurrect a cursor at its stale pre-call position. The next
+        // real mousemove will make it visible at the current pointer location.
+        hideCursorUntilPointerMoves();
+        if (idleTimer) clearTimeout(idleTimer);
+        idleTimer = null;
     };
     mouseLeaveHandler = () => {
         setIdle(true);
+        hideCursorUntilPointerMoves();
     };
     mouseEnterHandler = () => {
-        kickActivity();
+        setIdle(true);
+        hideCursorUntilPointerMoves();
+    };
+    visibilityHandler = () => {
+        document.documentElement.classList.toggle("dm-cursor-unfocused", document.visibilityState === "hidden");
+        hideCursorUntilPointerMoves();
     };
 
     window.addEventListener("blur", blurHandler);
     window.addEventListener("focus", focusHandler);
     document.addEventListener("mouseleave", mouseLeaveHandler);
     document.addEventListener("mouseenter", mouseEnterHandler);
+    document.addEventListener("visibilitychange", visibilityHandler);
     kickActivity();
 
     mousemoveHandler = (e: MouseEvent) => {
         lastX = e.clientX;
         lastY = e.clientY;
+        showCursorForPointer();
         kickActivity();
         if (!mouseRafId) {
             mouseRafId = requestAnimationFrame(() => {
@@ -479,6 +505,10 @@ function teardownTracking() {
     if (mouseEnterHandler) {
         document.removeEventListener("mouseenter", mouseEnterHandler);
         mouseEnterHandler = null;
+    }
+    if (visibilityHandler) {
+        document.removeEventListener("visibilitychange", visibilityHandler);
+        visibilityHandler = null;
     }
     document.documentElement.classList.remove("dm-cursor-unfocused");
     if (mouseRafId) {
