@@ -5,7 +5,7 @@
  */
 
 import { app } from "electron";
-import { existsSync, mkdirSync, renameSync } from "fs";
+import { existsSync, mkdirSync, readdirSync, renameSync, rmdirSync } from "fs";
 import { dirname, join } from "path";
 
 import { CommandLine } from "./cli";
@@ -38,7 +38,13 @@ mkdirSync(DATA_DIR, { recursive: true });
 const stableInstalledSessionDataDir = join(app.getPath("appData"), "Discordmaxxer", "sessionData");
 
 function hasChromiumSessionData(dir: string) {
-    return ["Network", "Local Storage", "IndexedDB"].some(name => existsSync(join(dir, name)));
+    return ["Network", "Local Storage", "IndexedDB"].some(name => {
+        try {
+            return readdirSync(join(dir, name)).length > 0;
+        } catch {
+            return false;
+        }
+    });
 }
 
 /**
@@ -60,10 +66,27 @@ function migrateLegacyInstalledSessionData(destination: string) {
     ].filter((candidate, index, all) => candidate !== destination && all.indexOf(candidate) === index);
 
     const source = candidates.find(hasChromiumSessionData);
-    if (!source || existsSync(destination)) return;
+    if (!source) return;
 
     try {
         mkdirSync(dirname(destination), { recursive: true });
+
+        // Electron may create an empty sessionData tree before this check.
+        // Preserve any cache-only tree, then move the real legacy profile into
+        // the stable location instead of treating those empty marker folders
+        // as a valid logged-in session.
+        if (existsSync(destination)) {
+            const existingEntries = readdirSync(destination);
+            if (existingEntries.length > 0) {
+                let backup = `${destination}.pre-migration`;
+                let suffix = 1;
+                while (existsSync(backup)) backup = `${destination}.pre-migration-${suffix++}`;
+                renameSync(destination, backup);
+            } else {
+                rmdirSync(destination);
+            }
+        }
+
         renameSync(source, destination);
         console.log(`[Discordmaxxer] Migrated the existing session profile to ${destination}`);
     } catch (error) {

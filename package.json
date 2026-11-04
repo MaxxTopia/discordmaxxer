@@ -1,6 +1,6 @@
 {
     "name": "discordmaxxer",
-    "version": "0.7.124",
+    "version": "0.7.125",
     "private": true,
     "description": "Discord, optimized. 7th project in the maxxer suite. Forked from Vesktop.",
     "keywords": [
@@ -35,7 +35,7 @@
     "package:dir": "pnpm overlay:vencord && pnpm build && node overlay-scripts/verify-build.mjs && electron-builder --dir",
     "package:win": "pnpm overlay:vencord && pnpm build && node overlay-scripts/verify-build.mjs && electron-builder --windows",
         "regen-icons": "node scripts/build/regenIcons.mjs",
-        "lint": "eslint",
+        "lint": "eslint src",
         "lint:fix": "pnpm lint --fix",
     "start": "pnpm overlay:vencord && pnpm build && node overlay-scripts/verify-build.mjs && node overlay-scripts/launch-verified.mjs",
     "start:dev": "pnpm overlay:full && node overlay-scripts/launch-verified.mjs",
