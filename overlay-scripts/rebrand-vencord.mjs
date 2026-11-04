@@ -26,10 +26,24 @@ const VENCORD_SRC = resolve(process.env.DISCORDMAXXER_VENCORD_SRC ?? join(__dirn
 const VENCORD_SOURCE_PIN = JSON.parse(readFileSync(join(__dirname, "vencord-source.json"), "utf8"));
 
 function readVencordSourceCommit() {
+    // Some local/dev checkouts contain the pinned source plus a provenance
+    // marker, but not a nested .git directory. In that layout `git -C` walks
+    // up into the Discordmaxxer repository and can report the wrong commit.
+    // Prefer the source marker when the source itself is not a git checkout;
+    // real pinned checkouts still use git as the authoritative source.
+    const sourceGitPath = join(VENCORD_SRC, ".git");
+    const markerPath = join(VENCORD_SRC, ".discordmaxxer-source.json");
+    if (!existsSync(sourceGitPath) && existsSync(markerPath)) {
+        try {
+            return JSON.parse(readFileSync(markerPath, "utf8")).commit ?? null;
+        } catch {
+            return null;
+        }
+    }
+
     try {
         return execFileSync("git", ["-C", VENCORD_SRC, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
     } catch {
-        const markerPath = join(VENCORD_SRC, ".discordmaxxer-source.json");
         if (!existsSync(markerPath)) return null;
         try {
             return JSON.parse(readFileSync(markerPath, "utf8")).commit ?? null;
@@ -563,6 +577,12 @@ const PATCHES = [
     },
     {
         file: "src/components/settings/tabs/plugins/PluginModal.tsx",
+        // This intermediate renderer is still needed on a pristine source
+        // checkout so the later compact-author patch can match it. On a
+        // second build, the final compact-author marker proves that this
+        // transitional shape was already consumed; do not report it as a
+        // stale upstream patch target.
+        obsoleteWhen: content => content.includes("Discordmaxxer: compact static plugin authors."),
         marker: "Discordmaxxer: render only valid plugin author overflow.",
         find:
             "    function renderMoreUsers(_label: string, count: number) {\n" +
@@ -584,12 +604,14 @@ const PATCHES = [
     },
     {
         file: "src/components/settings/tabs/plugins/PluginModal.tsx",
+        obsoleteWhen: content => content.includes("Discordmaxxer: compact static plugin authors."),
         marker: "Discordmaxxer: read normalized plugin authors.",
         find: "            for (const user of plugin.authors.slice(0, 6)) {",
         replace: "            for (const user of pluginAuthors.slice(0, 6)) {"
     },
     {
         file: "src/components/settings/tabs/plugins/PluginModal.tsx",
+        obsoleteWhen: content => content.includes("Discordmaxxer: compact static plugin authors."),
         marker: "Discordmaxxer: subscribe to normalized plugin authors.",
         find: "    }, [plugin.authors]);",
         replace: "    }, [pluginAuthors]);"
@@ -601,6 +623,7 @@ const PATCHES = [
     // not depend on that private list implementation.
     {
         file: "src/components/settings/tabs/plugins/PluginModal.tsx",
+        obsoleteWhen: content => content.includes("Discordmaxxer: compact static plugin authors."),
         marker: "Discordmaxxer: render plugin authors without native summary list.",
         find:
             "                            <UserSummaryItem\n" +
@@ -662,6 +685,7 @@ const PATCHES = [
     },
     {
         file: "src/components/settings/tabs/plugins/PluginModal.tsx",
+        obsoleteWhen: content => content.includes("Discordmaxxer: compact static plugin authors."),
         marker: "Discordmaxxer: use legacy plugin settings imports.",
         find: "Forms, Modal, openModal, React, Text, Tooltip, useEffect, useMemo, UserStore, UserSummaryItem, UserUtils, useState",
         replace: "Forms, Modal, openModal, React, Text, Tooltip, useEffect, useMemo, UserStore, UserUtils, useState"
@@ -680,6 +704,7 @@ const PATCHES = [
     },
     {
         file: "src/components/settings/tabs/plugins/PluginModal.tsx",
+        obsoleteWhen: content => content.includes("Discordmaxxer: compact static plugin authors."),
         find: 'import { RenderModalProps, User } from "@vencord/discord-types";',
         replace: 'import { User } from "@vencord/discord-types";'
     },
@@ -919,14 +944,70 @@ const PATCHES = [
     // events so the parent menu does not select and close on interaction.
     {
         file: "src/plugins/imageZoom/index.tsx",
-        marker: "Discordmaxxer: ImageZoom menu route helpers",
+        marker: "Discordmaxxer: ImageZoom ErrorBoundary import",
+        find: 'import { NavContextMenuPatchCallback } from "@api/ContextMenu";\n',
+        replace:
+            '// Discordmaxxer: ImageZoom ErrorBoundary import\n' +
+            'import { NavContextMenuPatchCallback } from "@api/ContextMenu";\n' +
+            'import ErrorBoundary from "@components/ErrorBoundary";\n'
+    },
+    {
+        file: "src/plugins/imageZoom/index.tsx",
+        marker: "Discordmaxxer: ImageZoom menu route helpers v2",
         find: 'const imageContextMenuPatch: NavContextMenuPatchCallback = (children, props) => {',
         replace:
-            '// Discordmaxxer: ImageZoom menu route helpers\n' +
-            'function isImageContext(props: any) {\n' +
-            '    const mediaType = props?.mediaItem?.contentType ?? props?.mediaItem?.originalContentType;\n' +
-            '    if (typeof mediaType === "string" && mediaType) return mediaType.startsWith("image/");\n' +
-            '    return props?.target?.tagName === "IMG";\n' +
+            '// Discordmaxxer: ImageZoom menu route helpers v2\n' +
+            'function looksLikeImageUrl(value: unknown): boolean {\n' +
+            '    if (typeof value !== "string") return false;\n' +
+            '    return /\\.(?:avif|gif|jpe?g|png|webp)(?:$|[?#])/i.test(value);\n' +
+            '}\n\n' +
+            'function isImageMedia(item: any): boolean {\n' +
+            '    if (!item || typeof item !== "object") return false;\n' +
+            '    const mediaType = item.contentType ?? item.content_type ?? item.mimeType ?? item.mime_type ?? item.type;\n' +
+            '    if (typeof mediaType === "string" && /^(?:image\\/|image$)/i.test(mediaType)) return true;\n' +
+            '    return [item.proxy_url, item.proxyUrl, item.url, item.filename, item.fileName, item.name].some(looksLikeImageUrl);\n' +
+            '}\n\n' +
+            'function messageHasImage(message: any): boolean {\n' +
+            '    if (!message || typeof message !== "object") return false;\n' +
+            '    if (Array.isArray(message.attachments) && message.attachments.some(isImageMedia)) return true;\n' +
+            '    if (!Array.isArray(message.embeds)) return false;\n' +
+            '    return message.embeds.some((embed: any) => {\n' +
+            '        if (!embed || typeof embed !== "object") return false;\n' +
+            '        if ([embed.type, embed.contentType, embed.content_type].some(value => typeof value === "string" && /^(?:image|gifv)$/i.test(value))) return true;\n' +
+            '        return isImageMedia(embed.image) || isImageMedia(embed.thumbnail) || isImageMedia(embed.video) || looksLikeImageUrl(embed.url);\n' +
+            '    });\n' +
+            '}\n\n' +
+            'function isImageContext(props: any): boolean {\n' +
+            '    try {\n' +
+            '        if (!props || typeof props !== "object") return false;\n' +
+            '        if (isImageMedia(props.mediaItem)) return true;\n' +
+            '        const target = props.target;\n' +
+            '        const tagName = target?.tagName;\n' +
+            '        if (typeof tagName === "string" && tagName.toUpperCase() === "IMG") return true;\n' +
+            '        if (typeof target?.closest === "function" && target.closest("img")) return true;\n' +
+            '        return messageHasImage(props.message);\n' +
+            '    } catch {\n' +
+            '        return false;\n' +
+            '    }\n' +
+            '}\n\n' +
+            'function hasMenuItemId(nodes: unknown, id: string): boolean {\n' +
+            '    try {\n' +
+            '        const list = Array.isArray(nodes) ? nodes : [nodes];\n' +
+            '        return list.some(node => {\n' +
+            '            if (!node || typeof node !== "object") return false;\n' +
+            '            const props = (node as any).props;\n' +
+            '            if (!props || typeof props !== "object") return false;\n' +
+            '            if (props.id === id) return true;\n' +
+            '            return hasMenuItemId(props.children, id);\n' +
+            '        });\n' +
+            '    } catch {\n' +
+            '        return false;\n' +
+            '    }\n' +
+            '}\n\n' +
+            'function settingNumber(key: "zoom" | "size" | "zoomSpeed", fallback: number, min: number, max: number): number {\n' +
+            '    const value = Number((settings.store as any)[key]);\n' +
+            '    if (!Number.isFinite(value)) return fallback;\n' +
+            '    return Math.min(max, Math.max(min, value));\n' +
             '}\n\n' +
             'function stopImageSliderKey(e: any) {\n' +
             '    if (!e.ctrlKey && !e.altKey && !e.metaKey && ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown", "Enter", " "].includes(e.key)) {\n' +
@@ -952,7 +1033,40 @@ const PATCHES = [
     {
         file: "src/plugins/imageZoom/index.tsx",
         find: '    if ("href" in props) return;\n    // emojis in user statuses',
-        replace: '    if ("href" in props) return;\n    if (props?.mediaItem && !isImageContext(props)) return;\n    if (children.some(child => child?.props?.id === "image-zoom")) return;\n    // emojis in user statuses'
+        replace: '    if ("href" in props) return;\n    if (props?.mediaItem && !isImageContext(props)) return;\n    if (hasMenuItemId(children, "image-zoom")) return;\n    // emojis in user statuses'
+    },
+    {
+        file: "src/plugins/imageZoom/index.tsx",
+        marker: "Discordmaxxer: ImageZoom ErrorBoundary menu boundary",
+        find: '<Menu.MenuGroup id="image-zoom">',
+        replace:
+            '<ErrorBoundary message="Image controls unavailable">\n' +
+            '            {/* Discordmaxxer: ImageZoom ErrorBoundary menu boundary */}\n' +
+            '            <Menu.MenuGroup id="image-zoom">'
+    },
+    {
+        file: "src/plugins/imageZoom/index.tsx",
+        marker: "Discordmaxxer: ImageZoom ErrorBoundary menu closing",
+        find: '</Menu.MenuGroup>\n    );',
+        replace:
+            '</Menu.MenuGroup>\n' +
+            '        </ErrorBoundary>\n' +
+            '    );'
+    },
+    {
+        file: "src/plugins/imageZoom/index.tsx",
+        find: 'value={settings.store.zoom}',
+        replace: 'value={settingNumber("zoom", 2, 1, 50)}'
+    },
+    {
+        file: "src/plugins/imageZoom/index.tsx",
+        find: 'value={settings.store.size}',
+        replace: 'value={settingNumber("size", 100, 50, 1000)}'
+    },
+    {
+        file: "src/plugins/imageZoom/index.tsx",
+        find: 'value={settings.store.zoomSpeed}',
+        replace: 'value={settingNumber("zoomSpeed", 0.5, 0.1, 5)}'
     },
     {
         file: "src/plugins/imageZoom/index.tsx",
@@ -990,9 +1104,9 @@ const PATCHES = [
     },
     {
         file: "src/plugins/imageZoom/index.tsx",
-        marker: "Discordmaxxer: preserve native attachment image clicks",
-        find: '                    replace: "\'div\',{onClick:e=>e.stopPropagation(),children:$1"',
-        replace: '                    // Discordmaxxer: preserve native attachment image clicks.\n                    replace: "\'div\',{children:$1"'
+        marker: "Discordmaxxer: preserve native attachment image clicks v2",
+        find: 'replace: "\'div\',{onClick:e=>e.stopPropagation(),children:$1"',
+        replace: 'replace: "\'div\',{children:$1"\n                    // Discordmaxxer: preserve native attachment image clicks v2'
     },
     {
         file: "src/plugins/imageZoom/index.tsx",
@@ -1383,6 +1497,11 @@ for (const p of PATCHES) {
     let content = readFileSync(path, "utf-8");
 
     if (p.marker && content.includes(p.marker)) {
+        skipped++;
+        continue;
+    }
+
+    if (p.obsoleteWhen?.(content) && !content.includes(p.find)) {
         skipped++;
         continue;
     }

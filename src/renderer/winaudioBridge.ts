@@ -171,6 +171,13 @@ export async function startWinAudioProcessSession(
     return startSessionFromInit(() => VesktopNative.winAudio.startProcess(targetPid, mode));
 }
 
+/** Resolve the selected Electron window source to its owning process. */
+export async function resolveWinAudioSourceProcessId(sourceId: string): Promise<number> {
+    const result = await VesktopNative.winAudio.resolveSourceProcessId(sourceId);
+    if (!result.ok) throw new Error("could not resolve selected share window: " + result.error);
+    return result.pid;
+}
+
 /**
  * Start a winaudio process-loopback capture of the whole system mix MINUS
  * this app's own process tree. Used for full-screen shares / when we can't

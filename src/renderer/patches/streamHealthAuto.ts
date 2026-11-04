@@ -75,7 +75,7 @@ function capture(stat: NonNullable<Awaited<ReturnType<typeof getOutboundVideoSta
     const cpuLimited = stat.qualityLimitationReason === "cpu";
     const bwLimited = stat.qualityLimitationReason === "bandwidth";
     const lowFps = stat.framesPerSecond < 24;
-    const echoRisk = echoFix === "loopback-fallback";
+    const echoRisk = echoFix === "loopback-fallback" || echoFix === "strict-failed";
     const healthy = !lowFps && !software && !cpuLimited && !echoRisk;
 
     let verdict: string;
@@ -114,7 +114,12 @@ function capture(stat: NonNullable<Awaited<ReturnType<typeof getOutboundVideoSta
     if (healthy) {
         toast(`Stream OK: ${stat.encoderKind} encoder @ ${stat.framesPerSecond}fps, echo-fix on`, Toasts.Type.SUCCESS);
     } else {
-        const echoNote = echoRisk ? " · echo fix fell back to loopback" : "";
+        const echoNote =
+            echoFix === "strict-failed"
+                ? " · strict audio was disabled because isolation failed"
+                : echoFix === "loopback-fallback"
+                  ? " · echo fix fell back to loopback"
+                  : "";
         toast(
             `Stream health: ${verdict}${echoNote}. See Settings → Discordmaxxer → Dev Settings.`,
             Toasts.Type.FAILURE

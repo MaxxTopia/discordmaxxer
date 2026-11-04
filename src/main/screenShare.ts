@@ -79,18 +79,12 @@ export function registerScreenShareHandler() {
         const streams: Streams = {
             video: source
         };
-        // On Windows, request system-loopback audio at the main-process layer
-        // ONLY when WGC is not forced. WGC + loopback fight each other in
-        // Chromium — the loopback request silently produces a silent track,
-        // and "Stream With Audio" appears broken. The renderer-side wrapper
-        // in screenShareFixes.ts re-captures audio via chromeMediaSource
-        // independently, so we can safely skip the main-side loopback under
-        // WGC and let the wrapper be the sole audio source.
-        const forceWgc = process.platform === "win32" && Settings.store.screenshareForceWgc;
-        // Skip the main-side loopback ONLY when the renderer per-window swap
-        // will actually take over — i.e. WGC forced AND the swap enabled. If the
-        // swap is off (default), loopback must stay on or stream audio is silent.
-        const swapTakesOver = forceWgc && Settings.store.screensharePerWindowAudio === true;
+        // Strict selected-window audio owns the track whenever enabled. Do
+        // not hand Chromium a system-loopback track first: if the renderer
+        // cannot resolve/capture the selected window, it must fail closed with
+        // video-only output rather than leaking Discord's call audio.
+        const strictWindowAudio = process.platform === "win32" && Settings.store.screensharePerWindowAudio === true;
+        const swapTakesOver = strictWindowAudio;
         if (choice.audio && process.platform === "win32" && !swapTakesOver) {
             streams.audio = "loopback";
         }

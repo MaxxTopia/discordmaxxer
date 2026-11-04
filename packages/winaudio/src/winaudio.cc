@@ -62,6 +62,7 @@
 #include <cstdint>
 #include <deque>
 #include <memory>
+#include <limits>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -365,6 +366,34 @@ Napi::Value EnumerateAudioSessions(const Napi::CallbackInfo& info) {
     Napi::Object result = Napi::Object::New(env);
     result.Set("sessions", arr);
     return result;
+}
+
+// Resolve the HWND embedded in Electron's Windows desktop-capturer source id
+// to the owning process. The renderer only supplies a source id that came
+// from the trusted main-process desktopCapturer list; the native side still
+// validates the handle before asking Windows for its PID.
+Napi::Value ResolveWindowProcessId(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (info.Length() < 1 || !info[0].IsNumber()) {
+        Napi::TypeError::New(env, "resolveWindowProcessId(hwnd: number)")
+            .ThrowAsJavaScriptException();
+        return env.Null();
+    }
+
+    const double raw = info[0].As<Napi::Number>().DoubleValue();
+    if (!(raw > 0) || raw > static_cast<double>(std::numeric_limits<UINT_PTR>::max())) {
+        return env.Null();
+    }
+
+    const UINT_PTR value = static_cast<UINT_PTR>(raw);
+    if (static_cast<double>(value) != raw) return env.Null();
+
+    const HWND hwnd = reinterpret_cast<HWND>(value);
+    if (!IsWindow(hwnd)) return env.Null();
+
+    DWORD pid = 0;
+    if (GetWindowThreadProcessId(hwnd, &pid) == 0 || pid == 0) return env.Null();
+    return Napi::Number::New(env, static_cast<double>(pid));
 }
 
 // ─── Process Loopback (Win10 1903+) ───────────────────────────────────
@@ -832,6 +861,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("stopCapture", Napi::Function::New(env, StopCapture));
     exports.Set("isCapturing", Napi::Function::New(env, IsCapturing));
     exports.Set("enumerateAudioSessions", Napi::Function::New(env, EnumerateAudioSessions));
+    exports.Set("resolveWindowProcessId", Napi::Function::New(env, ResolveWindowProcessId));
     exports.Set("startProcessLoopback", Napi::Function::New(env, StartProcessLoopback));
     exports.Set("drainChunks", Napi::Function::New(env, DrainChunks));
     return exports;

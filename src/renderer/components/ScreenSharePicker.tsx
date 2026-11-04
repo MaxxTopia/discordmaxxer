@@ -183,6 +183,8 @@ if (isWindows) {
             if (session) {
                 session.stop().catch(e => logger.warn("[winaudio] stop on STREAM_CLOSE failed:", e));
             }
+            currentSettings = null;
+            currentSourceId = null;
         });
     });
 }

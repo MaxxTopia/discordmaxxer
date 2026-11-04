@@ -6,10 +6,14 @@
 
 import { Logger } from "@vencord/types/utils";
 import { Toasts } from "@vencord/types/webpack/common";
-import { currentSettings } from "renderer/components/ScreenSharePicker";
-import { State } from "renderer/settings";
+import { currentSettings, currentSourceId } from "renderer/components/ScreenSharePicker";
+import { Settings, State } from "renderer/settings";
 import { isLinux } from "renderer/utils";
-import { startWinAudioExcludeSelfSession } from "renderer/winaudioBridge";
+import {
+    resolveWinAudioSourceProcessId,
+    startWinAudioExcludeSelfSession,
+    startWinAudioProcessSession
+} from "renderer/winaudioBridge";
 
 import { registerScreenShareVideoTracks } from "./screenShareTrackRegistry";
 import { applyScreenShareVideoQuality } from "./videoQuality";
@@ -82,7 +86,8 @@ if (isLinux) {
     };
 }
 
-// Windows screenshare audio — winaudio exclude-self injection (echo fix).
+// Windows screenshare audio — strict selected-window capture plus an
+// exclude-self compatibility path (echo fix).
 //
 // THE ECHO: `getDisplayMedia({ audio: true })` on Windows hands back a
 // system-loopback track (everything playing on the default output device).
@@ -90,14 +95,18 @@ if (isLinux) {
 // viewer's own voice playing back through the broadcaster's output → the
 // viewer hears themself echoed.
 //
-// THE FIX: before Discord ever ingests the stream, swap the loopback audio
-// track for a native winaudio process-loopback capture in EXCLUDE-SELF mode —
-// the whole system mix MINUS Discordmaxxer's own process tree. Discord plays
-// incoming voice through its own (excluded) renderer/audio-service children,
-// so that voice is never in the captured mix → no echo. The game / desktop
-// audio (separate processes) stays. This is what official Discord effectively
-// does, and the native capture is verified working on real hardware
-// (packages/winaudio/test-loopback.js).
+// THE STRICT FIX: when the user enables selected-window audio, resolve the
+// Windows source id to its owning process and swap the loopback audio track
+// for a native winaudio process-loopback capture in INCLUDE mode. That means
+// the selected game's process tree is the only captured program; Discord's
+// call audio is not part of the stream. If the source cannot be resolved or
+// the native capture cannot become ready, remove the audio track and keep the
+// share video-only rather than leaking the system mix.
+//
+// COMPATIBILITY PATH: when strict selected-window audio is off, retain the
+// existing EXCLUDE-SELF capture. It removes Discordmaxxer's process tree from
+// the system mix but can still include other applications, so it is not a
+// Fortnite-only guarantee.
 //
 // WHY HERE and not replaceTrack-on-sender: Discord's MediaEngine hides its
 // RTCPeerConnection behind a native wrapper, so the prior approach (find the
@@ -106,9 +115,10 @@ if (isLinux) {
 // time has zero dependency on Discord internals — the swapped track simply IS
 // the screenshare's audio when Discord picks the stream up.
 //
-// FALLBACK: if winaudio is unavailable (load failed / non-float mix format /
-// any error) we leave the original loopback track in place — audio still
-// works, just with the pre-existing echo. Never worse than before.
+// STRICT FALLBACK: if strict winaudio is unavailable (load failed / source
+// cannot resolve / non-float format / any error), we remove the original
+// loopback track. Video continues, but no untrusted system audio is sent.
+// Compatibility mode retains its old loopback fallback for availability.
 //
 // Diagnostic breadcrumbs land in window.__dmEcho without spamming the console.
 const ECHO_LOG: any[] = [];
@@ -117,11 +127,19 @@ const ECHO_LOG: any[] = [];
 // Records how the most recent screenshare resolved its audio, so the
 // auto-capture (patches/streamHealthAuto.ts) can report whether the echo fix
 // actually engaged without re-deriving it.
-//   "winaudio"          → clean exclude-self capture injected (no echo)
-//   "loopback-fallback" → winaudio unavailable/non-float, kept system loopback (may echo)
+//   "strict-winaudio"   → selected process capture injected (Fortnite-only)
+//   "winaudio"          → clean exclude-self capture injected (no self-echo)
+//   "strict-failed"     → strict isolation failed; audio was removed
+//   "loopback-fallback" → compatibility capture failed; kept system loopback (may echo)
 //   "video-only"        → audio not requested
 //   "none"              → no share since launch
-export type EchoInjectionResult = "winaudio" | "loopback-fallback" | "video-only" | "none";
+export type EchoInjectionResult =
+    | "strict-winaudio"
+    | "winaudio"
+    | "strict-failed"
+    | "loopback-fallback"
+    | "video-only"
+    | "none";
 let lastEchoInjection: EchoInjectionResult = "none";
 export function getLastEchoInjection(): EchoInjectionResult {
     return lastEchoInjection;
@@ -161,7 +179,7 @@ async function applyVideoQualityConstraints(stream: MediaStream) {
 }
 
 if (isWindows) {
-    debug("screenShareFixes patch loaded — getDisplayMedia wrapper installed (winaudio exclude-self)");
+    debug("screenShareFixes patch loaded — getDisplayMedia wrapper installed (strict selected-window audio available)");
 
     const original = navigator.mediaDevices.getDisplayMedia;
 
@@ -188,6 +206,63 @@ if (isWindows) {
 
         const loopbackTracks = stream.getAudioTracks();
         debug(`original (loopback) audio track count: ${loopbackTracks.length}`);
+
+        // Strict mode is deliberately fail-closed. The main-process source
+        // handler withholds Chromium's system loopback, and this branch adds
+        // only the selected window's process capture after it is ready.
+        if (Settings.store.screensharePerWindowAudio === true) {
+            let strictSession: Awaited<ReturnType<typeof startWinAudioProcessSession>> | null = null;
+            try {
+                if (!currentSourceId) throw new Error("no selected Windows share source");
+
+                const targetPid = await resolveWinAudioSourceProcessId(currentSourceId);
+                strictSession = await startWinAudioProcessSession(targetPid, "include");
+
+                if (!strictSession.format.isFloat) {
+                    throw new Error(`selected process mix is non-float (bits=${strictSession.format.bitsPerSample})`);
+                }
+
+                const cleanTrack = strictSession.track;
+                if (!cleanTrack || cleanTrack.readyState === "ended") {
+                    throw new Error("selected process capture produced no live track");
+                }
+
+                const ready = await strictSession.waitUntilReady(3000);
+                if (!ready) throw new Error("selected process AudioContext never reached running within 3s");
+
+                // Informational only. A quiet/loading game is still a valid
+                // capture; readiness, not loudness, is the safety gate.
+                const audibleAtSwap = await strictSession.waitForSignal(400);
+                debug("strict selected-window pipeline ready; audible-at-swap =", audibleAtSwap, { targetPid });
+
+                loopbackTracks.forEach(t => {
+                    stream.removeTrack(t);
+                    t.stop();
+                });
+                stream.addTrack(cleanTrack);
+
+                lastEchoInjection = "strict-winaudio";
+                debug("VERDICT: selected process audio injected — system/Discord audio excluded", { targetPid });
+                toast(
+                    "Stream audio: capturing only the selected window (Discord audio excluded).",
+                    Toasts.Type.SUCCESS
+                );
+                return stream;
+            } catch (e) {
+                await strictSession?.stop().catch(() => {});
+                loopbackTracks.forEach(t => {
+                    stream.removeTrack(t);
+                    t.stop();
+                });
+                lastEchoInjection = "strict-failed";
+                debug("STRICT AUDIO FAILED — continuing video-only to prevent Discord/system audio leak", String(e));
+                toast(
+                    "Stream audio disabled: Discordmaxxer could not isolate the selected window. Choose the game window or turn off strict audio.",
+                    Toasts.Type.FAILURE
+                );
+                return stream;
+            }
+        }
 
         try {
             // Capture the system mix minus our own process tree. The PID is

@@ -65,9 +65,9 @@ const SettingsOptions: Record<string, Array<BooleanSetting | SettingsComponent>>
         },
         {
             key: "screensharePerWindowAudio",
-            title: "Per-window stream audio (anti-echo)",
+            title: "Strict selected-window audio (Fortnite only)",
             description:
-                "Re-captures audio from the shared window instead of the whole system, to stop viewers hearing themselves echoed. OFF by default because on some Windows audio setups this capture crashes the screenshare — with it off, stream audio uses normal system loopback (works fine; only echoes if you're on speakers, not headphones). Requires a full app restart.",
+                "When Stream With Audio is enabled and you share a window, captures audio only from that app (for example Fortnite). Discord/call audio is never injected. If Windows cannot resolve or capture the selected window, the share stays video-only instead of falling back to the system mix. Does not affect voice or your microphone. Requires a full app restart.",
             defaultValue: false,
             invisible: () => !isWindows
         }

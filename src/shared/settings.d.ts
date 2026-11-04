@@ -40,11 +40,10 @@ export interface Settings {
     // Requires a full app restart.
     screenshareForceWgc?: boolean;
 
-    // When ON, screenshare audio re-captures per-window audio (anti-echo swap
-    // in screenShareFixes.ts). OFF by default: the swap runs a desktop-audio
-    // getUserMedia that can crash the renderer on some Windows audio setups, so
-    // stream audio just uses plain system loopback (which works and only echoes
-    // if you're listening on speakers, not headphones). Requires a restart.
+    // When ON, screenshare audio captures only the selected Windows window's
+    // owning process tree (strict Fortnite/game-only mode). If the source PID
+    // cannot be proven, the share stays video-only rather than leaking the
+    // whole system mix. Requires a restart.
     screensharePerWindowAudio?: boolean;
 
     // When ON, run the microphone through an in-app RNNoise (WebAssembly)

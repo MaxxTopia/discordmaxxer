@@ -988,42 +988,45 @@ const DMEmojiButton: ChatBarButtonFactory = ({ isAnyChat, channel }) => {
 const messageContextMenuPatch: NavContextMenuPatchCallback = (children, props: { message?: Message; }) => {
     const message = props?.message;
     if (!message || !Array.isArray(children)) return;
+    if (children.some(child => child?.props?.id === "dmemoji-message-actions")) return;
 
     try {
         children.push(
-            <Menu.MenuItem id="dmemoji-message-actions" label="DMEmoji">
-                <Menu.MenuItem
-                    id="dmemoji-open-reaction-picker"
-                    label="Search and react..."
-                    action={() =>
-                        openModal(modalProps => (
-                            <EmojiPickerModal {...modalProps} channelId={message.channel_id} message={message} />
-                        ))
-                    }
-                />
-                {emojiRecordsCache.length > 0 && (
-                    <Menu.MenuItem id="dmemoji-local-actions" label="Saved media">
-                        {emojiRecordsCache.map(record => {
-                            const nativeEmoji = parseDiscordEmojiRef(record.discordEmojiRef, record.name);
-                            return (
-                                <Menu.MenuItem id={`dmemoji-actions-${record.id}`} key={record.id} label={record.name}>
-                                    <Menu.MenuItem
-                                        id={`dmemoji-send-${record.id}`}
-                                        label="Attach image"
-                                        action={() => void sendEmojiAsImage(record, message.channel_id)}
-                                    />
-                                    <Menu.MenuItem
-                                        id={`dmemoji-react-${record.id}`}
-                                        label={nativeEmoji ? "React with linked server emoji" : "Link a server emoji first"}
-                                        disabled={!nativeEmoji}
-                                        action={() => reactWithEmoji(message, record)}
-                                    />
-                                </Menu.MenuItem>
-                            );
-                        })}
-                    </Menu.MenuItem>
-                )}
-            </Menu.MenuItem>
+            <ErrorBoundary message="DMEmoji controls unavailable">
+                <Menu.MenuItem id="dmemoji-message-actions" label="DMEmoji">
+                    <Menu.MenuItem
+                        id="dmemoji-open-reaction-picker"
+                        label="Search and react..."
+                        action={() =>
+                            openModal(modalProps => (
+                                <EmojiPickerModal {...modalProps} channelId={message.channel_id} message={message} />
+                            ))
+                        }
+                    />
+                    {emojiRecordsCache.length > 0 && (
+                        <Menu.MenuItem id="dmemoji-local-actions" label="Saved media">
+                            {emojiRecordsCache.map(record => {
+                                const nativeEmoji = parseDiscordEmojiRef(record.discordEmojiRef, record.name);
+                                return (
+                                    <Menu.MenuItem id={`dmemoji-actions-${record.id}`} key={record.id} label={record.name}>
+                                        <Menu.MenuItem
+                                            id={`dmemoji-send-${record.id}`}
+                                            label="Attach image"
+                                            action={() => void sendEmojiAsImage(record, message.channel_id)}
+                                        />
+                                        <Menu.MenuItem
+                                            id={`dmemoji-react-${record.id}`}
+                                            label={nativeEmoji ? "React with linked server emoji" : "Link a server emoji first"}
+                                            disabled={!nativeEmoji}
+                                            action={() => reactWithEmoji(message, record)}
+                                        />
+                                    </Menu.MenuItem>
+                                );
+                            })}
+                        </Menu.MenuItem>
+                    )}
+                </Menu.MenuItem>
+            </ErrorBoundary>
         );
     } catch (error) {
         console.warn("[DMEmoji] Could not add the message context menu", error);

@@ -192,6 +192,17 @@ function profileGradientVisual(surface?: HTMLElement): ProfileSkinPreset | null 
     if (surface) {
         let parent = surface.parentElement;
         for (let depth = 0; parent && depth < 4; depth++, parent = parent.parentElement) candidates.push(parent);
+
+        // DMProfileFlair paints the canonical palette on the profile-content
+        // node, which can sit below the outer popout surface. Prefer marked
+        // descendants from this surface before generic document/body values;
+        // this keeps another open profile from donating its colors.
+        try {
+            if (surface.matches("[data-dm-flair-theme-applied]")) candidates.unshift(surface);
+            candidates.unshift(...Array.from(surface.querySelectorAll<HTMLElement>("[data-dm-flair-theme-applied]")));
+        } catch {
+            // Discord may remove the portal during a concurrent render.
+        }
     }
     if (!surface) candidates.push(...findProfileSurfaces());
     if (typeof document !== "undefined") {
@@ -567,6 +578,7 @@ function removeOwnedMarkers(surface: HTMLElement, removeEffectLayer = true): voi
     surface.removeAttribute("data-dm-native-cosmetics");
     surface.removeAttribute("data-dm-profile-control");
     surface.removeAttribute("data-dm-profile-controls-shell");
+    surface.removeAttribute("data-dm-profile-controls-surface");
     PROFILE_SKIN_VARIABLES.forEach(property => surface.style.removeProperty(property));
     surface.querySelectorAll<HTMLElement>(`[${SURFACE_MARKER}="true"]`).forEach(node => {
         node.removeAttribute(SURFACE_MARKER);
@@ -581,9 +593,10 @@ function removeOwnedMarkers(surface: HTMLElement, removeEffectLayer = true): voi
         node.removeAttribute("data-dm-native-cosmetics");
         PROFILE_SKIN_VARIABLES.forEach(property => node.style.removeProperty(property));
     });
-    surface.querySelectorAll<HTMLElement>('[data-dm-profile-control], [data-dm-profile-controls-shell]').forEach(node => {
+    surface.querySelectorAll<HTMLElement>('[data-dm-profile-control], [data-dm-profile-controls-shell], [data-dm-profile-controls-surface]').forEach(node => {
         node.removeAttribute("data-dm-profile-control");
         node.removeAttribute("data-dm-profile-controls-shell");
+        node.removeAttribute("data-dm-profile-controls-surface");
     });
     if (removeEffectLayer) {
         surface.querySelectorAll<HTMLElement>(`[${EFFECT_LAYER_MARKER}="true"]`).forEach(layer => layer.remove());
@@ -623,6 +636,16 @@ function markControlRows(surface: HTMLElement): void {
         }
         if (shell && shell !== surface && controls.every(control => shell.contains(control))) {
             shell.setAttribute("data-dm-profile-controls-shell", "true");
+
+            // In some Discord builds the visible dark card is the shell's
+            // parent, while in others the shell itself owns the background.
+            // Mark only a small ancestor that contains this group and no more
+            // than the action copy, so the profile-gradient treatment reaches
+            // the actual card without flattening widgets or the whole popout.
+            const panel = shell.parentElement;
+            if (panel && panel !== surface && controls.every(control => panel.contains(control)) && normalizedText(panel).length <= 420) {
+                panel.setAttribute("data-dm-profile-controls-surface", "true");
+            }
         }
     }
 }
@@ -853,7 +876,10 @@ function buildCss(): string {
          * mode the action groups should read as part of the profile itself,
          * not as two dark cards pasted on top of it. Keep the native spacing
          * and readable row separators while removing the extra frame. */
-        [data-dm-profile-visual-source="profile"] [data-dm-profile-controls-shell="true"] {
+        [data-dm-profile-visual-source="profile"] [data-dm-profile-controls-shell="true"],
+        [data-dm-profile-visual-source="profile"] [data-dm-profile-controls-surface="true"],
+        [data-dm-profile-visual-source="profile"][data-dm-profile-controls-shell="true"],
+        [data-dm-profile-visual-source="profile"][data-dm-profile-controls-surface="true"] {
             margin: 2px 0 !important;
             padding: 0 !important;
             border: 0 !important;
@@ -862,7 +888,13 @@ function buildCss(): string {
             box-shadow: none !important;
         }
         [data-dm-profile-visual-source="profile"] [data-dm-profile-controls-shell="true"]::before,
-        [data-dm-profile-visual-source="profile"] [data-dm-profile-controls-shell="true"]::after {
+        [data-dm-profile-visual-source="profile"] [data-dm-profile-controls-shell="true"]::after,
+        [data-dm-profile-visual-source="profile"] [data-dm-profile-controls-surface="true"]::before,
+        [data-dm-profile-visual-source="profile"] [data-dm-profile-controls-surface="true"]::after,
+        [data-dm-profile-visual-source="profile"][data-dm-profile-controls-shell="true"]::before,
+        [data-dm-profile-visual-source="profile"][data-dm-profile-controls-shell="true"]::after,
+        [data-dm-profile-visual-source="profile"][data-dm-profile-controls-surface="true"]::before,
+        [data-dm-profile-visual-source="profile"][data-dm-profile-controls-surface="true"]::after {
             content: none;
             display: none;
         }

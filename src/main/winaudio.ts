@@ -38,6 +38,7 @@ interface WinAudioModule {
     enumerateAudioSessions: () => {
         sessions: Array<{ pid: number; processName: string; displayName: string; isActive: boolean }>;
     };
+    resolveWindowProcessId: (hwnd: number) => number | null;
     startProcessLoopback: (
         targetPid: number,
         mode: "include" | "exclude",
@@ -157,6 +158,34 @@ handle(IpcEvents.DM_WIN_AUDIO_SESSIONS, async () => {
     if (!mod) return { ok: false, error: loadError ?? "winaudio unavailable" };
     try {
         return { ok: true, sessions: mod.enumerateAudioSessions().sessions };
+    } catch (e: any) {
+        return { ok: false, error: String(e?.message || e) };
+    }
+});
+
+function parseWindowHandle(sourceId: unknown): number | null {
+    if (typeof sourceId !== "string") return null;
+    // Electron's Windows desktop-capturer ids are window:<HWND>:<suffix>.
+    // Keep this strict so a screen id or malformed renderer input can never
+    // accidentally be treated as a process target.
+    const match = /^window:(0x[0-9a-f]+|[0-9]+)(?::|$)/i.exec(sourceId.trim());
+    if (!match) return null;
+
+    const hwnd = Number(match[1]);
+    return Number.isSafeInteger(hwnd) && hwnd > 0 ? hwnd : null;
+}
+
+handle(IpcEvents.DM_WIN_AUDIO_RESOLVE_SOURCE_PID, async (_, sourceId: string) => {
+    const mod = load();
+    if (!mod) return { ok: false, error: loadError ?? "winaudio unavailable" };
+
+    const hwnd = parseWindowHandle(sourceId);
+    if (hwnd === null) return { ok: false, error: "the selected source is not a Windows window" };
+
+    try {
+        const pid = mod.resolveWindowProcessId(hwnd);
+        if (!pid) return { ok: false, error: "the selected window closed or could not be resolved" };
+        return { ok: true, pid };
     } catch (e: any) {
         return { ok: false, error: String(e?.message || e) };
     }

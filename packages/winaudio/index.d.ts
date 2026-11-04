@@ -110,6 +110,12 @@ export interface ListSessionsResult {
  */
 export function enumerateAudioSessions(): ListSessionsResult;
 
+/**
+ * Resolve an Electron desktop-capturer `window:<HWND>:...` handle to the
+ * owning Windows process. Returns null when the handle is stale or invalid.
+ */
+export function resolveWindowProcessId(hwnd: number): number | null;
+
 export type ProcessLoopbackMode = "include" | "exclude";
 
 /**

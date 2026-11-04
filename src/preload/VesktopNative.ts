@@ -210,6 +210,11 @@ export const VesktopNative = {
                       }>;
                   }
             >(IpcEvents.DM_WIN_AUDIO_SESSIONS),
+        resolveSourceProcessId: (sourceId: string) =>
+            invoke<{ ok: false; error: string } | { ok: true; pid: number }>(
+                IpcEvents.DM_WIN_AUDIO_RESOLVE_SOURCE_PID,
+                sourceId
+            ),
         startProcess: (targetPid: number, mode: "include" | "exclude") =>
             invoke<
                 | { ok: false; error: string }

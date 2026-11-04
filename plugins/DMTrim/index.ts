@@ -30,7 +30,11 @@ import definePlugin, { OptionType } from "@utils/types";
 let style: HTMLStyleElement | undefined;
 let promoObserver: MutationObserver | undefined;
 let promoScanTimer: ReturnType<typeof setTimeout> | undefined;
+const promoInitialScanTimers: ReturnType<typeof setTimeout>[] = [];
 const pendingPromoNodes = new Set<Node>();
+
+const PROMO_TEXT_NODE_LIMIT = 420;
+const PROMO_ANCESTOR_LIMIT = 10;
 
 const PROMO_SELECTOR = [
     '[aria-label*="Sponsored" i]',
@@ -49,14 +53,20 @@ const PROMO_MARKER = "data-dmtrim-hidden-promo";
 const PROMO_BRAND_RE = /\bfanduel\b/i;
 const PROMO_LABEL_RE = /\b(?:sponsored|promoted|advertisement|ad choices)\b/i;
 const PROMO_ACTION_RE = /\b(?:get reward|watch\s+\d+\s*(?:s|sec|seconds)?|unlock(?:\s+\d+(?:\.\d+)?x)?|learn more)\b/i;
+const PROMO_ATTRIBUTE_RE = /(?:fanduel|sponsor|promot|advert|adcontainer|adcard|reward)/i;
 
 function normalizeText(value: string): string {
     return value.replace(/\s+/g, " ").trim();
 }
 
+function hasPromotionalSignal(value: string): boolean {
+    const text = normalizeText(value);
+    return PROMO_BRAND_RE.test(text) || PROMO_LABEL_RE.test(text) || PROMO_ACTION_RE.test(text);
+}
+
 function isPromotionalCard(element: Element): boolean {
     const text = normalizeText(element.textContent ?? "");
-    if (text.length < 4 || text.length > 600) return false;
+    if (text.length < 4 || text.length > 900) return false;
 
     // Fanduel's card has no stable public selector in some Discord builds,
     // but it does have a distinctive brand + reward CTA. Requiring both
@@ -67,21 +77,32 @@ function isPromotionalCard(element: Element): boolean {
 }
 
 function findPromotionalTarget(element: Element): HTMLElement | null {
-    const marked = element.closest<HTMLElement>(PROMO_SELECTOR);
-    if (marked) return marked;
-
     let candidate: HTMLElement | null = element instanceof HTMLElement ? element : element.parentElement;
     let depth = 0;
-    while (candidate && candidate !== document.body && depth++ < 6) {
-        const text = normalizeText(candidate.textContent ?? "");
+    const candidates: HTMLElement[] = [];
+
+    while (candidate && candidate !== document.body && depth++ < PROMO_ANCESTOR_LIMIT) {
         const rect = candidate.getBoundingClientRect();
-        if (text.length <= 600 && rect.width >= 180 && rect.height >= 48 && rect.height <= 420) {
-            return candidate;
+        if (isPromotionalCard(candidate) && rect.width >= 180 && rect.height >= 48 && rect.height <= 420) {
+            candidates.push(candidate);
         }
         candidate = candidate.parentElement;
     }
 
-    return null;
+    if (!candidates.length) return null;
+
+    // Prefer a stable semantic ad card when Discord exposes one. Otherwise
+    // choose the smallest coherent visible card: this avoids marking only a
+    // CTA button while also avoiding a whole message panel or profile column.
+    return candidates.sort((left, right) => {
+        const leftSemantic = left.matches(PROMO_SELECTOR) ? 1 : 0;
+        const rightSemantic = right.matches(PROMO_SELECTOR) ? 1 : 0;
+        if (leftSemantic !== rightSemantic) return rightSemantic - leftSemantic;
+
+        const leftRect = left.getBoundingClientRect();
+        const rightRect = right.getBoundingClientRect();
+        return leftRect.width * leftRect.height - rightRect.width * rightRect.height;
+    })[0];
 }
 
 function hidePromotionalCard(element: Element): void {
@@ -91,11 +112,20 @@ function hidePromotionalCard(element: Element): void {
     target?.setAttribute(PROMO_MARKER, "true");
 }
 
-function scanPromotionalNode(node: Node): void {
-    if (node.nodeType !== Node.ELEMENT_NODE) return;
+function hidePromotionalTextNode(node: Node): void {
+    const parent = node.parentElement;
+    if (!parent) return;
 
-    const root = node as Element;
-    hidePromotionalCard(root);
+    const target = findPromotionalTarget(parent);
+    target?.setAttribute(PROMO_MARKER, "true");
+}
+
+function scanPromotionalNode(node: Node): void {
+    const root = node.nodeType === Node.TEXT_NODE ? node.parentElement : node;
+    if (!root || root.nodeType !== Node.ELEMENT_NODE) return;
+
+    const rootElement = root as Element;
+    hidePromotionalCard(rootElement);
 
     // Only inspect semantic ad hooks beneath a newly-mounted root. A full
     // descendant/class scan made this safety net needlessly expensive on
@@ -114,25 +144,15 @@ function scanPromotionalNode(node: Node): void {
     // Avoid walking ordinary Discord content at all. Obfuscated promos are
     // only worth checking when their newly-mounted subtree contains a known
     // brand/label/action marker; this keeps the fallback cheap in normal use.
-    const rootText = normalizeText((root.textContent ?? "").slice(0, 12000));
-    if (!PROMO_BRAND_RE.test(rootText) && !PROMO_LABEL_RE.test(rootText) && !PROMO_ACTION_RE.test(rootText)) return;
+    const rootText = normalizeText((rootElement.textContent ?? "").slice(0, 12000));
+    if (!hasPromotionalSignal(rootText)) return;
 
-    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    const walker = document.createTreeWalker(rootElement, NodeFilter.SHOW_TEXT);
     let textNodes = 0;
     let current: Node | null = walker.nextNode();
-    while (current && textNodes++ < 120) {
+    while (current && textNodes++ < PROMO_TEXT_NODE_LIMIT) {
         const text = normalizeText(current.nodeValue ?? "");
-        if (PROMO_BRAND_RE.test(text) || PROMO_LABEL_RE.test(text) || PROMO_ACTION_RE.test(text)) {
-            let ancestor = current.parentElement;
-            let depth = 0;
-            while (ancestor && ancestor !== document.body && depth++ < 8) {
-                if (isPromotionalCard(ancestor)) {
-                    hidePromotionalCard(ancestor);
-                    break;
-                }
-                ancestor = ancestor.parentElement;
-            }
-        }
+        if (hasPromotionalSignal(text)) hidePromotionalTextNode(current);
         current = walker.nextNode();
     }
 }
@@ -165,6 +185,11 @@ function stopPromotionalObserver(): void {
         promoScanTimer = undefined;
     }
 
+    while (promoInitialScanTimers.length) {
+        const timer = promoInitialScanTimers.pop();
+        if (timer !== undefined) clearTimeout(timer);
+    }
+
     pendingPromoNodes.clear();
     clearPromotionalMarkers();
 }
@@ -173,17 +198,49 @@ function startPromotionalObserver(): void {
     stopPromotionalObserver();
     if (settings.store.hidePromotedAds === false || !document.body || typeof MutationObserver === "undefined") return;
 
-    // Catch semantic cards that already exist before the observer attaches.
-    // Obfuscated cards are handled as they mount through the observer below.
+    // Catch semantic cards and already-mounted obfuscated cards before the
+    // observer attaches. The delayed passes cover reward cards whose text is
+    // filled in after Discord has mounted the shell.
     const existing = [...document.querySelectorAll<HTMLElement>(PROMO_SELECTOR)].slice(-160);
-    schedulePromotionalScan(existing);
+    schedulePromotionalScan([document.body, ...existing]);
+
+    for (const delay of [350, 1200]) {
+        promoInitialScanTimers.push(
+            setTimeout(() => {
+                if (document.visibilityState !== "hidden" && document.body) schedulePromotionalScan([document.body]);
+            }, delay)
+        );
+    }
 
     promoObserver = new MutationObserver(records => {
         const nodes: Node[] = [];
-        for (const record of records) nodes.push(...record.addedNodes);
+        for (const record of records) {
+            if (record.type === "childList") {
+                for (const node of record.addedNodes) {
+                    if (node.nodeType === Node.TEXT_NODE) {
+                        if (hasPromotionalSignal(node.nodeValue ?? "")) nodes.push(node.parentElement ?? node);
+                    } else {
+                        nodes.push(node);
+                    }
+                }
+            } else if (record.type === "characterData") {
+                if (hasPromotionalSignal(record.target.nodeValue ?? "")) {
+                    nodes.push(record.target.parentElement ?? record.target);
+                }
+            } else if (record.type === "attributes" && record.target instanceof Element) {
+                const value = record.target.getAttribute(record.attributeName ?? "") ?? "";
+                if (PROMO_ATTRIBUTE_RE.test(value)) nodes.push(record.target);
+            }
+        }
         if (nodes.length) schedulePromotionalScan(nodes);
     });
-    promoObserver.observe(document.body, { childList: true, subtree: true });
+    promoObserver.observe(document.body, {
+        childList: true,
+        subtree: true,
+        characterData: true,
+        attributes: true,
+        attributeFilter: ["aria-label", "class", "data-testid"]
+    });
 }
 
 function buildCss(): string {

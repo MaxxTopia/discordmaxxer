@@ -2943,3 +2943,123 @@ PCs and repeat the two-PC avatar test before claiming the rendered result is
 verified. Confirm that DiggyAI and DiggyT each show the owner's animated
 avatar without a default/static flash when the profile first opens or the
 client starts, and that an explicit cloud-side clear remains cleared.
+
+## 2026-11-04 — local strict selected-window screenshare audio candidate
+
+Scope: repair the Windows screenshare path so Fortnite/game-window audio can
+be selected without Discord call audio leaking into the stream. This is an
+unpublished local candidate based on the v0.7.121 source state in the isolated
+worktree `C:\Users\Diggy\projects\discordmaxxer-full-dev-merge-20261103c`.
+
+Implementation:
+- The existing per-window setting is now strict selected-window audio. The
+  renderer resolves Electron's selected `window:<HWND>` source to its owning
+  PID through the native Windows bridge and starts process-loopback capture in
+  include mode.
+- Strict mode withholds Chromium's system-loopback track at the main-process
+  boundary. If source resolution or native capture fails, the share continues
+  video-only and shows an error instead of falling back to a system mix that
+  could contain Discord audio. Voice and microphone capture are unchanged.
+- The previous exclude-this-client compatibility path remains available when
+  strict mode is off. It is not a Fortnite-only guarantee.
+- The freshly compiled native resolver was copied into the checked-in x64
+  N-API prebuild so the Windows package carries the new behavior.
+
+Verification completed locally:
+- `pnpm test` passed (ESLint and TypeScript).
+- `pnpm build` passed.
+- `pnpm buildWinAudio` passed with only the existing MSVC macro/C++ standard
+  warnings.
+- `node --test packages/winaudio/test.js` passed all 4 native tests.
+- Native window resolution returned OBS PID 19684 for HWND 394326.
+- Strict pinned Vencord source passed the rebrand guard: 123 patches applied,
+  zero warnings; all 29 custom plugins were staged.
+- `node overlay-scripts/verify-build.mjs` passed, including required custom
+  plugins and staged hash checks.
+- `pnpm exec electron-builder --dir` passed. The packaged
+  `resources/winaudio.node` hash matches the freshly built/prebuilt binary,
+  and the Electron runtime loaded its process-loopback and window-resolver
+  exports.
+- The packaged executable stayed alive through an 8-second startup smoke test
+  with isolated user data at `E:\Codex-recovery\discordmaxxer-package-smoke-20261104`;
+  it was stopped afterward and did not touch the signed-in public client.
+- A 3-second include-mode probe against the currently running OBS browser
+  process received 299 packets but measured zero amplitude. That is
+  inconclusive because the selected process was not producing audible audio;
+  it is not evidence of Fortnite capture.
+
+Release state: no commit, push, tag, live deployment, or public installer was
+made. Generated local artifacts exist under `dist/` and the pinned Vencord
+candidate worktree under `E:\Codex-recovery`; the user's public client was not
+replaced or restarted.
+
+Remaining proof gate: run the packaged candidate while signed in, enable
+strict selected-window audio, share the Fortnite window with Stream With Audio,
+and have a second account confirm that Fortnite audio is audible while Discord
+call audio is absent. Also test a window with no audio and stop/restart the
+share to confirm cleanup. Do not claim game-only audio from the automated
+native packet test alone.
+
+## 2026-11-04 — v0.7.122 combined release candidate
+
+Scope: keep the image-menu/enlargement repair, the DMProfileCosmetics default
+profile-gradient parity repair, and the existing strict selected-window
+screenshare-audio candidate in one next public release. This candidate is
+based on v0.7.121 and has not been published.
+
+Implementation:
+- `overlay-scripts/rebrand-vencord.mjs` hardens ImageZoom for both native
+  image-context and message routes, isolates custom image controls and plugin
+  settings with error boundaries, validates numeric settings, deduplicates
+  menu injection, and preserves Discord's native attachment click path.
+- `plugins/DMEmoji/index.tsx` isolates custom message controls so a DMEmoji
+  failure cannot replace or crash the native message menu.
+- `plugins/DMProfileCosmetics/index.ts` uses the canonical DMProfileFlair
+  palette and marks the actual action surface so Profile gradient (default) /
+  Match profile gradient can blend the real popout rows into the exact profile
+  gradient rather than leaving a dark stock card.
+- `plugins/DMTrim/index.ts` strengthens sponsored/reward-card detection for
+  Fanduel-style placements: bounded delayed scans cover already-mounted or
+  late-filled cards, text/semantic updates are observed, and the detector
+  targets a coherent card-sized ancestor without broad relational selectors.
+- `overlay-scripts/rebrand-vencord.mjs` now treats the transitional PluginModal
+  patches as consumed once the final compact author renderer is present, so
+  repeated strict overlay/package builds stay warning-free.
+- The pre-existing strict selected-window screenshare-audio changes remain in
+  the same candidate; they must not be split into a separate release.
+- `package.json` is versioned `0.7.122`; release notes are in
+  `docs/releases/v0.7.122.md`.
+
+Verification completed:
+- `pnpm test` passed after the DMTrim changes; the packaged build also
+  completed its TypeScript build and structural verification.
+- Fresh pinned Vencord source with `DM_STRICT_REBRAND=1`: 129 patches applied,
+  zero warnings; all 29 custom plugins staged.
+- A repeat overlay build from the same pinned checkout reported 129 idempotent
+  skips and zero warnings.
+- `pnpm package:dir` completed for v0.7.122.
+- `node overlay-scripts/verify-build.mjs` passed, including version 0.7.122,
+  source fingerprint, staged hashes, and required plugin presence.
+- The unpacked Windows executable stayed alive for an 8-second isolated smoke
+  run using `--user-data-dir` and `--disable-gpu`, then was stopped; the
+  signed-in client was not touched.
+- `git diff --check` passed.
+
+Release state: local release candidate only. No commit, tag, push, installer
+publication, or public updater deployment has occurred in this session.
+
+Diggy-owed acceptance checks before publishing:
+- In the signed-in client, right-click a sent image: it must not crash, and the
+  normal Discord reply/forward/reaction/action menu must remain present.
+- Click the sent image itself: it must open Discord's enlarged viewer.
+- Open DMProfileCosmetics, leave the mode at Profile gradient (default), and
+  compare the actual profile popout with the showroom: action rows should be
+  seamless, use the exact gradient palette, and remain correctly placed.
+- If releasing the strict screenshare candidate, share a Fortnite window with
+  audio while a second listener confirms Fortnite audio is present and Discord
+  call audio is absent. A failed selected-process capture should be video-only,
+  not a system-audio fallback.
+
+Next action: after those signed-in checks and explicit release approval, commit
+only the intended candidate changes, push/tag the v0.7.122 release, publish the
+installer/update metadata, and verify the public artifact and updater route.
