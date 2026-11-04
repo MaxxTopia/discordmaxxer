@@ -18,7 +18,7 @@ import {
     session,
     shell
 } from "electron";
-import { readFileSync, watch } from "fs";
+import { type FSWatcher, readFileSync, watch } from "fs";
 import { readFile, stat } from "fs/promises";
 import { enableHardwareAcceleration } from "main";
 import { release } from "os";
@@ -51,13 +51,40 @@ const VESKTOP_RENDERER_CSS_PATH = join(__dirname, "renderer.css");
 handleSync(IpcEvents.GET_VESKTOP_RENDERER_SCRIPT, () => readFileSync(VESKTOP_RENDERER_JS_PATH, "utf-8"));
 handle(IpcEvents.GET_VESKTOP_RENDERER_CSS, () => readFile(VESKTOP_RENDERER_CSS_PATH, "utf-8"));
 
-if (IS_DEV) {
-    watch(VESKTOP_RENDERER_CSS_PATH, { persistent: false }, async () => {
-        mainWin?.webContents.postMessage(
-            IpcEvents.VESKTOP_RENDERER_CSS_UPDATE,
-            await readFile(VESKTOP_RENDERER_CSS_PATH, "utf-8")
-        );
+function watchRendererCssSafely() {
+    let cssWatcher: FSWatcher;
+
+    try {
+        cssWatcher = watch(VESKTOP_RENDERER_CSS_PATH, { persistent: false }, () => {
+            void readFile(VESKTOP_RENDERER_CSS_PATH, "utf-8")
+                .then(css => {
+                    if (!mainWin || mainWin.isDestroyed()) return;
+                    mainWin.webContents.postMessage(IpcEvents.VESKTOP_RENDERER_CSS_UPDATE, css);
+                })
+                .catch(error => {
+                    console.warn("[Discordmaxxer] Dev CSS hot reload skipped:", error);
+                });
+        });
+    } catch (error) {
+        console.warn("[Discordmaxxer] Dev CSS watcher could not start:", error);
+        return;
+    }
+
+    // Windows can emit EPERM/ENOENT when a rebuild replaces the watched file.
+    // Without this listener Node treats the watcher error as an uncaught main
+    // process exception and Discordmaxxer crashes.
+    cssWatcher.on("error", error => {
+        console.warn("[Discordmaxxer] Dev CSS watcher disabled after an OS error:", error);
+        try {
+            cssWatcher.close();
+        } catch {
+            // The watcher may already have closed itself.
+        }
     });
+}
+
+if (IS_DEV) {
+    watchRendererCssSafely();
 }
 
 handleSync(IpcEvents.GET_SETTINGS, () => Settings.plain);

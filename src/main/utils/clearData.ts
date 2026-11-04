@@ -10,8 +10,8 @@ import { DATA_DIR, MessageBoxChoice } from "main/constants";
 
 export async function clearData(win: BrowserWindow) {
     const { response } = await dialog.showMessageBox(win, {
-        message: "Are you sure you want to reset Vesktop?",
-        detail: "This will log you out, clear caches and reset all your settings!\n\nVesktop will automatically restart after this operation.",
+        message: "Are you sure you want to reset Discordmaxxer?",
+        detail: "This will log you out, clear caches and reset all your settings!\n\nDiscordmaxxer will automatically restart after this operation.",
         buttons: ["Yes", "No"],
         cancelId: MessageBoxChoice.Cancel,
         defaultId: MessageBoxChoice.Default,
@@ -20,12 +20,25 @@ export async function clearData(win: BrowserWindow) {
 
     if (response === MessageBoxChoice.Cancel) return;
 
+    const discordSession = win.webContents.session;
     win.close();
 
-    await win.webContents.session.clearStorageData();
-    await win.webContents.session.clearCache();
-    await win.webContents.session.clearCodeCaches({});
-    await rm(DATA_DIR, { force: true, recursive: true });
+    // Reset is invoked from a tray/menu callback. Keep cleanup failures from
+    // becoming an unhandled rejection that takes down the main process.
+    const cleanup = [
+        ["storage data", () => discordSession.clearStorageData()],
+        ["cache", () => discordSession.clearCache()],
+        ["code cache", () => discordSession.clearCodeCaches({})],
+        ["profile data", () => rm(DATA_DIR, { force: true, recursive: true, maxRetries: 3, retryDelay: 100 })]
+    ] as const;
+
+    for (const [label, task] of cleanup) {
+        try {
+            await task();
+        } catch (error) {
+            console.warn(`[Discordmaxxer] Reset could not clear ${label}; continuing:`, error);
+        }
+    }
 
     app.relaunch();
     app.quit();

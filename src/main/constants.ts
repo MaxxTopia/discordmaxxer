@@ -5,17 +5,23 @@
  */
 
 import { app } from "electron";
-import { existsSync, mkdirSync } from "fs";
+import { existsSync, mkdirSync, renameSync } from "fs";
 import { dirname, join } from "path";
 
 import { CommandLine } from "./cli";
 
 const vesktopDir = dirname(process.execPath);
+const isElectronDevelopment = process.execPath.toLowerCase().endsWith("electron.exe");
+const isDefaultWindowsInstall =
+    process.platform === "win32" &&
+    typeof process.env.LOCALAPPDATA === "string" &&
+    vesktopDir.toLowerCase() === join(process.env.LOCALAPPDATA, "Discordmaxxer").toLowerCase();
 
 export const PORTABLE =
     process.platform === "win32" &&
     !process.execPath.toLowerCase().endsWith("electron.exe") &&
-    !existsSync(join(vesktopDir, "Uninstall Discordmaxxer.exe"));
+    !existsSync(join(vesktopDir, "Uninstall Discordmaxxer.exe")) &&
+    !isDefaultWindowsInstall;
 
 export const DATA_DIR =
     process.env.VENCORD_USER_DATA_DIR || (PORTABLE ? join(vesktopDir, "Data") : join(app.getPath("userData")));
@@ -29,9 +35,55 @@ mkdirSync(DATA_DIR, { recursive: true });
 // shell.  Keep the dev profile separate and give portable builds a stable
 // local runtime directory instead.  An explicit override remains available
 // for diagnostics and managed deployments.
+const stableInstalledSessionDataDir = join(app.getPath("appData"), "Discordmaxxer", "sessionData");
+
+function hasChromiumSessionData(dir: string) {
+    return ["Network", "Local Storage", "IndexedDB"].some(name => existsSync(join(dir, name)));
+}
+
+/**
+ * Older releases could put the Chromium session in a profile selected from
+ * the install directory. That directory can change during an NSIS update,
+ * which makes Discord look logged out even though the old session still
+ * exists. Migrate only when the stable destination has no session markers;
+ * never overwrite an existing profile.
+ */
+function migrateLegacyInstalledSessionData(destination: string) {
+    if (hasChromiumSessionData(destination)) return;
+
+    const candidates = [
+        join(app.getPath("userData"), "sessionData"),
+        join(app.getPath("appData"), "DiscordmaxxerPortable", "sessionData"),
+        join(app.getPath("appData"), "Vesktop", "sessionData"),
+        join(app.getPath("appData"), "Vencord", "sessionData"),
+        join(vesktopDir, "Data", "sessionData")
+    ].filter((candidate, index, all) => candidate !== destination && all.indexOf(candidate) === index);
+
+    const source = candidates.find(hasChromiumSessionData);
+    if (!source || existsSync(destination)) return;
+
+    try {
+        mkdirSync(dirname(destination), { recursive: true });
+        renameSync(source, destination);
+        console.log(`[Discordmaxxer] Migrated the existing session profile to ${destination}`);
+    } catch (error) {
+        // A failed migration must never prevent Discord from starting. The
+        // next launch can retry after a stale updater/portable process exits.
+        console.warn("[Discordmaxxer] Could not migrate the existing session profile:", error);
+    }
+}
+
+if (!PORTABLE && !isElectronDevelopment && !process.env.DISCORDMAXXER_SESSION_DATA_DIR) {
+    migrateLegacyInstalledSessionData(stableInstalledSessionDataDir);
+}
+
 export const SESSION_DATA_DIR =
     process.env.DISCORDMAXXER_SESSION_DATA_DIR ||
-    (PORTABLE ? join(app.getPath("appData"), "DiscordmaxxerPortable", "sessionData") : join(DATA_DIR, "sessionData"));
+    (PORTABLE
+        ? join(app.getPath("appData"), "DiscordmaxxerPortable", "sessionData")
+        : isElectronDevelopment
+          ? join(DATA_DIR, "sessionData")
+          : stableInstalledSessionDataDir);
 app.setPath("sessionData", SESSION_DATA_DIR);
 
 export const VENCORD_SETTINGS_DIR = join(DATA_DIR, "settings");

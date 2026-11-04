@@ -1,5 +1,49 @@
 # Discordmaxxer — RESUME
 
+## 2026-11-04 — v0.7.124 reset/update reliability (release candidate)
+
+Scope: fix the inherited Vesktop wording in Reset, prevent Windows watcher
+errors from crashing the main process, and keep the Discord session profile
+stable across installed updates.
+
+Implementation:
+- Reset now says Discordmaxxer and continues through individual Windows
+  cleanup failures instead of turning one rejected cache/profile operation
+  into an unhandled main-process failure. Reset still intentionally logs out
+  and clears the profile.
+- The development CSS watcher now catches startup, read, and watcher error
+  paths, including Windows `EPERM`/`ENOENT`, and closes itself safely.
+- Installed builds now use `%APPDATA%\\Discordmaxxer\\sessionData` instead of
+  selecting a profile from the install directory. A non-destructive one-time
+  migration can move an existing legacy profile from the old Discordmaxxer,
+  DiscordmaxxerPortable, Vesktop, Vencord, or portable locations when the
+  stable destination is absent.
+
+Verification gates completed locally:
+- `pnpm test`, `pnpm build`, strict pinned Vencord overlay, and
+  `node overlay-scripts/verify-build.mjs` passed with zero overlay warnings.
+- `pnpm package:dir` and `pnpm package:win` passed, producing signed x64 and
+  ARM64 archives plus the NSIS installer.
+- The exact packaged x64 executable stayed alive for a 10-second startup
+  smoke test with isolated data. The production bundle contains the new reset
+  wording and stable-session logic; the dev watcher guard is intentionally
+  omitted from production by the `IS_DEV` build branch and is verified in
+  source.
+
+Release state:
+- Source changes are ready to commit and publish; no public v0.7.124 tag or
+  release has been created yet.
+
+Remaining gates:
+- Commit and push the authorized release, wait for GitHub Actions packaging,
+  and verify the public updater manifest and installer.
+- Diggy should update an already signed-in client and confirm it stays logged
+  in, then open Reset and confirm the Discordmaxxer-branded dialog. Do not
+  click Reset unless intentionally testing the logout/clear behavior.
+
+Next action: commit the scoped files, publish v0.7.124, and verify its public
+artifacts before handing off the signed-in device checks.
+
 ## 2026-11-04 — v0.7.123 image context-menu crash fix (published)
 
 Scope: publish the focused fix for the renderer crash Diggy was still seeing
