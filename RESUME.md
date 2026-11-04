@@ -3109,6 +3109,12 @@ Verification completed locally:
   identity, source fingerprint, staged hashes, and required plugin presence.
 - A static check confirmed the unsafe ImageZoom message route is absent from
   the pinned source and DMEmoji is present in the staged renderer.
+- `pnpm package:dir` passed when pointed at the required pinned Vencord
+  checkout; the default local command correctly refused the stale
+  `vencord-src` checkout instead of packaging the wrong source.
+- The packaged renderer hash exactly matched `vencord-dist/`, and the packaged
+  executable stayed alive through an 8-second isolated startup smoke using a
+  temporary `--user-data-dir`; the signed-in client was not touched.
 
 Release state: no commit, push, tag, installer, or public deployment has been
 made for this candidate. Generated local overlay files are present in
@@ -3121,6 +3127,10 @@ Diggy-owed acceptance checks after an explicitly approved publication:
 - right-click a text-only message and confirm DMEmoji's submenu still appears;
 - open several plugins through DMHub to confirm the broader settings crash is
   not reintroduced.
+
+Evidence boundary: source, build, packaged renderer, and isolated startup are
+verified. A signed-in right-click image test is still required before calling
+the crash fixed for users.
 
 Next action: package and publish only after the candidate receives explicit
 release approval, then verify the public artifact and updater route separately
