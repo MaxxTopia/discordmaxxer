@@ -1,5 +1,58 @@
 # Discordmaxxer — RESUME
 
+## 2026-11-04 — v0.7.123 image context-menu crash fix (published)
+
+Scope: publish the focused fix for the renderer crash Diggy was still seeing
+when right-clicking an image in a Discord message.
+
+Implementation:
+- Removed the broad ImageZoom `message` context-menu injection from
+  `overlay-scripts/rebrand-vencord.mjs`; image messages now stay on Discord's
+  native image/message menu path with Reply, Forward, reactions, attachment,
+  and image actions intact.
+- Kept ImageZoom's optional image-specific controls on the guarded narrow
+  `image-context` route.
+- Made `plugins/DMEmoji/index.tsx` leave image attachments and image/GIF embeds
+  untouched while preserving its text-message search/react and saved-media
+  controls.
+- The native image click path remains available for the enlarged viewer.
+
+Verification gates:
+- `pnpm test`, `pnpm build`, strict pinned Vencord overlay with
+  `DM_STRICT_REBRAND=1`, and `node overlay-scripts/verify-build.mjs` passed;
+  the overlay reported zero warnings and staged all 29 custom plugins.
+- `pnpm package:dir` and `pnpm package:win` passed with signed x64/ARM64 ZIPs
+  and the combined NSIS installer.
+- The packaged renderer SHA-256 matched the staged renderer exactly, and the
+  unsafe broad ImageZoom message-menu marker was absent.
+- The isolated packaged executable stayed alive through the startup smoke
+  test without touching the signed-in client.
+- GitHub Actions release run
+  `https://github.com/MaxxTopia/discordmaxxer/actions/runs/41872861906`
+  passed all build, verification, packaging, and publication steps.
+
+Release state:
+- Commit `06293357754889f0792dd0734e9d093a4bd03bb2` is on `origin/main` and
+  tag `v0.7.123` is public.
+- Public release:
+  `https://github.com/MaxxTopia/discordmaxxer/releases/tag/v0.7.123`.
+- The public `latest.yml` route returned HTTP 200 and advertises version
+  `0.7.123` with `Discordmaxxer-Setup-0.7.123.exe`.
+
+Remaining user/device acceptance:
+- In a signed-in updated client, right-click a received image repeatedly and
+  confirm the client stays open and the normal Discord menu works; click the
+  image and confirm the enlarged viewer opens.
+- Right-click a text-only message and confirm DMEmoji's custom submenu still
+  appears, then test several DMHub plugin settings.
+- The documented full-suite CDP validator was not run because this checkout
+  references `overlay-scripts/launch-verified.mjs`, but that file is absent;
+  the package build and isolated startup checks are complete, not a substitute
+  for authenticated UI acceptance.
+
+Next action: Diggy should update the signed-in PCs to v0.7.123 and report the
+exact image right-click and image-open results before any further code change.
+
 ## 2026-11-03 — v0.7.121 reliability release: detached cursor marker and image-menu crash guard (published)
 
 Recovered state:
