@@ -985,9 +985,56 @@ const DMEmojiButton: ChatBarButtonFactory = ({ isAnyChat, channel }) => {
     );
 };
 
+function looksLikeImageUrl(value: unknown): boolean {
+    return typeof value === "string" && /\.(?:avif|gif|jpe?g|png|webp)(?:$|[?#])/i.test(value);
+}
+
+function isImageMedia(value: unknown): boolean {
+    if (!value || typeof value !== "object") return false;
+
+    const media = value as Record<string, unknown>;
+    const contentType = [media.contentType, media.content_type, media.type]
+        .find(candidate => typeof candidate === "string") as string | undefined;
+    if (contentType && /^(?:image\/|image$|gifv$)/i.test(contentType)) return true;
+
+    return [media.url, media.proxy_url, media.proxyUrl, media.filename, media.fileName, media.name]
+        .some(looksLikeImageUrl);
+}
+
+function messageHasImageMedia(message: Message): boolean {
+    try {
+        const rawMessage = message as Message & {
+            attachments?: unknown;
+            embeds?: unknown;
+        };
+        if (Array.isArray(rawMessage.attachments) && rawMessage.attachments.some(isImageMedia)) return true;
+        if (!Array.isArray(rawMessage.embeds)) return false;
+
+        return rawMessage.embeds.some(embed => {
+            if (!embed || typeof embed !== "object") return false;
+            const rawEmbed = embed as Record<string, unknown>;
+            const embedType = [rawEmbed.type, rawEmbed.contentType, rawEmbed.content_type]
+                .find(candidate => typeof candidate === "string") as string | undefined;
+            if (embedType && /^(?:image|gifv)$/i.test(embedType)) return true;
+
+            return [rawEmbed.image, rawEmbed.thumbnail, rawEmbed.video, rawEmbed.url]
+                .some(isImageMedia);
+        });
+    } catch (error) {
+        // Never let optional Discord message fields take down the native menu.
+        console.warn("[DMEmoji] Could not inspect message media", error);
+        return false;
+    }
+}
+
 const messageContextMenuPatch: NavContextMenuPatchCallback = (children, props: { message?: Message; }) => {
     const message = props?.message;
     if (!message || !Array.isArray(children)) return;
+
+    // Discord's native image menu is a separate, fragile rendering path. Keep
+    // it untouched so right-clicking an attachment retains Reply/Forward/etc.
+    // and cannot be destabilized by an optional DMEmoji submenu.
+    if (messageHasImageMedia(message)) return;
     if (children.some(child => child?.props?.id === "dmemoji-message-actions")) return;
 
     try {

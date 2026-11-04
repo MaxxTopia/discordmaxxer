@@ -938,10 +938,11 @@ const PATCHES = [
     },
 
     // ── Round 6 (v0.5.6): CSP allowlist + donor-badge kill ────────────
-    // ImageZoom: current Discord routes attachment-image context menus
-    // through `message`, not `image-context`. Keep the upstream route for
-    // older builds, add the current route, and isolate slider pointer/arrow
-    // events so the parent menu does not select and close on interaction.
+    // ImageZoom: keep the upstream image-context route and isolate slider
+    // pointer/arrow events so the parent menu does not select and close on
+    // interaction. Do not patch the broad `message` route: Discord uses that
+    // native menu for ordinary messages and attachments, and touching it can
+    // crash the renderer while building the menu for an image message.
     {
         file: "src/plugins/imageZoom/index.tsx",
         marker: "Discordmaxxer: ImageZoom ErrorBoundary import",
@@ -1087,18 +1088,32 @@ const PATCHES = [
     },
     {
         file: "src/plugins/imageZoom/index.tsx",
-        marker: "Discordmaxxer: ImageZoom message-menu route",
+        marker: "Discordmaxxer: remove unsafe ImageZoom message route",
+        obsoleteWhen: content => !content.includes("Discordmaxxer: ImageZoom message-menu route"),
+        find:
+            '// Discordmaxxer: ImageZoom message-menu route\n' +
+            'const messageContextMenuPatch: NavContextMenuPatchCallback = (children, props) => {\n' +
+            '    if (!props || typeof props !== "object" || !Array.isArray(children) || !isImageContext(props)) return;\n' +
+            '    imageContextMenuPatch(children, props);\n' +
+            '};\n\n',
+        replace: ""
+    },
+    {
+        file: "src/plugins/imageZoom/index.tsx",
+        marker: "Discordmaxxer: remove unsafe ImageZoom message route registration",
+        obsoleteWhen: content => !content.includes('"message": messageContextMenuPatch'),
+        find: '        "image-context": imageContextMenuPatch,\n        "message": messageContextMenuPatch',
+        replace: '        "image-context": imageContextMenuPatch'
+    },
+    {
+        file: "src/plugins/imageZoom/index.tsx",
+        marker: "Discordmaxxer: ImageZoom menu error guard",
         find: '    );\n};\n\nexport default definePlugin({\n    name: "ImageZoom",',
         replace:
             '    );\n' +
             '    } catch (error) {\n' +
             '        new Logger("ImageZoom").error("Failed to add image controls to native context menu", error);\n' +
             '    }\n' +
-            '};\n\n' +
-            '// Discordmaxxer: ImageZoom message-menu route\n' +
-            'const messageContextMenuPatch: NavContextMenuPatchCallback = (children, props) => {\n' +
-            '    if (!props || typeof props !== "object" || !Array.isArray(children) || !isImageContext(props)) return;\n' +
-            '    imageContextMenuPatch(children, props);\n' +
             '};\n\n' +
             'export default definePlugin({\n    name: "ImageZoom",'
     },
@@ -1107,11 +1122,6 @@ const PATCHES = [
         marker: "Discordmaxxer: preserve native attachment image clicks v2",
         find: 'replace: "\'div\',{onClick:e=>e.stopPropagation(),children:$1"',
         replace: 'replace: "\'div\',{children:$1"\n                    // Discordmaxxer: preserve native attachment image clicks v2'
-    },
-    {
-        file: "src/plugins/imageZoom/index.tsx",
-        find: '        "image-context": imageContextMenuPatch\n    },',
-        replace: '        "image-context": imageContextMenuPatch,\n        "message": messageContextMenuPatch\n    },'
     },
     // WebKeybinds: do not steal a key already claimed by Discord, an IME, or
     // text editing controls. Ctrl+Tab is explicitly prevented because the

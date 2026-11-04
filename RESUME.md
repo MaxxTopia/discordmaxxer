@@ -3079,3 +3079,49 @@ Next action: Diggy should update both signed-in PCs to v0.7.122 and run the
 acceptance checks above. Report the exact client version and any failing path;
 source, build, publication, and updater-route gates are already verified, while
 the visual and second-listener checks remain device-side evidence.
+
+## 2026-11-04 — unpublished image context-menu crash candidate
+
+Scope: investigate the continuing crash when Diggy right-clicks an image in a
+message. The public v0.7.122 build still contains the earlier broad ImageZoom
+message-menu hook, so this is a new local candidate and not a claim about the
+live installer.
+
+Implementation:
+- `overlay-scripts/rebrand-vencord.mjs` no longer injects ImageZoom into
+  Discord's broad `message` context-menu route. The native `image-context`
+  route remains guarded for ImageZoom's optional controls, while ordinary
+  image right-clicks use Discord's own menu path.
+- `plugins/DMEmoji/index.tsx` now detects image attachments and image/gif
+  embeds and leaves those message menus completely untouched. Text-message
+  menus retain DMEmoji's search/react and saved-media actions.
+- This preserves the native Reply, Forward, reaction, attachment, and image
+  actions instead of allowing an optional submenu to destabilize that path.
+
+Verification completed locally:
+- `git diff --check` passed.
+- `node --check overlay-scripts/rebrand-vencord.mjs` passed.
+- `pnpm test` passed (ESLint and TypeScript).
+- Strict `pnpm overlay:vencord` from pinned Vencord revision
+  `ef29bbeb6119cfb53d1273ed78147bcc97d91261` completed with zero warnings;
+  all 29 custom plugins were staged.
+- `node overlay-scripts/verify-build.mjs` passed, including package/version
+  identity, source fingerprint, staged hashes, and required plugin presence.
+- A static check confirmed the unsafe ImageZoom message route is absent from
+  the pinned source and DMEmoji is present in the staged renderer.
+
+Release state: no commit, push, tag, installer, or public deployment has been
+made for this candidate. Generated local overlay files are present in
+`vencord-dist/`; the signed-in public client was not replaced or restarted.
+
+Diggy-owed acceptance checks after an explicitly approved publication:
+- right-click an image and confirm there is no crash and the normal Discord
+  menu remains usable;
+- click the image itself and confirm the enlarged viewer opens;
+- right-click a text-only message and confirm DMEmoji's submenu still appears;
+- open several plugins through DMHub to confirm the broader settings crash is
+  not reintroduced.
+
+Next action: package and publish only after the candidate receives explicit
+release approval, then verify the public artifact and updater route separately
+from the signed-in image-menu test.
