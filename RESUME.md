@@ -1,10 +1,10 @@
 # Discordmaxxer — RESUME
 
-## 2026-11-03 — v0.7.121 reliability release candidate: detached cursor marker and image-menu crash guard (pending CI)
+## 2026-11-03 — v0.7.121 reliability release: detached cursor marker and image-menu crash guard (published)
 
 Recovered state:
 - The canonical source is the isolated worktree `C:\Users\Diggy\projects\discordmaxxer-full-dev-merge-20261103c` on `codex/dev-full-merge-20261103c`, based at `87b4bcf` (`fix: guard updater against low disk space`). Its focused source edits are intentionally isolated here; the canonical dirty project was not changed.
-- The public line remains v0.7.120 until the v0.7.121 tag workflow completes. No v0.7.121 commit, tag, GitHub release, updater publication, or live deployment has been made yet.
+- Commit `312bf45` is pushed to `main`; tag `v0.7.121` is public. The GitHub release workflow and updater artifacts have completed successfully.
 - C: is effectively full (0 bytes reported free during this pass). Build and packaging were performed in the isolated E: candidate `E:\Codex-recovery\discordmaxxer-build-candidate-20261103c` and its packaged app was not installed over the public client.
 
 Change:
@@ -17,6 +17,9 @@ Verification:
 - `pnpm build`, `node overlay-scripts/verify-build.mjs`, `pnpm test`, and `git diff --check` passed before the version bump. The verifier confirmed the source fingerprint, staged hashes, required plugins, and compiled TournamentMode/DMVoiceKeybinds/DMVoiceGuard/DMHub/DMTierFlair/DMProfileCosmetics/DMDisplayNameStyle/DMEmoji/DMTranslate.
 - `pnpm exec electron-builder --dir` passed. The signed packaged executable is `E:\Codex-recovery\discordmaxxer-build-candidate-20261103c\dist\win-unpacked\discordmaxxer.exe`.
 - That exact packaged executable was launched with an isolated E: user-data directory; four candidate processes remained alive after 12 seconds and were then stopped by PID. This proves package startup survivability only, not authenticated Discord behavior.
+- GitHub Actions release run `41759334977` completed successfully, including the strict overlay, artifact verification, Windows Electron packaging, and release-note attachment.
+- Public release `https://github.com/MaxxTopia/discordmaxxer/releases/tag/v0.7.121` is non-draft and non-prerelease. It contains the x64 and ARM64 ZIPs, `Discordmaxxer-Setup-0.7.121.exe`, its blockmap, and `latest.yml`.
+- Public `latest.yml` returned HTTP 200 and advertises version `0.7.121`; the installer URL returned HTTP 200 with a 211,819,985-byte payload. `main` and `v0.7.121` both resolve to `312bf45830e187f654e75c654844dbb61894bcdf`.
 
 Remaining / Diggy-owed acceptance:
 - In the actual updated client, join a call and move through several servers/channels; verify the detached dot never appears and that the intended DMCursor still appears after the next pointer move.
@@ -24,7 +27,7 @@ Remaining / Diggy-owed acceptance:
 - Recheck DMTrim's Fanduel card, DMDisplayNameStyle's compact Authors section, DMEmoji mouse-send, and the profile-cosmetics Default gradient after the same client update.
 
 Next action:
-- Rebuild and verify the v0.7.121 candidate, review the intended diff, then push the authorized main update and v0.7.121 tag. Verify the GitHub release assets and updater manifest separately before asking Diggy to test the public client.
+- Diggy should update to v0.7.121 and run the runtime acceptance checks above. Any failure should be reported with the exact build, account/viewer pair, action, and timestamp before changing code; source/build/public-release proof is complete, while authenticated UI behavior remains a user/device gate.
 
 ## 2026-11-03 — updater low-disk guard (local, not released)
 
