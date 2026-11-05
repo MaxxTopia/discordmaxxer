@@ -10,7 +10,6 @@
 import "./styles.css";
 
 import * as DataStore from "@api/DataStore";
-import { NavContextMenuPatchCallback } from "@api/ContextMenu";
 import { ChatBarButton, ChatBarButtonFactory } from "@api/ChatButtons";
 import { definePluginSettings } from "@api/Settings";
 import ErrorBoundary from "@components/ErrorBoundary";
@@ -26,7 +25,6 @@ import {
     EmojiStore,
     Forms,
     GuildStore,
-    Menu,
     MessageActions,
     openModal,
     PendingReplyStore,
@@ -985,101 +983,6 @@ const DMEmojiButton: ChatBarButtonFactory = ({ isAnyChat, channel }) => {
     );
 };
 
-function looksLikeImageUrl(value: unknown): boolean {
-    return typeof value === "string" && /\.(?:avif|gif|jpe?g|png|webp)(?:$|[?#])/i.test(value);
-}
-
-function isImageMedia(value: unknown): boolean {
-    if (!value || typeof value !== "object") return false;
-
-    const media = value as Record<string, unknown>;
-    const contentType = [media.contentType, media.content_type, media.type]
-        .find(candidate => typeof candidate === "string") as string | undefined;
-    if (contentType && /^(?:image\/|image$|gifv$)/i.test(contentType)) return true;
-
-    return [media.url, media.proxy_url, media.proxyUrl, media.filename, media.fileName, media.name]
-        .some(looksLikeImageUrl);
-}
-
-function messageHasImageMedia(message: Message): boolean {
-    try {
-        const rawMessage = message as Message & {
-            attachments?: unknown;
-            embeds?: unknown;
-        };
-        if (Array.isArray(rawMessage.attachments) && rawMessage.attachments.some(isImageMedia)) return true;
-        if (!Array.isArray(rawMessage.embeds)) return false;
-
-        return rawMessage.embeds.some(embed => {
-            if (!embed || typeof embed !== "object") return false;
-            const rawEmbed = embed as Record<string, unknown>;
-            const embedType = [rawEmbed.type, rawEmbed.contentType, rawEmbed.content_type]
-                .find(candidate => typeof candidate === "string") as string | undefined;
-            if (embedType && /^(?:image|gifv)$/i.test(embedType)) return true;
-
-            return [rawEmbed.image, rawEmbed.thumbnail, rawEmbed.video, rawEmbed.url]
-                .some(isImageMedia);
-        });
-    } catch (error) {
-        // Never let optional Discord message fields take down the native menu.
-        console.warn("[DMEmoji] Could not inspect message media", error);
-        return false;
-    }
-}
-
-const messageContextMenuPatch: NavContextMenuPatchCallback = (children, props: { message?: Message; }) => {
-    const message = props?.message;
-    if (!message || !Array.isArray(children)) return;
-
-    // Discord's native image menu is a separate, fragile rendering path. Keep
-    // it untouched so right-clicking an attachment retains Reply/Forward/etc.
-    // and cannot be destabilized by an optional DMEmoji submenu.
-    if (messageHasImageMedia(message)) return;
-    if (children.some(child => child?.props?.id === "dmemoji-message-actions")) return;
-
-    try {
-        children.push(
-            <ErrorBoundary message="DMEmoji controls unavailable">
-                <Menu.MenuItem id="dmemoji-message-actions" label="DMEmoji">
-                    <Menu.MenuItem
-                        id="dmemoji-open-reaction-picker"
-                        label="Search and react..."
-                        action={() =>
-                            openModal(modalProps => (
-                                <EmojiPickerModal {...modalProps} channelId={message.channel_id} message={message} />
-                            ))
-                        }
-                    />
-                    {emojiRecordsCache.length > 0 && (
-                        <Menu.MenuItem id="dmemoji-local-actions" label="Saved media">
-                            {emojiRecordsCache.map(record => {
-                                const nativeEmoji = parseDiscordEmojiRef(record.discordEmojiRef, record.name);
-                                return (
-                                    <Menu.MenuItem id={`dmemoji-actions-${record.id}`} key={record.id} label={record.name}>
-                                        <Menu.MenuItem
-                                            id={`dmemoji-send-${record.id}`}
-                                            label="Attach image"
-                                            action={() => void sendEmojiAsImage(record, message.channel_id)}
-                                        />
-                                        <Menu.MenuItem
-                                            id={`dmemoji-react-${record.id}`}
-                                            label={nativeEmoji ? "React with linked server emoji" : "Link a server emoji first"}
-                                            disabled={!nativeEmoji}
-                                            action={() => reactWithEmoji(message, record)}
-                                        />
-                                    </Menu.MenuItem>
-                                );
-                            })}
-                        </Menu.MenuItem>
-                    )}
-                </Menu.MenuItem>
-            </ErrorBoundary>
-        );
-    } catch (error) {
-        console.warn("[DMEmoji] Could not add the message context menu", error);
-    }
-};
-
 const settings = definePluginSettings({
     showButton: {
         type: OptionType.BOOLEAN,
@@ -1101,16 +1004,13 @@ const settings = definePluginSettings({
 export default definePlugin({
     name: "DMEmoji",
     description:
-        "Search and insert Unicode/server emoji, react from a searchable picker, keep a private local media shelf, and send messages with a mouse-click button beside DMEmoji.",
+        "Search and insert Unicode/server emoji, keep a private local media shelf, and send messages with a mouse-click button beside DMEmoji. Native message context menus stay untouched for stock Reply/Forward/reaction behavior.",
     tags: ["Chat", "Emotes", "Media"],
     authors: [{ name: "Diggy", id: 0n }],
     settings,
     chatBarButton: {
         icon: DMEmojiIcon as IconComponent,
         render: DMEmojiButton
-    },
-    contextMenus: {
-        message: messageContextMenuPatch
     },
     async start() {
         emojiRecordsCache = await readRecords();

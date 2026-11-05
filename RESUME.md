@@ -3370,3 +3370,49 @@ Diggy-owed acceptance checks before publication:
   performed.
 - The signed-in visual/recipient checks above remain the acceptance gate before
   any separately approved publication.
+
+## 2026-11-05 — disable DMEmoji's native message-menu injection
+
+Observed issue: right-clicking an ordinary Discord message could show the crash
+recovery toast instead of leaving the native Reply/Forward/reaction menu usable.
+The earlier image-menu hardening was a separate route and did not remove
+DMEmoji's `contextMenus.message` registration. That optional registration was
+still running for text-only messages and could destabilize Discord's native
+context-menu render.
+
+Fix:
+- Removed DMEmoji's native `message` context-menu registration and its custom
+  submenu/attachment inspection code.
+- Kept DMEmoji's composer button, mouse-click Send button, picker, and private
+  saved-media shelf. Native message menus are now deliberately left to
+  Discord, restoring stock Reply/Forward/reaction/pin/copy behavior.
+- Updated the plugin description so it does not promise a removed context-menu
+  entry.
+
+Verification:
+- `pnpm test` passed (ESLint and TypeScript).
+- `pnpm overlay:vencord` passed; all 29 custom plugins staged.
+- `pnpm build:dev` passed.
+- `node overlay-scripts/verify-build.mjs` passed, including product/version,
+  source fingerprint, renderer hashes, and required plugin presence.
+- A targeted source/staged-source assertion confirmed that DMEmoji has no
+  native message context-menu route.
+- `pnpm package:dir` passed and produced
+  `dist/win-unpacked/discordmaxxer.exe` in this isolated candidate.
+- No public push or live replacement was made.
+
+Runtime acceptance still owed by Diggy:
+- In the packaged candidate, right-click a text-only message and use Reply,
+  Forward, reactions, Pin, and Copy Message Link; then repeat with an image
+  message and click the image to enlarge it. Confirm no crash recovery toast.
+- DMEmoji's right-click submenu is intentionally absent for now. If native
+  message reactions through a custom DMEmoji search are still wanted, add them
+  later through a separate safe UI surface rather than patching Discord's
+  native message menu.
+
+Architecture decision: do not replace Electron/React with a Rust/GPUI client
+as the next optimization step. That would be a large compatibility rewrite;
+first profile this candidate and isolate remaining CPU/RAM cost across the
+Discord renderer, plugins, themes, and media. Revisit a Rust shell only if
+measured renderer overhead remains the dominant cost after those controls are
+proven.
