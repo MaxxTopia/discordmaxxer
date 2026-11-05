@@ -1,5 +1,54 @@
 # Discordmaxxer — RESUME
 
+## 2026-11-04 — v0.7.125 session migration fix (published)
+
+Scope: include the non-destructive update migration fix that prevents an
+Electron-created empty stable sessionData tree from being mistaken for a
+valid logged-in profile.
+
+Implementation:
+- Migration now checks for actual contents inside Chromium's Network, Local
+  Storage, and IndexedDB directories instead of treating marker directories
+  as proof of a usable session.
+- If the stable destination already exists but is empty or cache-only, it is
+  removed or preserved as a `.pre-migration` backup before the recoverable
+  legacy profile is moved into the stable location.
+- The root lint script now scopes ESLint to `src`, so generated overlay output
+  cannot cause a normal source check to run out of memory.
+
+Verification gates:
+- Local `pnpm test`, `pnpm build`, and `git diff --check` passed.
+- The authoritative clean Windows GitHub Actions release run passed the
+  pinned Vencord install, strict rebrand/overlay, build, artifact verifier,
+  Electron Builder packaging, and release upload steps:
+  `https://github.com/MaxxTopia/discordmaxxer/actions/runs/41937499163`.
+- Public `latest.yml` returned HTTP 200, advertises `0.7.125`, and its
+  installer SHA-512 and size matched a fresh download exactly.
+- The local Vencord dependency-link attempt was stopped after the recovered
+  E: cache made slow but healthy progress; it did not alter source or user
+  session data. The clean CI run is the release overlay/package proof.
+
+Release state:
+- Commit `5fb0f413c7bb14e01de194b7d0676251e0949aaa` is on `origin/main` and
+  tag `v0.7.125` is public.
+- Public release:
+  `https://github.com/MaxxTopia/discordmaxxer/releases/tag/v0.7.125`.
+  It is published (not draft or prerelease) and contains the x64/ARM64 ZIPs,
+  NSIS installer, blockmap, and `latest.yml`.
+- The installer was verified at 211,840,754 bytes with the SHA-512 recorded
+  by the public updater manifest.
+
+Remaining gates:
+- Diggy should update an already signed-in client and confirm it stays logged
+  in. This release preserves the session when the legacy profile is present;
+  it does not claim to preserve a deliberate Reset operation.
+- If a device still starts logged out, preserve the old profile and report
+  the exact session paths before changing migration logic again.
+
+Next action: update the signed-in PCs from the public v0.7.125 channel and
+report whether login survives the update and whether Reset shows
+Discordmaxxer branding.
+
 ## 2026-11-04 — v0.7.124 reset/update reliability (published)
 
 Scope: fix the inherited Vesktop wording in Reset, prevent Windows watcher
