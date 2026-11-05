@@ -3416,3 +3416,56 @@ first profile this candidate and isolate remaining CPU/RAM cost across the
 Discord renderer, plugins, themes, and media. Revisit a Rust shell only if
 measured renderer overhead remains the dominant cost after those controls are
 proven.
+
+## 2026-11-05 - v0.7.126 published
+
+Public release state:
+- Commit `8f77230` is on `origin/main`.
+- Annotated tag `v0.7.126` is published.
+- GitHub release: https://github.com/MaxxTopia/discordmaxxer/releases/tag/v0.7.126
+- Release workflow `42121666780` completed successfully:
+  https://github.com/MaxxTopia/discordmaxxer/actions/runs/42121666780
+- Public assets include the x64 and ARM64 ZIPs, NSIS installer, blockmap, and
+  `latest.yml`.
+- The public updater manifest returned HTTP 200 and identifies version
+  `0.7.126` and the matching NSIS installer.
+
+Release contents:
+- DMEmoji no longer patches Discord's native message context-menu route. This
+  is intended to restore the stock Reply, Forward, reaction, Pin, Bookmark,
+  and Copy Message Link menu instead of crashing on text or image messages.
+- The DMEmoji composer picker, saved-media shelf, and mouse Send control remain.
+- The release also contains the previously integrated dev-build changes. The
+  original dirty development checkout remains untouched at
+  `C:/Users/Diggy/projects/discordmaxxer`.
+
+Local release gates passed:
+- `pnpm test`
+- `pnpm build`
+- strict `pnpm overlay:vencord`
+- `node overlay-scripts/verify-build.mjs`
+- `pnpm package:dir`
+- `pnpm package:win`
+- `git diff --check`
+
+Diggy-owed real-user acceptance on v0.7.126:
+- Update/relaunch and confirm the client reports v0.7.126 without an
+  unnecessary login or Vesktop branding.
+- Right-click ordinary text and image messages; use Reply, Forward, a
+  reaction, Pin, Bookmark, Copy Message Link, and click the image to enlarge.
+  There must be no crash recovery screen.
+- Open DMEmoji through DMHub, search/use its picker and saved media, and
+  verify the mouse Send control sends the message.
+- Open DMProfileCosmetics, DMDisplayNameStyle, DMTrim, DMTheme, and unrelated
+  plugin settings through DMHub; verify no `length` render error or crash.
+- Check profile-gradient/default cosmetics, widget skins, animated flair,
+  banner/avatar placement, Tournament Mode toast/motion, DMTrim ad removal,
+  and server-folder navigation.
+- Test Fortnite screen sharing with a second listener. Game audio should be
+  heard and Discord call audio should not be heard. This recipient test is
+  still required; packaging and CI cannot prove selected-process audio.
+
+Known proof boundary: source, build, package, public push, release assets, and
+updater manifest are verified. Signed-in UI behavior, visual parity, crash
+reproduction, and recipient audio remain runtime acceptance checks rather than
+claims of completion.
