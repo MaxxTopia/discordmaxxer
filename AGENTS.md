@@ -72,6 +72,45 @@ Use the existing pnpm scripts; do not invent a parallel build path.
 - Remote configuration must fail open to the last known-good state; never make
   a control channel a startup dependency.
 
+## Conditional REA artifact workflow
+
+Use the installed `reverse-engineer-anything` skill and REA MCP opportunistically,
+only when the task depends on what a built or released Discordmaxxer artifact or
+passive runtime actually does and source/build inspection cannot establish it.
+Do not use REA for ordinary source edits, plugin architecture analysis, lint,
+type-checking, or normal tests.
+
+Good triggers include:
+
+- comparing a development build with a packaged or released candidate;
+- verifying that an Electron feature really shipped in `resources\\app.asar` or
+  an extracted app folder;
+- tracing packaged preload, IPC, native-module, asset, feature-flag, or updater
+  boundaries;
+- investigating a packaged-only regression or release drift; and
+- inspecting an authorized reference artifact for one concrete behavior.
+
+When a trigger is present, follow this workflow:
+
+1. Define one concrete behavior and inspect the source/package metadata first.
+2. If an exact own-artifact path is available, use REA on that target. Prefer
+   `dist\\win-unpacked\\resources\\app.asar` or an extracted `resources\\app`
+   folder; use an `.exe` or installer when that is the only available artifact.
+3. Before invoking REA, tell Diggy briefly why it fits, the exact target, and
+   what it may and may not prove. If no exact target is known, do not scan the
+   computer; continue with source work and state which path would unlock REA.
+4. Keep observed artifact facts, inferences, source/build evidence, runtime
+   evidence, and recipient/device evidence separate.
+5. After REA use, report observed facts, inferences, unknowns, limitations, and
+   the best next coding or test action.
+6. Inspect only software Diggy owns or is authorized to analyze. Never bypass
+   authentication, DRM, anti-cheat, sandboxing, or other protections.
+
+REA can explain what is bundled, but it cannot replace real voice, screenshare,
+rendering, recipient, or gameplay tests. If native deep analysis needs a provider
+that is unavailable, report that limitation instead of treating static evidence
+as proof of native or physical behavior.
+
 ## Continuity handoff
 
 At the end of meaningful work, update `RESUME.md` with what changed, the exact

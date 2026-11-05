@@ -59,6 +59,7 @@ const PLUGINS_DEFAULT_ON: string[] = [
     "MassDelete",
     "DMBadge",
     "DMProfileFlair", // user-set custom banner / animated avatar / theme colors
+    "DMWidget", // profile-board widgets and cross-client widget skins
     "DMProfileCosmetics", // profile-popout control skin + native cosmetic-safe local effects
     "DMTheme",
     "VideoBackground",

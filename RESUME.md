@@ -3294,3 +3294,79 @@ the crash fixed for users.
 Next action: package and publish only after the candidate receives explicit
 release approval, then verify the public artifact and updater route separately
 from the signed-in image-menu test.
+
+## 2026-11-05 — controlled merge into the v0.7.125 candidate
+
+Scope: preserve the dirty development checkout while carrying its remaining
+verified product changes into a clean integration branch based on the newer
+v0.7.125 release. The original development checkout remains untouched at
+`C:/Users/Diggy/projects/discordmaxxer`.
+
+Integration state:
+- Branch: `codex/integrate-dev-20261105` in
+  `C:/Users/Diggy/projects/discordmaxxer-integration-20261105`.
+- Base: `a1428c0`, the v0.7.125 release line.
+- The newer release already contained the safer profile-gradient default,
+  DMTrim bounded ad observer, ImageZoom/image-menu guards, DMEmoji native
+  send and reaction fallbacks, cursor safety, and the other overlapping dev
+  changes. Those newer implementations were kept instead of regressing them
+  with older dev copies.
+- The intentional remaining merge is the DMWidget default seed, the verified
+  relative launcher, the release draft, and the continuity instructions.
+  `screenShareFixes.ts` had no remaining net difference after duplicate-line
+  resolution because v0.7.125 already contained that fix.
+- `launch-dev.bat` resolves its own checkout, and
+  `overlay-scripts/launch-verified.mjs` refuses a stale/mismatched staged
+  renderer or a missing required plugin set.
+
+Verification completed:
+- `pnpm overlay:vencord` passed against pinned Vencord revision
+  `ef29bbeb6119cfb53d1273ed78147bcc97d91261`; all 29 custom plugins staged.
+- `pnpm verifyPlugins` passed: 58 defaults, 10 bundle IDs, and 9 featured IDs
+  all resolve to registered plugins.
+- `pnpm build:dev` passed.
+- `node overlay-scripts/verify-build.mjs` passed: product/version identity,
+  source fingerprint, staged renderer hashes, required plugin presence, and
+  the app renderer bundle are all valid.
+- `pnpm test` passed: ESLint and TypeScript (`tsc --noEmit`).
+- `git diff --check` passed. No public push, tag, installer, deployment, or
+  signed-in client restart has been made for this candidate.
+
+Disk/CUDA safety:
+- Active RTX 2070 driver 596.36, CUDA 13.1, and the installed CUDA/TensorRT
+  path used by Aimmaxer were not removed or modified.
+- Only old extracted Downloads payloads were quarantined reversibly under
+  `E:/Discordmaxxer-quarantine/cuda-nvidia-downloads-20261105`. Twenty-two
+  top-level folders completed; the large `Display.Driver` cache remains
+  partially copied, and 29 old folders remain in Downloads. This is not being
+  claimed as a full 8.4 GB cleanup.
+
+Diggy-owed acceptance checks before publication:
+- Launch the integration checkout and verify it reports v0.7.125, does not
+  open the old dev tree, force a login, or show Vesktop branding.
+- Open DMHub entries for DMProfileCosmetics, DMEmoji, DMTrim, DMTheme, and
+  unrelated plugins; settings must render without a crash or `length` error.
+- Compare the default profile-gradient popout with the showroom; action rows,
+  widget skins, animated flair, banner/avatar placement, and motion safeguards
+  must match the intended gradient without stray dots.
+- Click a sent image to open the enlarged viewer; right-click it and confirm
+  the native reaction/reply/forward/pin/copy menu appears without a crash.
+- In DMEmoji, search native/server/iEmoji sources, use the mouse Send button,
+  and verify real Discord emoji reactions still work; local images must remain
+  attachments rather than pretending to be native reactions.
+- Confirm DMTrim removes sponsored/reward cards after load and navigation.
+- Open a server folder, use the DMHub shortcut, and verify no folder contents
+  disappear.
+- Toggle Tournament Mode and verify the text toast is visible, the grey-dot
+  artifact is gone, motion pauses only in Tournament Mode, and voice audio is
+  unchanged.
+- Share a Fortnite window with a second listener: Fortnite audio should be
+  present and Discord call audio absent; selected-process failure must not fall
+  back to system mix audio.
+- Local `pnpm package:dir` then passed against the pinned Vencord checkout;
+  `dist/win-unpacked/discordmaxxer.exe` was produced and the integration
+  worktree remained clean. This was a local packaging pass only: no push,
+  installer upload, updater publication, or signed-in client replacement was
+  performed.
+- The signed-in visual/recipient checks above remain the acceptance gate before
+  any separately approved publication.
