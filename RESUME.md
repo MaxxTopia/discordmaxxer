@@ -3469,3 +3469,52 @@ Known proof boundary: source, build, package, public push, release assets, and
 updater manifest are verified. Signed-in UI behavior, visual parity, crash
 reproduction, and recipient audio remain runtime acceptance checks rather than
 claims of completion.
+
+## 2026-11-05 — widget animation, native image menu, DMEmoji, and display-name hardening
+
+Candidate state:
+- The isolated integration worktree contains the next uncommitted fix set; the
+  canonical dirty development checkout is untouched.
+- Public v0.7.126 remains unchanged. This candidate has not been committed,
+  pushed, packaged for publication, or installed over the signed-in client.
+
+Fixes in this candidate:
+- DMWidget no longer pauses card animations merely because no element has
+  focus. Normal mode can animate; Tournament Mode, document-hidden, and
+  offscreen safeguards still pause motion.
+- DMEmoji rejects Gift/Nitro controls before selecting a composer send target,
+  then uses Discord's form/send pipeline as a fallback. Custom server emoji in
+  DMs use the normal upload attachment path instead of unsupported animated
+  custom-emoji markup that triggers Discord's Nitro/Clyde warning.
+- DMTranslate, MassDelete, and ImageZoom no longer inject custom message/image
+  context-menu routes. Discord's native Reply/Forward/reaction/pin/copy and
+  image menu remain authoritative to avoid the right-click crash path.
+- DMDisplayNameStyle recognizes more Discord profile/self name markers and
+  applies its gradient text properties with explicit priority so Discord CSS
+  cannot make the styled name invisible.
+
+Verification completed:
+- `pnpm testTypes` passed.
+- `pnpm lint` passed.
+- `git diff --check` passed.
+- `pnpm overlay:vencord` passed with all 29 custom plugins staged.
+- `pnpm build` passed.
+- `node overlay-scripts/verify-build.mjs` passed: product/version identity,
+  source fingerprint, staged hashes, required plugin presence, and renderer
+  bundle integrity.
+- Staged-source checks found no custom `message` context-menu route in
+  DMTranslate or MassDelete, and no registered ImageZoom `image-context` route.
+
+Diggy-owed runtime checks before publication:
+- In the candidate, confirm normal-mode widget skins visibly animate in profile,
+  popout, playing cards, and self-name surfaces; confirm Tournament Mode still
+  pauses them and voice audio is unchanged.
+- Click the added DMEmoji Send button with a text message; it must send once
+  and never open Send a Gift. In a DM, select an animated server emoji and
+  confirm it stages as an image attachment rather than a Nitro warning.
+- Open a sent image full-screen, right-click it, and use the native reaction,
+  Reply, Forward, Pin, Bookmark, and Copy Message Link actions without a crash.
+- Confirm display names are visible and styled in self profile, profile
+  popouts, member list, DM list, and messages according to their toggles.
+- If those signed-in checks pass, request a separate publication approval;
+  do not treat this candidate as live until the release and updater gates pass.

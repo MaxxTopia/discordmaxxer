@@ -223,25 +223,6 @@ const channelContextPatch: NavContextMenuPatchCallback = (children, { channel }:
     );
 };
 
-// Right-click on a specific message — most users intuitively expect this UX.
-// Resolves the channel from the message's channel_id and runs the same flow.
-const messageContextPatch: NavContextMenuPatchCallback = (children, { message }: { message: any }) => {
-    if (!settings.store.enableContextMenu) return;
-    if (!message?.channel_id) return;
-    // Synthesize a minimal channel-shaped object from the message's channel_id
-    const channel = { id: message.channel_id, name: "this channel" } as unknown as Channel;
-    // Insert above the existing "Delete Message" item, near other dangerous ops.
-    const deleteGroup = findGroupChildrenByChildId("delete", children) ?? children;
-    deleteGroup.push(
-        <Menu.MenuItem
-            id="dm-mass-delete-from-message"
-            label="Mass-delete my messages in this channel..."
-            color="danger"
-            action={() => promptAndDelete(channel)}
-        />
-    );
-};
-
 export default definePlugin({
     name: "MassDelete",
     description:
@@ -254,7 +235,6 @@ export default definePlugin({
         "channel-context": channelContextPatch,
         "thread-context": channelContextPatch,
         "user-context": channelContextPatch,
-        "gdm-context": channelContextPatch,
-        "message": messageContextPatch
+        "gdm-context": channelContextPatch
     }
 });

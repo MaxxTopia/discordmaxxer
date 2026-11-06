@@ -1107,6 +1107,16 @@ const PATCHES = [
     },
     {
         file: "src/plugins/imageZoom/index.tsx",
+        marker: "Discordmaxxer: keep native image context menus",
+        find: '    contextMenus: {\n        "image-context": imageContextMenuPatch\n    },\n',
+        replace:
+            '    // Keep Discord\'s native image context menu authoritative. The\n' +
+            '    // custom ImageZoom menu used to crash after opening the full-screen\n' +
+            '    // viewer on some Discord builds, so zoom remains available through\n' +
+            '    // the hover magnifier and plugin settings instead.\n'
+    },
+    {
+        file: "src/plugins/imageZoom/index.tsx",
         marker: "Discordmaxxer: ImageZoom menu error guard",
         find: '    );\n};\n\nexport default definePlugin({\n    name: "ImageZoom",',
         replace:

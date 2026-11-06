@@ -11,7 +11,6 @@
 
 import "./styles.css";
 
-import { findGroupChildrenByChildId, NavContextMenuPatchCallback } from "@api/ContextMenu";
 import { definePluginSettings } from "@api/Settings";
 import ErrorBoundary from "@components/ErrorBoundary";
 import { copyWithToast } from "@utils/discord";
@@ -23,7 +22,6 @@ const getNative = () => (typeof VencordNative !== "undefined" ? VencordNative?.p
 import {
     Button,
     Forms,
-    Menu,
     openModal,
     Toasts,
     useEffect,
@@ -529,37 +527,11 @@ async function openTranslation(message: Message) {
     }
 }
 
-const messageContextPatch: NavContextMenuPatchCallback = (children, props: { message?: Message; }) => {
-    const message = props?.message;
-    if (!message) return;
-    const content = getMessageContent(message);
-    if (!content) return;
-
-    const group = findGroupChildrenByChildId("copy-text", children);
-    if (!group) return;
-
-    const targetLabel = languageLabel(settings.store.targetLanguage);
-    const item = (
-        <Menu.MenuItem
-            id="dm-translate-message"
-            label={`Translate to ${targetLabel}`}
-            icon={TranslateIcon}
-            leadingAccessory={{ type: "icon", icon: TranslateIcon }}
-            action={() => void openTranslation(message)}
-        />
-    );
-    const copyIndex = group.findIndex(child => child?.props?.id === "copy-text");
-    group.splice(copyIndex >= 0 ? copyIndex + 1 : group.length, 0, item);
-};
-
 export default definePlugin({
     name: "DMTranslate",
     description:
         "Instant multi-engine message translation. Right-click any message → Translate; auto-detects any language with Google Translate & DeepL fallbacks.",
     authors: [{ name: "Diggy", id: 0n }],
     settings,
-    contextMenus: {
-        message: messageContextPatch
-    },
     renderMessageAccessory: props => <TranslationAccessory message={props.message} />
 });

@@ -207,6 +207,42 @@ async function sendEmojiAsImage(record: EmojiRecord, channelId: string, onDone?:
     }
 }
 
+async function attachNativeEmojiAsImage(choice: NativeEmojiChoice, channelId: string, onDone?: () => void): Promise<void> {
+    if (choice.kind !== "custom" || !choice.imageUrl) return;
+
+    try {
+        const channel = ChannelStore.getChannel(channelId);
+        if (!channel) throw new Error("The current chat channel is unavailable.");
+
+        // Discord only accepts native custom-emoji markup when the account has
+        // the required access (notably Nitro in DMs). Fetching the CDN asset
+        // and using Discord's normal upload route gives every account a useful
+        // fallback without pretending that a local file can become a native
+        // reaction.
+        const response = await fetch(choice.imageUrl, { credentials: "omit" });
+        if (!response.ok) throw new Error(`Emoji CDN returned ${response.status}`);
+        const blob = await response.blob();
+        const mime = ACCEPTED_TYPES.has(blob.type) ? blob.type : choice.animated ? "image/gif" : "image/png";
+        if (blob.size > MAX_FILE_BYTES) throw new Error("That emoji is over the 4 MB attachment limit.");
+
+        const file = new File([blob], `${safeEmojiName(choice.name)}.${extensionForMime(mime)}`, { type: mime });
+        UploadHandler.promptToUpload([file], channel, DraftType.ChannelMessage);
+        Toasts.show({
+            message: `:${choice.name}: attached as an image`,
+            id: Toasts.genId(),
+            type: Toasts.Type.SUCCESS
+        });
+        onDone?.();
+    } catch (error) {
+        console.error("[DMEmoji] Could not attach native emoji", error);
+        Toasts.show({
+            message: "Could not attach that emoji. Try Copy, or use a static emoji available in this DM.",
+            id: Toasts.genId(),
+            type: Toasts.Type.FAILURE
+        });
+    }
+}
+
 function parseDiscordEmojiRef(
     value: unknown,
     fallbackName: string
@@ -310,7 +346,12 @@ function reactWithEmoji(message: Message, record: EmojiRecord): void {
     }
 }
 
-function useNativeEmojiAction(message: Message | undefined, choice: NativeEmojiChoice, onClose?: () => void): void {
+function useNativeEmojiAction(
+    message: Message | undefined,
+    choice: NativeEmojiChoice,
+    channelId?: string,
+    onClose?: () => void
+): void {
     if (message) {
         const addReaction = (MessageActions as any)?.addReaction;
         if (typeof addReaction !== "function") {
@@ -338,6 +379,11 @@ function useNativeEmojiAction(message: Message | undefined, choice: NativeEmojiC
                 type: Toasts.Type.FAILURE
             });
         }
+        return;
+    }
+
+    if (choice.kind === "custom" && channelId && !ChannelStore.getChannel(channelId)?.guild_id) {
+        void attachNativeEmojiAsImage(choice, channelId, onClose);
         return;
     }
 
@@ -418,19 +464,27 @@ function useEmojiLibrary() {
 function NativeEmojiCard({
     choice,
     message,
+    channelId,
     onClose
 }: {
     choice: NativeEmojiChoice;
     message?: Message;
+    channelId?: string;
     onClose?: () => void;
 }) {
+    const attachInstead = !message && choice.kind === "custom" && Boolean(channelId) && !ChannelStore.getChannel(channelId)?.guild_id;
+    const activate = () => {
+        if (attachInstead && channelId) return void attachNativeEmojiAsImage(choice, channelId, onClose);
+        useNativeEmojiAction(message, choice, channelId, onClose);
+    };
+
     return (
         <div className="dmemoji-native-card">
             <button
                 type="button"
                 className="dmemoji-native-preview"
-                onClick={() => useNativeEmojiAction(message, choice, onClose)}
-                title={message ? "React with this emoji" : "Insert this emoji"}
+                onClick={activate}
+                title={message ? "React with this emoji" : attachInstead ? "Attach this emoji as an image" : "Insert this emoji"}
             >
                 {choice.imageUrl ? (
                     <img src={choice.imageUrl} alt={choice.name} loading="lazy" />
@@ -446,9 +500,9 @@ function NativeEmojiCard({
                 <button
                     type="button"
                     className="dmemoji-action dmemoji-action-primary"
-                    onClick={() => useNativeEmojiAction(message, choice, onClose)}
+                    onClick={activate}
                 >
-                    {message ? "React" : "Insert"}
+                    {message ? "React" : attachInstead ? "Attach" : "Insert"}
                 </button>
                 <button
                     type="button"
@@ -642,7 +696,7 @@ function EmojiLibrary({
                     <p>
                         {message
                             ? "Search Discord's native emoji and react in one click. Local files can also be linked to a real server emoji."
-                            : "Native emoji insert into the composer. Your imported images and GIFs stay private to this client until you attach them."}
+                            : "Search native emoji, insert Unicode, or attach a server emoji as an image when Discord would require Nitro."}
                     </p>
                     <span className="dmemoji-hero-note">
                         Custom emoji lists up to 240 server emoji available to this account. Browse iEmoji for a larger discovery catalog; only real Discord server emoji can be native reactions.
@@ -739,7 +793,7 @@ function EmojiLibrary({
                                     ? "These are real Discord emoji from servers your account can use."
                                     : message
                                       ? "Click React to react to the selected message."
-                                      : "Click Insert to place it in the message composer."}
+                                      : "Click Insert for Unicode, or Attach for custom emoji that cannot be native in this DM."}
                             </span>
                         </div>
                         <span className="dmemoji-count">{nativeChoices.length}</span>
@@ -747,7 +801,7 @@ function EmojiLibrary({
                     {nativeChoices.length ? (
                         <div className="dmemoji-native-grid">
                             {nativeChoices.map(choice => (
-                                <NativeEmojiCard key={choice.key} choice={choice} message={message} onClose={onClose} />
+                                <NativeEmojiCard key={choice.key} choice={choice} message={message} channelId={channelId} onClose={onClose} />
                             ))}
                         </div>
                     ) : (
@@ -869,12 +923,16 @@ function findComposerSubmitButton(input: HTMLElement): HTMLElement | undefined {
                 .filter(Boolean)
                 .join(" ")
                 .toLowerCase();
-            if (
-                element.id === "submit-button" ||
-                element.getAttribute("type") === "submit" ||
-                label.includes("submit-button") ||
-                /\bsend(?: message)?\b/.test(label)
-            ) {
+            // Gift/Nitro controls can live in the same composer and, on some
+            // Discord builds, are also rendered as submit-like buttons. Reject
+            // them before considering any generic submit marker so the helper
+            // can never open the purchase modal by mistake.
+            const isGiftOrNitro = /\bgift\b|\bnitro\b/.test(label);
+            const isNativeSend = element.id === "submit-button"
+                || label.includes("submit-button")
+                || /\bsend(?:[\s_-]+(?:a[\s_-]+)?message)?\b/.test(label)
+                || label.includes("send-message");
+            if (!isGiftOrNitro && isNativeSend) {
                 return element;
             }
         }

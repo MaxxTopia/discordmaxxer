@@ -747,7 +747,7 @@ function cssForProfile(profile: StyleProfile): string {
         }
         #${ROOT_ID} { display: none; }
         [${TARGET_ATTR}] {
-            ${clean ? `color: ${profile.primary} !important; -webkit-text-fill-color: ${profile.primary};` : `background-image: ${gradient}; background-size: 180% 100%; background-clip: text; -webkit-background-clip: text; color: ${profile.primary} !important; -webkit-text-fill-color: transparent;`}
+            ${clean ? `color: ${profile.primary} !important; -webkit-text-fill-color: ${profile.primary} !important;` : `background-image: ${gradient} !important; background-size: 180% 100% !important; background-clip: text !important; -webkit-background-clip: text !important; color: ${profile.primary} !important; -webkit-text-fill-color: transparent !important;`}
             font-family: ${profile.fontFamily} !important;
             font-style: ${profile.fontStyle ?? "normal"} !important;
             font-weight: ${profile.fontWeight} !important;
@@ -887,7 +887,7 @@ function semanticText(element: HTMLElement): string {
 const MESSAGE_SURFACE_SEL = '[id^="chat-messages-"], [class*="messageListItem"], [class*="messagesWrapper"], [class*="chatContent"]';
 const PROFILE_VISUAL_MARKER_SEL = '[data-dm-flair-theme-applied], [data-dm-flair-banner-applied], [data-dm-flair-banner-owner-id], [data-dm-flair-theme-owner-id]';
 const PROFILE_SURFACE_SEL = '[class*="userPopout"], [class*="user-popout"], [class*="accountPopout"], [class*="account-popout"], [class*="userProfile"], [class*="user-profile"], [class*="profileModal"], [class*="profile-modal"], [class*="profilePanel"], [class*="profile-panel"], [role="dialog"], ' + PROFILE_VISUAL_MARKER_SEL;
-const PROFILE_NAME_FALLBACK_SEL = '[class*="userText"], [class*="user-text"], [class*="nameTag"], [class*="name-tag"], [class*="profile"] [class*="name"], [class*="profile"] [class*="title"], [class*="popout"] [class*="name"], [class*="popout"] [class*="title"], [role="heading"], h1, h2';
+const PROFILE_NAME_FALLBACK_SEL = '[class*="userText" i], [class*="user-text" i], [class*="nameTag" i], [class*="name-tag" i], [class*="profile" i] [class*="name" i], [class*="profile" i] [class*="title" i], [class*="popout" i] [class*="name" i], [class*="popout" i] [class*="title" i], [data-text-variant], [data-username], [data-display-name], [role="heading"], h1, h2';
 const PROFILE_SEMANTIC_RE = /user.?popout|account.?popout|user.?profile|profile.?modal|profile.?header|profile.?body|profile.?card|profile.?sidebar|profile.?panel|profile.?popover|full.?profile|user.?card/;
 
 function profileDialogLooksLikeUserCard(element: HTMLElement): boolean {
@@ -989,7 +989,15 @@ function getSurface(element: HTMLElement): Surface | null {
 function userIdFor(element: HTMLElement): string | null {
     if (scanMemo?.userIds.has(element)) return scanMemo.userIds.get(element)!;
     const readNode = (node: Element): string | null => {
-        for (const attribute of ["data-user-id", "data-userid", "data-profile-user-id", "data-profile-userid", "data-dm-flair-avatar-user-id"]) {
+        for (const attribute of [
+            "data-user-id",
+            "data-userid",
+            "data-profile-user-id",
+            "data-profile-userid",
+            "data-dm-flair-avatar-user-id",
+            "data-dm-flair-banner-owner-id",
+            "data-dm-flair-theme-owner-id"
+        ]) {
             const value = node.getAttribute(attribute) ?? "";
             if (/^\d{17,20}$/.test(value)) return value;
         }
@@ -1042,19 +1050,32 @@ function normalizedDisplayName(value: unknown): string {
 
 function profileDisplayNameValues(element: HTMLElement): Set<string> {
     if (scanMemo?.profileNames.has(element)) return scanMemo.profileNames.get(element)!;
+    const values = new Set<string>();
+    for (const attribute of ["data-username", "data-display-name", "data-profile-display-name", "data-name"]) {
+        const normalized = normalizedDisplayName(element.getAttribute(attribute));
+        if (normalized) values.add(normalized);
+    }
+
     const userId = userIdFor(element);
     if (!userId) {
-        const empty = new Set<string>();
-        scanMemo?.profileNames.set(element, empty);
-        return empty;
+        // The self panel can be rendered before Discord attaches its user ID.
+        // Keep the fallback limited to the self surface so generic profile
+        // copy such as “Online” cannot be mistaken for a display name.
+        if (getSurface(element) === "self") {
+            const currentUser = (UserStore as any).getCurrentUser?.() as any;
+            for (const value of [currentUser?.globalName, currentUser?.global_name, currentUser?.displayName, currentUser?.display_name, currentUser?.username, currentUser?.tag]) {
+                const normalized = normalizedDisplayName(value);
+                if (normalized) values.add(normalized);
+            }
+        }
+        scanMemo?.profileNames.set(element, values);
+        return values;
     }
     const user = (UserStore as any).getUser?.(userId) as any;
     if (!user) {
-        const empty = new Set<string>();
-        scanMemo?.profileNames.set(element, empty);
-        return empty;
+        scanMemo?.profileNames.set(element, values);
+        return values;
     }
-    const values = new Set<string>();
     for (const value of [user.globalName, user.global_name, user.displayName, user.display_name, user.username, user.tag]) {
         const normalized = normalizedDisplayName(value);
         if (normalized) values.add(normalized);
@@ -1096,7 +1117,11 @@ function hasNameClass(element: HTMLElement): boolean {
     if (scanMemo?.nameClasses.has(element)) return scanMemo.nameClasses.get(element)!;
     const className = typeof element.className === "string" ? element.className.toLowerCase() : "";
     const result = /username|display.?name|user.?tag/.test(className)
-        || (element.hasAttribute("data-text-variant") && Boolean(element.closest("[class*='panelTitleContainer']")))
+        || (element.hasAttribute("data-text-variant") && Boolean(element.closest("[class*='panelTitleContainer' i]")))
+        || (element.hasAttribute("data-text-variant") && (
+            (isProfileLikeContext(element) || getSurface(element) === "self")
+            && profileDisplayNameValues(element).has(normalizedDisplayName(element.textContent))
+        ))
         || (isProfileLikeContext(element) && (
             /(?:^|[-_])(?:name|title|username|display.?name|user.?text|nametag|namecontainer)(?:[-_]|$)/.test(className)
             || element.getAttribute("role") === "heading"
@@ -1168,7 +1193,7 @@ function applyTarget(element: HTMLElement, surface: Surface, profile: StyleProfi
 }
 
 function candidateSelector(): string {
-    return "[class*='username'],[class*='displayName'],[class*='userTag'],[class*='userText'],[class*='panelTitleContainer'] [data-text-variant],[class*='nameContainer'] [class*='name'],[class*='nameTag'] [class*='title'],[class*='nameTag'] [class*='name'],[class*='userPopout'] [class*='name'],[class*='user-popout'] [class*='name'],[class*='accountPopout'] [class*='name'],[class*='account-popout'] [class*='name'],[class*='userProfile'] [class*='name'],[class*='user-profile'] [class*='name'],[class*='profileModal'] [class*='name'],[class*='profile-modal'] [class*='name'],[class*='profilePanel'] [class*='name'],[class*='profile-panel'] [class*='name'],[role='dialog'] [class*='name'],[role='dialog'] [class*='userText']";
+    return "[class*='username' i],[class*='displayname' i],[class*='usertag' i],[class*='usertext' i],[class*='paneltitlecontainer' i] [data-text-variant],[data-username],[data-display-name],[class*='namecontainer' i] [class*='name' i],[class*='nametag' i] [class*='title' i],[class*='nametag' i] [class*='name' i],[class*='userpopout' i] [class*='name' i],[class*='user-popout' i] [class*='name' i],[class*='accountpopout' i] [class*='name' i],[class*='account-popout' i] [class*='name' i],[class*='userprofile' i] [class*='name' i],[class*='user-profile' i] [class*='name' i],[class*='profilemodal' i] [class*='name' i],[class*='profile-modal' i] [class*='name' i],[class*='profilepanel' i] [class*='name' i],[class*='profile-panel' i] [class*='name' i],[role='dialog'] [class*='name' i],[role='dialog'] [class*='usertext' i]";
 }
 
 function scanRoot(root: ParentNode, reconcileAll = root === document) {
