@@ -3763,3 +3763,12 @@ Release/proof boundary:
   context menus, fullscreen-image right-click, and DMEmoji send/preview.
 - Best next move: perform those runtime checks; only after they pass should a
   release be explicitly authorized.
+## 2026-11-06 - v0.7.128 published and verified
+
+- Public `main` includes release commit `26c8276643c15c137e677353786bc4f36d96653f`; annotated tag `v0.7.128` points to that release commit.
+- GitHub Actions release run `42181294675` passed checkout, pinned-Vencord checkout, strict overlay generation, product build, artifact verification, Electron Builder, release-note attachment, and notification.
+- The public release is https://github.com/MaxxTopia/discordmaxxer/releases/tag/v0.7.128. It contains the Windows installer, `latest.yml`, installer blockmap, and Windows/ARM64 ZIP artifacts. The public updater manifest reports `version: 0.7.128` and the 211,853,651-byte installer.
+- The source/build gates passed: `pnpm testTypes`, root `pnpm build`, strict overlay (`129` applied, `0` warnings), staged-source verification, and package checks. The repository-wide `pnpm test` remains limited by the pre-existing CRLF/header lint backlog in untouched `src` files; that was not used as a release blocker because the actual CI package workflow passed.
+- The signed-in runtime boundary remains user-owned: after updating, verify first-paint animated Playing-card skins, normal and image message context menus, full-screen image right-click, DMEmoji send/preview, display names, profile flair, and screenshare audio/video. Do not treat package success as proof of those device interactions.
+- The canonical dirty checkout `C:\Users\Diggy\projects\discordmaxxer` was not edited intentionally. The E: release checkout remains the source of the release work.
+- Best next move: Diggy tests the public updater and the runtime acceptance checklist on both PCs; collect any remaining failures as a new focused hotfix rather than mixing them into this release.
