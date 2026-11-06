@@ -38,6 +38,7 @@ let streaming = false;
 let streamStartTs = 0;
 let capturedThisStream = false;
 let autoAdjustedThisStream = false;
+let stressSamples = 0;
 
 const WARMUP_MS = 6000;
 const POLL_MS = 3000;
@@ -57,6 +58,7 @@ async function tick() {
             streamStartTs = Date.now();
             capturedThisStream = false;
             autoAdjustedThisStream = false;
+            stressSamples = 0;
         }
         // Keep watching after startup as well. A game can become encoder- or
         // bandwidth-limited several seconds into a share, especially when a
@@ -70,6 +72,7 @@ async function tick() {
     } else if (streaming) {
         // streaming → null edge: share ended, re-arm for the next one.
         streaming = false;
+        stressSamples = 0;
     }
 }
 
@@ -97,7 +100,16 @@ function stabilizeVideoIfNeeded(stat: NonNullable<Awaited<ReturnType<typeof getO
     if (autoAdjustedThisStream) return false;
 
     const target = nextStabilizingTarget(stat);
-    if (!target) return false;
+    if (!target) {
+        stressSamples = 0;
+        return false;
+    }
+
+    // Do not downgrade on one transient startup sample. Two consecutive polls
+    // are roughly six seconds apart, which filters encoder warm-up while still
+    // catching a real match/motion spike later in the share.
+    stressSamples++;
+    if (stressSamples < 2) return false;
 
     const track = getLiveScreenShareVideoTrack();
     if (!track) return false;
@@ -114,6 +126,7 @@ function stabilizeVideoIfNeeded(stat: NonNullable<Awaited<ReturnType<typeof getO
         })
         .catch(() => {
             autoAdjustedThisStream = false;
+            stressSamples = 0;
         });
 
     return true;

@@ -3620,7 +3620,8 @@ Implementation:
   user's saved quality selection. This lets recovery lower 60 FPS to 30 FPS or
   step down one resolution rung without permanently changing the setting.
 - `streamHealthAuto.ts` checks stress throughout the share, not only at startup.
-  On a sustained CPU/bandwidth/FPS problem it applies one per-share recovery:
+  After two consecutive stressed polls (to filter encoder warm-up), it applies
+  one per-share recovery:
   preserve resolution while moving 60 -> 30 FPS, then move down one resolution
   rung when the stream is already at 30 FPS. A visible status toast explains the
   actual fallback. Software encoding alone is not enough to downgrade while the
