@@ -432,6 +432,83 @@
     color: var(--text-positive, #57f287);
 }
 
+/* Discord normally renders pending uploads above the composer. Some client
+ * builds omit that surface when a plugin opens the upload flow, so DMEmoji
+ * mounts this local-only fallback into the same form. It disappears as soon
+ * as Discord's native image/video preview is present. */
+.dmemoji-pending-attachment-preview {
+    align-items: center;
+    background: color-mix(in srgb, var(--background-secondary, #2b2d31) 92%, #10131d);
+    border-bottom: 1px solid var(--background-modifier-accent, #4e5058);
+    display: flex;
+    gap: 8px;
+    max-width: 100%;
+    overflow-x: auto;
+    padding: 8px 12px;
+}
+
+.dmemoji-pending-attachment {
+    align-items: center;
+    background: var(--background-secondary-alt, #232428);
+    border: 1px solid color-mix(in srgb, var(--dmemoji-cyan) 35%, var(--background-modifier-accent, #4e5058));
+    border-radius: 8px;
+    display: flex;
+    flex: 0 0 auto;
+    gap: 7px;
+    max-width: min(260px, 52vw);
+    min-width: 0;
+    padding: 4px 6px 4px 4px;
+}
+
+.dmemoji-pending-attachment-media {
+    align-items: center;
+    background: var(--background-tertiary, #1e1f22);
+    border-radius: 5px;
+    color: var(--text-muted, #949ba4);
+    display: flex;
+    flex: 0 0 36px;
+    font-size: 8px;
+    font-weight: 800;
+    height: 36px;
+    justify-content: center;
+    letter-spacing: 0.04em;
+    overflow: hidden;
+    text-align: center;
+    width: 36px;
+}
+
+.dmemoji-pending-attachment-media img,
+.dmemoji-pending-attachment-media video {
+    height: 100%;
+    object-fit: cover;
+    width: 100%;
+}
+
+.dmemoji-pending-attachment-name {
+    color: var(--text-normal, #dbdee1);
+    font-size: 11px;
+    max-width: 150px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.dmemoji-pending-attachment-remove {
+    background: transparent;
+    border: 0;
+    border-radius: 5px;
+    color: var(--text-muted, #949ba4);
+    cursor: pointer;
+    font-size: 16px;
+    line-height: 1;
+    padding: 3px 5px;
+}
+
+.dmemoji-pending-attachment-remove:hover {
+    background: var(--background-modifier-hover, rgba(255, 255, 255, 0.08));
+    color: var(--text-danger, #ed4245);
+}
+
 @media (max-width: 620px) {
     .dmemoji-hero {
         flex-direction: column;

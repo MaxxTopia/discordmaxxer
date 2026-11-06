@@ -17,24 +17,29 @@ import { Devs } from "@utils/constants";
 import { copyWithToast, insertTextIntoChatInputBox, sendMessage } from "@utils/discord";
 import { ModalCloseButton, ModalContent, ModalHeader, ModalRoot, ModalSize } from "@utils/modal";
 import definePlugin, { IconComponent, OptionType } from "@utils/types";
+import type { CloudUpload } from "@vencord/discord-types";
 import { Message, RenderModalProps } from "@vencord/discord-types";
 import {
     Button,
     ChannelStore,
     DraftType,
+    DraftStore,
     EmojiStore,
     Forms,
     GuildStore,
     MessageActions,
     openModal,
     PendingReplyStore,
+    ReactDOM,
     SelectedChannelStore,
     Toasts as DiscordToasts,
+    UploadAttachmentStore,
     UploadHandler,
     useEffect,
     useMemo,
     useRef,
-    useState
+    useState,
+    useStateFromStores
 } from "@webpack/common";
 
 import { showDiscordmaxxerStatusToast } from "../_dm-shared/statusToast";
@@ -945,6 +950,151 @@ function findComposerSubmitButton(input: HTMLElement): HTMLElement | undefined {
     return undefined;
 }
 
+function getPendingMessageUploads(channelId: string): CloudUpload[] {
+    try {
+        return UploadAttachmentStore.getUploads(channelId, DraftType.ChannelMessage) ?? [];
+    } catch (error) {
+        console.warn("[DMEmoji] Could not read pending message uploads", error);
+        return [];
+    }
+}
+
+function findMessageComposerForm(): HTMLFormElement | undefined {
+    const input = Array.from(
+        document.querySelectorAll<HTMLElement>('[role="textbox"][contenteditable="true"], [contenteditable="true"], textarea')
+    )
+        .filter(isVisibleComposerElement)
+        .find(element => {
+            const label = [element.getAttribute("aria-label"), element.getAttribute("placeholder")].filter(Boolean).join(" ").toLowerCase();
+            return /message|chat|reply|type/.test(label);
+        });
+
+    return input?.closest("form") as HTMLFormElement | undefined;
+}
+
+function hasNativeAttachmentPreview(form: HTMLFormElement, fallbackHost: HTMLElement): boolean {
+    return Array.from(form.querySelectorAll<HTMLElement>("img, video")).some(element =>
+        !fallbackHost.contains(element) && isVisibleComposerElement(element)
+    );
+}
+
+type PendingAttachmentPreviewItem = {
+    upload: CloudUpload;
+    url: string;
+    kind: "image" | "video" | "file";
+};
+
+function PendingAttachmentPreview({ channelId }: { channelId: string; }) {
+    const uploads = useStateFromStores(
+        [UploadAttachmentStore],
+        () => getPendingMessageUploads(channelId)
+    );
+    const [portalHost, setPortalHost] = useState<HTMLElement | null>(null);
+    const [nativePreviewVisible, setNativePreviewVisible] = useState(false);
+
+    const previewItems = useMemo<PendingAttachmentPreviewItem[]>(() => uploads.map(upload => {
+        const file = upload.item?.file;
+        if (!(file instanceof Blob)) return null;
+
+        const kind = upload.isImage ? "image" : upload.isVideo ? "video" : "file";
+        return { upload, url: URL.createObjectURL(file), kind };
+    }).filter((item): item is PendingAttachmentPreviewItem => item !== null), [uploads]);
+
+    useEffect(() => {
+        return () => {
+            for (const item of previewItems) URL.revokeObjectURL(item.url);
+        };
+    }, [previewItems]);
+
+    useEffect(() => {
+        let cancelled = false;
+        let retryTimer: number | undefined;
+        let observer: MutationObserver | undefined;
+        let host: HTMLDivElement | undefined;
+
+        const attach = () => {
+            if (cancelled) return true;
+
+            const form = findMessageComposerForm();
+            if (!form) return false;
+
+            host = document.createElement("div");
+            host.dataset.dmemojiPendingPreview = "true";
+            form.insertBefore(host, form.firstChild);
+            setPortalHost(host);
+
+            const updateNativePreviewState = () => {
+                if (!host || !host.isConnected) return;
+                setNativePreviewVisible(hasNativeAttachmentPreview(form, host));
+            };
+
+            updateNativePreviewState();
+            observer = new MutationObserver(updateNativePreviewState);
+            observer.observe(form, {
+                childList: true,
+                subtree: true,
+                attributes: true,
+                attributeFilter: ["class", "src", "style"]
+            });
+            return true;
+        };
+
+        if (!attach()) {
+            retryTimer = window.setInterval(() => {
+                if (attach() && retryTimer !== undefined) {
+                    window.clearInterval(retryTimer);
+                    retryTimer = undefined;
+                }
+            }, 250);
+        }
+
+        return () => {
+            cancelled = true;
+            if (retryTimer !== undefined) window.clearInterval(retryTimer);
+            observer?.disconnect();
+            setPortalHost(null);
+            host?.remove();
+        };
+    }, [channelId]);
+
+    if (!portalHost || nativePreviewVisible || previewItems.length === 0) return null;
+
+    return ReactDOM.createPortal(
+        <div className="dmemoji-pending-attachment-preview" role="status" aria-live="polite">
+            {previewItems.map(({ upload, url, kind }) => (
+                <div className="dmemoji-pending-attachment" key={upload.uniqueId || upload.id}>
+                    <div className="dmemoji-pending-attachment-media">
+                        {kind === "image" && <img src={url} alt={upload.filename} />}
+                        {kind === "video" && <video src={url} muted autoPlay loop playsInline />}
+                        {kind === "file" && <span aria-hidden="true">FILE</span>}
+                    </div>
+                    <span className="dmemoji-pending-attachment-name" title={upload.filename}>{upload.filename}</span>
+                    <button
+                        type="button"
+                        className="dmemoji-pending-attachment-remove"
+                        aria-label={`Remove ${upload.filename}`}
+                        onClick={() => {
+                            try {
+                                upload.removeFromMsgDraft();
+                            } catch (error) {
+                                console.error("[DMEmoji] Could not remove pending upload", error);
+                                Toasts.show({
+                                    message: "Could not remove that attachment",
+                                    id: Toasts.genId(),
+                                    type: Toasts.Type.FAILURE
+                                });
+                            }
+                        }}
+                    >
+                        ×
+                    </button>
+                </div>
+            ))}
+        </div>,
+        portalHost
+    );
+}
+
 async function sendCurrentMessage() {
     const inputs = Array.from(
         document.querySelectorAll<HTMLElement>('[role="textbox"][contenteditable="true"], [contenteditable="true"], textarea')
@@ -973,32 +1123,26 @@ async function sendCurrentMessage() {
         return;
     }
 
-    const composer = input.closest("form");
-    if (composer && typeof composer.requestSubmit === "function") {
-        composer.requestSubmit();
-        return;
-    }
-
-    const content = composerText(input);
-    if (!content.trim()) {
-        Toasts.show({ message: "Type a message first", id: Toasts.genId(), type: Toasts.Type.FAILURE });
-        return;
-    }
-
-    // Some Discord builds expose neither the submit button nor a form. A
-    // synthetic KeyboardEvent does not reliably reach React's internal
-    // composer handler, so use Discord's own send pipeline as the final
-    // fallback. This preserves the normal channel and pending-reply route.
     const channelId = SelectedChannelStore.getChannelId();
     if (!channelId) {
         Toasts.show({ message: "Could not find the active message channel", id: Toasts.genId(), type: Toasts.Type.FAILURE });
         return;
     }
 
+    const content = DraftStore.getDraft(channelId, DraftType.ChannelMessage) || composerText(input);
+    const pendingUploads = getPendingMessageUploads(channelId);
+    if (!content.trim() && pendingUploads.length === 0) {
+        Toasts.show({ message: "Type a message or attach a file first", id: Toasts.genId(), type: Toasts.Type.FAILURE });
+        return;
+    }
+
     try {
         const pendingReply = PendingReplyStore.getPendingReply(channelId);
         const replyOptions = pendingReply ? MessageActions.getSendMessageOptionsForReply(pendingReply) : undefined;
-        await sendMessage(channelId, { content }, true, replyOptions);
+        await sendMessage(channelId, { content }, true, {
+            ...(replyOptions ?? {}),
+            attachmentsToUpload: pendingUploads
+        });
         Toasts.show({ message: "Message sent", id: Toasts.genId(), type: Toasts.Type.SUCCESS });
     } catch (error) {
         console.error("[DMEmoji] Could not send message", error);
@@ -1012,6 +1156,7 @@ const DMEmojiButton: ChatBarButtonFactory = ({ isAnyChat, channel }) => {
     if (!isAnyChat || !channelId || (!showButton && !showSendButton)) return null;
     return (
         <>
+            <PendingAttachmentPreview channelId={channelId} />
             {showButton && (
                 <ChatBarButton
                     tooltip="Open DMEmoji"

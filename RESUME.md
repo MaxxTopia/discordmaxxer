@@ -1,5 +1,52 @@
 # Discordmaxxer — RESUME
 
+## 2026-11-05 — DMEmoji send and pending attachment preview candidate
+
+Scope: restore the custom DMEmoji mouse-send action and make a selected local
+image/video visible above the composer before the user sends it.
+
+Implementation:
+- `plugins/DMEmoji/index.tsx` now reads the active draft and pending
+  `CloudUpload` objects from Discord's own stores, then calls the native
+  `sendMessage` pipeline with text, replies, and `attachmentsToUpload`.
+  The old `form.requestSubmit()` fallback was unreliable in this client and
+  has been removed from the custom send path.
+- The plugin mounts a local-only attachment preview in the active composer.
+  It previews images and animated video/GIF files from object URLs, shows a
+  filename for other files, and can remove an upload through Discord's draft
+  API. It yields to a visible native Discord image/video preview so users do
+  not get duplicate previews.
+- `plugins/DMEmoji/styles.css` adds the bounded preview strip and accessible
+  remove control without changing Discord's native message context menu.
+
+Verification gates completed:
+- `git diff --check` passed.
+- `pnpm test` passed (ESLint and TypeScript).
+- `pnpm build` passed.
+- `pnpm overlay:vencord` passed; all 29 custom plugins were staged.
+- `node overlay-scripts/verify-build.mjs` passed, including source
+  fingerprint, staged hashes, required plugin presence, and renderer
+  integrity.
+- The isolated renderer was reloaded with Ctrl+R from
+  `C:/Users/Diggy/projects/discordmaxxer-integration-20261105`; the client
+  remained open and the custom `Open DMEmoji` and `Send message` controls were
+  present afterward.
+
+Release/proof boundary:
+- Changes remain in the isolated worktree on branch
+  `codex/integrate-dev-20261105`; the canonical dirty checkout is untouched.
+- Public v0.7.127 remains unchanged. No push, tag, package publication, or
+  public live-client replacement was made for this candidate.
+- A real message send and local-file selection were not automated because
+  they would transmit data or send a message from the signed-in account.
+  Diggy's acceptance test is still required: attach an image/GIF/video, verify
+  the preview appears above the composer and can be removed, then type a
+  harmless test message and click the purple Send button. Confirm the message
+  and attachment arrive normally.
+
+Next action: review the candidate test result and explicitly authorize a
+  release only after the signed-in attachment/send path passes.
+
 ## 2026-11-04 — v0.7.125 session migration fix (published)
 
 Scope: include the non-destructive update migration fix that prevents an
