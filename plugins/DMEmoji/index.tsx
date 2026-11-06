@@ -216,7 +216,11 @@ async function sendEmojiAsImage(record: EmojiRecord, channelId: string, onDone?:
     }
 }
 
-async function attachNativeEmojiAsImage(choice: NativeEmojiChoice, channelId: string, onDone?: () => void): Promise<void> {
+async function attachNativeEmojiAsImage(
+    choice: NativeEmojiChoice,
+    channelId: string,
+    onDone?: () => void
+): Promise<void> {
     if (choice.kind !== "custom" || !choice.imageUrl) return;
 
     try {
@@ -255,7 +259,7 @@ async function attachNativeEmojiAsImage(choice: NativeEmojiChoice, channelId: st
 function parseDiscordEmojiRef(
     value: unknown,
     fallbackName: string
-): { id: string; name: string; isAnimated: boolean; } | null {
+): { id: string; name: string; isAnimated: boolean } | null {
     // DataStore can contain records written by older DMEmoji builds. Treat a
     // malformed optional field as an unlinked local image instead of allowing
     // a context-menu render to throw while Discord is opening it.
@@ -312,17 +316,19 @@ function getNativeEmojiChoices(query: string, channelId?: string, customOnly = f
             });
         }
 
-        return choices
-            .sort((a, b) => {
-                if (!normalized) return a.kind === b.kind ? 0 : a.kind === "unicode" ? -1 : 1;
-                const aStarts = a.searchText.startsWith(normalized);
-                const bStarts = b.searchText.startsWith(normalized);
-                if (aStarts !== bStarts) return aStarts ? -1 : 1;
-                return a.name.localeCompare(b.name);
-            })
-            // Some accounts can access hundreds of server emoji. Keep the
-            // drawer useful without rendering an unbounded Discord catalog.
-            .slice(0, 240);
+        return (
+            choices
+                .sort((a, b) => {
+                    if (!normalized) return a.kind === b.kind ? 0 : a.kind === "unicode" ? -1 : 1;
+                    const aStarts = a.searchText.startsWith(normalized);
+                    const bStarts = b.searchText.startsWith(normalized);
+                    if (aStarts !== bStarts) return aStarts ? -1 : 1;
+                    return a.name.localeCompare(b.name);
+                })
+                // Some accounts can access hundreds of server emoji. Keep the
+                // drawer useful without rendering an unbounded Discord catalog.
+                .slice(0, 240)
+        );
     } catch (error) {
         console.warn("[DMEmoji] Native emoji data is not ready", error);
         return [];
@@ -400,7 +406,7 @@ function useNativeEmojiAction(
     onClose?.();
 }
 
-function DMEmojiIcon({ height = 20, width = 20, className }: { height?: number; width?: number; className?: string; }) {
+function DMEmojiIcon({ height = 20, width = 20, className }: { height?: number; width?: number; className?: string }) {
     return (
         <svg aria-hidden="true" role="img" width={width} height={height} className={className} viewBox="0 0 24 24">
             <circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" strokeWidth="2" />
@@ -417,14 +423,28 @@ function DMEmojiIcon({ height = 20, width = 20, className }: { height?: number; 
     );
 }
 
-function SendMessageIcon({ height = 20, width = 20, className }: { height?: number; width?: number; className?: string; }) {
+function SendMessageIcon({
+    height = 20,
+    width = 20,
+    className
+}: {
+    height?: number;
+    width?: number;
+    className?: string;
+}) {
     return (
         <svg aria-hidden="true" role="img" width={width} height={height} className={className} viewBox="0 0 24 24">
             <path
                 d="M3.4 4.2a1 1 0 0 1 1.28-.94l16.05 5.35a1.4 1.4 0 0 1 0 2.66L4.68 16.62a1 1 0 0 1-1.28-.94l-.25-4.22 9.1-.96a.5.5 0 0 0 0-1l-9.1-.96.25-4.34Z"
                 fill="currentColor"
             />
-            <path d="m3.15 11.5 9.1-1" fill="none" stroke="var(--background-primary, #313338)" strokeLinecap="round" strokeWidth="1.2" />
+            <path
+                d="m3.15 11.5 9.1-1"
+                fill="none"
+                stroke="var(--background-primary, #313338)"
+                strokeLinecap="round"
+                strokeWidth="1.2"
+            />
         </svg>
     );
 }
@@ -481,7 +501,8 @@ function NativeEmojiCard({
     channelId?: string;
     onClose?: () => void;
 }) {
-    const attachInstead = !message && choice.kind === "custom" && Boolean(channelId) && !ChannelStore.getChannel(channelId)?.guild_id;
+    const attachInstead =
+        !message && choice.kind === "custom" && Boolean(channelId) && !ChannelStore.getChannel(channelId)?.guild_id;
     const activate = () => {
         if (attachInstead && channelId) return void attachNativeEmojiAsImage(choice, channelId, onClose);
         useNativeEmojiAction(message, choice, channelId, onClose);
@@ -493,7 +514,13 @@ function NativeEmojiCard({
                 type="button"
                 className="dmemoji-native-preview"
                 onClick={activate}
-                title={message ? "React with this emoji" : attachInstead ? "Attach this emoji as an image" : "Insert this emoji"}
+                title={
+                    message
+                        ? "React with this emoji"
+                        : attachInstead
+                          ? "Attach this emoji as an image"
+                          : "Insert this emoji"
+                }
             >
                 {choice.imageUrl ? (
                     <img src={choice.imageUrl} alt={choice.name} loading="lazy" />
@@ -506,11 +533,7 @@ function NativeEmojiCard({
                 <span>{choice.sourceLabel}</span>
             </div>
             <div className="dmemoji-native-actions">
-                <button
-                    type="button"
-                    className="dmemoji-action dmemoji-action-primary"
-                    onClick={activate}
-                >
+                <button type="button" className="dmemoji-action dmemoji-action-primary" onClick={activate}>
                     {message ? "React" : attachInstead ? "Attach" : "Insert"}
                 </button>
                 <button
@@ -573,7 +596,8 @@ function LocalEmojiEntry({
             <div className="dmemoji-entry-body">
                 <strong>{record.name}</strong>
                 <span className="dmemoji-meta">
-                    {Math.max(1, Math.round((record.size ?? 0) / 1024))} KB {record.mime === "image/gif" || record.mime === "image/webp" ? "animated-capable" : "image"}
+                    {Math.max(1, Math.round((record.size ?? 0) / 1024))} KB{" "}
+                    {record.mime === "image/gif" || record.mime === "image/webp" ? "animated-capable" : "image"}
                 </span>
                 <span className={native ? "dmemoji-native-status" : "dmemoji-attachment-status"}>
                     {native ? `Reaction linked to :${native.name}:` : "Local attachment only"}
@@ -589,7 +613,11 @@ function LocalEmojiEntry({
                         </button>
                     )}
                     {message && native && (
-                        <button type="button" className="dmemoji-action" onClick={() => reactWithEmoji(message, record)}>
+                        <button
+                            type="button"
+                            className="dmemoji-action"
+                            onClick={() => reactWithEmoji(message, record)}
+                        >
                             React
                         </button>
                     )}
@@ -629,7 +657,11 @@ function LocalEmojiEntry({
                                     key={choice.key}
                                     onClick={() => void linkNativeEmoji(choice)}
                                 >
-                                    {choice.imageUrl ? <img src={choice.imageUrl} alt="" /> : <span>{choice.value}</span>}
+                                    {choice.imageUrl ? (
+                                        <img src={choice.imageUrl} alt="" />
+                                    ) : (
+                                        <span>{choice.value}</span>
+                                    )}
                                     <span>:{choice.name}:</span>
                                 </button>
                             ))}
@@ -676,7 +708,11 @@ function EmojiLibrary({
     const nativeChoices = useMemo(
         () =>
             getNativeEmojiChoices(query, channelId, activeTab === "custom").filter(choice =>
-                activeTab === "unicode" ? choice.kind === "unicode" : activeTab === "custom" ? choice.kind === "custom" : true
+                activeTab === "unicode"
+                    ? choice.kind === "unicode"
+                    : activeTab === "custom"
+                      ? choice.kind === "custom"
+                      : true
             ),
         [activeTab, channelId, query]
     );
@@ -708,11 +744,16 @@ function EmojiLibrary({
                             : "Search native emoji, insert Unicode, or attach a server emoji as an image when Discord would require Nitro."}
                     </p>
                     <span className="dmemoji-hero-note">
-                        Custom emoji lists up to 240 server emoji available to this account. Browse iEmoji for a larger discovery catalog; only real Discord server emoji can be native reactions.
+                        Custom emoji lists up to 240 server emoji available to this account. Browse iEmoji for a larger
+                        discovery catalog; only real Discord server emoji can be native reactions.
                     </span>
                 </div>
                 <div className="dmemoji-hero-actions">
-                    <Button size={Button.Sizes.SMALL} color={Button.Colors.BRAND} onClick={() => inputRef.current?.click()}>
+                    <Button
+                        size={Button.Sizes.SMALL}
+                        color={Button.Colors.BRAND}
+                        onClick={() => inputRef.current?.click()}
+                    >
                         Import media
                     </Button>
                     <button
@@ -753,7 +794,13 @@ function EmojiLibrary({
                             role="tab"
                             aria-selected={activeTab === tab}
                         >
-                            {tab === "all" ? "All" : tab === "saved" ? "Saved media" : tab === "unicode" ? "Unicode" : "Custom emoji"}
+                            {tab === "all"
+                                ? "All"
+                                : tab === "saved"
+                                  ? "Saved media"
+                                  : tab === "unicode"
+                                    ? "Unicode"
+                                    : "Custom emoji"}
                         </button>
                     ))}
                 </div>
@@ -796,7 +843,13 @@ function EmojiLibrary({
                 <section className="dmemoji-section">
                     <div className="dmemoji-section-heading">
                         <div>
-                            <h3>{activeTab === "custom" ? "Custom server emoji" : activeTab === "unicode" ? "Unicode emoji" : "Native emoji"}</h3>
+                            <h3>
+                                {activeTab === "custom"
+                                    ? "Custom server emoji"
+                                    : activeTab === "unicode"
+                                      ? "Unicode emoji"
+                                      : "Native emoji"}
+                            </h3>
                             <span>
                                 {activeTab === "custom"
                                     ? "These are real Discord emoji from servers your account can use."
@@ -810,7 +863,13 @@ function EmojiLibrary({
                     {nativeChoices.length ? (
                         <div className="dmemoji-native-grid">
                             {nativeChoices.map(choice => (
-                                <NativeEmojiCard key={choice.key} choice={choice} message={message} channelId={channelId} onClose={onClose} />
+                                <NativeEmojiCard
+                                    key={choice.key}
+                                    choice={choice}
+                                    message={message}
+                                    channelId={channelId}
+                                    onClose={onClose}
+                                />
                             ))}
                         </div>
                     ) : (
@@ -822,7 +881,9 @@ function EmojiLibrary({
             )}
 
             <div className="dmemoji-footnote">
-                <strong>What can react?</strong> Unicode and real Discord server emoji can react natively. Imported local media is an attachment unless you link it to a server emoji identity; Discord does not accept an arbitrary local file as a reaction.
+                <strong>What can react?</strong> Unicode and real Discord server emoji can react natively. Imported
+                local media is an attachment unless you link it to a server emoji identity; Discord does not accept an
+                arbitrary local file as a reaction.
             </div>
         </div>
     );
@@ -892,7 +953,7 @@ function SafeModalContainer({
     );
 }
 
-function EmojiPickerModal(props: RenderModalProps & { channelId: string; message?: Message; }) {
+function EmojiPickerModal(props: RenderModalProps & { channelId: string; message?: Message }) {
     return (
         <ErrorBoundary message="Could not display DMEmoji picker">
             <SafeModalContainer transitionState={props.transitionState} onClose={props.onClose}>
@@ -906,7 +967,13 @@ function isVisibleComposerElement(element: HTMLElement): boolean {
     if (element.getAttribute("aria-hidden") === "true") return false;
     const style = window.getComputedStyle(element);
     const rect = element.getBoundingClientRect();
-    return style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0" && rect.width > 0 && rect.height > 0;
+    return (
+        style.display !== "none" &&
+        style.visibility !== "hidden" &&
+        style.opacity !== "0" &&
+        rect.width > 0 &&
+        rect.height > 0
+    );
 }
 
 function composerText(input: HTMLElement): string {
@@ -924,11 +991,23 @@ function findComposerSubmitButton(input: HTMLElement): HTMLElement | undefined {
     const seen = new Set<HTMLElement>();
 
     for (const scope of scopes) {
-        const candidates = Array.from(scope.querySelectorAll<HTMLElement>('button, [role="button"], input[type="submit"]'));
+        const candidates = Array.from(
+            scope.querySelectorAll<HTMLElement>('button, [role="button"], input[type="submit"]')
+        );
         for (const element of candidates) {
-            if (seen.has(element) || element.hasAttribute("data-dmemoji-send-button") || !isVisibleComposerElement(element)) continue;
+            if (
+                seen.has(element) ||
+                element.hasAttribute("data-dmemoji-send-button") ||
+                !isVisibleComposerElement(element)
+            )
+                continue;
             seen.add(element);
-            const label = [element.id, element.getAttribute("aria-label"), element.getAttribute("title"), element.getAttribute("data-testid")]
+            const label = [
+                element.id,
+                element.getAttribute("aria-label"),
+                element.getAttribute("title"),
+                element.getAttribute("data-testid")
+            ]
                 .filter(Boolean)
                 .join(" ")
                 .toLowerCase();
@@ -937,10 +1016,11 @@ function findComposerSubmitButton(input: HTMLElement): HTMLElement | undefined {
             // them before considering any generic submit marker so the helper
             // can never open the purchase modal by mistake.
             const isGiftOrNitro = /\bgift\b|\bnitro\b/.test(label);
-            const isNativeSend = element.id === "submit-button"
-                || label.includes("submit-button")
-                || /\bsend(?:[\s_-]+(?:a[\s_-]+)?message)?\b/.test(label)
-                || label.includes("send-message");
+            const isNativeSend =
+                element.id === "submit-button" ||
+                label.includes("submit-button") ||
+                /\bsend(?:[\s_-]+(?:a[\s_-]+)?message)?\b/.test(label) ||
+                label.includes("send-message");
             if (!isGiftOrNitro && isNativeSend) {
                 return element;
             }
@@ -959,23 +1039,45 @@ function getPendingMessageUploads(channelId: string): CloudUpload[] {
     }
 }
 
-function findMessageComposerForm(): HTMLFormElement | undefined {
-    const input = Array.from(
-        document.querySelectorAll<HTMLElement>('[role="textbox"][contenteditable="true"], [contenteditable="true"], textarea')
+function findVisibleMessageComposerInput(): HTMLElement | undefined {
+    return Array.from(
+        document.querySelectorAll<HTMLElement>(
+            '[role="textbox"][contenteditable="true"], [contenteditable="true"], textarea'
+        )
     )
         .filter(isVisibleComposerElement)
         .find(element => {
-            const label = [element.getAttribute("aria-label"), element.getAttribute("placeholder")].filter(Boolean).join(" ").toLowerCase();
+            const label = [element.getAttribute("aria-label"), element.getAttribute("placeholder")]
+                .filter(Boolean)
+                .join(" ")
+                .toLowerCase();
             return /message|chat|reply|type/.test(label);
         });
+}
 
-    return input?.closest("form") as HTMLFormElement | undefined;
+function findMessageComposerForm(): HTMLFormElement | undefined {
+    return findVisibleMessageComposerInput()?.closest("form") as HTMLFormElement | undefined;
+}
+
+function findComposerInsertionAnchor(form: HTMLFormElement): Node | null {
+    const input = findVisibleMessageComposerInput();
+    if (!input || !form.contains(input)) return form.firstChild;
+
+    let anchor: Node = input;
+    while (anchor.parentNode && anchor.parentNode !== form) anchor = anchor.parentNode;
+    return anchor;
 }
 
 function hasNativeAttachmentPreview(form: HTMLFormElement, fallbackHost: HTMLElement): boolean {
-    return Array.from(form.querySelectorAll<HTMLElement>("img, video")).some(element =>
-        !fallbackHost.contains(element) && isVisibleComposerElement(element)
-    );
+    return Array.from(form.querySelectorAll<HTMLImageElement | HTMLVideoElement>("img, video")).some(element => {
+        if (fallbackHost.contains(element) || !isVisibleComposerElement(element)) return false;
+
+        const source = element.currentSrc || element.src;
+        const attachmentContainer = element.closest(
+            '[class*="attachment" i], [class*="upload" i], [data-testid*="attachment" i], [data-list-id*="upload" i]'
+        );
+        return Boolean(attachmentContainer || source.startsWith("blob:") || source.startsWith("data:"));
+    });
 }
 
 type PendingAttachmentPreviewItem = {
@@ -984,27 +1086,47 @@ type PendingAttachmentPreviewItem = {
     kind: "image" | "video" | "file";
 };
 
-function PendingAttachmentPreview({ channelId }: { channelId: string; }) {
-    const uploads = useStateFromStores(
-        [UploadAttachmentStore],
-        () => getPendingMessageUploads(channelId)
-    );
+function PendingAttachmentPreview({ channelId }: { channelId: string }) {
+    const uploads = useStateFromStores([UploadAttachmentStore], () => getPendingMessageUploads(channelId));
     const [portalHost, setPortalHost] = useState<HTMLElement | null>(null);
     const [nativePreviewVisible, setNativePreviewVisible] = useState(false);
+    const [expandedId, setExpandedId] = useState<string | null>(null);
 
-    const previewItems = useMemo<PendingAttachmentPreviewItem[]>(() => uploads.map(upload => {
-        const file = upload.item?.file;
-        if (!(file instanceof Blob)) return null;
+    const previewItems = useMemo<PendingAttachmentPreviewItem[]>(
+        () =>
+            uploads
+                .map(upload => {
+                    const file = upload.item?.file;
+                    if (!(file instanceof Blob)) return null;
 
-        const kind = upload.isImage ? "image" : upload.isVideo ? "video" : "file";
-        return { upload, url: URL.createObjectURL(file), kind };
-    }).filter((item): item is PendingAttachmentPreviewItem => item !== null), [uploads]);
+                    const kind = upload.isImage ? "image" : upload.isVideo ? "video" : "file";
+                    return { upload, url: URL.createObjectURL(file), kind };
+                })
+                .filter((item): item is PendingAttachmentPreviewItem => item !== null),
+        [uploads]
+    );
 
     useEffect(() => {
         return () => {
             for (const item of previewItems) URL.revokeObjectURL(item.url);
         };
     }, [previewItems]);
+
+    const expandedItem = previewItems.find(item => (item.upload.uniqueId || item.upload.id) === expandedId);
+
+    useEffect(() => {
+        if (!expandedItem) setExpandedId(null);
+    }, [expandedItem]);
+
+    useEffect(() => {
+        if (!expandedItem) return;
+
+        const onKeyDown = (event: KeyboardEvent) => {
+            if (event.key === "Escape") setExpandedId(null);
+        };
+        document.addEventListener("keydown", onKeyDown);
+        return () => document.removeEventListener("keydown", onKeyDown);
+    }, [expandedItem]);
 
     useEffect(() => {
         let cancelled = false;
@@ -1019,8 +1141,9 @@ function PendingAttachmentPreview({ channelId }: { channelId: string; }) {
             if (!form) return false;
 
             host = document.createElement("div");
+            host.className = "dmemoji-pending-attachment-host";
             host.dataset.dmemojiPendingPreview = "true";
-            form.insertBefore(host, form.firstChild);
+            form.insertBefore(host, findComposerInsertionAnchor(form));
             setPortalHost(host);
 
             const updateNativePreviewState = () => {
@@ -1063,12 +1186,19 @@ function PendingAttachmentPreview({ channelId }: { channelId: string; }) {
         <div className="dmemoji-pending-attachment-preview" role="status" aria-live="polite">
             {previewItems.map(({ upload, url, kind }) => (
                 <div className="dmemoji-pending-attachment" key={upload.uniqueId || upload.id}>
-                    <div className="dmemoji-pending-attachment-media">
+                    <button
+                        type="button"
+                        className="dmemoji-pending-attachment-media"
+                        aria-label={`Preview ${upload.filename}`}
+                        onClick={() => setExpandedId(upload.uniqueId || upload.id)}
+                    >
                         {kind === "image" && <img src={url} alt={upload.filename} />}
                         {kind === "video" && <video src={url} muted autoPlay loop playsInline />}
                         {kind === "file" && <span aria-hidden="true">FILE</span>}
-                    </div>
-                    <span className="dmemoji-pending-attachment-name" title={upload.filename}>{upload.filename}</span>
+                    </button>
+                    <span className="dmemoji-pending-attachment-name" title={upload.filename}>
+                        {upload.filename}
+                    </span>
                     <button
                         type="button"
                         className="dmemoji-pending-attachment-remove"
@@ -1090,6 +1220,39 @@ function PendingAttachmentPreview({ channelId }: { channelId: string; }) {
                     </button>
                 </div>
             ))}
+            {expandedItem && (
+                <div
+                    className="dmemoji-pending-attachment-lightbox"
+                    role="dialog"
+                    aria-modal="true"
+                    aria-label={`Preview ${expandedItem.upload.filename}`}
+                    onClick={() => setExpandedId(null)}
+                >
+                    <div
+                        className="dmemoji-pending-attachment-lightbox-card"
+                        onClick={event => event.stopPropagation()}
+                    >
+                        <button
+                            type="button"
+                            className="dmemoji-pending-attachment-lightbox-close"
+                            aria-label="Close attachment preview"
+                            onClick={() => setExpandedId(null)}
+                        >
+                            ×
+                        </button>
+                        {expandedItem.kind === "image" && (
+                            <img src={expandedItem.url} alt={expandedItem.upload.filename} />
+                        )}
+                        {expandedItem.kind === "video" && (
+                            <video src={expandedItem.url} controls autoPlay loop playsInline />
+                        )}
+                        {expandedItem.kind === "file" && (
+                            <div className="dmemoji-pending-attachment-lightbox-file">FILE</div>
+                        )}
+                        <span>{expandedItem.upload.filename}</span>
+                    </div>
+                </div>
+            )}
         </div>,
         portalHost
     );
@@ -1097,18 +1260,27 @@ function PendingAttachmentPreview({ channelId }: { channelId: string; }) {
 
 async function sendCurrentMessage() {
     const inputs = Array.from(
-        document.querySelectorAll<HTMLElement>('[role="textbox"][contenteditable="true"], [contenteditable="true"], textarea')
+        document.querySelectorAll<HTMLElement>(
+            '[role="textbox"][contenteditable="true"], [contenteditable="true"], textarea'
+        )
     )
         .filter(isVisibleComposerElement)
         .map(element => {
-            const label = [element.getAttribute("aria-label"), element.getAttribute("placeholder")].filter(Boolean).join(" ").toLowerCase();
+            const label = [element.getAttribute("aria-label"), element.getAttribute("placeholder")]
+                .filter(Boolean)
+                .join(" ")
+                .toLowerCase();
             return { element, score: /message|chat|reply|type/.test(label) ? 10 : 0 };
         })
         .sort((a, b) => b.score - a.score);
 
     const input = inputs[0]?.element;
     if (!input) {
-        Toasts.show({ message: "Could not find the active message composer", id: Toasts.genId(), type: Toasts.Type.FAILURE });
+        Toasts.show({
+            message: "Could not find the active message composer",
+            id: Toasts.genId(),
+            type: Toasts.Type.FAILURE
+        });
         return;
     }
 
@@ -1116,7 +1288,11 @@ async function sendCurrentMessage() {
 
     if (sendButton) {
         if (sendButton.getAttribute("aria-disabled") === "true" || (sendButton as HTMLButtonElement).disabled) {
-            Toasts.show({ message: "There is no message ready to send", id: Toasts.genId(), type: Toasts.Type.FAILURE });
+            Toasts.show({
+                message: "There is no message ready to send",
+                id: Toasts.genId(),
+                type: Toasts.Type.FAILURE
+            });
             return;
         }
         sendButton.click();
@@ -1125,14 +1301,22 @@ async function sendCurrentMessage() {
 
     const channelId = SelectedChannelStore.getChannelId();
     if (!channelId) {
-        Toasts.show({ message: "Could not find the active message channel", id: Toasts.genId(), type: Toasts.Type.FAILURE });
+        Toasts.show({
+            message: "Could not find the active message channel",
+            id: Toasts.genId(),
+            type: Toasts.Type.FAILURE
+        });
         return;
     }
 
     const content = DraftStore.getDraft(channelId, DraftType.ChannelMessage) || composerText(input);
     const pendingUploads = getPendingMessageUploads(channelId);
     if (!content.trim() && pendingUploads.length === 0) {
-        Toasts.show({ message: "Type a message or attach a file first", id: Toasts.genId(), type: Toasts.Type.FAILURE });
+        Toasts.show({
+            message: "Type a message or attach a file first",
+            id: Toasts.genId(),
+            type: Toasts.Type.FAILURE
+        });
         return;
     }
 

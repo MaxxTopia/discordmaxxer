@@ -3710,3 +3710,56 @@ Release/proof boundary:
   actually limited, the expected result is a visible one-time fallback to
   1080p30 or 720p30 rather than freeze frames; the saved selection remains
   unchanged for the next share.
+
+## 2026-11-05 - first-paint Playing-card skin timing and reproducible ImageZoom guard
+
+Scope:
+- Fix the brief native-looking Playing card when opening a profile: the profile
+  transition now requests one immediate direct Playing-card probe, while normal
+  background probes keep their one-second throttle.
+- Make the ImageZoom/context-menu hardening reproducible from a clean pinned
+  Vencord source tree. A stale rebrand patch previously duplicated helpers and
+  could leave an unmatched `try` in fresh builds, so a clean build could fail
+  even when an already-patched local copy appeared healthy.
+- Preserve the existing DMEmoji attachment-preview/lightbox and send fixes in
+  this same candidate.
+
+Implementation:
+- `plugins/DMWidget/index.tsx` adds a one-shot direct probe request consumed by
+  `runWidgetSkinProfileScan`; it is reset when the renderer stops and does not
+  change the ordinary background scan cadence.
+- `overlay-scripts/rebrand-vencord.mjs` now gives the injected image-context
+  helper a unique name, does not re-inject helpers already present in the
+  pinned source, and closes the guarded image-menu route at the actual
+  Discordmaxxer message-route boundary.
+- `plugins/DMEmoji/index.tsx` and `plugins/DMEmoji/styles.css` retain the
+  compact in-composer preview, clickable enlarged preview, and send behavior
+  changes from this candidate.
+
+Verification completed:
+- `pnpm testTypes` passed.
+- `pnpm build` passed earlier in this candidate.
+- `node --check overlay-scripts/rebrand-vencord.mjs` passed.
+- `git diff --check` passed; only normal LF/CRLF conversion warnings were
+  emitted for the two DMEmoji files.
+- A fresh pinned-source `pnpm overlay:vencord` passed after the generator fix;
+  all 29 custom plugins were staged into `vencord-dist`.
+- `node overlay-scripts/verify-build.mjs` passed, including product/version,
+  source fingerprint, staged hashes, required plugin presence, and renderer
+  integrity.
+- The generated ImageZoom source has exactly one upstream `isImageContext`, one
+  Discordmaxxer image-context helper, one slider key helper, one slider
+  component, and a matching image-menu error guard.
+
+Release/proof boundary:
+- Work is uncommitted in the isolated E: worktree
+  `E:/discordmaxxer-dmemoji-fix-20261105-b`; the canonical dirty C: checkout
+  was not edited intentionally. Public v0.7.127 is unchanged. No push,
+  package publication, or live-client replacement was made.
+- The source/build proof does not yet prove the signed-in runtime. Diggy still
+  needs to reload the candidate and open the same profile repeatedly, checking
+  that the Playing card is skin-styled on first visible paint without the
+  native flash. Also test ordinary text-message context menus, inline image
+  context menus, fullscreen-image right-click, and DMEmoji send/preview.
+- Best next move: perform those runtime checks; only after they pass should a
+  release be explicitly authorized.

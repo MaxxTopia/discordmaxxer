@@ -978,7 +978,7 @@ const PATCHES = [
             '        return isImageMedia(embed.image) || isImageMedia(embed.thumbnail) || isImageMedia(embed.video) || looksLikeImageUrl(embed.url);\n' +
             '    });\n' +
             '}\n\n' +
-            'function isImageContext(props: any): boolean {\n' +
+            'function isDiscordmaxxerImageContext(props: any): boolean {\n' +
             '    try {\n' +
             '        if (!props || typeof props !== "object") return false;\n' +
             '        if (isImageMedia(props.mediaItem)) return true;\n' +
@@ -1010,23 +1010,6 @@ const PATCHES = [
             '    if (!Number.isFinite(value)) return fallback;\n' +
             '    return Math.min(max, Math.max(min, value));\n' +
             '}\n\n' +
-            'function stopImageSliderKey(e: any) {\n' +
-            '    if (!e.ctrlKey && !e.altKey && !e.metaKey && ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown", "Enter", " "].includes(e.key)) {\n' +
-            '        e.stopPropagation();\n' +
-            '    }\n' +
-            '}\n\n' +
-            'function ImageZoomSlider({ children }: { children: JSX.Element }) {\n' +
-            '    return (\n' +
-            '        <div\n' +
-            '            onPointerDown={e => e.stopPropagation()}\n' +
-            '            onMouseDown={e => e.stopPropagation()}\n' +
-            '            onClick={e => e.stopPropagation()}\n' +
-            '            onKeyDown={stopImageSliderKey}\n' +
-            '        >\n' +
-            '            {children}\n' +
-            '        </div>\n' +
-            '    );\n' +
-            '}\n\n' +
             'const imageContextMenuPatch: NavContextMenuPatchCallback = (children, props) => {\n' +
             '    if (!props || typeof props !== "object" || !Array.isArray(children)) return;\n' +
             '    try {'
@@ -1034,7 +1017,7 @@ const PATCHES = [
     {
         file: "src/plugins/imageZoom/index.tsx",
         find: '    if ("href" in props) return;\n    // emojis in user statuses',
-        replace: '    if ("href" in props) return;\n    if (props?.mediaItem && !isImageContext(props)) return;\n    if (hasMenuItemId(children, "image-zoom")) return;\n    // emojis in user statuses'
+        replace: '    if ("href" in props) return;\n    if (props?.mediaItem && !isDiscordmaxxerImageContext(props)) return;\n    if (hasMenuItemId(children, "image-zoom")) return;\n    // emojis in user statuses'
     },
     {
         file: "src/plugins/imageZoom/index.tsx",
@@ -1118,14 +1101,14 @@ const PATCHES = [
     {
         file: "src/plugins/imageZoom/index.tsx",
         marker: "Discordmaxxer: ImageZoom menu error guard",
-        find: '    );\n};\n\nexport default definePlugin({\n    name: "ImageZoom",',
+        find: '        </ErrorBoundary>\n    );\n};\n\nexport default definePlugin({',
         replace:
-            '    );\n' +
+            '        </ErrorBoundary>\n    );\n' +
             '    } catch (error) {\n' +
             '        new Logger("ImageZoom").error("Failed to add image controls to native context menu", error);\n' +
             '    }\n' +
             '};\n\n' +
-            'export default definePlugin({\n    name: "ImageZoom",'
+            'export default definePlugin({'
     },
     {
         file: "src/plugins/imageZoom/index.tsx",

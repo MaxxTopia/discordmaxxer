@@ -2147,6 +2147,10 @@ const widgetSkinVisibilityRoots = new Set<HTMLElement>();
 let widgetSkinVisibilityRefreshFrame: number | null = null;
 let widgetSkinVisibilityRefreshHandler: (() => void) | null = null;
 let lastPlayingCardDirectProbeAt = 0;
+// A profile click can mount the Playing card after the first shell mutation.
+// Request one uncapped direct probe for that transition so the card does not
+// remain native for the normal one-second probe interval.
+let widgetSkinPlayingCardProbeRequested = false;
 const PLAYING_CARD_DIRECT_PROBE_INTERVAL_MS = 1000;
 let widgetSkinPlayingCardTimelineStartedAt = -1;
 let removeTournamentModeListener: (() => void) | null = null;
@@ -4958,8 +4962,10 @@ function scanWidgetSkinCards(budgetMs = 120): number {
                 || !widgetSkinPlayingCardRoot.isConnected
                 || !visibleDiscordmaxxerPlayingCard(widgetSkinPlayingCardRoot);
             let directPlayingCandidates: HTMLElement[] = [];
-            if (shouldProbeDirectPlayingCard && Date.now() - lastPlayingCardDirectProbeAt >= PLAYING_CARD_DIRECT_PROBE_INTERVAL_MS) {
+            const directProbeRequested = widgetSkinPlayingCardProbeRequested;
+            if (shouldProbeDirectPlayingCard && (directProbeRequested || Date.now() - lastPlayingCardDirectProbeAt >= PLAYING_CARD_DIRECT_PROBE_INTERVAL_MS)) {
                 lastPlayingCardDirectProbeAt = Date.now();
+                widgetSkinPlayingCardProbeRequested = false;
                 directPlayingCandidates = queryPlayingCardProfileSurfaces(180)
                     .filter(candidate => isDiscordmaxxerPlayingCard(candidate));
             }
@@ -5466,6 +5472,7 @@ function startWidgetSkinRenderer(): void {
 function stopWidgetSkinRenderer(): void {
     widgetSkinRun++;
     widgetSkinRendererSuspended = false;
+    widgetSkinPlayingCardProbeRequested = false;
     widgetSkinVisibilityHandler?.();
     widgetSkinVisibilityHandler = null;
     removeWidgetSkinProfileTriggerListeners?.();
@@ -5583,6 +5590,7 @@ function clearWidgetSkinProfileScanTimers(): void {
 
 function queueWidgetSkinProfileScan(): void {
     if (document.hidden || widgetSkinEditorOpen() || widgetSkinRendererSuspended) return;
+    widgetSkinPlayingCardProbeRequested = true;
     startWidgetSkinProfileMountObserver();
     scheduleWidgetSkinProfileFastScan();
     const now = Date.now();
