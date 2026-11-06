@@ -3637,6 +3637,9 @@ Verification completed:
   candidate Vencord bundle.
 - `node overlay-scripts/verify-build.mjs` passed, including source fingerprint,
   staged hashes, required plugin presence, and renderer integrity.
+- After the two-poll warm-up guard was added, `pnpm test`, `pnpm build`,
+  `pnpm overlay:vencord`, and `node overlay-scripts/verify-build.mjs` were
+  rerun successfully; the running local renderer was reloaded afterward.
 - `pnpm buildWinAudio` passed; only the existing MSVC macro/C++ standard
   warnings were emitted.
 - `node --test packages/winaudio/test.js` passed all 4 native tests.
