@@ -3473,10 +3473,10 @@ claims of completion.
 ## 2026-11-05 — widget animation, native image menu, DMEmoji, and display-name hardening
 
 Candidate state:
-- The isolated integration worktree contains the next uncommitted fix set; the
-  canonical dirty development checkout is untouched.
-- Public v0.7.126 remains unchanged. This candidate has not been committed,
-  pushed, packaged for publication, or installed over the signed-in client.
+- The isolated integration worktree contained the next fix set; the canonical
+  dirty development checkout remains untouched.
+- The fix set was committed as `1b0461f`, pushed to `origin/main`, tagged as
+  `v0.7.127`, and published through the release workflow below.
 
 Fixes in this candidate:
 - DMWidget no longer pauses card animations merely because no element has
@@ -3505,7 +3505,7 @@ Verification completed:
 - Staged-source checks found no custom `message` context-menu route in
   DMTranslate or MassDelete, and no registered ImageZoom `image-context` route.
 
-Diggy-owed runtime checks before publication:
+Runtime checks remaining after publication:
 - In the candidate, confirm normal-mode widget skins visibly animate in profile,
   popout, playing cards, and self-name surfaces; confirm Tournament Mode still
   pauses them and voice audio is unchanged.
@@ -3516,5 +3516,34 @@ Diggy-owed runtime checks before publication:
   Reply, Forward, Pin, Bookmark, and Copy Message Link actions without a crash.
 - Confirm display names are visible and styled in self profile, profile
   popouts, member list, DM list, and messages according to their toggles.
-- If those signed-in checks pass, request a separate publication approval;
-  do not treat this candidate as live until the release and updater gates pass.
+
+## 2026-11-05 - v0.7.127 published
+
+Public release state:
+- Commit `1b0461f` is on `origin/main`.
+- Tag `v0.7.127` is published.
+- GitHub release: https://github.com/MaxxTopia/discordmaxxer/releases/tag/v0.7.127
+- Release workflow `42147388400` completed successfully in 5m28s:
+  https://github.com/MaxxTopia/discordmaxxer/actions/runs/42147388400
+- The release is non-draft and non-prerelease. Assets include the x64 and
+  ARM64 ZIPs, NSIS installer, blockmap, and `latest.yml`.
+- The public updater manifest returned HTTP 200 and identifies version
+  `0.7.127`, installer `Discordmaxxer-Setup-0.7.127.exe`, and the matching
+  size/hash metadata.
+
+Publication gates passed:
+- `pnpm test`
+- strict `pnpm overlay:vencord`
+- `pnpm build`
+- `node overlay-scripts/verify-build.mjs`
+- `pnpm package:dir`
+- `pnpm package:win`
+- `git diff --check` and ASCII-safe shipped-script check
+
+Current proof boundary:
+- Source, build, package, commit, push, tag, hosted workflow, release assets,
+  and updater manifest are verified.
+- A signed-in device still needs to verify the visual and interaction paths
+  listed above: animated widget skins, DMEmoji Send/attachment behavior,
+  native text/image context menus, full-screen image right-click, display-name
+  visibility, and the existing profile/plugin surfaces.
