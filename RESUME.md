@@ -3598,3 +3598,64 @@ Diggy-owed runtime checks before publication:
   VideoBackground, plus Tournament Mode and screenshare status.
 - If those signed-in checks pass, authorize the release separately. Do not
   treat source/build proof as proof that the public signed-in runtime is fixed.
+
+## 2026-11-05 - screenshare video-quality reliability candidate
+
+Scope:
+- Preserve the improved Windows selected-process audio path while making the
+  video-quality pass reliable for application/window shares.
+- Improve the automatic stream-health confirmation so it reports what the
+  sender actually delivered, not only whether the encoder was healthy.
+
+Implementation:
+- `screenShareTrackRegistry.ts` now retains the live display track returned by
+  `getDisplayMedia` and removes it when the track ends.
+- `ScreenSharePicker.tsx` now prefers that exact track for the post-submit
+  quality-settling retries. The prior private `MediaEngine` connection lookup
+  remains as a fallback for client builds that expose a different track path.
+- `ScreenSharePicker.tsx` now uses a lower bitrate floor and a 0.1
+  bits-per-pixel-per-frame motion budget so a 1080p60 share can adapt below its
+  target instead of being pinned near an unsustainable bitrate.
+- `videoQuality.ts` accepts an explicit fallback target while preserving the
+  user's saved quality selection. This lets recovery lower 60 FPS to 30 FPS or
+  step down one resolution rung without permanently changing the setting.
+- `streamHealthAuto.ts` checks stress throughout the share, not only at startup.
+  On a sustained CPU/bandwidth/FPS problem it applies one per-share recovery:
+  preserve resolution while moving 60 -> 30 FPS, then move down one resolution
+  rung when the stream is already at 30 FPS. A visible status toast explains the
+  actual fallback. Software encoding alone is not enough to downgrade while the
+  requested FPS is still being delivered.
+- `streamHealthAuto.ts` now includes delivered width, height, FPS, and kbps in
+  the success toast, after any recovery has had a chance to settle.
+
+Verification completed:
+- `git diff --check` passed.
+- `pnpm test` passed (ESLint and TypeScript).
+- `pnpm build` passed.
+- `pnpm overlay:vencord` passed; all 29 custom plugins were staged into the
+  candidate Vencord bundle.
+- `node overlay-scripts/verify-build.mjs` passed, including source fingerprint,
+  staged hashes, required plugin presence, and renderer integrity.
+- `pnpm buildWinAudio` passed; only the existing MSVC macro/C++ standard
+  warnings were emitted.
+- `node --test packages/winaudio/test.js` passed all 4 native tests.
+- `node packages/winaudio/test-loopback.js` ran successfully but found no game
+  process, so it did not provide Fortnite-only audio evidence.
+
+Release/proof boundary:
+- The five source/document changes are committed locally in the isolated
+  worktree `C:/Users/Diggy/projects/discordmaxxer-integration-20261105` on
+  `codex/integrate-dev-20261105`; the canonical dirty checkout is untouched.
+- v0.7.127 remains the public version. No push, tag, package publication, or
+  live-client replacement was made for this candidate.
+- The isolated dev candidate was launched with `start:dev`; its process command
+  line used this worktree's app path and `vencord-dist` bundle. This proves the
+  candidate is wired into a running client, not that a remote viewer received
+  good media.
+- A real sender/recipient test is still required: share a Fortnite window at
+  1080p60 and a YouTube/browser source at 720p60, confirm the health toast's
+  delivered resolution/FPS/bitrate, and have a second account judge motion
+  clarity while confirming Discord call audio remains absent. If the sender is
+  actually limited, the expected result is a visible one-time fallback to
+  1080p30 or 720p30 rather than freeze frames; the saved selection remains
+  unchanged for the next share.

@@ -11,11 +11,16 @@ const DEFAULT_HEIGHT = 720;
 const DEFAULT_ASPECT = 16 / 9;
 const MAX_WIDTH = 3840;
 
+export interface ScreenShareQualityTarget {
+    frameRate: number;
+    height: number;
+}
+
 function even(value: number) {
     return Math.max(2, Math.round(value / 2) * 2);
 }
 
-function qualityTarget() {
+export function getScreenShareQualityTarget(): ScreenShareQualityTarget {
     const frameRate = Number(State.store.screenshareQuality?.frameRate ?? DEFAULT_FRAME_RATE);
     const height = Number(State.store.screenshareQuality?.resolution ?? DEFAULT_HEIGHT);
 
@@ -25,8 +30,8 @@ function qualityTarget() {
     };
 }
 
-function targetDimensions(track: MediaStreamTrack) {
-    const { height: targetHeight } = qualityTarget();
+function targetDimensions(track: MediaStreamTrack, target = getScreenShareQualityTarget()) {
+    const { height: targetHeight } = target;
     const settings = track.getSettings?.() ?? {};
     const sourceWidth = Number(settings.width);
     const sourceHeight = Number(settings.height);
@@ -42,7 +47,7 @@ function targetDimensions(track: MediaStreamTrack) {
         height = even(width / aspect);
     }
 
-    return { frameRate: qualityTarget().frameRate, width, height };
+    return { frameRate: target.frameRate, width, height };
 }
 
 /**
@@ -53,8 +58,11 @@ function targetDimensions(track: MediaStreamTrack) {
  * size. Preserve the source aspect ratio and use crop-and-scale so window and
  * whole-screen shares settle through the same path.
  */
-export function getScreenShareVideoConstraints(track: MediaStreamTrack): MediaTrackConstraints {
-    const { frameRate, width, height } = targetDimensions(track);
+export function getScreenShareVideoConstraints(
+    track: MediaStreamTrack,
+    target = getScreenShareQualityTarget()
+): MediaTrackConstraints {
+    const { frameRate, width, height } = targetDimensions(track, target);
 
     // Preserve unrelated constraints, but replace stale dimensions/advanced
     // entries from the previous one-shot pass so they cannot fight this retry.
@@ -74,26 +82,30 @@ export function getScreenShareVideoConstraints(track: MediaStreamTrack): MediaTr
     } as MediaTrackConstraints;
 }
 
-export async function applyScreenShareVideoQuality(track: MediaStreamTrack, contentHint?: string) {
+export async function applyScreenShareVideoQuality(
+    track: MediaStreamTrack,
+    contentHint?: string,
+    target = getScreenShareQualityTarget()
+) {
     if (track.readyState !== "live") return null;
 
     track.contentHint = contentHint === "detail" ? "detail" : "motion";
-    await track.applyConstraints(getScreenShareVideoConstraints(track));
+    await track.applyConstraints(getScreenShareVideoConstraints(track, target));
     return track.getSettings?.() ?? null;
 }
 
-function isAtTarget(track: MediaStreamTrack) {
+function isAtTarget(track: MediaStreamTrack, target = getScreenShareQualityTarget()) {
     const settings = track.getSettings?.() ?? {};
     const width = Number(settings.width);
     const height = Number(settings.height);
     const frameRate = Number(settings.frameRate);
     if (![width, height, frameRate].every(Number.isFinite)) return false;
 
-    const target = targetDimensions(track);
+    const dimensions = targetDimensions(track, target);
     // Chromium can round capture dimensions by a pixel or two. Treat that as
     // settled, but do not stop while the track is still above the requested
     // resource budget.
-    return width <= target.width + 2 && height <= target.height + 2 && frameRate <= target.frameRate + 1;
+    return width <= dimensions.width + 2 && height <= dimensions.height + 2 && frameRate <= dimensions.frameRate + 1;
 }
 
 /**

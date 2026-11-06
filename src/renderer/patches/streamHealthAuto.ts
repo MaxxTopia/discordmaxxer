@@ -10,7 +10,9 @@ import { isWindows } from "renderer/utils";
 
 import { getOutboundVideoStats } from "./rtcStats";
 import { getLastEchoInjection } from "./screenShareFixes";
+import { getLiveScreenShareVideoTrack } from "./screenShareTrackRegistry";
 import { showDiscordmaxxerStatusToast } from "./statusToast";
+import { applyScreenShareVideoQuality, getScreenShareQualityTarget } from "./videoQuality";
 
 export interface LastStreamHealth {
     ts: number;
@@ -35,6 +37,7 @@ function toast(message: string, type: string) {
 let streaming = false;
 let streamStartTs = 0;
 let capturedThisStream = false;
+let autoAdjustedThisStream = false;
 
 const WARMUP_MS = 6000;
 const POLL_MS = 3000;
@@ -53,9 +56,14 @@ async function tick() {
             streaming = true;
             streamStartTs = Date.now();
             capturedThisStream = false;
+            autoAdjustedThisStream = false;
         }
+        // Keep watching after startup as well. A game can become encoder- or
+        // bandwidth-limited several seconds into a share, especially when a
+        // match starts or Discord opens another hardware-accelerated surface.
+        const stabilizing = stabilizeVideoIfNeeded(stat);
         // Once the encoder has settled, snapshot exactly once per share.
-        if (!capturedThisStream && Date.now() - streamStartTs >= WARMUP_MS) {
+        if (!capturedThisStream && !stabilizing && Date.now() - streamStartTs >= WARMUP_MS) {
             capturedThisStream = true;
             capture(stat);
         }
@@ -63,6 +71,52 @@ async function tick() {
         // streaming → null edge: share ended, re-arm for the next one.
         streaming = false;
     }
+}
+
+function nextStabilizingTarget(stat: NonNullable<Awaited<ReturnType<typeof getOutboundVideoStats>>>) {
+    const requested = getScreenShareQualityTarget();
+    const videoStressed =
+        stat.qualityLimitationReason === "cpu" ||
+        stat.qualityLimitationReason === "bandwidth" ||
+        (stat.encoderKind === "software" && stat.framesPerSecond < requested.frameRate * 0.9) ||
+        stat.framesPerSecond < requested.frameRate * 0.75;
+
+    if (!videoStressed) return null;
+
+    // Preserve resolution first when possible: dropping 60 -> 30 is usually
+    // enough to rescue a game share while keeping text and HUD detail sharp.
+    if (requested.frameRate > 30) return { frameRate: 30, height: requested.height };
+
+    const rung = [480, 720, 1080, 1440, 2160].indexOf(requested.height);
+    if (rung > 1) return { frameRate: requested.frameRate, height: [480, 720, 1080, 1440, 2160][rung - 1] };
+
+    return null;
+}
+
+function stabilizeVideoIfNeeded(stat: NonNullable<Awaited<ReturnType<typeof getOutboundVideoStats>>>) {
+    if (autoAdjustedThisStream) return false;
+
+    const target = nextStabilizingTarget(stat);
+    if (!target) return false;
+
+    const track = getLiveScreenShareVideoTrack();
+    if (!track) return false;
+
+    autoAdjustedThisStream = true;
+    void applyScreenShareVideoQuality(track, "motion", target)
+        .then(settings => {
+            const delivered = settings as MediaTrackSettings | null;
+            const actual = delivered?.height ? `${delivered.width ?? "?"}x${delivered.height}` : "the safer fallback";
+            toast(
+                `Stream was limited at the selected quality; stabilized at ${target.height}p${target.frameRate} (${actual}) to prevent freeze frames.`,
+                Toasts.Type.MESSAGE
+            );
+        })
+        .catch(() => {
+            autoAdjustedThisStream = false;
+        });
+
+    return true;
 }
 
 function capture(stat: NonNullable<Awaited<ReturnType<typeof getOutboundVideoStats>>>) {
@@ -108,8 +162,12 @@ function capture(stat: NonNullable<Awaited<ReturnType<typeof getOutboundVideoSta
     }
 
     // Surface it. Healthy = quiet confirmation; problem = louder + actionable.
+    const delivered = `${stat.frameWidth}x${stat.frameHeight} @ ${stat.framesPerSecond}fps`;
     if (healthy) {
-        toast(`Stream OK: ${stat.encoderKind} encoder @ ${stat.framesPerSecond}fps, echo-fix on`, Toasts.Type.SUCCESS);
+        toast(
+            `Stream OK: ${delivered}, ${stat.encoderKind} encoder, ${stat.kbps}kbps, echo-fix on`,
+            Toasts.Type.SUCCESS
+        );
     } else {
         const echoNote =
             echoFix === "strict-failed"

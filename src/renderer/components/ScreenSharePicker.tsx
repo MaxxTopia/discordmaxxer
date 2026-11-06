@@ -40,6 +40,7 @@ import {
     useState
 } from "@vencord/types/webpack/common";
 import type { Dispatch, SetStateAction } from "react";
+import { getLiveScreenShareVideoTrack } from "renderer/patches/screenShareTrackRegistry";
 import { addPatch } from "renderer/patches/shared";
 import { settleScreenShareVideoQuality } from "renderer/patches/videoQuality";
 import { State, useSettings, useVesktopState } from "renderer/settings";
@@ -127,18 +128,15 @@ addPatch({
             // bits-per-pixel-per-frame budget instead so a 480p15 share stays
             // light and a 1080p60 share gets real bandwidth.
             //
-            // bpp 0.15 ≈ Twitch's published target for game footage at the
-            // chosen res/fps. WebRTC adapts down on congestion regardless of
-            // target, so we set bitrateMin to ~60% of target — high enough
-            // that the encoder can't sink to VOIP rates during a motion burst
-            // and get stuck there, low enough that genuinely congested links
-            // can still claw down to a usable stream.
+            // Use a practical motion budget, but let WebRTC adapt below the
+            // target when the sender or upload path is under pressure. The old
+            // 60% minimum looked good on paper but could pin a 1080p60 share
+            // near 4.8 Mbps and produce freeze frames when the real path could
+            // not sustain it. A low floor is intentionally safer: a soft,
+            // lower-bitrate frame is preferable to a stalled stream.
             const bitrateMax = 8_000_000;
-            const bitrateTarget = Math.max(
-                500_000,
-                Math.min(bitrateMax, Math.round(width * height * framerate * 0.15))
-            );
-            const bitrateMin = Math.round(bitrateTarget * 0.6);
+            const bitrateTarget = Math.max(500_000, Math.min(bitrateMax, Math.round(width * height * framerate * 0.1)));
+            const bitrateMin = 0;
 
             Object.assign(opts, {
                 bitrateMin,
@@ -862,6 +860,13 @@ function ModalComponent({
                             // captures and can leave application shares at
                             // their native, expensive resolution.
                             void settleScreenShareVideoQuality(() => {
+                                // Prefer the exact display track registered by
+                                // getDisplayMedia. The MediaEngine connection
+                                // object is private and is not shaped the same
+                                // way on every Discord build.
+                                const displayTrack = getLiveScreenShareVideoTrack();
+                                if (displayTrack) return displayTrack;
+
                                 const conn = [...MediaEngineStore.getMediaEngine().connections].find(
                                     connection => connection.streamUserId === UserStore.getCurrentUser().id
                                 );
