@@ -22,7 +22,11 @@
 import { definePluginSettings } from "@api/Settings";
 import { findByPropsLazy } from "@webpack";
 import definePlugin, { OptionType } from "@utils/types";
-import { MediaEngineStore, Toasts } from "@webpack/common";
+import { MediaEngineStore, Toasts as DiscordToasts } from "@webpack/common";
+
+import { showDiscordmaxxerStatusToast } from "../_dm-shared/statusToast";
+
+const Toasts = { ...DiscordToasts, show: showDiscordmaxxerStatusToast };
 
 const MUTE_ID = "discordmaxxer.VoiceKeybinds.mute";
 const DEAFEN_ID = "discordmaxxer.VoiceKeybinds.deafen";

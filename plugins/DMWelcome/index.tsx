@@ -20,13 +20,16 @@ import { managedStyleRootNode } from "@api/Styles";
 import { definePluginSettings } from "@api/Settings";
 import { createAndAppendStyle } from "@utils/css";
 import definePlugin, { OptionType } from "@utils/types";
-import { Toasts, UserStore } from "@webpack/common";
+import { Toasts as DiscordToasts, UserStore } from "@webpack/common";
 
 import { BUNDLES } from "../_dm-shared/bundles";
 import { FEATURED_PLUGINS } from "../_dm-shared/featured";
 import { GRADIENT_PRESETS } from "../_dm-shared/gradientPresets";
 import { hasTier, Tier, TIER_LABELS } from "../_dm-shared/vip";
 import { BADGE_ICON } from "../DMBadge";
+import { showDiscordmaxxerStatusToast } from "../_dm-shared/statusToast";
+
+const Toasts = { ...DiscordToasts, show: showDiscordmaxxerStatusToast };
 
 // Bump this when new featured plugins are added to force the modal to re-show
 // on launch so existing users see the additions. Major content updates only —

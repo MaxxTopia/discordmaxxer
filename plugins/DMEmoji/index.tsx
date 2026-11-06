@@ -29,13 +29,17 @@ import {
     openModal,
     PendingReplyStore,
     SelectedChannelStore,
-    Toasts,
+    Toasts as DiscordToasts,
     UploadHandler,
     useEffect,
     useMemo,
     useRef,
     useState
 } from "@webpack/common";
+
+import { showDiscordmaxxerStatusToast } from "../_dm-shared/statusToast";
+
+const Toasts = { ...DiscordToasts, show: showDiscordmaxxerStatusToast };
 
 const RECORDS_KEY = "Discordmaxxer_DMEmoji_records";
 const FILE_KEY_PREFIX = "Discordmaxxer_DMEmoji_file_";

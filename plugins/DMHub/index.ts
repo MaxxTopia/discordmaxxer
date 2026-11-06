@@ -18,6 +18,7 @@ import { createAndAppendStyle } from "@utils/css";
 import definePlugin from "@utils/types";
 import { Toasts } from "@webpack/common";
 
+import { showDiscordmaxxerStatusToast } from "../_dm-shared/statusToast";
 import { getMyTier, hasTier, Tier, TIER_LABELS } from "../_dm-shared/vip";
 import { activateFreeProfile, getMyHwid, readBinding, reserveFreeActivationWindow } from "../_dm-shared/vipClaim";
 
@@ -300,6 +301,14 @@ function isPluginEnabled(name: string): boolean {
     return !!vencord()?.PlainSettings?.plugins?.[name]?.enabled;
 }
 
+function ensurePluginEnabled(name: string): boolean {
+    if (isPluginEnabled(name)) return true;
+    // Opening a shortcut should be enough to make the feature usable. The old
+    // Hub only opened a disabled plugin's settings modal, which made the
+    // modal look present while every control inside it remained inert.
+    return setSetting(name, "enabled", true, false) || isPluginEnabled(name);
+}
+
 function getSetting(plugin: string, key: string): boolean {
     return !!vencord()?.PlainSettings?.plugins?.[plugin]?.[key];
 }
@@ -340,11 +349,10 @@ function setSetting(plugin: string, key: string, value: boolean, noRestart?: boo
 }
 
 function showHubToast(message: string, type = Toasts.Type.MESSAGE, durationMs = 3500) {
-    Toasts.show({
+    showDiscordmaxxerStatusToast({
         message,
         type,
-        id: Toasts.genId(),
-        options: { duration: durationMs, position: Toasts.Position.TOP }
+        options: { duration: durationMs }
     });
 }
 
@@ -366,6 +374,10 @@ async function activateFreeFromHub(authorizationWindow?: any | null) {
 }
 
 function openDMWidgetSettings() {
+    if (!ensurePluginEnabled("DMWidget")) {
+        showHubToast("DMWidget could not be enabled in this client build.", Toasts.Type.FAILURE, 5000);
+        return;
+    }
     const plugin = vencord()?.Plugins?.plugins?.DMWidget;
     if (plugin) {
         try {
@@ -387,6 +399,10 @@ function openDMWidgetSettings() {
 }
 
 function openVideoBackgroundSettings() {
+    if (!ensurePluginEnabled("VideoBackground")) {
+        showHubToast("Video Background could not be enabled in this client build.", Toasts.Type.FAILURE, 5000);
+        return;
+    }
     const plugin = vencord()?.Plugins?.plugins?.VideoBackground;
     if (plugin) {
         try {
@@ -414,6 +430,10 @@ function openVideoBackgroundSettings() {
 }
 
 function openDMProfileFlairSettings() {
+    if (!ensurePluginEnabled("DMProfileFlair")) {
+        showHubToast("Profile Flair could not be enabled in this client build.", Toasts.Type.FAILURE, 5000);
+        return;
+    }
     // Open the same editor used by the DMProfileFlair plugin card's cog. The
     // local Vencord modal shell was repaired to handle this custom editor
     // safely; sending the user to the generic Plugins list makes the shortcut
@@ -446,6 +466,10 @@ function openDMProfileFlairSettings() {
 }
 
 function openDMProfileCosmeticsSettings() {
+    if (!ensurePluginEnabled("DMProfileCosmetics")) {
+        showHubToast("Profile Cosmetics could not be enabled in this client build.", Toasts.Type.FAILURE, 5000);
+        return;
+    }
     // Open the live cosmetics showroom directly from the Hub. Keep the same
     // guarded modal/fallback behavior as the other profile controls so a
     // partially loaded plugin registry does not turn this shortcut into a
@@ -476,6 +500,10 @@ function openDMProfileCosmeticsSettings() {
 }
 
 function openDMDisplayNameStyleSettings() {
+    if (!ensurePluginEnabled("DMDisplayNameStyle")) {
+        showHubToast("Display Name Style could not be enabled in this client build.", Toasts.Type.FAILURE, 5000);
+        return;
+    }
     const plugin = vencord()?.Plugins?.plugins?.DMDisplayNameStyle;
     if (plugin) {
         try {
@@ -503,9 +531,9 @@ function renderPanelHTML(): string {
 
     const rows = QUICK_TOGGLES.map(t => {
         if (!isPluginEnabled(t.plugin)) {
-            return `<div class="dm-hub-row" style="opacity:0.5">
-                <div class="dm-hub-row-label">${t.label}</div>
-                <span style="font-size:10px;color:#8b6aad">disabled</span>
+            return `<div class="dm-hub-row">
+                <div class="dm-hub-row-label">${t.label}<span style="font-size:10px;color:#ddb1ff">off</span></div>
+                <div class="dm-hub-toggle" data-plugin="${t.plugin}" data-key="enabled" role="switch" tabindex="0" aria-checked="false" aria-label="Enable ${t.label}"></div>
             </div>`;
         }
         if (t.minTier && !hasTier(t.minTier)) {
@@ -606,9 +634,9 @@ function ensurePanelRoot() {
         if (!t.classList.contains("dm-hub-toggle") || t.dataset.locked) return;
         const plugin = t.dataset.plugin!;
         const key = t.dataset.key!;
-        const entry = QUICK_TOGGLES.find(e => e.plugin === plugin && e.settingKey === key);
+        const entry = QUICK_TOGGLES.find(e => e.plugin === plugin && (e.settingKey === key || key === "enabled"));
         const next = !getSetting(plugin, key);
-        const applied = setSetting(plugin, key, next, entry?.noRestart);
+        const applied = setSetting(plugin, key, next, key === "enabled" ? false : entry?.noRestart);
         const label = entry?.label ?? plugin;
         if (applied) {
             showHubToast(`${label} ${next ? "enabled" : "disabled"}.`, Toasts.Type.SUCCESS);

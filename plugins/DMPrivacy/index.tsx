@@ -15,7 +15,11 @@
 
 import { definePluginSettings } from "@api/Settings";
 import definePlugin, { OptionType } from "@utils/types";
-import { Alerts, RestAPI, Toasts } from "@webpack/common";
+import { Alerts, RestAPI, Toasts as DiscordToasts } from "@webpack/common";
+
+import { showDiscordmaxxerStatusToast } from "../_dm-shared/statusToast";
+
+const Toasts = { ...DiscordToasts, show: showDiscordmaxxerStatusToast };
 
 let promptTimer: ReturnType<typeof setTimeout> | null = null;
 

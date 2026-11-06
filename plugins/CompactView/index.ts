@@ -14,10 +14,13 @@ import { definePluginSettings } from "@api/Settings";
 import { managedStyleRootNode } from "@api/Styles";
 import { createAndAppendStyle } from "@utils/css";
 import definePlugin, { OptionType } from "@utils/types";
-import { React, Toasts } from "@webpack/common";
+import { React, Toasts as DiscordToasts } from "@webpack/common";
 
 import { HotkeyPicker } from "../_dm-shared/HotkeyPicker";
 import { matchesHotkey, parseHotkey } from "../_dm-shared/hotkey";
+import { showDiscordmaxxerStatusToast } from "../_dm-shared/statusToast";
+
+const Toasts = { ...DiscordToasts, show: showDiscordmaxxerStatusToast };
 
 const HOTKEY_ID = "discordmaxxer.CompactView";
 const DEFAULT_HOTKEY = "ctrl+alt+h";

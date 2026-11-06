@@ -21,7 +21,7 @@
 
 import { definePluginSettings } from "@api/Settings";
 import definePlugin, { OptionType } from "@utils/types";
-import { React, Toasts, UserStore } from "@webpack/common";
+import { React, Toasts as DiscordToasts, UserStore } from "@webpack/common";
 
 import {
     bumpValidatedAt,
@@ -37,6 +37,9 @@ import {
     WORKER_URL
 } from "../_dm-shared/vipClaim";
 import { Tier, TIER_LABELS } from "../_dm-shared/vip";
+import { showDiscordmaxxerStatusToast } from "../_dm-shared/statusToast";
+
+const Toasts = { ...DiscordToasts, show: showDiscordmaxxerStatusToast };
 
 function currentUserId(): string | undefined {
     try {

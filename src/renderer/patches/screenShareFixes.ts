@@ -16,6 +16,7 @@ import {
 } from "renderer/winaudioBridge";
 
 import { registerScreenShareVideoTracks } from "./screenShareTrackRegistry";
+import { showDiscordmaxxerStatusToast } from "./statusToast";
 import { applyScreenShareVideoQuality } from "./videoQuality";
 
 const logger = new Logger("VesktopStreamFixes");
@@ -151,11 +152,7 @@ function debug(...args: any[]) {
 }
 
 function toast(message: string, type: string) {
-    try {
-        Toasts.show({ message, id: Toasts.genId(), type });
-    } catch (e) {
-        debug("toast failed", String(e));
-    }
+    showDiscordmaxxerStatusToast(message, type);
 }
 
 // Cap the captured screenshare video to the user's chosen quality and hint the

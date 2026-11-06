@@ -16,10 +16,13 @@
 import { addProfileBadge, BadgePosition, ProfileBadge, removeProfileBadge } from "@api/Badges";
 import { definePluginSettings } from "@api/Settings";
 import definePlugin, { OptionType } from "@utils/types";
-import { React, RestAPI, Toasts, UserStore } from "@webpack/common";
+import { React, RestAPI, Toasts as DiscordToasts, UserStore } from "@webpack/common";
 
 import { getRosterStatus, getRosterTier, refreshRoster } from "../_dm-shared/roster";
 import { Tier } from "../_dm-shared/vip";
+import { showDiscordmaxxerStatusToast } from "../_dm-shared/statusToast";
+
+const Toasts = { ...DiscordToasts, show: showDiscordmaxxerStatusToast };
 
 // Profile-badge mark — v1 horror-Clyde, 96px PNG with TRANSPARENT background,
 // glyph cropped tight (no cream sticker frame, no padding) so the badge fills

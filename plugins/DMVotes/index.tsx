@@ -21,11 +21,14 @@
  */
 
 import { definePluginSettings } from "@api/Settings";
-import { React, Toasts } from "@webpack/common";
+import { React, Toasts as DiscordToasts } from "@webpack/common";
 import definePlugin, { OptionType } from "@utils/types";
 
 import { makePersistentValue } from "../_dm-shared/persist";
 import { hasTier, Tier, tierGateMessage } from "../_dm-shared/vip";
+import { showDiscordmaxxerStatusToast } from "../_dm-shared/statusToast";
+
+const Toasts = { ...DiscordToasts, show: showDiscordmaxxerStatusToast };
 
 declare global {
     interface Window {

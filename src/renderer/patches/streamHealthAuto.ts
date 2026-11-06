@@ -10,6 +10,7 @@ import { isWindows } from "renderer/utils";
 
 import { getOutboundVideoStats } from "./rtcStats";
 import { getLastEchoInjection } from "./screenShareFixes";
+import { showDiscordmaxxerStatusToast } from "./statusToast";
 
 export interface LastStreamHealth {
     ts: number;
@@ -28,11 +29,7 @@ export interface LastStreamHealth {
 }
 
 function toast(message: string, type: string) {
-    try {
-        Toasts.show({ message, id: Toasts.genId(), type });
-    } catch {
-        /* webpack not ready / no toast — fine */
-    }
+    showDiscordmaxxerStatusToast(message, type);
 }
 
 let streaming = false;

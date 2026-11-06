@@ -16,9 +16,12 @@
 import { definePluginSettings } from "@api/Settings";
 import { NavContextMenuPatchCallback } from "@api/ContextMenu";
 import definePlugin, { OptionType } from "@utils/types";
-import { Menu, Toasts } from "@webpack/common";
+import { Menu, Toasts as DiscordToasts } from "@webpack/common";
 
 import { getUserTier, isAdmin, Tier, TIER_LABELS } from "../_dm-shared/vip";
+import { showDiscordmaxxerStatusToast } from "../_dm-shared/statusToast";
+
+const Toasts = { ...DiscordToasts, show: showDiscordmaxxerStatusToast };
 
 const settings = definePluginSettings({
     grants: {

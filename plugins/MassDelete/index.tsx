@@ -16,7 +16,11 @@ import { findGroupChildrenByChildId, NavContextMenuPatchCallback } from "@api/Co
 import { definePluginSettings } from "@api/Settings";
 import definePlugin, { OptionType } from "@utils/types";
 import { Channel } from "@vencord/discord-types";
-import { Alerts, Constants, Menu, RestAPI, Toasts, UserStore } from "@webpack/common";
+import { Alerts, Constants, Menu, RestAPI, Toasts as DiscordToasts, UserStore } from "@webpack/common";
+
+import { showDiscordmaxxerStatusToast } from "../_dm-shared/statusToast";
+
+const Toasts = { ...DiscordToasts, show: showDiscordmaxxerStatusToast };
 
 const HARD_CAP = 100;
 const RATE_LIMIT_MS = 1000;

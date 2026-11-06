@@ -32,7 +32,11 @@
 
 import { definePluginSettings } from "@api/Settings";
 import definePlugin, { OptionType } from "@utils/types";
-import { FluxDispatcher, Toasts } from "@webpack/common";
+import { FluxDispatcher, Toasts as DiscordToasts } from "@webpack/common";
+
+import { showDiscordmaxxerStatusToast } from "../_dm-shared/statusToast";
+
+const Toasts = { ...DiscordToasts, show: showDiscordmaxxerStatusToast };
 
 // Track which receiver tracks we've touched so we can cleanly restore them
 // on plugin stop / unmute, without un-muting tracks the user muted via some

@@ -5,6 +5,13 @@ const STATUS_TOAST_ID = "discordmaxxer-visible-status-toast";
 let statusToast: HTMLDivElement | null = null;
 let statusToastTimer: number | null = null;
 
+type LegacyStatusToastOptions = {
+    message?: unknown;
+    type?: any;
+    options?: { duration?: unknown };
+    [key: string]: unknown;
+};
+
 function hideStatusToast(): void {
     if (statusToastTimer !== null) {
         window.clearTimeout(statusToastTimer);
@@ -22,10 +29,25 @@ function hideStatusToast(): void {
  * independent of that internal DOM, so actions such as widget skin updates
  * and Tournament Mode changes remain readable.
  */
-export function showDiscordmaxxerStatusToast(message: string, type: any, duration = 3200): void {
+export function showDiscordmaxxerStatusToast(
+    messageOrOptions: string | LegacyStatusToastOptions,
+    type: any = Toasts.Type.MESSAGE,
+    duration = 3200
+): void {
     if (typeof document === "undefined") return;
     const mount = document.body ?? document.documentElement;
     if (!mount) return;
+
+    // Accept the old Toasts.show({ message, type, options: { duration } })
+    // shape during migration. This lets every Discordmaxxer status path use
+    // the same visible surface without losing existing durations or colors.
+    const legacyOptions = typeof messageOrOptions === "string" ? undefined : messageOrOptions;
+    const rawMessage = typeof messageOrOptions === "string" ? messageOrOptions : legacyOptions?.message;
+    if (rawMessage === undefined || rawMessage === null) return;
+    const resolvedType = legacyOptions?.type ?? type;
+    const configuredDuration = legacyOptions?.options?.duration;
+    const resolvedDuration = typeof configuredDuration === "number" ? configuredDuration : duration;
+    const message = typeof rawMessage === "string" ? rawMessage : String(rawMessage);
 
     if (statusToastTimer !== null) {
         window.clearTimeout(statusToastTimer);
@@ -63,8 +85,8 @@ export function showDiscordmaxxerStatusToast(message: string, type: any, duratio
         mount.appendChild(statusToast);
     }
 
-    const failure = type === Toasts.Type.FAILURE;
-    const success = type === Toasts.Type.SUCCESS;
+    const failure = resolvedType === Toasts.Type.FAILURE;
+    const success = resolvedType === Toasts.Type.SUCCESS;
     statusToast.textContent = message;
     statusToast.style.background = failure
         ? "linear-gradient(135deg, #8e2632, #5b1824)"
@@ -84,7 +106,7 @@ export function showDiscordmaxxerStatusToast(message: string, type: any, duratio
         statusToast.style.opacity = "0";
         statusToast.style.transform = "translateY(-8px)";
         statusToastTimer = window.setTimeout(hideStatusToast, 180);
-    }, duration);
+    }, Math.max(800, resolvedDuration));
 }
 
 export function hideDiscordmaxxerStatusToast(): void {

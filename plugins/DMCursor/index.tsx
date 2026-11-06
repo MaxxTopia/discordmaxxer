@@ -19,10 +19,13 @@
 import { definePluginSettings } from "@api/Settings";
 import { managedStyleRootNode } from "@api/Styles";
 import { createAndAppendStyle } from "@utils/css";
-import { React, Toasts } from "@webpack/common";
+import { React, Toasts as DiscordToasts } from "@webpack/common";
 import definePlugin, { OptionType } from "@utils/types";
 
 import { hasTier, Tier, TIER_LABELS } from "../_dm-shared/vip";
+import { showDiscordmaxxerStatusToast } from "../_dm-shared/statusToast";
+
+const Toasts = { ...DiscordToasts, show: showDiscordmaxxerStatusToast };
 
 type CursorSkin = "sharingan" | "rinnegan" | "rasengan" | "chidori" | "dragonsword" | "stiiizy";
 

@@ -20,10 +20,13 @@ import { definePluginSettings } from "@api/Settings";
 import { managedStyleRootNode } from "@api/Styles";
 import { createAndAppendStyle } from "@utils/css";
 import definePlugin, { OptionType } from "@utils/types";
-import { Toasts } from "@webpack/common";
+import { Toasts as DiscordToasts } from "@webpack/common";
 import { React, UserStore } from "@webpack/common";
 
 import { DISPLAY_NAME_STYLE_PRESET_IDS, isDisplayNameStylePresetId } from "../_dm-shared/displayNameStylePresets";
+import { showDiscordmaxxerStatusToast } from "../_dm-shared/statusToast";
+
+const Toasts = { ...DiscordToasts, show: showDiscordmaxxerStatusToast };
 
 const ROOT_ID = "dm-display-name-style-root";
 const TARGET_ATTR = "data-dm-display-name-style";

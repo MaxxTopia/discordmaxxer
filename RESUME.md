@@ -3547,3 +3547,54 @@ Current proof boundary:
   listed above: animated widget skins, DMEmoji Send/attachment behavior,
   native text/image context menus, full-screen image right-click, display-name
   visibility, and the existing profile/plugin surfaces.
+
+## 2026-11-05 - status surface and DM Hub integration candidate
+
+Scope:
+- The public profile had `NotAnotherAnimeTheme.theme.css` in its remembered
+  enabled-theme list only in the dev settings; the CSS file was missing from
+  both local theme directories. The official upstream file was restored to
+  `C:/Users/Diggy/AppData/Roaming/discordmaxxer/themes/NotAnotherAnimeTheme.theme.css`
+  and the public settings entry was enabled. The previous public settings file
+  is preserved as
+  `C:/Users/Diggy/AppData/Roaming/discordmaxxer/settings/settings.json.codex-theme-restore-20261105.bak`.
+- DMHub direct shortcuts now ensure DMWidget, VideoBackground, DMProfileFlair,
+  DMProfileCosmetics, and DMDisplayNameStyle are enabled before opening their
+  settings. Disabled quick-toggle rows are actionable instead of looking like
+  dead, disabled text.
+- Discordmaxxer-owned plugin status messages now route through the visible
+  `discordmaxxer-visible-status-toast` surface, including legacy
+  `Toasts.show({ message, type, options })` call shapes. DMTheme,
+  VideoBackground, DMHub, and the renderer-owned screenshare/stream-health
+  patches use the same surface. Discord's stock Developer Options/User Assets
+  notifications remain native and are not altered.
+
+Candidate source state:
+- Changes are uncommitted in the isolated worktree
+  `C:/Users/Diggy/projects/discordmaxxer-integration-20261105` on branch
+  `codex/integrate-dev-20261105`; the canonical dirty checkout remains
+  untouched and no public release was made for this candidate.
+- v0.7.127 remains the public version until this candidate is explicitly
+  authorized for release.
+
+Verification completed for this candidate:
+- `pnpm test` passed (lint and TypeScript).
+- `pnpm build` passed.
+- strict `pnpm overlay:vencord` passed; all 29 custom plugins were staged.
+- `node overlay-scripts/verify-build.mjs` passed, including source fingerprint,
+  staged hashes, required plugin presence, and renderer integrity.
+- `pnpm verifyPlugins` passed: defaults 58, bundles 10, featured 9, registry
+  sources 244; all user-facing IDs resolve.
+- `git diff --check` passed and no Discordmaxxer-owned plugin `showToast(...)`
+  imports/calls remain.
+
+Diggy-owed runtime checks before publication:
+- Reload/relaunch the public app after the local theme restore and confirm the
+  restored theme is visible and that the DMHub Profile Look shortcuts open and
+  enable the intended plugins.
+- Disable DMDisplayNameStyle, reopen it through DMHub, change a style, and
+  confirm a readable status message appears rather than the recurring grey
+  marker shown in the attached screenshot. Repeat for DMTheme and
+  VideoBackground, plus Tournament Mode and screenshare status.
+- If those signed-in checks pass, authorize the release separately. Do not
+  treat source/build proof as proof that the public signed-in runtime is fixed.

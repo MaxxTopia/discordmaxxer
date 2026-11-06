@@ -23,10 +23,14 @@ import {
     Button,
     Forms,
     openModal,
-    Toasts,
+    Toasts as DiscordToasts,
     useEffect,
     useState
 } from "@webpack/common";
+
+import { showDiscordmaxxerStatusToast } from "../_dm-shared/statusToast";
+
+const Toasts = { ...DiscordToasts, show: showDiscordmaxxerStatusToast };
 
 const GOOGLE_TRANSLATE_KEY = "AIzaSyDLEeFI5OtFBwYBIoK_jj5m32rZK5CkCXA";
 const MAX_MESSAGE_LENGTH = 5000;

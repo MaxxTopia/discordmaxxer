@@ -21,9 +21,10 @@ import { definePluginSettings } from "@api/Settings";
 import { managedStyleRootNode } from "@api/Styles";
 import { createAndAppendStyle } from "@utils/css";
 import definePlugin, { OptionType } from "@utils/types";
-import { Button, React, showToast, Toasts } from "@webpack/common";
+import { Button, React, Toasts } from "@webpack/common";
 
 import { makePersistentValue } from "../_dm-shared/persist";
+import { showDiscordmaxxerStatusToast } from "../_dm-shared/statusToast";
 import { getMyTier, Tier, TIER_LABELS } from "../_dm-shared/vip";
 
 const VIDEO_ID = "dm-video-bg";
@@ -633,20 +634,7 @@ function VideoControls() {
 }
 
 function toast(message: string, type: any = Toasts.Type.MESSAGE, durationMs = 3000) {
-    try {
-        showToast(message, type, { duration: durationMs });
-    } catch (error) {
-        console.warn("[VideoBackground] status toast failed:", error);
-        try {
-            Toasts.show({
-                message, type,
-                id: Toasts.genId(),
-                options: { duration: durationMs, position: Toasts.Position.TOP }
-            });
-        } catch (fallbackError) {
-            console.warn("[VideoBackground] legacy toast fallback failed:", fallbackError);
-        }
-    }
+    showDiscordmaxxerStatusToast(message, type, durationMs);
 }
 
 function SavedSlotsPanel() {

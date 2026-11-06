@@ -25,7 +25,7 @@
 import { definePluginSettings } from "@api/Settings";
 import { managedStyleRootNode } from "@api/Styles";
 import { createAndAppendStyle } from "@utils/css";
-import { React, showToast, Toasts } from "@webpack/common";
+import { React, Toasts } from "@webpack/common";
 import definePlugin, { OptionType } from "@utils/types";
 
 import {
@@ -42,6 +42,7 @@ import {
     ThemeVisibility
 } from "../_dm-shared/themes";
 import { hasTier, TIER_LABELS } from "../_dm-shared/vip";
+import { showDiscordmaxxerStatusToast } from "../_dm-shared/statusToast";
 
 let style: HTMLStyleElement;
 let flairStyle: HTMLStyleElement;
@@ -72,16 +73,7 @@ function themeIsAvailable(id: ThemeId): boolean {
 }
 
 function showThemeToast(message: string, type: any = Toasts.Type.MESSAGE, duration = 4000): void {
-    try {
-        showToast(message, type, { duration });
-    } catch (error) {
-        console.warn("[DiscordmaxxerTheme] status toast failed:", error);
-        try {
-            Toasts.show({ message, id: Toasts.genId(), type, options: { duration } });
-        } catch (fallbackError) {
-            console.warn("[DiscordmaxxerTheme] legacy status toast fallback failed:", fallbackError);
-        }
-    }
+    showDiscordmaxxerStatusToast(message, type, duration);
 }
 
 function applyTheme(id: ThemeId): ThemeId {
