@@ -24,6 +24,13 @@ const REQUIRED_BUILD_PLUGINS = [
     "DMTranslate"
 ];
 
+const REQUIRED_VENCORD_FILES = [
+    "vencordDesktopMain.js",
+    "vencordDesktopPreload.js",
+    "vencordDesktopRenderer.js",
+    "vencordDesktopRenderer.css"
+];
+
 function sha256File(path: string): string {
     return createHash("sha256").update(readFileSync(path)).digest("hex");
 }
@@ -94,13 +101,6 @@ function hasVerifiedBuildIdentity(dir: string): boolean {
 // custom plugins compiled in) when it exists. This bypasses Vesktop's runtime
 // download of stock Vencord. The staged folder is built by `pnpm overlay:vencord`.
 function discordmaxxerStagedVencord(): string | null {
-    const required = [
-        "vencordDesktopMain.js",
-        "vencordDesktopPreload.js",
-        "vencordDesktopRenderer.js",
-        "vencordDesktopRenderer.css"
-    ];
-
     // Dev: project-relative path. Production: bundled in resources/.
     // In dev __dirname is dist/js/ — go up 2 levels to project root.
     const candidates = IS_DEV
@@ -108,7 +108,7 @@ function discordmaxxerStagedVencord(): string | null {
         : [join(process.resourcesPath ?? "", "vencord-dist"), join(app.getAppPath(), "vencord-dist")];
 
     for (const dir of candidates) {
-        const filesPresent = required.every(f => existsSync(join(dir, f)));
+        const filesPresent = REQUIRED_VENCORD_FILES.every(f => existsSync(join(dir, f)));
         if (!filesPresent) {
             console.log(`[Discordmaxxer] vencord-dist candidate: ${dir} -> miss`);
             continue;
@@ -121,6 +121,21 @@ function discordmaxxerStagedVencord(): string | null {
 }
 
 const STAGED = discordmaxxerStagedVencord();
+const PACKAGED_STAGE_DIR = join(process.resourcesPath ?? "", "vencord-dist");
+const PACKAGED_STAGE_PRESENT = REQUIRED_VENCORD_FILES.every(f => existsSync(join(PACKAGED_STAGE_DIR, f)));
+
+// A packaged build must never silently replace the Discordmaxxer overlay with
+// a stock, rolling Vencord download. That fallback can produce a blank or
+// plugin-less client while looking superficially healthy. Let the startup
+// recovery screen explain the bad package instead, so the release is repaired
+// rather than hiding the packaging error behind a runtime download.
+export const PACKAGED_VENCORD_STAGE_ERROR =
+    app.isPackaged && !STAGED
+        ? PACKAGED_STAGE_PRESENT
+            ? "The packaged Discordmaxxer overlay failed its integrity check. Install a repaired build."
+            : "The packaged Discordmaxxer overlay is missing. Install a repaired build."
+        : null;
+
 if (STAGED) {
     console.log(`[Discordmaxxer] Using locally-staged Vencord at ${STAGED}`);
 } else {

@@ -8,13 +8,15 @@ import {
     app,
     BrowserWindow,
     BrowserWindowConstructorOptions,
+    ipcMain,
     Menu,
     MenuItemConstructorOptions,
     nativeImage,
     nativeTheme,
     Rectangle,
     screen,
-    session
+    session,
+    shell
 } from "electron";
 import { existsSync } from "fs";
 import { join } from "path";
@@ -32,7 +34,14 @@ import { AppEvents } from "./events";
 import { darwinURL } from "./index";
 import { sendRendererCommand } from "./ipcCommands";
 import { Settings, State, VencordSettings } from "./settings";
-import { createSplashWindow, updateSplashMessage } from "./splash";
+import {
+    closeStartupRecovery,
+    createSplashWindow,
+    registerStartupRecoveryHandlers,
+    showStartupRecovery,
+    updateSplashMessage
+} from "./splash";
+import { describeStartupError, getStartupLogPath, recordStartupEvent } from "./startupDiagnostics";
 import { destroyTray, initTray } from "./tray";
 import { clearData } from "./utils/clearData";
 import { makeLinksOpenExternally } from "./utils/makeLinksOpenExternally";
@@ -49,6 +58,25 @@ app.on("before-quit", () => {
 });
 
 export let mainWin: BrowserWindow;
+
+const STARTUP_PREPARATION_TIMEOUT_MS = 20_000;
+const STARTUP_RENDERER_TIMEOUT_MS = 25_000;
+const STARTUP_PROBE_INTERVAL_MS = 250;
+const MAX_STARTUP_NAVIGATION_RETRIES = 3;
+const retryDelay = 1000;
+
+let retryTimer: ReturnType<typeof setTimeout> | null = null;
+let startupWatchdogTimer: ReturnType<typeof setTimeout> | null = null;
+let startupProbeTimer: ReturnType<typeof setInterval> | null = null;
+let unresponsiveTimer: ReturnType<typeof setTimeout> | null = null;
+let startupAttempt = 0;
+let startupTargetUrl = "";
+let startupReady = false;
+let startupRecoveryShown = false;
+let navigationRetryCount = 0;
+let recoveryHandlersRegistered = false;
+let startupFailureIpcRegistered = false;
+let createWindowsPromise: Promise<void> | null = null;
 
 function makeSettingsListenerHelpers<O extends object>(o: SettingsStore<O>) {
     const listeners = new Map<(data: any) => void, PropertyKey>();
@@ -479,34 +507,193 @@ function createMainWindow() {
 
     win.webContents.setUserAgent(BrowserUserAgent);
 
-    // if the open-url event is fired (in index.ts) while starting up, darwinURL will be set. If not fall back to checking the process args (which Windows and Linux use for URI calling.)
-    // win.webContents.session.clearCache().then(() => {
-    loadUrl(darwinURL || process.argv.find(arg => arg.startsWith("discord://")));
-    // });
-
     return win;
 }
 
 const runVencordMain = once(() => require(join(VENCORD_FILES_DIR, "vencordDesktopMain.js")));
 
-export function loadUrl(uri: string | undefined) {
+function clearStartupWatch() {
+    if (startupWatchdogTimer !== null) {
+        clearTimeout(startupWatchdogTimer);
+        startupWatchdogTimer = null;
+    }
+    if (startupProbeTimer !== null) {
+        clearInterval(startupProbeTimer);
+        startupProbeTimer = null;
+    }
+    if (unresponsiveTimer !== null) {
+        clearTimeout(unresponsiveTimer);
+        unresponsiveTimer = null;
+    }
+}
+
+function startupDiagnosticId() {
+    return `${app.getVersion()}-${process.pid}-${Date.now().toString(36)}`;
+}
+
+function failStartup(reason: string, error?: unknown) {
+    if (startupRecoveryShown) return;
+
+    startupRecoveryShown = true;
+    clearStartupWatch();
     if (retryTimer !== null) {
         clearTimeout(retryTimer);
         retryTimer = null;
     }
+
+    const detail = error === undefined ? reason : `${reason} ${describeStartupError(error)}`;
+    const diagnosticId = startupDiagnosticId();
+    recordStartupEvent("startup-recovery", {
+        diagnosticId,
+        reason,
+        detail,
+        targetUrl: startupTargetUrl
+    });
+    showStartupRecovery(detail, diagnosticId, app.getVersion());
+}
+
+function markStartupReady(attempt: number) {
+    if (attempt !== startupAttempt || startupReady) return;
+
+    startupReady = true;
+    startupRecoveryShown = false;
+    clearStartupWatch();
+    recordStartupEvent("renderer-ready", { attempt, targetUrl: startupTargetUrl });
+    closeStartupRecovery();
+    AppEvents.emit("appLoaded");
+}
+
+function beginStartupWatch(targetUrl: string) {
+    startupAttempt += 1;
+    startupReady = false;
+    startupRecoveryShown = false;
+    startupTargetUrl = targetUrl;
+    clearStartupWatch();
+
+    const attempt = startupAttempt;
+    startupWatchdogTimer = setTimeout(() => {
+        failStartup("Discord did not finish loading within the startup timeout.");
+    }, STARTUP_RENDERER_TIMEOUT_MS);
+
+    recordStartupEvent("navigation-start", { attempt, targetUrl });
+    return attempt;
+}
+
+function startRendererProbe(attempt: number) {
+    let probeInFlight = false;
+
+    const probe = () => {
+        if (attempt !== startupAttempt || startupReady || startupRecoveryShown) return;
+        if (!mainWin || mainWin.isDestroyed()) return;
+        if (probeInFlight) return;
+
+        probeInFlight = true;
+
+        try {
+            void mainWin.webContents
+                .executeJavaScript(
+                    `(() => { const mount = document.querySelector("#app-mount"); return Boolean(mount && mount.childElementCount > 0); })()`,
+                    true
+                )
+                .then(isReady => {
+                    if (isReady === true) markStartupReady(attempt);
+                })
+                .catch(error => recordStartupEvent("renderer-probe-error", describeStartupError(error)))
+                .finally(() => {
+                    probeInFlight = false;
+                });
+        } catch (error) {
+            recordStartupEvent("renderer-probe-error", describeStartupError(error));
+            probeInFlight = false;
+        }
+    };
+
+    probe();
+    startupProbeTimer = setInterval(probe, STARTUP_PROBE_INTERVAL_MS);
+}
+
+function retryStartup() {
+    recordStartupEvent("startup-retry-requested");
+    startupRecoveryShown = false;
+    navigationRetryCount = 0;
+    closeStartupRecovery();
+
+    if (!mainWin || mainWin.isDestroyed()) {
+        app.relaunch();
+        app.quit();
+        return;
+    }
+
+    loadUrl(undefined, true);
+}
+
+function restartStartup() {
+    recordStartupEvent("startup-restart-requested");
+    app.relaunch();
+    app.quit();
+}
+
+function registerStartupRecovery() {
+    if (!recoveryHandlersRegistered) {
+        recoveryHandlersRegistered = true;
+        registerStartupRecoveryHandlers({
+            retry: retryStartup,
+            restart: restartStartup,
+            openLog: () => void shell.openPath(getStartupLogPath())
+        });
+    }
+
+    if (startupFailureIpcRegistered) return;
+    startupFailureIpcRegistered = true;
+    ipcMain.on(IpcEvents.DM_STARTUP_ERROR, (event, stage: string, detail: string) => {
+        if (!mainWin || event.sender !== mainWin.webContents) return;
+
+        recordStartupEvent("renderer-startup-error", { stage, detail });
+        if (!startupReady) failStartup(`Discord's startup script failed at ${stage || "an unknown stage"}.`, detail);
+    });
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(label)), timeoutMs);
+    });
+
+    return Promise.race([promise, timeout]).finally(() => {
+        if (timer !== undefined) clearTimeout(timer);
+    });
+}
+
+export function loadUrl(uri: string | undefined, resetRetries = true) {
+    if (retryTimer !== null) {
+        clearTimeout(retryTimer);
+        retryTimer = null;
+    }
+    if (resetRetries) navigationRetryCount = 0;
+
     const branch = Settings.store.discordBranch;
     const subdomain = branch === "canary" || branch === "ptb" ? `${branch}.` : "";
-    const targetUrl = `https://${subdomain}discord.com/${uri ? new URL(uri).pathname.slice(1) || "app" : "app"}`;
+    let targetUrl: string;
+    try {
+        targetUrl = `https://${subdomain}discord.com/${uri ? new URL(uri).pathname.slice(1) || "app" : "app"}`;
+    } catch (error) {
+        failStartup("Discord's startup URL was invalid.", error);
+        return;
+    }
 
-    // we do not rely on 'did-finish-load' because it fires even if loadURL fails which triggers early detruction of the splash
-    mainWin
+    const attempt = beginStartupWatch(targetUrl);
+    recordStartupEvent("navigation-requested", { attempt, targetUrl });
+    if (!mainWin || mainWin.isDestroyed()) {
+        failStartup("Discord's main window was unavailable during startup.");
+        return;
+    }
+
+    void mainWin
         .loadURL(targetUrl)
         .then(() => {
-            if (retryTimer !== null) {
-                clearTimeout(retryTimer);
-                retryTimer = null;
-            }
-            AppEvents.emit("appLoaded");
+            if (attempt !== startupAttempt || startupRecoveryShown) return;
+            recordStartupEvent("document-loaded", { attempt, targetUrl });
+            startRendererProbe(attempt);
         })
         .catch(error => {
             const failure = error as { url?: string; code?: string };
@@ -514,28 +701,34 @@ export function loadUrl(uri: string | undefined) {
         });
 }
 
-const retryDelay = 1000;
-let retryTimer: ReturnType<typeof setTimeout> | null = null;
-function retryUrl(url: string, description: string, error: any) {
-    console.log(`retrying in ${retryDelay}ms`);
+function retryUrl(url: string, description: string, error: unknown) {
     // Electron reports ERR_ABORTED when a navigation is superseded by a
     // legitimate redirect (for example /app -> /login) or by another loadURL
-    // call. Showing that as a fatal splash error makes a healthy sign-in path
-    // look like an infinite loading failure.
-    if (description !== "ERR_ABORTED") {
-        updateSplashMessage(`Failed to load Discord: ${description}`);
-        console.warn("[mainWindow] Discord navigation failed:", error);
+    // call. Treat that as a normal navigation transition.
+    if (description === "ERR_ABORTED") return;
+
+    recordStartupEvent("navigation-failed", { url, description, error: describeStartupError(error) });
+    updateSplashMessage(`Failed to load Discord: ${description}`);
+    console.warn("[mainWindow] Discord navigation failed:", error);
+
+    if (startupRecoveryShown || retryTimer !== null) return;
+    if (navigationRetryCount >= MAX_STARTUP_NAVIGATION_RETRIES) {
+        failStartup(`Discord navigation failed after ${MAX_STARTUP_NAVIGATION_RETRIES} attempts (${description}).`, error);
+        return;
     }
-    if (retryTimer !== null) return;
+
+    navigationRetryCount += 1;
+    console.log(`[mainWindow] retrying Discord navigation in ${retryDelay}ms (${navigationRetryCount}/${MAX_STARTUP_NAVIGATION_RETRIES})`);
     retryTimer = setTimeout(() => {
         retryTimer = null;
         if (!mainWin || mainWin.isDestroyed()) return;
-        loadUrl(url);
+        loadUrl(url, false);
     }, retryDelay);
 }
 
-export async function createWindows() {
+async function createWindowsInternal() {
     const startMinimized = CommandLine.values["start-minimized"];
+    registerStartupRecovery();
 
     let splash: BrowserWindow | undefined;
     if (Settings.store.enableSplashScreen !== false) {
@@ -545,10 +738,27 @@ export async function createWindows() {
         if (isDeckGameMode) splash.setFullScreen(true);
     }
 
-    await ensureVencordFiles();
-    runVencordMain();
+    try {
+        recordStartupEvent("vencord-preparation-start", { directory: VENCORD_FILES_DIR });
+        await withTimeout(
+            ensureVencordFiles(),
+            STARTUP_PREPARATION_TIMEOUT_MS,
+            "The plugin engine did not become ready within the startup timeout."
+        );
+        recordStartupEvent("vencord-preparation-ready");
+        runVencordMain();
+        recordStartupEvent("vencord-main-ready");
+    } catch (error) {
+        failStartup("The Discordmaxxer plugin engine could not start.", error);
+        return;
+    }
 
     AppEvents.on("appLoaded", () => {
+        startupReady = true;
+        startupRecoveryShown = false;
+        clearStartupWatch();
+        closeStartupRecovery();
+
         try {
             splash?.destroy();
         } catch {}
@@ -579,19 +789,15 @@ export async function createWindows() {
     // loaded Discord renderer.
     mainWin = createMainWindow();
 
-    // Safety net: ensure the main window is visible even if Discord's network
-    // load takes longer than usual. Keep the splash recovery bounded so a
-    // transient CDN delay cannot strand the user behind an invisible window.
-    setTimeout(() => {
-        if (mainWin && !mainWin.isDestroyed() && !mainWin.isVisible() && !startMinimized) {
-            try {
-                splash?.destroy();
-            } catch {}
-            mainWin.show();
-            mainWin.focus();
-            if (State.store.maximized && !isDeckGameMode) mainWin.maximize();
-        }
-    }, 3500);
+    mainWin.webContents.on("did-fail-load", (_, errorCode, errorDescription, validatedURL, isMainFrame) => {
+        if (!isMainFrame || errorCode === -3) return;
+
+        retryUrl(
+            validatedURL || startupTargetUrl,
+            `${errorCode}: ${errorDescription}`,
+            { errorCode, errorDescription, validatedURL }
+        );
+    });
 
     mainWin.webContents.on("did-navigate", (_, url: string, responseCode: number) => {
         updateSplashMessage(""); // clear the splash message
@@ -603,16 +809,59 @@ export async function createWindows() {
         // Discord's own origin.
         let isDiscordOrigin = false;
         try {
-            isDiscordOrigin = /^(([^.]+)\.)*discord\.com$/i.test(new URL(url).hostname);
+            isDiscordOrigin = /^(([^.]+\.)*discord\.com)$/i.test(new URL(url).hostname);
         } catch {
             isDiscordOrigin = false;
         }
         if (responseCode >= 300 && !isDiscordOrigin) {
-            loadUrl(undefined);
-            console.warn(`'did-navigate': Caught bad page response: ${responseCode}, redirecting to main app`);
+            retryUrl(url, `HTTP ${responseCode}`, new Error(`Discord navigation escaped to ${url}`));
+            console.warn(`'did-navigate': Caught bad page response: ${responseCode}, retrying the main app`);
         }
     });
 
-    mainWin.webContents.on("render-process-gone", (event, details) => console.log(details));
+    mainWin.webContents.on("render-process-gone", (_event, details) => {
+        recordStartupEvent("render-process-gone", details);
+        if (!startupReady) failStartup("The Discord renderer stopped during startup.", details);
+    });
+
+    mainWin.webContents.on("unresponsive", () => {
+        recordStartupEvent("renderer-unresponsive");
+        if (startupReady || unresponsiveTimer !== null) return;
+
+        unresponsiveTimer = setTimeout(() => {
+            unresponsiveTimer = null;
+            if (!startupReady) failStartup("The Discord renderer stopped responding during startup.");
+        }, 8_000);
+    });
+
+    mainWin.webContents.on("responsive", () => {
+        recordStartupEvent("renderer-responsive");
+        if (unresponsiveTimer !== null) {
+            clearTimeout(unresponsiveTimer);
+            unresponsiveTimer = null;
+        }
+    });
+
     initArRPC();
+    loadUrl(darwinURL || process.argv.find(arg => arg.startsWith("discord://")));
+}
+
+/**
+ * App activation, first-launch completion, and the normal bootstrap can all
+ * ask for a window around the same time. Keep those paths on one startup
+ * promise; two concurrent Vencord preparations can otherwise race over the
+ * staged files and leave one of the windows blank.
+ */
+export function createWindows() {
+    if (createWindowsPromise) return createWindowsPromise;
+
+    const promise = createWindowsInternal();
+    createWindowsPromise = promise.finally(() => {
+        // If preparation failed before a main window existed, allow a later
+        // activation/retry to start a fresh attempt. Once a real window exists,
+        // keep the promise as the single owner for this process lifetime.
+        if (!mainWin || mainWin.isDestroyed()) createWindowsPromise = null;
+    });
+
+    return createWindowsPromise;
 }

@@ -9,5 +9,14 @@ import { contextBridge, ipcRenderer } from "electron/renderer";
 contextBridge.exposeInMainWorld("VesktopSplashNative", {
     onUpdateMessage(callback: (message: string) => void) {
         ipcRenderer.on("update-splash-message", (_, message: string) => callback(message));
+    },
+    retryStartup() {
+        ipcRenderer.send("startup-recovery-retry");
+    },
+    restartStartup() {
+        ipcRenderer.send("startup-recovery-restart");
+    },
+    openStartupLog() {
+        ipcRenderer.send("startup-recovery-open-log");
     }
 });

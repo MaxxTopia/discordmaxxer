@@ -85,7 +85,8 @@ export const enum IpcEvents {
     DM_CHROME_WINDOW_OCCLUSION_SET = "DM_CHROME_WINDOW_OCCLUSION_SET",
     DM_REPORT_INCIDENT = "DM_REPORT_INCIDENT",
     DM_GET_RESILIENCE_STATE = "DM_GET_RESILIENCE_STATE",
-    DM_UPDATER_CHECK = "DM_UPDATER_CHECK"
+    DM_UPDATER_CHECK = "DM_UPDATER_CHECK",
+    DM_STARTUP_ERROR = "DM_STARTUP_ERROR"
 }
 
 /** Runtime knobs that TournamentMode is allowed to change in the main process. */

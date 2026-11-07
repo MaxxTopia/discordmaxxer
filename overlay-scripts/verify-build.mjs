@@ -106,6 +106,38 @@ if (!existsSync(shellRenderer)) fail("dist/js/renderer.js missing — `pnpm buil
 else if (sizeKB(shellRenderer) < 50) fail(`dist/js/renderer.js is only ${sizeKB(shellRenderer).toFixed(1)}KB — likely a failed build`);
 else ok(`dist/js/renderer.js present (${sizeKB(shellRenderer).toFixed(0)}KB)`);
 
+// 4) Startup recovery must ship with the shell. A normal TypeScript/build
+// check cannot catch accidentally omitting the recovery view or reverting the
+// watchdog wiring, which would put users back into an unrecoverable blank
+// window after a bad renderer/plugin start.
+const recoveryView = join(ROOT, "static", "views", "startup-recovery.html");
+if (!existsSync(recoveryView)) {
+    fail("static/views/startup-recovery.html missing — startup failures would have no recovery UI");
+} else {
+    const recoveryMarkup = readFileSync(recoveryView, "utf8");
+    for (const control of ['id="retry"', 'id="restart"', 'id="log"']) {
+        if (recoveryMarkup.includes(control)) ok(`startup recovery view includes ${control}`);
+        else fail(`startup recovery view is missing ${control}`);
+    }
+}
+
+const shellMain = join(ROOT, "dist", "js", "main.js");
+const shellPreload = join(ROOT, "dist", "js", "preload.js");
+const startupMarkers = [
+    [shellMain, "did-fail-load", "main-process navigation watchdog"],
+    [shellMain, "Discord did not finish loading within the startup timeout.", "renderer startup timeout"],
+    [shellMain, "The plugin engine did not become ready within the startup timeout.", "plugin preparation timeout"],
+    [shellPreload, "DM_STARTUP_ERROR", "renderer startup error reporting"],
+    [shellPreload, "renderer-script-load", "empty renderer bundle reporting"]
+];
+for (const [file, marker, description] of startupMarkers) {
+    if (!existsSync(file) || !readFileSync(file, "utf8").includes(marker)) {
+        fail(`${description} marker is missing from ${file.replace(ROOT + "\\", "")}`);
+    } else {
+        ok(`${description} is present`);
+    }
+}
+
 if (errors.length) {
     console.error(`\n[verify] ✗ FAILED — ${errors.length} integrity problem(s). Refusing to publish this build.`);
     process.exit(1);

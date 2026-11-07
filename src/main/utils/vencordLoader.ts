@@ -5,8 +5,8 @@
  */
 
 import { mkdirSync, readFileSync } from "fs";
-import { access, constants as FsConstants, writeFile } from "fs/promises";
-import { VENCORD_FILES_DIR } from "main/vencordFilesDir";
+import { access, constants as FsConstants, stat, writeFile } from "fs/promises";
+import { PACKAGED_VENCORD_STAGE_ERROR, VENCORD_FILES_DIR } from "main/vencordFilesDir";
 import { join } from "path";
 
 import { USER_AGENT } from "../constants";
@@ -60,7 +60,8 @@ export async function downloadVencordFiles() {
 
 const existsAsync = (path: string) =>
     access(path, FsConstants.F_OK)
-        .then(() => true)
+        .then(() => stat(path))
+        .then(info => info.isFile() && info.size > 0)
         .catch(() => false);
 
 export async function isValidVencordInstall(dir: string) {
@@ -69,6 +70,9 @@ export async function isValidVencordInstall(dir: string) {
 }
 
 export async function ensureVencordFiles() {
+    if (PACKAGED_VENCORD_STAGE_ERROR) {
+        throw new Error(PACKAGED_VENCORD_STAGE_ERROR);
+    }
     if (await isValidVencordInstall(VENCORD_FILES_DIR)) return;
 
     mkdirSync(VENCORD_FILES_DIR, { recursive: true });
@@ -78,9 +82,14 @@ export async function ensureVencordFiles() {
 
 // TODO: remove this once enough time has passed
 export function vencordSupportsSandboxing() {
-    const supports = readFileSync(join(VENCORD_FILES_DIR, "vencordDesktopMain.js"), "utf-8").includes(
-        "VencordGetRendererCss"
-    );
+    let supports = false;
+    try {
+        supports = readFileSync(join(VENCORD_FILES_DIR, "vencordDesktopMain.js"), "utf-8").includes(
+            "VencordGetRendererCss"
+        );
+    } catch (error) {
+        console.warn("[VencordLoader] Could not inspect the staged main script; using the legacy preload path.", error);
+    }
     if (!supports) {
         console.warn(
             "⚠️  [VencordLoader] Vencord version is outdated and does not support sandboxing. Please update Vencord to the latest version."

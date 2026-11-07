@@ -62,7 +62,15 @@ function syncUserplugins() {
 }
 
 function buildVencord() {
-    log("Running Vencord build (pnpm build --disable-updater inside vencord-src/)...");
+    // CI and normal local builds keep using the documented pnpm entry point.
+    // The direct entry is an explicit escape hatch for Windows worktrees where
+    // pnpm is asked to remove/relink a junctioned modules directory without a
+    // TTY. The caller must provide the already-installed, lockfile-verified
+    // dependency tree; this does not skip the actual Vencord build.
+    const useDirectBuild = process.env.DM_SKIP_VENCORD_INSTALL === "1";
+    log(
+        `Running Vencord build (${useDirectBuild ? "direct build entry" : "pnpm build"} --disable-updater inside vencord-src/)...`,
+    );
     // --disable-updater bakes IS_UPDATER_DISABLED=true into the bundle (see
     // vencord-src/scripts/build/common.mjs). Without this flag, Vencord's
     // internal updater plugin runs at startup, hits the upstream Vencord
@@ -71,7 +79,10 @@ function buildVencord() {
     // update via OUR electron-updater (src/main/updater.ts) targeting our
     // own GitHub Releases. Disabling Vencord's updater at build time keeps
     // the user on the Discordmaxxer release channel exclusively.
-    execSync("pnpm build -- --disable-updater", { cwd: VENCORD_SRC, stdio: "inherit" });
+    const command = useDirectBuild
+        ? "node --require=./scripts/suppressExperimentalWarnings.js scripts/build/build.mjs --disable-updater"
+        : "pnpm build -- --disable-updater";
+    execSync(command, { cwd: VENCORD_SRC, stdio: "inherit" });
 }
 
 function stageDist() {
