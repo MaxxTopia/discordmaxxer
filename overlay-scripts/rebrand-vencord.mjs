@@ -63,6 +63,53 @@ if (actualVencordCommit !== VENCORD_SOURCE_PIN.commit) {
 }
 
 const PATCHES = [
+    // ── Startup compatibility: Discord's current Webpack export helper ──
+    // Newer Discord bundles call n.d(exports, definition, directExports),
+    // while Vencord's configurable-export shim historically accepted only
+    // the two-argument form. Dropping directExports leaves exports such as
+    // module 626584's `A` undefined and prevents Discord from mounting.
+    {
+        file: "src/webpack/patchWebpack.ts",
+        find:
+            "            this.d = function (exports, definition) {\n" +
+            "                for (const key in definition) {\n" +
+            "                    if (Object.hasOwn(definition, key) && !Object.hasOwn(exports, key)) {\n" +
+            "                        Object.defineProperty(exports, key, {\n" +
+            "                            enumerable: true,\n" +
+            "                            configurable: true,\n" +
+            "                            get: definition[key],\n" +
+            "                        });\n" +
+            "                    }\n" +
+            "                }\n" +
+            "            };",
+        replace:
+            "            this.d = function (exports, definition, directDefinition) {\n" +
+            "                for (const key in definition) {\n" +
+            "                    if (Object.hasOwn(definition, key) && !Object.hasOwn(exports, key)) {\n" +
+            "                        Object.defineProperty(exports, key, {\n" +
+            "                            enumerable: true,\n" +
+            "                            configurable: true,\n" +
+            "                            get: definition[key],\n" +
+            "                        });\n" +
+            "                    }\n" +
+            "                }\n" +
+            "\n" +
+            "                // Discord now sometimes passes direct export values as\n" +
+            "                // the third argument (for example { A: SomeClass }).\n" +
+            "                // Preserve those values as live export getters too.\n" +
+            "                if (directDefinition && typeof directDefinition === \"object\") {\n" +
+            "                    for (const key in directDefinition) {\n" +
+            "                        if (Object.hasOwn(directDefinition, key) && !Object.hasOwn(exports, key)) {\n" +
+            "                            Object.defineProperty(exports, key, {\n" +
+            "                                enumerable: true,\n" +
+            "                                configurable: true,\n" +
+            "                                get: () => directDefinition[key],\n" +
+            "                            });\n" +
+            "                        }\n" +
+            "                    }\n" +
+            "                }\n" +
+            "            };"
+    },
     // ── A. Settings tab title ──────────────────────────────────────────
     {
         file: "src/components/settings/tabs/vencord/index.tsx",
