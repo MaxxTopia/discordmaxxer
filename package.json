@@ -34,6 +34,7 @@
     "package": "pnpm overlay:vencord && pnpm build && node overlay-scripts/verify-build.mjs && electron-builder",
     "package:dir": "pnpm overlay:vencord && pnpm build && node overlay-scripts/verify-build.mjs && electron-builder --dir",
     "package:win": "pnpm overlay:vencord && pnpm build && node overlay-scripts/verify-build.mjs && electron-builder --windows",
+        "package:linux": "pnpm overlay:vencord && pnpm build && node overlay-scripts/verify-build.mjs && node scripts/build/gen-desktop.mjs && electron-builder --linux",
         "regen-icons": "node scripts/build/regenIcons.mjs",
         "lint": "eslint src",
         "lint:fix": "pnpm lint --fix",

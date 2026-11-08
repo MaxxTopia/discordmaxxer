@@ -1,5 +1,56 @@
 # Discordmaxxer — RESUME
 
+## 2026-11-08 — Linux build + CI matrix restored (issue #2)
+
+Scope: build Discordmaxxer for Linux (Arch Wayland) locally, install it, and
+restore the Linux CI job in `.github/workflows/release.yml`.
+
+Implementation:
+- Cloned the pinned Vencord source (`ef29bbeb6119cfb53d1273ed78147bcc97d91261`)
+  into `vencord-src/` (gitignored, not in the repo).
+- Ran `pnpm overlay:vencord` (DM_STRICT_REBRAND unset — the strict rebrand
+  path is only for tagged releases; local dev builds skip it).
+- Ran `pnpm build` and `node overlay-scripts/verify-build.mjs` — all checks
+  passed.
+- Added `package:linux` script to `package.json` mirroring `package:win`.
+- Built four Linux targets: AppImage, tar.gz, deb, rpm.
+- Installed via `tar.gz` to `~/.local/opt/discordmaxxer-0.7.129/` with a
+  `~/.local/bin/discordmaxxer` symlink. Verified `discordmaxxer --version`
+  returns `Discordmaxxer v0.7.129`.
+- Added a `release-linux` job to `.github/workflows/release.yml` (ubuntu-latest)
+  that builds `--linux` and uploads to the same GitHub Release as the Windows
+  job. The `notify-failure` job now depends on both.
+
+Known issues:
+- The fpm/libcrypt.so.1 issue on this Arch host was a local-only artifact:
+  fpm's bundled Ruby needs `libcrypt.so.1`, which Arch ships as
+  `libcrypt.so.2` (from libxcrypt). Fixed by `sudo pacman -S libxcrypt-compat`
+  which provides `/usr/lib/libcrypt.so.1 -> libcrypt.so.1.1.0`. CI's
+  ubuntu-latest has the correct libcrypt already.
+- The deb and rpm installers were built but could not be installed on Arch
+  via `pacman -U` (Arch's pacman rejects Debian packages and RPMs need
+  `rpm2cpio`); the tar.gz is the supported install path on Arch.
+- Wayland: no Wayland-specific code changes were needed. Electron 43.2.0
+  auto-detects the Wayland/Ozone backend. Screenshare requires
+  `xdg-desktop-portal` + a portal backend (e.g. `xdg-desktop-portal-gtk` or
+  `xdg-desktop-portal-wlr`); not tested here because no live session was run.
+
+Verification performed:
+- `pnpm overlay:vencord` — staged 6 custom plugins, rebrand applied cleanly.
+- `pnpm build` — produced `dist/js/` with main.js, preload.js, renderer.js.
+- `node overlay-scripts/verify-build.mjs` — all structural checks passed.
+- `npx electron-builder --linux deb rpm` — produced
+  `dist/discordmaxxer_0.7.129_amd64.deb` (107M) and
+  `dist/discordmaxxer-0.7.129.x86_64.rpm` (93M).
+- `dist/Discordmaxxer-0.7.129.AppImage` (134M) and
+  `dist/discordmaxxer-0.7.129.tar.gz` (126M) built earlier.
+- `~/.local/bin/discordmaxxer --version` → `Discordmaxxer v0.7.129`.
+
+Remaining:
+- Live Wayland session (voice + screenshare) not run — human-only check.
+- macOS still deferred to v0.2 per CLAUDE.md.
+- Step 5 (GitHub Release publication) was not run — the user asked to skip it.
+
 ## 2026-11-05 — DMEmoji send and pending attachment preview candidate
 
 Scope: restore the custom DMEmoji mouse-send action and make a selected local
