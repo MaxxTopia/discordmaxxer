@@ -1542,6 +1542,24 @@ function DirectMediaPreview({ kind, url, isVideoSource = false, profile, onPickF
     const mediaSpeed = PROFILE_SPEED_VALUES.has(profile?.mediaSpeed as any)
         ? Number(profile?.mediaSpeed)
         : 1;
+    // The saved runtime changes playback rate only on actual video media.
+    // GIF/image avatars and non-video banners keep native timing, so the
+    // preview must not advertise a speed change that cannot be applied.
+    const speedApplies = isVideo;
+    const previewSpeed = speedApplies ? mediaSpeed : 1;
+    const positionLabel = objectPosition.charAt(0).toUpperCase() + objectPosition.slice(1);
+    const fitLabel = objectFit === "contain" ? "Whole source" : "Fill / crop";
+    const effectLabel = mediaEffect === "glow"
+        ? "Soft glow"
+        : mediaEffect === "scanline"
+            ? "Scanline"
+            : "Clean finish";
+    const enhancementLabel = [
+        `${fitLabel} · ${positionLabel}`,
+        kind === "avatar" ? `${Math.round(avatarScale * 100)}% scale` : null,
+        previewSpeed === 1 ? "Native speed" : `${previewSpeed}x speed`,
+        effectLabel
+    ].filter(Boolean).join(" · ");
 
     React.useEffect(() => {
         setState(url && validSource ? "loading" : "empty");
@@ -1564,6 +1582,17 @@ function DirectMediaPreview({ kind, url, isVideoSource = false, profile, onPickF
         alignItems: "center",
         justifyContent: "center"
     };
+    const finishFrameStyle: React.CSSProperties = mediaEffect === "glow"
+        ? {
+            borderColor: "rgba(226, 91, 255, 0.72)",
+            boxShadow: "0 0 0 1px rgba(226, 91, 255, 0.35), 0 0 22px rgba(226, 91, 255, 0.42), inset 0 0 22px rgba(226, 91, 255, 0.16)"
+        }
+        : mediaEffect === "scanline"
+            ? {
+                borderColor: "rgba(114, 246, 210, 0.62)",
+                boxShadow: "0 0 0 1px rgba(114, 246, 210, 0.22), inset 0 0 16px rgba(114, 246, 210, 0.12)"
+            }
+            : {};
     const mediaStyle: React.CSSProperties = {
         display: state === "error" ? "none" : "block",
         width: "100%",
@@ -1573,8 +1602,10 @@ function DirectMediaPreview({ kind, url, isVideoSource = false, profile, onPickF
         background: "#17131d",
         transform: kind === "avatar" ? `scale(${avatarScale})` : undefined,
         filter: mediaEffect === "glow"
-            ? "drop-shadow(0 0 10px rgba(226, 91, 255, 0.75))"
-            : undefined
+            ? "saturate(1.08) contrast(1.04) drop-shadow(0 0 14px rgba(226, 91, 255, 0.88))"
+            : kind === "avatar" && mediaEffect === "scanline"
+                ? "saturate(1.24) contrast(1.12) brightness(1.03)"
+                : undefined
     };
     const messageStyle: React.CSSProperties = {
         position: "absolute",
@@ -1623,7 +1654,13 @@ function DirectMediaPreview({ kind, url, isVideoSource = false, profile, onPickF
     const onError = () => setState("error");
 
     return (
-        <div style={{ ...frameStyle, cursor: onPickFile && state === "error" ? "pointer" : undefined }} aria-label={`${kind} live preview`} {...(state === "error" ? previewInteraction : {})}>
+        <div
+            style={{ ...frameStyle, ...finishFrameStyle, cursor: onPickFile && state === "error" ? "pointer" : undefined }}
+            aria-label={`${kind} live preview`}
+            data-dm-flair-media-kind={kind}
+            data-dm-flair-media-effect={mediaEffect !== "none" ? mediaEffect : undefined}
+            {...(state === "error" ? previewInteraction : {})}
+        >
             {isVideo ? (
                 <video
                     src={source}
@@ -1657,11 +1694,38 @@ function DirectMediaPreview({ kind, url, isVideoSource = false, profile, onPickF
                         position: "absolute",
                         inset: 0,
                         pointerEvents: "none",
-                        background: "repeating-linear-gradient(180deg, rgba(255,255,255,0.12) 0, rgba(255,255,255,0.12) 1px, transparent 1px, transparent 4px)",
+                        background: "repeating-linear-gradient(180deg, rgba(255,255,255,0.2) 0, rgba(255,255,255,0.2) 1px, transparent 1px, transparent 4px)",
                         mixBlendMode: "screen",
-                        opacity: 0.55
+                        opacity: 0.68
                     }}
                 />
+            )}
+            {profile && (
+                <div
+                    aria-label={`Applied presentation enhancements: ${enhancementLabel}`}
+                    style={{
+                        position: "absolute",
+                        top: 7,
+                        left: 7,
+                        right: 7,
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 6,
+                        minWidth: 0,
+                        padding: "4px 7px",
+                        borderRadius: 999,
+                        background: "rgba(8, 7, 14, 0.72)",
+                        border: "1px solid rgba(255, 255, 255, 0.18)",
+                        color: "#fbefff",
+                        fontSize: 9.5,
+                        lineHeight: 1.2,
+                        pointerEvents: "none",
+                        backdropFilter: "blur(5px)"
+                    }}
+                >
+                    <span style={{ color: "#72f6d2", fontWeight: 800, letterSpacing: 0.35, flex: "0 0 auto" }}>LIVE</span>
+                    <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", opacity: 0.9 }}>{enhancementLabel}</span>
+                </div>
             )}
             {state === "loading" && <div style={messageStyle}>Loading preview…</div>}
             {state === "error" && <div style={messageStyle}>
@@ -2427,7 +2491,7 @@ function FlairEditor() {
                     Live appearance preview
                 </div>
                 <div style={{ fontSize: 10.5, color: "#cbd0e0", opacity: 0.8, lineHeight: 1.4, marginBottom: 8 }}>
-                    These are the same values used by the Save button. The preview updates while you type; Save to Discordmaxxer pushes the finished look to the roster.
+                    These are the same values used by the Save button. The media panes below are the real live showcase: their crop, fit, position, scale, speed, and finish update as you change the controls. Save to Discordmaxxer pushes the finished look to the roster.
                 </div>
                 <FlairMediaSetting
                     kind="banner"
@@ -2442,7 +2506,7 @@ function FlairEditor() {
                     onChange={value => { markFlairDraftField("myAvatarAnimatedUrl"); s.myAvatarAnimatedUrl = value; }}
                 />
                 <div style={{ margin: "4px 0 8px", padding: "10px 11px", borderRadius: 7, background: "rgba(0, 212, 255, 0.05)", border: "1px solid rgba(0, 212, 255, 0.2)" }}>
-                    <div style={{ color: "#fbefff", fontSize: 12, fontWeight: 700, marginBottom: 3 }}>Paid presentation enhancements</div>
+                    <div style={{ color: "#fbefff", fontSize: 12, fontWeight: 700, marginBottom: 3 }}>Paid presentation enhancements · live above</div>
                     <div style={{ color: "#cbd0e0", fontSize: 10.5, lineHeight: 1.4, opacity: 0.85 }}>
                         Free users keep the exact same animated banner/avatar quality. Paid tiers only add optional framing, scale, and visual-finish controls, and the selected controls travel with your profile to other Discordmaxxer clients.
                     </div>
@@ -2925,9 +2989,13 @@ function buildCss(): string {
         [data-dm-flair-banner-position="bottom"] .dm-flair-banner-image {
             object-position: center bottom !important;
         }
+        [data-dm-flair-media-effect="glow"] {
+            border-color: rgba(226, 91, 255, 0.72) !important;
+            box-shadow: 0 0 0 1px rgba(226, 91, 255, 0.32), 0 0 20px rgba(226, 91, 255, 0.34), inset 0 0 22px rgba(226, 91, 255, 0.12);
+        }
         [data-dm-flair-media-effect="glow"] .dm-flair-banner-video,
         [data-dm-flair-media-effect="glow"] .dm-flair-banner-image {
-            filter: drop-shadow(0 0 12px rgba(226, 91, 255, 0.75));
+            filter: saturate(1.08) contrast(1.04) drop-shadow(0 0 14px rgba(226, 91, 255, 0.88));
         }
         [data-dm-flair-media-effect="scanline"]::after {
             content: "";
@@ -2935,9 +3003,9 @@ function buildCss(): string {
             inset: 0;
             pointer-events: none;
             z-index: 1;
-            background: repeating-linear-gradient(180deg, rgba(255,255,255,0.12) 0, rgba(255,255,255,0.12) 1px, transparent 1px, transparent 4px);
+            background: repeating-linear-gradient(180deg, rgba(255,255,255,0.20) 0, rgba(255,255,255,0.20) 1px, transparent 1px, transparent 4px);
             mix-blend-mode: screen;
-            opacity: 0.42;
+            opacity: 0.62;
         }
 
         img[data-dm-flair-avatar-applied] {
@@ -2961,10 +3029,10 @@ function buildCss(): string {
             transform: scale(1.1);
         }
         img[data-dm-flair-avatar-effect="glow"] {
-            filter: drop-shadow(0 0 8px rgba(226, 91, 255, 0.75));
+            filter: saturate(1.08) contrast(1.04) drop-shadow(0 0 13px rgba(226, 91, 255, 0.88));
         }
         img[data-dm-flair-avatar-effect="scanline"] {
-            filter: saturate(1.2) contrast(1.08);
+            filter: saturate(1.24) contrast(1.12) brightness(1.03);
         }
         [data-dm-flair-bg-avatar-applied][data-dm-flair-avatar-fit="contain"] {
             background-size: contain !important;
@@ -3934,7 +4002,11 @@ function scheduleScan() {
     scanScheduled = true;
     requestAnimationFrame(() => {
         scanScheduled = false;
-        scanForPopouts(document);
+        try {
+            scanForPopouts(document);
+        } catch (error) {
+            console.warn("[DMProfileFlair] guarded route scan", error);
+        }
     });
 }
 
@@ -3945,9 +4017,13 @@ function startObserver() {
     window.addEventListener("discordmaxxer:tournament-mode-changed", onTournamentModeChange);
     removeRosterListener = onRosterChange(scheduleScan);
     observer = new MutationObserver(mutations => {
-        if (document.hidden) return;
-        const relevant = mutations.some(tournamentMutationNeedsProfileScan);
-        if (relevant) scheduleScan();
+        try {
+            if (document.hidden) return;
+            const relevant = mutations.some(tournamentMutationNeedsProfileScan);
+            if (relevant) scheduleScan();
+        } catch (error) {
+            console.warn("[DMProfileFlair] observer ignored during navigation:", error);
+        }
     });
     if (!document.hidden) {
         observer.observe(document.body, { childList: true, subtree: true });
@@ -3957,12 +4033,16 @@ function startObserver() {
     // (e.g. an <img src> swapped in place). 2s is plenty for animated-avatar
     // surfaces and halves the steady-state polling cost vs the old 1s.
     rescanTimer = window.setInterval(() => {
-        // TournamentMode already performs an immediate scan when toggled and
-        // suppresses animated media. Do not keep walking every visible profile
-        // surface while that mode is active; the observer still handles real
-        // DOM changes and the toggle event restores the normal scan path.
-        if (document.hidden || isTournamentModeActive()) return;
-        scanForPopouts(document);
+        try {
+            // TournamentMode already performs an immediate scan when toggled and
+            // suppresses animated media. Do not keep walking every visible profile
+            // surface while that mode is active; the observer still handles real
+            // DOM changes and the toggle event restores the normal scan path.
+            if (document.hidden || isTournamentModeActive()) return;
+            scanForPopouts(document);
+        } catch (error) {
+            console.warn("[DMProfileFlair] scheduled scan ignored during navigation:", error);
+        }
     }, 2000);
     refreshRosterForVisibleSurface();
 }

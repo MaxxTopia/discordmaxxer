@@ -24,6 +24,11 @@ import { fileURLToPath } from "node:url";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const VENCORD_SRC = resolve(process.env.DISCORDMAXXER_VENCORD_SRC ?? join(__dirname, "..", "vencord-src"));
 const VENCORD_SOURCE_PIN = JSON.parse(readFileSync(join(__dirname, "vencord-source.json"), "utf8"));
+// BetterFolders owns Discord's folder expansion and route state.  Keep that
+// contract on the pinned upstream implementation; the previous local bridge
+// attempted to predict store transitions and could blank the folder popout or
+// crash navigation when Discord replaced its stores during a DM switch.
+const USE_STABLE_BETTER_FOLDERS = process.env.DM_STABLE_BETTER_FOLDERS !== "0";
 
 function readVencordSourceCommit() {
     // Some local/dev checkouts contain the pinned source plus a provenance
@@ -363,6 +368,29 @@ const PATCHES = [
         file: "src/components/settings/tabs/themes/CspErrorCard.tsx",
         find: 'After allowing a domain, you have to fully close (from tray / task manager) and restart {IS_DISCORD_DESKTOP ? "Discord" : "Vesktop"} to apply the change.',
         replace: 'After allowing a domain, you have to fully close (from tray / task manager) and restart {IS_DISCORD_DESKTOP ? "Discord" : "Discordmaxxer"} to apply the change.'
+    },
+
+    // ── R2. Theme loader parity ──
+    // Desktop builds previously kept the vencord:// import path while web
+    // builds loaded the same file through a Blob URL. Discordmaxxer can serve
+    // local themes from a packaged/updated profile where that custom scheme is
+    // unavailable, so use the native theme bytes for both paths and guard
+    // against an older async load winning a newer toggle.
+    {
+        file: "src/api/Themes.ts",
+        find: 'import { isNonNullish } from "@utils/guards";\n',
+        replace: ''
+    },
+    {
+        file: "src/api/Themes.ts",
+          marker: "let themeInitGeneration = 0;",
+        find: '// for cleanup\nlet previousThemeBlobObjectURLs = [] as string[];',
+        replace: '// for cleanup\nlet previousThemeBlobObjectURLs = [] as string[];\nlet themeInitGeneration = 0;'
+    },
+    {
+        file: "src/api/Themes.ts",
+        find: '    if (IS_WEB) {\n        previousThemeBlobObjectURLs.forEach(url => URL.revokeObjectURL(url));\n\n        const objectUrls = await Promise.all(enabledThemes.map(async theme => {\n            const themeData = await VencordNative.themes.getThemeData(theme);\n            if (!themeData) return null;\n\n            const blob = new Blob([themeData], { type: "text/css" });\n            return URL.createObjectURL(blob);\n        }));\n\n        previousThemeBlobObjectURLs = objectUrls.filter(isNonNullish);\n        links.push(...previousThemeBlobObjectURLs);\n    } else {\n        const localThemes = enabledThemes.map(theme => `vencord:///themes/${theme}?v=${Date.now()}`);\n        links.push(...localThemes);\n    }',
+        replace: '    const generation = ++themeInitGeneration;\n    const nextObjectUrls: string[] = [];\n    for (const theme of enabledThemes) {\n        try {\n            const themeData = await VencordNative.themes.getThemeData(theme);\n            if (!themeData) continue;\n            const blob = new Blob([themeData], { type: "text/css" });\n            nextObjectUrls.push(URL.createObjectURL(blob));\n        } catch (error) {\n            console.warn("[Discordmaxxer] theme load failed:", theme, error);\n        }\n    }\n    if (generation !== themeInitGeneration) {\n        nextObjectUrls.forEach(url => URL.revokeObjectURL(url));\n        return;\n    }\n    previousThemeBlobObjectURLs.forEach(url => URL.revokeObjectURL(url));\n    previousThemeBlobObjectURLs = nextObjectUrls;\n    links.push(...nextObjectUrls);'
     },
 
     // ── S. webKeybinds plugin description ──
@@ -983,185 +1011,522 @@ const PATCHES = [
         find: 'description: "Vencord Contributor",',
         replace: 'description: "Plugin Engine Contributor",'
     },
-
     // ── Round 6 (v0.5.6): CSP allowlist + donor-badge kill ────────────
-    // ImageZoom: keep the upstream image-context route and isolate slider
-    // pointer/arrow events so the parent menu does not select and close on
-    // interaction. Do not patch the broad `message` route: Discord uses that
-    // native menu for ordinary messages and attachments, and touching it can
-    // crash the renderer while building the menu for an image message.
+    // ImageZoom: leave Discord's native image click and context-menu paths
+    // authoritative. The previous overlay touched the image viewer and
+    // menu renderer and could crash on ordinary message/image right-clicks.
+    // ImageZoom's hover magnifier and settings remain upstream behavior.
+    // The first replacement below is the durable form of the image-render
+    // repair. It removes the wrapper that swallowed Discord's native image
+    // node/menu target from a clean pinned Vencord checkout. The second form
+    // recognizes the older local checkout that already contains the v2
+    // replacement, so rebuilds remain idempotent while converging it to the
+    // same native path.
     {
         file: "src/plugins/imageZoom/index.tsx",
-        marker: "Discordmaxxer: ImageZoom ErrorBoundary import",
-        find: 'import { NavContextMenuPatchCallback } from "@api/ContextMenu";\n',
-        replace:
-            '// Discordmaxxer: ImageZoom ErrorBoundary import\n' +
-            'import { NavContextMenuPatchCallback } from "@api/ContextMenu";\n' +
-            'import ErrorBoundary from "@components/ErrorBoundary";\n'
-    },
-    {
-        file: "src/plugins/imageZoom/index.tsx",
-        marker: "Discordmaxxer: ImageZoom menu route helpers v2",
-        find: 'const imageContextMenuPatch: NavContextMenuPatchCallback = (children, props) => {',
-        replace:
-            '// Discordmaxxer: ImageZoom menu route helpers v2\n' +
-            'function looksLikeImageUrl(value: unknown): boolean {\n' +
-            '    if (typeof value !== "string") return false;\n' +
-            '    return /\\.(?:avif|gif|jpe?g|png|webp)(?:$|[?#])/i.test(value);\n' +
-            '}\n\n' +
-            'function isImageMedia(item: any): boolean {\n' +
-            '    if (!item || typeof item !== "object") return false;\n' +
-            '    const mediaType = item.contentType ?? item.content_type ?? item.mimeType ?? item.mime_type ?? item.type;\n' +
-            '    if (typeof mediaType === "string" && /^(?:image\\/|image$)/i.test(mediaType)) return true;\n' +
-            '    return [item.proxy_url, item.proxyUrl, item.url, item.filename, item.fileName, item.name].some(looksLikeImageUrl);\n' +
-            '}\n\n' +
-            'function messageHasImage(message: any): boolean {\n' +
-            '    if (!message || typeof message !== "object") return false;\n' +
-            '    if (Array.isArray(message.attachments) && message.attachments.some(isImageMedia)) return true;\n' +
-            '    if (!Array.isArray(message.embeds)) return false;\n' +
-            '    return message.embeds.some((embed: any) => {\n' +
-            '        if (!embed || typeof embed !== "object") return false;\n' +
-            '        if ([embed.type, embed.contentType, embed.content_type].some(value => typeof value === "string" && /^(?:image|gifv)$/i.test(value))) return true;\n' +
-            '        return isImageMedia(embed.image) || isImageMedia(embed.thumbnail) || isImageMedia(embed.video) || looksLikeImageUrl(embed.url);\n' +
-            '    });\n' +
-            '}\n\n' +
-            'function isDiscordmaxxerImageContext(props: any): boolean {\n' +
-            '    try {\n' +
-            '        if (!props || typeof props !== "object") return false;\n' +
-            '        if (isImageMedia(props.mediaItem)) return true;\n' +
-            '        const target = props.target;\n' +
-            '        const tagName = target?.tagName;\n' +
-            '        if (typeof tagName === "string" && tagName.toUpperCase() === "IMG") return true;\n' +
-            '        if (typeof target?.closest === "function" && target.closest("img")) return true;\n' +
-            '        return messageHasImage(props.message);\n' +
-            '    } catch {\n' +
-            '        return false;\n' +
-            '    }\n' +
-            '}\n\n' +
-            'function hasMenuItemId(nodes: unknown, id: string): boolean {\n' +
-            '    try {\n' +
-            '        const list = Array.isArray(nodes) ? nodes : [nodes];\n' +
-            '        return list.some(node => {\n' +
-            '            if (!node || typeof node !== "object") return false;\n' +
-            '            const props = (node as any).props;\n' +
-            '            if (!props || typeof props !== "object") return false;\n' +
-            '            if (props.id === id) return true;\n' +
-            '            return hasMenuItemId(props.children, id);\n' +
-            '        });\n' +
-            '    } catch {\n' +
-            '        return false;\n' +
-            '    }\n' +
-            '}\n\n' +
-            'function settingNumber(key: "zoom" | "size" | "zoomSpeed", fallback: number, min: number, max: number): number {\n' +
-            '    const value = Number((settings.store as any)[key]);\n' +
-            '    if (!Number.isFinite(value)) return fallback;\n' +
-            '    return Math.min(max, Math.max(min, value));\n' +
-            '}\n\n' +
-            'const imageContextMenuPatch: NavContextMenuPatchCallback = (children, props) => {\n' +
-            '    if (!props || typeof props !== "object" || !Array.isArray(children)) return;\n' +
-            '    try {'
-    },
-    {
-        file: "src/plugins/imageZoom/index.tsx",
-        find: '    if ("href" in props) return;\n    // emojis in user statuses',
-        replace: '    if ("href" in props) return;\n    if (props?.mediaItem && !isDiscordmaxxerImageContext(props)) return;\n    if (hasMenuItemId(children, "image-zoom")) return;\n    // emojis in user statuses'
-    },
-    {
-        file: "src/plugins/imageZoom/index.tsx",
-        marker: "Discordmaxxer: ImageZoom ErrorBoundary menu boundary",
-        find: '<Menu.MenuGroup id="image-zoom">',
-        replace:
-            '<ErrorBoundary message="Image controls unavailable">\n' +
-            '            {/* Discordmaxxer: ImageZoom ErrorBoundary menu boundary */}\n' +
-            '            <Menu.MenuGroup id="image-zoom">'
-    },
-    {
-        file: "src/plugins/imageZoom/index.tsx",
-        marker: "Discordmaxxer: ImageZoom ErrorBoundary menu closing",
-        find: '</Menu.MenuGroup>\n    );',
-        replace:
-            '</Menu.MenuGroup>\n' +
-            '        </ErrorBoundary>\n' +
-            '    );'
-    },
-    {
-        file: "src/plugins/imageZoom/index.tsx",
-        find: 'value={settings.store.zoom}',
-        replace: 'value={settingNumber("zoom", 2, 1, 50)}'
-    },
-    {
-        file: "src/plugins/imageZoom/index.tsx",
-        find: 'value={settings.store.size}',
-        replace: 'value={settingNumber("size", 100, 50, 1000)}'
-    },
-    {
-        file: "src/plugins/imageZoom/index.tsx",
-        find: 'value={settings.store.zoomSpeed}',
-        replace: 'value={settingNumber("zoomSpeed", 0.5, 0.1, 5)}'
-    },
-    {
-        file: "src/plugins/imageZoom/index.tsx",
-        marker: "Discordmaxxer: ImageZoom interactive MenuControlItems",
-        find: '                control={(props, ref) => (',
-        replace: '                // Discordmaxxer: ImageZoom interactive MenuControlItems\n                interactive\n                control={(props, ref) => ('
-    },
-    {
-        file: "src/plugins/imageZoom/index.tsx",
-        marker: "Discordmaxxer: ImageZoom slider interaction boundary",
-        find: 'control={(props, ref) => (\n                    <Menu.MenuSliderControl',
-        replace: 'control={(props, ref) => (\n                    <ImageZoomSlider>\n                        {/* Discordmaxxer: ImageZoom slider interaction boundary */}\n                        <Menu.MenuSliderControl'
-    },
-    {
-        file: "src/plugins/imageZoom/index.tsx",
-        find: '                    />\n                )}',
-        replace: '                        />\n                    </ImageZoomSlider>\n                )}'
-    },
-    {
-        file: "src/plugins/imageZoom/index.tsx",
-        marker: "Discordmaxxer: remove unsafe ImageZoom message route",
-        obsoleteWhen: content => !content.includes("Discordmaxxer: ImageZoom message-menu route"),
+        allowOnStable: true,
+        marker: "Discordmaxxer: preserve native attachment image node.",
+        obsoleteWhen: content => content.includes("Discordmaxxer: preserve native attachment image clicks v2"),
         find:
-            '// Discordmaxxer: ImageZoom message-menu route\n' +
-            'const messageContextMenuPatch: NavContextMenuPatchCallback = (children, props) => {\n' +
-            '    if (!props || typeof props !== "object" || !Array.isArray(children) || !isImageContext(props)) return;\n' +
-            '    imageContextMenuPatch(children, props);\n' +
-            '};\n\n',
-        replace: ""
+            "                {\n" +
+            "                    match: /(?<=null!=(\\i)\\?.{0,20})\\i(?:\\.\\i)?,{children:\\1/, // TODO: (?:\\.\\i)? is stable compat\n" +
+            "                    replace: \"'div',{onClick:e=>e.stopPropagation(),children:$1\"\n" +
+            "                }\n",
+        replace:
+            "                // Discordmaxxer: preserve native attachment image node.\n"
     },
     {
         file: "src/plugins/imageZoom/index.tsx",
-        marker: "Discordmaxxer: remove unsafe ImageZoom message route registration",
-        obsoleteWhen: content => !content.includes('"message": messageContextMenuPatch'),
-        find: '        "image-context": imageContextMenuPatch,\n        "message": messageContextMenuPatch',
-        replace: '        "image-context": imageContextMenuPatch'
+        allowOnStable: true,
+        marker: "Discordmaxxer: preserve native attachment image node.",
+        find:
+            "                {\n" +
+            "                    match: /(?<=null!=(\\i)\\?.{0,20})\\i(?:\\.\\i)?,{children:\\1/, // TODO: (?:\\.\\i)? is stable compat\n" +
+            "                    replace: \"'div',{children:$1\"\n" +
+            "                    // Discordmaxxer: preserve native attachment image clicks v2\n" +
+            "                }\n",
+        replace:
+            "                // Discordmaxxer: preserve native attachment image node.\n"
     },
     {
         file: "src/plugins/imageZoom/index.tsx",
-        marker: "Discordmaxxer: keep native image context menus",
+        marker: "Discordmaxxer: keep native image context menus v3",
         find: '    contextMenus: {\n        "image-context": imageContextMenuPatch\n    },\n',
         replace:
-            '    // Keep Discord\'s native image context menu authoritative. The\n' +
-            '    // custom ImageZoom menu used to crash after opening the full-screen\n' +
-            '    // viewer on some Discord builds, so zoom remains available through\n' +
-            '    // the hover magnifier and plugin settings instead.\n'
+            '    // Discordmaxxer: keep Discord native image/message context menus.\n' +
+            '    // Zoom remains available through the hover magnifier/settings.\n'
     },
+    // ReverseImageSearch has a second, standalone image-context hook. It can
+    // receive frozen/partial menu children while Discord is opening the image
+    // viewer; keeping only its message hook preserves the useful search action
+    // without replacing Discord's native image menu or crashing the renderer.
     {
-        file: "src/plugins/imageZoom/index.tsx",
-        marker: "Discordmaxxer: ImageZoom menu error guard",
-        find: '        </ErrorBoundary>\n    );\n};\n\nexport default definePlugin({',
+        file: "src/plugins/reverseImageSearch/index.tsx",
+        marker: "Discordmaxxer: keep native image context menus in ReverseImageSearch.",
+        find:
+            '    contextMenus: {\n' +
+            '        "message": messageContextMenuPatch,\n' +
+            '        "image-context": imageContextMenuPatch\n' +
+            '    }',
         replace:
-            '        </ErrorBoundary>\n    );\n' +
-            '    } catch (error) {\n' +
-            '        new Logger("ImageZoom").error("Failed to add image controls to native context menu", error);\n' +
-            '    }\n' +
-            '};\n\n' +
-            'export default definePlugin({'
+            '    contextMenus: {\n' +
+            '        // Discordmaxxer: keep native image context menus in ReverseImageSearch.\n' +
+            '        // The message hook remains available for inline-image search.\n' +
+            '        "message": messageContextMenuPatch\n' +
+            '    }'
+    },
+    // Keep Discord's stock message/image menus authoritative. Plugin patches
+    // for these menu IDs are optional enhancements; one malformed child from
+    // any plugin can otherwise take down the renderer after the menu opens.
+    // Reply, forward, reactions, pin, bookmark, and image actions remain the
+    // native Discord actions, while user/guild/channel menus stay extensible.
+    {
+        file: "src/api/PluginManager.ts",
+        marker: "Discordmaxxer: preserve native message menus.",
+        find: "export const startPlugin = traceFunction(\"startPlugin\", function startPlugin(p: Plugin) {",
+        replace:
+            "const DISCORDMAXXER_NATIVE_MENU_IDS = new Set([\"message\", \"message-actions\", \"image-context\"]);\n\n" +
+            "// Discordmaxxer: preserve native message menus.\n" +
+            "export const startPlugin = traceFunction(\"startPlugin\", function startPlugin(p: Plugin) {"
     },
     {
-        file: "src/plugins/imageZoom/index.tsx",
-        marker: "Discordmaxxer: preserve native attachment image clicks v2",
-        find: 'replace: "\'div\',{onClick:e=>e.stopPropagation(),children:$1"',
-        replace: 'replace: "\'div\',{children:$1"\n                    // Discordmaxxer: preserve native attachment image clicks v2'
+        file: "src/api/PluginManager.ts",
+        marker: "Discordmaxxer: skip unsafe message menu patches.",
+        find:
+            "    if (contextMenus) {\n" +
+            "        logger.debug(\"Adding context menus patches of plugin\", name);\n" +
+            "        for (const navId in contextMenus) {\n" +
+            "            addContextMenuPatch(navId, contextMenus[navId]);\n" +
+            "        }\n" +
+            "    }",
+        replace:
+            "    if (contextMenus) {\n" +
+            "        logger.debug(\"Adding context menus patches of plugin\", name);\n" +
+            "        for (const navId in contextMenus) {\n" +
+            "            if (DISCORDMAXXER_NATIVE_MENU_IDS.has(navId) && name !== \"WebContextMenus\") {\n" +
+            "                logger.debug(\"Keeping native Discord context menu\", navId, name);\n" +
+            "                continue;\n" +
+            "            }\n" +
+            "            addContextMenuPatch(navId, contextMenus[navId]);\n" +
+            "        }\n" +
+            "    }"
+    },
+    {
+        file: "src/api/PluginManager.ts",
+        marker: "Discordmaxxer: skip unsafe message menu removals.",
+        find:
+            "    if (contextMenus) {\n" +
+            "        logger.debug(\"Removing context menus patches of plugin\", name);\n" +
+            "        for (const navId in contextMenus) {\n" +
+            "            removeContextMenuPatch(navId, contextMenus[navId]);\n" +
+            "        }\n" +
+            "    }",
+        replace:
+            "    if (contextMenus) {\n" +
+            "        logger.debug(\"Removing context menus patches of plugin\", name);\n" +
+            "        for (const navId in contextMenus) {\n" +
+            "            if (DISCORDMAXXER_NATIVE_MENU_IDS.has(navId) && name !== \"WebContextMenus\") continue;\n" +
+            "            removeContextMenuPatch(navId, contextMenus[navId]);\n" +
+            "        }\n" +
+            "    }"
+    },
+    // Vencord's desktop-only WebContextMenus plugin restores the Discord
+    // image/link/text menu path that the web client omits. Keep that desktop
+    // path enabled so Copy Image/Open Image are present; the independent
+    // PluginManager guard above still prevents third-party message/image
+    // context-menu patches from replacing the native menu or crashing it.
+    {
+        file: "src/plugins/webContextMenus.web/index.ts",
+        marker: "Discordmaxxer: preserve desktop context menus.",
+        obsoleteWhen: content => content.includes("const shouldAddBackMenus = () => IS_VESKTOP || settings.store.addBack;") ||
+            content.includes("Discordmaxxer: keep Discord desktop native context menus."),
+        find: "const shouldAddBackMenus = () => IS_DISCORD_DESKTOP || IS_VESKTOP || settings.store.addBack;",
+        replace:
+            "// Discordmaxxer: preserve desktop context menus.\n" +
+            "const shouldAddBackMenus = () => IS_DISCORD_DESKTOP || IS_VESKTOP || settings.store.addBack;"
+    },
+    {
+        file: "src/plugins/webContextMenus.web/index.ts",
+        allowOnStable: true,
+        marker: "Discordmaxxer: require native desktop context menus.",
+        alreadyAppliedWhen: content => content.includes("required: IS_DISCORD_DESKTOP || IS_VESKTOP,"),
+        find:
+            "    enabledByDefault: true,\n" +
+            "    required: IS_VESKTOP,",
+        replace:
+            "    enabledByDefault: true,\n" +
+            "    // Discordmaxxer: require native desktop context menus.\n" +
+            "    required: IS_DISCORD_DESKTOP || IS_VESKTOP,"
+    },
+    // The generated source may already contain the older overlay marker from
+    // a previous build. Converge that state as well so an incremental rebuild
+    // cannot silently leave the native desktop image menu disabled.
+    {
+        file: "src/plugins/webContextMenus.web/index.ts",
+        allowOnStable: true,
+        marker: "Discordmaxxer: restore desktop context menus from disabled overlay.",
+        obsoleteWhen: content => content.includes("const shouldAddBackMenus = () => IS_VESKTOP || settings.store.addBack;") ||
+            content.includes("Discordmaxxer: keep Discord desktop native context menus."),
+        find:
+            "// Discordmaxxer: use Discord native web context menus.\n" +
+            "const shouldAddBackMenus = () => false;",
+        replace:
+            "// Discordmaxxer: restore desktop context menus from disabled overlay.\n" +
+            "const shouldAddBackMenus = () => IS_DISCORD_DESKTOP || IS_VESKTOP || settings.store.addBack;"
+    },
+    // Converge the intermediate release state where the native menu was
+    // restored but still depended on IS_VESKTOP alone. Discordmaxxer is a
+    // desktop Electron client, so the broader desktop constant must count.
+    {
+        file: "src/plugins/webContextMenus.web/index.ts",
+        allowOnStable: true,
+        marker: "Discordmaxxer: desktop-aware context menu flag.",
+        alreadyAppliedWhen: content => content.includes("const shouldAddBackMenus = () => IS_DISCORD_DESKTOP || IS_VESKTOP || settings.store.addBack;"),
+        find: "const shouldAddBackMenus = () => IS_VESKTOP || settings.store.addBack;",
+        replace:
+            "// Discordmaxxer: desktop-aware context menu flag.\n" +
+            "const shouldAddBackMenus = () => IS_DISCORD_DESKTOP || IS_VESKTOP || settings.store.addBack;"
+    },
+    // Discord's desktop renderer already owns the native message/image menu.
+    // The web-context-menu replacement is only needed by Vesktop/web-style
+    // surfaces. Keep the desktop plugin optional so it cannot intercept the
+    // native Copy Image, Reply, Forward, and attachment actions.
+    {
+        file: "src/plugins/webContextMenus.web/index.ts",
+        allowOnStable: true,
+        marker: "Discordmaxxer: keep Discord desktop native context menus.",
+        alreadyAppliedWhen: content => content.includes("const shouldAddBackMenus = () => IS_VESKTOP || settings.store.addBack;"),
+        find: "const shouldAddBackMenus = () => IS_DISCORD_DESKTOP || IS_VESKTOP || settings.store.addBack;",
+        replace:
+            "// Discordmaxxer: keep Discord desktop native context menus.\n" +
+            "const shouldAddBackMenus = () => IS_VESKTOP || settings.store.addBack;"
+    },
+    {
+        file: "src/plugins/webContextMenus.web/index.ts",
+        allowOnStable: true,
+        marker: "Discordmaxxer: keep Discord desktop plugin optional.",
+        alreadyAppliedWhen: content => content.includes("required: IS_VESKTOP,"),
+        find: "    required: IS_DISCORD_DESKTOP || IS_VESKTOP,",
+        replace:
+            "    // Discordmaxxer: keep Discord desktop plugin optional.\n" +
+            "    required: IS_VESKTOP,"
+    },
+    // Discordmaxxer runs in a Vesktop-derived Electron shell, but its normal
+    // desktop menu is Discord's native menu. Do not use IS_VESKTOP as a
+    // reason to replace that menu: opt-in is the only safe path for the web
+    // compatibility plugin. Existing users may still have the plugin enabled
+    // in settings, so the explicit runtime predicate is required as well.
+    {
+        file: "src/plugins/webContextMenus.web/index.ts",
+        allowOnStable: true,
+        marker: "Discordmaxxer: web context menus are opt-in.",
+        alreadyAppliedWhen: content => content.includes("const shouldAddBackMenus = () => false;"),
+        find: "const shouldAddBackMenus = () => IS_VESKTOP || settings.store.addBack;",
+        replace:
+            "// Discordmaxxer: native Discord menus stay authoritative on the desktop client.\n" +
+            "// The compatibility plugin remains present for source parity, but it is\n" +
+            "// hard-disabled so persisted settings cannot replace image/message menus.\n" +
+            "const shouldAddBackMenus = () => false;"
+    },
+    {
+        file: "src/plugins/webContextMenus.web/index.ts",
+        allowOnStable: true,
+        marker: "Discordmaxxer: web context menus are not required.",
+        alreadyAppliedWhen: content => content.includes("required: false,"),
+        find: "    required: IS_VESKTOP,",
+        replace:
+            "    // Discordmaxxer: the narrow composer bridge is required on desktop.\n" +
+            "    required: IS_DISCORD_DESKTOP || IS_VESKTOP,"
+    },
+    {
+        file: "src/plugins/webContextMenus.web/index.ts",
+        allowOnStable: true,
+        marker: "Discordmaxxer: web context menus are opt-in by default.",
+        alreadyAppliedWhen: content => content.includes("enabledByDefault: false,"),
+        find: "    enabledByDefault: true,",
+        replace: "    // Discordmaxxer: native composer menu bridge is enabled by default.\n    enabledByDefault: true,"
+    },
+    {
+        file: "src/plugins/webContextMenus.web/index.ts",
+        allowOnStable: true,
+        marker: "Discordmaxxer: restore only the built-in image menu route.",
+        alreadyAppliedWhen: content => content.includes("const shouldAddImageMenus = () => false;") ||
+            content.includes("const shouldAddImageMenus = () => true;"),
+        find: "const shouldAddBackMenus = () => false;",
+        replace:
+            "const shouldAddBackMenus = () => false;\n" +
+            "// Discordmaxxer: keep the built-in image route scoped to Discord's\n" +
+            "// native renderer. DMImageContext owns the desktop Copy Image affordance\n" +
+            "// so this compatibility plugin cannot replace normal message menus.\n" +
+            "const shouldAddImageMenus = () => false;\n" +
+            "// Discordmaxxer: route only the composer through Discord's native menu.\n" +
+            "// Message, image, link, and media menus remain on Discord's normal path.\n" +
+            "const shouldAddComposerMenus = () => IS_DISCORD_DESKTOP || IS_VESKTOP || settings.store.addBack;\n" +
+            "function isComposerTarget(event: Event) {\n" +
+            "    const target = event.target as any;\n" +
+            "    return !!target && typeof target.closest === \"function\" && Boolean(target.closest('[contenteditable=\"true\"], textarea, input, [role=\"textbox\"]'));\n" +
+            "}\n" +
+            "let composerContextMenuRouter: ((event: MouseEvent) => void) | null = null;"
+    },
+    {
+        file: "src/plugins/webContextMenus.web/index.ts",
+        allowOnStable: true,
+        marker: "Discordmaxxer: guard link menu patches.",
+        alreadyAppliedWhen: content => content.includes("predicate: shouldAddBackMenus,\n            find: \"open-native-link\",") ,
+        find: "            find: \"open-native-link\",",
+        replace: "            predicate: shouldAddBackMenus,\n            find: \"open-native-link\"," 
+    },
+    {
+        file: "src/plugins/webContextMenus.web/index.ts",
+        allowOnStable: true,
+        marker: "Discordmaxxer: guard image support patch.",
+        alreadyAppliedWhen: content => content.includes("predicate: shouldAddImageMenus,\n            find: \"Copy image not supported\",") ,
+        find: "            find: \"Copy image not supported\",",
+        replace: "            predicate: shouldAddImageMenus,\n            find: \"Copy image not supported\"," 
+    },
+    {
+        file: "src/plugins/webContextMenus.web/index.ts",
+        allowOnStable: true,
+        marker: "Discordmaxxer: guard image action patches.",
+        alreadyAppliedWhen: content => content.includes("predicate: shouldAddImageMenus,\n            find: 'id:\"copy-image\"',"),
+        find: "            find: 'id:\"copy-image\"',",
+        replace: "            predicate: shouldAddImageMenus,\n            find: 'id:\"copy-image\"',"
+    },
+    {
+        file: "src/plugins/webContextMenus.web/index.ts",
+        allowOnStable: true,
+        marker: "Discordmaxxer: guard built-in image context menu patch.",
+        alreadyAppliedWhen: content => content.includes("            predicate: shouldAddImageMenus,\n            find: 'navId:\"image-context\"',"),
+        find: "            find: 'navId:\"image-context\"',",
+        replace: "            predicate: shouldAddImageMenus,\n            find: 'navId:\"image-context\"'," 
+    },
+    {
+        file: "src/plugins/webContextMenus.web/index.ts",
+        allowOnStable: true,
+        marker: "Discordmaxxer: deduplicate built-in image context menu predicate.",
+        alreadyAppliedWhen: content =>
+            !content.includes(
+                "            all: true,\n" +
+                "            predicate: shouldAddBackMenus,\n" +
+                "            replacement:"
+            ),
+        find:
+            "            predicate: shouldAddImageMenus,\n" +
+            "            find: 'navId:\"image-context\"',\n" +
+            "            all: true,\n" +
+            "            predicate: shouldAddBackMenus,\n",
+        replace:
+            "            predicate: shouldAddImageMenus,\n" +
+            "            find: 'navId:\"image-context\"',\n" +
+            "            all: true,\n"
+    },
+    {
+        file: "src/plugins/webContextMenus.web/index.ts",
+        allowOnStable: true,
+        marker: "Discordmaxxer: guard media menu patch.",
+        alreadyAppliedWhen: content => content.includes("predicate: shouldAddBackMenus,\n            find: '\"MediaEngineWebRTC\");',") ,
+        find: "            find: '\"MediaEngineWebRTC\");',",
+        replace: "            predicate: shouldAddBackMenus,\n            find: '\"MediaEngineWebRTC\");'," 
+    },
+    {
+        file: "src/plugins/webContextMenus.web/index.ts",
+        allowOnStable: true,
+        marker: "Discordmaxxer: guard search menu patch.",
+        alreadyAppliedWhen: content => content.includes("predicate: shouldAddBackMenus,\n            find: \"#{intl::SEARCH_WITH_GOOGLE}\",") ,
+        find: "            find: \"#{intl::SEARCH_WITH_GOOGLE}\",",
+        replace: "            predicate: shouldAddBackMenus,\n            find: \"#{intl::SEARCH_WITH_GOOGLE}\"," 
+    },
+    {
+        file: "src/plugins/webContextMenus.web/index.ts",
+        allowOnStable: true,
+        marker: "Discordmaxxer: guard copy menu patch.",
+        alreadyAppliedWhen: content => content.includes("predicate: shouldAddBackMenus,\n            find: \"#{intl::COPY}),hint:\",") ,
+        find: "            find: \"#{intl::COPY}),hint:\",",
+        replace: "            predicate: shouldAddBackMenus,\n            find: \"#{intl::COPY}),hint:\"," 
+    },
+    {
+        file: "src/plugins/webContextMenus.web/index.ts",
+        allowOnStable: true,
+        marker: "Discordmaxxer: guard automod menu patch.",
+        alreadyAppliedWhen: content => content.includes("predicate: shouldAddBackMenus,\n            find: '(\"interactionUsernameProfile',") ,
+        find: "            find: '(\"interactionUsernameProfile',",
+        replace: "            predicate: shouldAddBackMenus,\n            find: '(\"interactionUsernameProfile'," 
+    },
+    {
+        file: "src/plugins/webContextMenus.web/index.ts",
+        allowOnStable: true,
+        marker: "Discordmaxxer: harden native context menu listeners.",
+        alreadyAppliedWhen: content => content.includes("Discordmaxxer: harden native context menu listeners."),
+        find:
+            "    start() {\n" +
+            "        if (shouldAddBackMenus()) {\n" +
+            "            window.removeEventListener(\"contextmenu\", ctxMenuCallbacks.contextMenuCallbackWeb);\n" +
+            "            window.addEventListener(\"contextmenu\", ctxMenuCallbacks.contextMenuCallbackNative);\n" +
+            "            this.changedListeners = true;\n" +
+            "        }\n" +
+            "    },\n\n" +
+            "    stop() {\n" +
+            "        if (this.changedListeners) {\n" +
+            "            window.removeEventListener(\"contextmenu\", ctxMenuCallbacks.contextMenuCallbackNative);\n" +
+            "            window.addEventListener(\"contextmenu\", ctxMenuCallbacks.contextMenuCallbackWeb);\n" +
+            "        }\n" +
+            "    },",
+        replace:
+            "    // Discordmaxxer: harden native context menu listeners.\n" +
+            "    start() {\n" +
+            "        if (!shouldAddComposerMenus()) return;\n" +
+            "        const callbacks = ctxMenuCallbacks as any;\n" +
+            "        const web = callbacks?.contextMenuCallbackWeb;\n" +
+            "        const native = callbacks?.contextMenuCallbackNative;\n" +
+            "        if (typeof web !== \"function\" || typeof native !== \"function\") {\n" +
+            "            console.warn(\"[Discordmaxxer] native context menu callbacks unavailable; keeping Discord web menu path\");\n" +
+            "            this.changedListeners = false;\n" +
+            "            return;\n" +
+            "        }\n" +
+            "        try {\n" +
+            "            const router = (event: MouseEvent) => {\n" +
+            "                try {\n" +
+            "                    if (isComposerTarget(event)) native(event);\n" +
+            "                    else web(event);\n" +
+            "                } catch (error) {\n" +
+            "                    console.error(\"[Discordmaxxer] context menu route failed; restoring Discord web menu\", error);\n" +
+            "                    web(event);\n" +
+            "                }\n" +
+            "            };\n" +
+            "            composerContextMenuRouter = router;\n" +
+            "            window.removeEventListener(\"contextmenu\", web);\n" +
+            "            window.addEventListener(\"contextmenu\", router);\n" +
+            "            this.changedListeners = true;\n" +
+            "        } catch (error) {\n" +
+            "            console.error(\"[Discordmaxxer] failed to install native context menu path\", error);\n" +
+            "            this.changedListeners = false;\n" +
+            "        }\n" +
+            "    },\n\n" +
+            "    stop() {\n" +
+            "        if (!this.changedListeners) return;\n" +
+            "        const callbacks = ctxMenuCallbacks as any;\n" +
+            "        const web = callbacks?.contextMenuCallbackWeb;\n" +
+            "        try {\n" +
+            "            if (composerContextMenuRouter) {\n" +
+            "                window.removeEventListener(\"contextmenu\", composerContextMenuRouter);\n" +
+            "                composerContextMenuRouter = null;\n" +
+            "            }\n" +
+            "            if (typeof web === \"function\") window.addEventListener(\"contextmenu\", web);\n" +
+            "        } catch (error) {\n" +
+            "            console.error(\"[Discordmaxxer] failed to restore web context menu path\", error);\n" +
+            "        }\n" +
+            "        this.changedListeners = false;\n" +
+            "    },"
+    },
+    {
+        file: "src/plugins/webContextMenus.web/index.ts",
+        allowOnStable: true,
+        marker: "Discordmaxxer: scope slate context menu patch to composer.",
+        alreadyAppliedWhen: content => content.includes("find: 'getElementById(\"slate-toolbar\"',\n            predicate: shouldAddComposerMenus,"),
+        find:
+            "            find: 'getElementById(\"slate-toolbar\"',\n" +
+            "            predicate: shouldAddBackMenus,",
+        replace:
+            "            find: 'getElementById(\"slate-toolbar\"',\n" +
+            "            predicate: shouldAddComposerMenus,"
+    },
+    {
+        file: "src/plugins/webContextMenus.web/index.ts",
+        allowOnStable: true,
+        marker: "Discordmaxxer: scope slash context menu patch to composer.",
+        alreadyAppliedWhen: content => content.includes("find: \".SLASH_COMMAND_SUGGESTIONS_TOGGLED,{\",\n            predicate: shouldAddComposerMenus,"),
+        find:
+            "            find: \".SLASH_COMMAND_SUGGESTIONS_TOGGLED,{\",\n" +
+            "            predicate: shouldAddBackMenus,",
+        replace:
+            "            find: \".SLASH_COMMAND_SUGGESTIONS_TOGGLED,{\",\n" +
+            "            predicate: shouldAddComposerMenus,"
+    },
+    {
+        file: "src/plugins/webContextMenus.web/index.ts",
+        allowOnStable: true,
+        marker: "Discordmaxxer: scope dictionary context menu patch to composer.",
+        alreadyAppliedWhen: content => content.includes("find: '\"add-to-dictionary\"',\n            predicate: shouldAddComposerMenus,"),
+        find:
+            "            find: '\"add-to-dictionary\"',\n" +
+            "            predicate: shouldAddBackMenus,",
+        replace:
+            "            find: '\"add-to-dictionary\"',\n" +
+            "            predicate: shouldAddComposerMenus,"
+    },
+    {
+        file: "src/plugins/webContextMenus.web/index.ts",
+        allowOnStable: true,
+        marker: "Discordmaxxer: harden image copy fallback.",
+        alreadyAppliedWhen: content => content.includes("Discordmaxxer: harden image copy fallback."),
+        find:
+            "    async copyImage(url: string) {\n" +
+            "        url = fixImageUrl(url);\n\n" +
+            "        let imageData = await fetch(url).then(r => r.blob());\n" +
+            "        if (imageData.type !== \"image/png\") {\n" +
+            "            const bitmap = await createImageBitmap(imageData);\n\n" +
+            "            const canvas = document.createElement(\"canvas\");\n" +
+            "            canvas.width = bitmap.width;\n" +
+            "            canvas.height = bitmap.height;\n" +
+            "            canvas.getContext(\"2d\")!.drawImage(bitmap, 0, 0);\n\n" +
+            "            await new Promise<void>(done => {\n" +
+            "                canvas.toBlob(data => {\n" +
+            "                    imageData = data!;\n" +
+            "                    done();\n" +
+            "                }, \"image/png\");\n" +
+            "            });\n" +
+            "        }\n\n" +
+            "        if (IS_VESKTOP && VesktopNative.clipboard) {\n" +
+            "            VesktopNative.clipboard.copyImage(await imageData.arrayBuffer(), url);\n" +
+            "            return;\n" +
+            "        } else {\n" +
+            "            navigator.clipboard.write([\n" +
+            "                new ClipboardItem({\n" +
+            "                    \"image/png\": imageData\n" +
+            "                })\n" +
+            "            ]);\n" +
+            "        }\n" +
+            "    },",
+        replace:
+            "    // Discordmaxxer: harden image copy fallback.\n" +
+            "    async copyImage(url: string) {\n" +
+            "        const sourceUrl = url;\n" +
+            "        try {\n" +
+            "            url = fixImageUrl(url);\n" +
+            "            const response = await fetch(url);\n" +
+            "            if (!response.ok) throw new Error(`Image request failed (${response.status})`);\n" +
+            "            let imageData = await response.blob();\n" +
+            "            if (!imageData || imageData.size === 0) throw new Error(\"Image response was empty\");\n" +
+            "            if (imageData.type !== \"image/png\") {\n" +
+            "                const bitmap = await createImageBitmap(imageData);\n" +
+            "                try {\n" +
+            "                    const canvas = document.createElement(\"canvas\");\n" +
+            "                    canvas.width = bitmap.width;\n" +
+            "                    canvas.height = bitmap.height;\n" +
+            "                    const context = canvas.getContext(\"2d\");\n" +
+            "                    if (!context) throw new Error(\"Canvas context unavailable\");\n" +
+            "                    context.drawImage(bitmap, 0, 0);\n" +
+            "                    imageData = await new Promise<Blob>((resolve, reject) => {\n" +
+            "                        canvas.toBlob(data => data ? resolve(data) : reject(new Error(\"PNG conversion failed\")), \"image/png\");\n" +
+            "                    });\n" +
+            "                } finally {\n" +
+            "                    bitmap.close();\n" +
+            "                }\n" +
+            "            }\n" +
+            "            if (IS_VESKTOP && VesktopNative.clipboard) {\n" +
+            "                await VesktopNative.clipboard.copyImage(await imageData.arrayBuffer(), url);\n" +
+            "                return;\n" +
+            "            }\n" +
+            "            await navigator.clipboard.write([new ClipboardItem({ \"image/png\": imageData })]);\n" +
+            "        } catch (error) {\n" +
+            "            console.warn(\"[Discordmaxxer] copy image failed; copying the source link instead\", error);\n" +
+            "            try {\n" +
+            "                await copyToClipboard(sourceUrl);\n" +
+            "            } catch (fallbackError) {\n" +
+            "                console.error(\"[Discordmaxxer] copy image fallback failed\", fallbackError);\n" +
+            "            }\n" +
+            "        }\n" +
+            "    },"
     },
     // WebKeybinds: do not steal a key already claimed by Discord, an IME, or
     // text editing controls. Ctrl+Tab is explicitly prevented because the
@@ -1274,13 +1639,200 @@ const PATCHES = [
             '}'
     },
 
+    // ── DM navigation: keep optional PinDMs stores fail-open ──
+    // Discord's current module graph can expose these lazy store proxies
+    // before their backing exports exist. A group-DM navigation must never
+    // take down the renderer just because the optional pinning plugin cannot
+    // read its sort order for one render.
+    {
+        file: "src/plugins/pinDms/data.ts",
+        allowOnStable: true,
+        marker: "Discordmaxxer: guard PinDMs lazy stores.",
+        alreadyAppliedWhen: content =>
+            content.includes("Discordmaxxer: guard PinDMs lazy stores.") ||
+            (content.includes("function currentUserIdSafe(): string | null") &&
+                content.includes("function privateChannelIdsSafe(): string[]")),
+        find:
+            "let forceUpdateDms: (() => void) | undefined = undefined;\n" +
+            "export let currentUserCategories: Category[] = [];\n",
+        replace:
+            "let forceUpdateDms: (() => void) | undefined = undefined;\n" +
+            "export let currentUserCategories: Category[] = [];\n\n" +
+            "// Discordmaxxer: guard PinDMs lazy stores.\n" +
+            "let warnedUserStoreUnavailable = false;\n" +
+            "let warnedPrivateChannelSortStoreUnavailable = false;\n\n" +
+            "function currentUserIdSafe(): string | null {\n" +
+            "    try {\n" +
+            "        const getCurrentUser = (UserStore as any)?.getCurrentUser;\n" +
+            "        const user = typeof getCurrentUser === \"function\" ? getCurrentUser.call(UserStore) : null;\n" +
+            "        return user?.id ?? null;\n" +
+            "    } catch (error) {\n" +
+            "        if (!warnedUserStoreUnavailable) {\n" +
+            "            warnedUserStoreUnavailable = true;\n" +
+            "            console.warn(\"[PinDMs] user store unavailable; deferring category initialization\", error);\n" +
+            "        }\n" +
+            "        return null;\n" +
+            "    }\n" +
+            "}\n\n" +
+            "function privateChannelIdsSafe(): string[] {\n" +
+            "    try {\n" +
+            "        const getPrivateChannelIds = (PrivateChannelSortStore as any)?.getPrivateChannelIds;\n" +
+            "        const ids = typeof getPrivateChannelIds === \"function\"\n" +
+            "            ? getPrivateChannelIds.call(PrivateChannelSortStore)\n" +
+            "            : [];\n" +
+            "        return Array.isArray(ids) ? ids : [];\n" +
+            "    } catch (error) {\n" +
+            "        if (!warnedPrivateChannelSortStoreUnavailable) {\n" +
+            "            warnedPrivateChannelSortStoreUnavailable = true;\n" +
+            "            console.warn(\"[PinDMs] private channel sort store unavailable; using saved DM order\", error);\n" +
+            "        }\n" +
+            "        return [];\n" +
+            "    }\n" +
+            "}\n"
+    },
+    {
+        file: "src/plugins/pinDms/data.ts",
+        allowOnStable: true,
+        marker: "Discordmaxxer: use guarded PinDMs user initialization.",
+        alreadyAppliedWhen: content =>
+            content.includes("Discordmaxxer: use guarded PinDMs user initialization.") ||
+            content.includes("const userId = currentUserIdSafe();"),
+        find: "    const userId = UserStore.getCurrentUser()?.id;",
+        replace:
+            "    // Discordmaxxer: use guarded PinDMs user initialization.\n" +
+            "    const userId = currentUserIdSafe();"
+    },
+    {
+        file: "src/plugins/pinDms/data.ts",
+        allowOnStable: true,
+        marker: "Discordmaxxer: use guarded PinDMs order reads.",
+        alreadyAppliedWhen: content =>
+            content.includes("Discordmaxxer: use guarded PinDMs order reads.") ||
+            content.includes("const sortedChannels = privateChannelIdsSafe();"),
+        find:
+            "export function getAllUncollapsedChannels() {\n" +
+            "    if (settings.store.pinOrder === PinOrder.LastMessage) {\n" +
+            "        const sortedChannels = PrivateChannelSortStore.getPrivateChannelIds();\n" +
+            "        return currentUserCategories.filter(c => !c.collapsed).flatMap(c => sortedChannels.filter(channel => c.channels.includes(channel)));\n" +
+            "    }\n",
+        replace:
+            "export function getAllUncollapsedChannels() {\n" +
+            "    let pinOrder: PinOrder | undefined;\n" +
+            "    try {\n" +
+            "        pinOrder = settings.store.pinOrder;\n" +
+            "    } catch (error) {\n" +
+            "        if (!warnedPrivateChannelSortStoreUnavailable) {\n" +
+            "            warnedPrivateChannelSortStoreUnavailable = true;\n" +
+            "            console.warn(\"[PinDMs] pin order settings unavailable; using saved DM order\", error);\n" +
+            "        }\n" +
+            "    }\n\n" +
+            "    if (pinOrder === PinOrder.LastMessage) {\n" +
+            "        const sortedChannels = privateChannelIdsSafe();\n" +
+            "        return currentUserCategories.filter(c => !c.collapsed).flatMap(c => sortedChannels.filter(channel => c.channels.includes(channel)));\n" +
+            "    }\n"
+    },
+
+    // ── BetterFolders: keep the actual folder popout enabled ──
+    // The custom sidebar is deliberately guarded by the stable-store
+    // fallbacks below, but it must not be hard-disabled or folder contents
+    // disappear instead of becoming selectable.
+    {
+        file: "src/plugins/betterFolders/index.tsx",
+        allowOnStable: true,
+        marker: "Discordmaxxer: enable guarded custom folder sidebar.",
+        alreadyAppliedWhen: content =>
+            content.includes("Discordmaxxer: enable guarded custom folder sidebar.") ||
+            content.includes("const DISCORDMAXXER_CUSTOM_SIDEBAR_SUPPORTED = false;"),
+        find:
+            "const GRID_STYLE_NAME = \"vc-betterFolders-sidebar-grid\";\n\n" +
+            "export default definePlugin({",
+        replace:
+            "const GRID_STYLE_NAME = \"vc-betterFolders-sidebar-grid\";\n\n" +
+            "// Discordmaxxer: enable guarded custom folder sidebar.\n" +
+            "const DISCORDMAXXER_CUSTOM_SIDEBAR_SUPPORTED = false;\n\n" +
+            "export default definePlugin({"
+    },
+    {
+        file: "src/plugins/betterFolders/index.tsx",
+        allowOnStable: true,
+        marker: "Discordmaxxer: keep native folder children visible.",
+        find: "            predicate: () => settings.store.sidebar,\n",
+        replace: "            predicate: () => settings.store.sidebar && DISCORDMAXXER_CUSTOM_SIDEBAR_SUPPORTED,\n"
+    },
+    {
+        file: "src/plugins/betterFolders/index.tsx",
+        allowOnStable: true,
+        marker: "Discordmaxxer: export guarded custom folder sidebar flag.",
+        alreadyAppliedWhen: content => content.includes("export const DISCORDMAXXER_CUSTOM_SIDEBAR_SUPPORTED = false;"),
+        find: "const DISCORDMAXXER_CUSTOM_SIDEBAR_SUPPORTED = false;",
+        replace:
+            "// Discordmaxxer: export guarded custom folder sidebar flag.\n" +
+            "export const DISCORDMAXXER_CUSTOM_SIDEBAR_SUPPORTED = false;"
+    },
+    {
+        file: "src/plugins/betterFolders/index.tsx",
+        allowOnStable: true,
+        marker: "Discordmaxxer: keep native folder expansion authoritative.",
+        find: "            predicate: () => settings.store.sidebar && settings.store.showFolderIcon !== FolderIconDisplay.Always,\n",
+        replace: "            predicate: () => settings.store.sidebar && DISCORDMAXXER_CUSTOM_SIDEBAR_SUPPORTED && settings.store.showFolderIcon !== FolderIconDisplay.Always,\n"
+    },
+    {
+        file: "src/plugins/betterFolders/index.tsx",
+        allowOnStable: true,
+        marker: "Discordmaxxer: leave native folder lifecycle untouched.",
+        alreadyAppliedWhen: content => content.includes("Discordmaxxer: leave native folder lifecycle untouched.") ||
+            content.includes("Discordmaxxer: close folder store transitions safely.") ||
+            content.includes("const expanded = ExpandedGuildFolderStore?.getExpandedFolders?.();") ||
+            content.includes("const expanded = ExpandedGuildFolderStore.getExpandedFolders?.();"),
+        obsoleteWhen: content => content.includes("for (const id of ExpandedGuildFolderStore.getExpandedFolders())") &&
+            content.includes("FolderUtils.toggleGuildFolderExpand(id);"),
+        find:
+            "function closeFolders() {\n" +
+            "    try {\n",
+        replace:
+            "function closeFolders() {\n" +
+            "    // Discord owns the native folder tree. The optional custom sidebar\n" +
+            "    // is disabled until its renderer contract is stable.\n" +
+            "    // Discordmaxxer: leave native folder lifecycle untouched.\n" +
+            "    if (!DISCORDMAXXER_CUSTOM_SIDEBAR_SUPPORTED) return;\n" +
+            "    try {\n"
+    },
+    {
+        file: "src/plugins/betterFolders/index.tsx",
+        allowOnStable: true,
+        marker: "Discordmaxxer: leave native folder route selection untouched.",
+        alreadyAppliedWhen: content => content.includes("Discordmaxxer: leave native folder route selection untouched."),
+        find:
+            "        CHANNEL_SELECT(data) {\n" +
+            "            if (!settings.store.closeAllFolders && !settings.store.forceOpen)\n",
+        replace:
+            "        CHANNEL_SELECT(data) {\n" +
+            "            // Discordmaxxer: leave native folder route selection untouched.\n" +
+            "            if (!DISCORDMAXXER_CUSTOM_SIDEBAR_SUPPORTED) return;\n" +
+            "            if (!settings.store.closeAllFolders && !settings.store.forceOpen)\n"
+    },
+    {
+        file: "src/plugins/betterFolders/index.tsx",
+        allowOnStable: true,
+        marker: "Discordmaxxer: leave native folder toggle untouched.",
+        alreadyAppliedWhen: content => content.includes("Discordmaxxer: leave native folder toggle untouched."),
+        find:
+            "        TOGGLE_GUILD_FOLDER_EXPAND(data) {\n" +
+            "            if (settings.store.closeOthers && !dispatchingFoldersClose) {\n",
+        replace:
+            "        TOGGLE_GUILD_FOLDER_EXPAND(data) {\n" +
+            "            // Discordmaxxer: leave native folder toggle untouched.\n" +
+            "            if (!DISCORDMAXXER_CUSTOM_SIDEBAR_SUPPORTED) return;\n" +
+            "            if (settings.store.closeOthers && !dispatchingFoldersClose) {\n"
+    },
+
     // ── BetterFolders: carry ID and renderer-transition safeguards into CI ──
     // The local Vencord checkout is ignored and CI clones it from the pinned
     // commit. Keep the folder repair in this tracked overlay so a release
     // cannot silently fall back to the old disappearing-child behavior.
     {
         file: "src/plugins/betterFolders/index.tsx",
-        marker: "export function normalizeFolderId",
+        marker: "Discordmaxxer: BetterFolders normalized ID helpers.",
         find: "let lastGuildId = null as string | null;\nlet dispatchingFoldersClose = false;\n",
         replace:
             "let lastGuildId = null as string | null;\n" +
@@ -1289,67 +1841,611 @@ const PATCHES = [
             "// emitted folder/guild IDs as both numbers and strings across\n" +
             "// client revisions; compare them at the store/React boundary.\n" +
             "export function normalizeFolderId(value: unknown): string | null {\n" +
+            "    if (value !== null && typeof value === \"object\") {\n" +
+            "        const record = value as any;\n" +
+            "        value = record.folderId ?? record.id ?? record.folder?.id ?? record.node?.id;\n" +
+            "    }\n" +
             "    return value === null || value === undefined ? null : String(value);\n" +
             "}\n\n" +
-            "export function hasFolderId(ids: Iterable<unknown> | undefined, value: unknown): boolean {\n" +
+            "export function hasFolderId(ids: unknown, value: unknown): boolean {\n" +
             "    const target = normalizeFolderId(value);\n" +
-            "    if (target === null || !ids) return false;\n\n" +
-            "    for (const id of ids) {\n" +
-            "        if (normalizeFolderId(id) === target) return true;\n" +
+            "    if (target === null || ids === null || ids === undefined) return false;\n\n" +
+            "    const candidate = ids as any;\n" +
+            "    try {\n" +
+            "        if (typeof candidate.has === \"function\") {\n" +
+            "            for (const key of [value, target]) {\n" +
+            "                if (!candidate.has(key)) continue;\n" +
+            "                if (typeof candidate.get !== \"function\" || candidate.get(key) !== false) return true;\n" +
+            "            }\n" +
+            "        }\n" +
+            "        if (typeof candidate.includes === \"function\" && (candidate.includes(value) || candidate.includes(target))) return true;\n" +
+            "    } catch {\n" +
+            "        // A renderer transition can expose a partially disposed store.\n" +
+            "    }\n\n" +
+            "    if (candidate && typeof candidate === \"object\" && !Array.isArray(candidate)) {\n" +
+            "        try {\n" +
+            "            for (const [key, entry] of Object.entries(candidate)) {\n" +
+            "                if (normalizeFolderId(key) === target && entry !== false) return true;\n" +
+            "            }\n" +
+            "        } catch {\n" +
+            "            // Continue to the iterable fallback.\n" +
+            "        }\n" +
+            "    }\n\n" +
+            "    try {\n" +
+            "        if (typeof candidate?.[Symbol.iterator] !== \"function\") return false;\n" +
+            "        for (const id of candidate as Iterable<unknown>) {\n" +
+            "            if (normalizeFolderId(id) === target) return true;\n" +
+            "            if (Array.isArray(id) && normalizeFolderId(id[0]) === target && id[1] !== false) return true;\n" +
+            "        }\n" +
+            "    } catch {\n" +
+            "        // Treat an unstable store as not expanded; the caller fails open.\n" +
             "    }\n\n" +
             "    return false;\n" +
+            "}\n\n" +
+            "export function isFolderExpandedId(value: unknown): boolean {\n" +
+            "    const store = ExpandedGuildFolderStore as any;\n" +
+            "    try {\n" +
+            "        if (typeof store?.isFolderExpanded === \"function\" && (store.isFolderExpanded(value) || store.isFolderExpanded(normalizeFolderId(value)))) return true;\n" +
+            "    } catch {\n" +
+            "        // Fall through to the expanded-ID collection for older clients.\n" +
+            "    }\n" +
+            "    try {\n" +
+            "        return hasFolderId(store?.getExpandedFolders?.(), value);\n" +
+            "    } catch {\n" +
+            "        return false;\n" +
+            "    }\n" +
             "}\n"
     },
     {
         file: "src/plugins/betterFolders/index.tsx",
-        find: "return SortedGuildStore.getGuildFolders().find(folder => folder.guildIds.includes(id));",
-        replace: "return SortedGuildStore.getGuildFolders().find(folder =>\n        folder.guildIds?.some(guildId => normalizeFolderId(guildId) === normalizeFolderId(id))\n    );"
+        marker: "Discordmaxxer: optimistic expanded-folder bridge.",
+        alreadyAppliedWhen: content => content.includes("Discordmaxxer: optimistic expanded-folder bridge."),
+        obsoleteWhen: content => content.includes("discordmaxxerManualExpandedFolderIds"),
+        find: "let dispatchingFoldersClose = false;\n",
+        replace:
+            "let dispatchingFoldersClose = false;\n\n" +
+            "// Discordmaxxer: optimistic expanded-folder bridge. Discord's\n" +
+            "// expanded-folder store can be one render behind the folder click,\n" +
+            "// so keep a small local bridge for the dedicated sidebar.\n" +
+            "const discordmaxxerManualExpandedFolderIds = new Set<string>();\n" +
+            "const discordmaxxerManualExpandedFolderListeners = new Set<() => void>();\n" +
+            "export const DiscordmaxxerExpandedFolderStore = {\n" +
+            "    addChangeListener(listener: () => void) {\n" +
+            "        discordmaxxerManualExpandedFolderListeners.add(listener);\n" +
+            "    },\n" +
+            "    removeChangeListener(listener: () => void) {\n" +
+            "        discordmaxxerManualExpandedFolderListeners.delete(listener);\n" +
+            "    },\n" +
+            "    emitChange() {\n" +
+            "        for (const listener of [...discordmaxxerManualExpandedFolderListeners]) {\n" +
+            "            try {\n" +
+            "                listener();\n" +
+            "            } catch {\n" +
+            "                // A stale React subscriber must not break the dispatcher.\n" +
+            "            }\n" +
+            "        }\n" +
+            "    }\n" +
+            "};\n\n" +
+            "export function getDiscordmaxxerManualExpandedFolderIds() {\n" +
+            "    return new Set(discordmaxxerManualExpandedFolderIds);\n" +
+            "}\n\n" +
+            "function setManualExpandedFolder(id: unknown, expanded: boolean) {\n" +
+            "    const normalized = normalizeFolderId(id);\n" +
+            "    if (normalized === null) return;\n" +
+            "    if (expanded) discordmaxxerManualExpandedFolderIds.add(normalized);\n" +
+            "    else discordmaxxerManualExpandedFolderIds.delete(normalized);\n" +
+            "    DiscordmaxxerExpandedFolderStore.emitChange();\n" +
+            "}\n\n" +
+            "function noteFolderToggle(id: unknown) {\n" +
+            "    const normalized = normalizeFolderId(id);\n" +
+            "    if (normalized === null) return;\n" +
+            "    // Mirror the direction of Discord's native toggle, then reconcile\n" +
+            "    // after its store commits. Never force every toggle to \"open\".\n" +
+            "    const expectedExpanded = !isFolderExpandedId(normalized);\n" +
+            "    setManualExpandedFolder(normalized, expectedExpanded);\n" +
+            "    const reconcile = (attempt: number) => {\n" +
+            "        window.setTimeout(() => {\n" +
+            "            try {\n" +
+            "                const expanded = isFolderExpandedId(normalized);\n" +
+            "                if (expanded === expectedExpanded || attempt >= 3) {\n" +
+            "                    setManualExpandedFolder(normalized, expanded);\n" +
+            "                    return;\n" +
+            "                }\n" +
+            "            } catch {\n" +
+            "                if (attempt >= 3) return;\n" +
+            "            }\n" +
+            "            reconcile(attempt + 1);\n" +
+            "        }, attempt === 0 ? 120 : 180);\n" +
+            "    };\n" +
+            "    reconcile(0);\n" +
+            "}\n\n" +
+            "function clearManualExpandedFolders() {\n" +
+            "    if (!discordmaxxerManualExpandedFolderIds.size) return;\n" +
+            "    discordmaxxerManualExpandedFolderIds.clear();\n" +
+            "    DiscordmaxxerExpandedFolderStore.emitChange();\n" +
+            "}\n"
     },
     {
         file: "src/plugins/betterFolders/index.tsx",
+        marker: "Discordmaxxer: guard force-open navigation.",
+        alreadyAppliedWhen: content => content.includes("noteFolderToggle(guildFolder.folderId)"),
+        obsoleteWhen: content => content.includes("noteFolderToggle(guildFolder.folderId)") || content.includes("Discordmaxxer: keep route selection native."),
+        find:
+            "                    if (settings.store.forceOpen && !ExpandedGuildFolderStore.isFolderExpanded(guildFolder.folderId)) {\n" +
+            "                        FolderUtils.toggleGuildFolderExpand(guildFolder.folderId);\n" +
+            "                    }",
+        replace:
+            "                    if (settings.store.forceOpen && !isFolderExpandedId(guildFolder.folderId)) {\n" +
+            "                        try {\n" +
+            "                            FolderUtils.toggleGuildFolderExpand(guildFolder.folderId);\n" +
+            "                            noteFolderToggle(guildFolder.folderId);\n" +
+            "                        } catch {\n" +
+            "                            // Guild navigation can race folder disposal.\n" +
+            "                        }\n" +
+            "                    }"
+    },
+    {
+        file: "src/plugins/betterFolders/index.tsx",
+        marker: "Discordmaxxer: keep route selection native.",
+        alreadyAppliedWhen: content => content.includes("Discordmaxxer: keep route selection native."),
+        obsoleteWhen: content => content.includes("Discordmaxxer: keep route selection native."),
+        find:
+            "        CHANNEL_SELECT(data) {\n" +
+            "            try {\n" +
+            "                if (!settings.store.closeAllFolders && !settings.store.forceOpen)\n" +
+            "                    return;\n\n" +
+            "                if (lastGuildId !== data?.guildId) {\n" +
+            "                    lastGuildId = data?.guildId ?? null;\n" +
+            "                    const guildFolder = getGuildFolder(data?.guildId);\n\n" +
+            "                    if (guildFolder?.folderId !== null && guildFolder?.folderId !== undefined) {\n" +
+            "                        if (settings.store.forceOpen && !isFolderExpandedId(guildFolder.folderId)) {\n" +
+            "                            try {\n" +
+            "                                FolderUtils.toggleGuildFolderExpand(guildFolder.folderId);\n" +
+            "                                noteFolderToggle(guildFolder.folderId);\n" +
+            "                            } catch {\n" +
+            "                                // Guild navigation can race folder disposal.\n" +
+            "                            }\n" +
+            "                        }\n" +
+            "                    } else if (settings.store.closeAllFolders) {\n" +
+            "                        closeFolders();\n" +
+            "                    }\n" +
+            "                }\n" +
+            "            } catch {\n" +
+            "                // DM/group-chat navigation may expose partial stores for one tick.\n" +
+            "            }\n" +
+            "        },",
+        replace:
+            "        CHANNEL_SELECT() {\n" +
+            "            // Discord owns route selection. Folder convenience behavior is\n" +
+            "            // deliberately excluded from DM/group-chat navigation.\n" +
+            "        },"
+    },
+    {
+        file: "src/plugins/betterFolders/index.tsx",
+        marker: "Discordmaxxer: keep folder toggle native.",
+        alreadyAppliedWhen: content => content.includes("Discordmaxxer: keep folder toggle native."),
+        obsoleteWhen: content => content.includes("Discordmaxxer: keep folder toggle native."),
+        find:
+            "        TOGGLE_GUILD_FOLDER_EXPAND(data) {\n" +
+            "            noteFolderToggle(data?.folderId);\n" +
+            "            if (settings.store.closeOthers && !dispatchingFoldersClose) {\n" +
+            "                dispatchingFoldersClose = true;\n\n" +
+            "                FluxDispatcher.wait(() => {\n" +
+            "                    try {\n" +
+            "                        const expandedFolders = ExpandedGuildFolderStore.getExpandedFolders?.();\n\n" +
+            "                        if (expandedFolders.size > 1) {\n" +
+            "                            for (const id of expandedFolders) if (id !== data.folderId)\n" +
+            "                                FolderUtils.toggleGuildFolderExpand(id);\n" +
+            "                        }\n" +
+            "                    } catch {\n" +
+            "                        // A partially disposed folder store must not crash navigation.\n" +
+            "                    } finally {\n" +
+            "                        dispatchingFoldersClose = false;\n" +
+            "                    }\n" +
+            "                });\n" +
+            "            }\n" +
+            "        },",
+        replace:
+            "        TOGGLE_GUILD_FOLDER_EXPAND(data) {\n" +
+            "            // Discord owns the folder toggle. Only mirror its state for\n" +
+            "            // the custom sidebar; do not dispatch recursive close events.\n" +
+            "            // Discordmaxxer: keep folder toggle native.\n" +
+            "            try { noteFolderToggle(data?.folderId); } catch { /* fail open */ }\n" +
+            "        },"
+    },
+    {
+        file: "src/plugins/betterFolders/index.tsx",
+        marker: "Discordmaxxer: guard folder close-other wait.",
+        alreadyAppliedWhen: content => content.includes("A partially disposed folder store must not crash navigation."),
+        obsoleteWhen: content => content.includes("A partially disposed folder store must not crash navigation.") || content.includes("Discordmaxxer: keep folder toggle native."),
+        find: "                FluxDispatcher.wait(() => {\n                    const expandedFolders = ExpandedGuildFolderStore.getExpandedFolders?.();\n",
+        replace:
+            "                FluxDispatcher.wait(() => {\n" +
+            "                    try {\n" +
+            "                        const expandedFolders = ExpandedGuildFolderStore.getExpandedFolders?.();\n"
+    },
+    {
+        file: "src/plugins/betterFolders/index.tsx",
+        marker: "Discordmaxxer: finish folder close-other wait safely.",
+        alreadyAppliedWhen: content => content.includes("finally {\n                            dispatchingFoldersClose = false;"),
+        obsoleteWhen: content => content.includes("finally {\n                            dispatchingFoldersClose = false;") || content.includes("Discordmaxxer: keep folder toggle native."),
+        find: "                    }\n\n                    dispatchingFoldersClose = false;\n                });",
+        replace:
+            "                        }\n" +
+            "                    } catch {\n" +
+            "                        // A partially disposed folder store must not crash navigation.\n" +
+            "                    } finally {\n" +
+            "                        dispatchingFoldersClose = false;\n" +
+            "                    }\n" +
+            "                });"
+    },
+    {
+        file: "src/plugins/betterFolders/index.tsx",
+        marker: "Discordmaxxer: clear manual folder state on lifecycle.",
+        alreadyAppliedWhen: content => content.includes("start() {\n        clearManualExpandedFolders();"),
+        obsoleteWhen: content => content.includes("clearManualExpandedFolders();"),
+        find: "    FolderSideBar,\n    closeFolders,\n",
+        replace:
+            "    FolderSideBar,\n    closeFolders,\n\n" +
+            "    start() {\n" +
+            "        clearManualExpandedFolders();\n" +
+            "    },\n\n" +
+            "    stop() {\n" +
+            "        clearManualExpandedFolders();\n" +
+            "    },\n"
+    },
+    {
+        file: "src/plugins/betterFolders/FolderSideBar.tsx",
+        marker: "Discordmaxxer: subscribe optimistic folder state.",
+        alreadyAppliedWhen: content => content.includes("DiscordmaxxerExpandedFolderStore"),
+        obsoleteWhen: content => content.includes("DiscordmaxxerExpandedFolderStore"),
+        find: "import { ExpandedGuildFolderStore, hasFolderId, isFolderExpandedId, normalizeFolderId, settings, SortedGuildStore } from \".\";",
+        replace: "import { DiscordmaxxerExpandedFolderStore, ExpandedGuildFolderStore, getDiscordmaxxerManualExpandedFolderIds, hasFolderId, isFolderExpandedId, normalizeFolderId, settings, SortedGuildStore } from \".\";"
+    },
+    {
+        file: "src/plugins/betterFolders/FolderSideBar.tsx",
+        marker: "Discordmaxxer: merge optimistic folder state.",
+        alreadyAppliedWhen: content => content.includes("Discordmaxxer: merge optimistic folder state while Discord"),
+        obsoleteWhen: content => content.includes("getDiscordmaxxerManualExpandedFolderIds()"),
+        find: "        return expandedFolderIds;\n",
+        replace:
+            "        // Discordmaxxer: merge optimistic folder state while Discord\n" +
+            "        // commits the expanded-folder store after a click.\n" +
+            "        for (const id of getDiscordmaxxerManualExpandedFolderIds()) expandedFolderIds.add(id);\n\n" +
+            "        return expandedFolderIds;\n"
+    },
+    {
+        file: "src/plugins/betterFolders/FolderSideBar.tsx",
+        marker: "Discordmaxxer: subscribe FolderSideBar to optimistic state.",
+        alreadyAppliedWhen: content => content.includes("DiscordmaxxerExpandedFolderStore"),
+        obsoleteWhen: content => content.includes("DiscordmaxxerExpandedFolderStore"),
+        find: "    const expandedFolderIds = useStateFromStores([ExpandedGuildFolderStore, SortedGuildStore], () => getExpandedFolderIds());",
+        replace: "    const expandedFolderIds = useStateFromStores([ExpandedGuildFolderStore, SortedGuildStore, DiscordmaxxerExpandedFolderStore], () => getExpandedFolderIds());"
+    },
+    {
+        file: "src/plugins/betterFolders/FolderSideBar.tsx",
+        marker: "Discordmaxxer: support map-shaped expanded state.",
+        alreadyAppliedWhen: content => content.includes("for (const entry of expandedFolders as Iterable<unknown>)"),
+        obsoleteWhen: content => content.includes("for (const entry of expandedFolders as Iterable<unknown>)"),
+        find:
+            "            for (const id of expandedFolders as Iterable<unknown>) {\n" +
+            "                const normalized = normalizeFolderId(id);\n" +
+            "                if (normalized !== null) expandedFolderIds.add(normalized);\n" +
+            "            }",
+        replace:
+            "            for (const entry of expandedFolders as Iterable<unknown>) {\n" +
+            "                const id = Array.isArray(entry) ? entry[0] : entry;\n" +
+            "                if (Array.isArray(entry) && entry[1] === false) continue;\n" +
+            "                const normalized = normalizeFolderId(id);\n" +
+            "                if (normalized !== null) expandedFolderIds.add(normalized);\n" +
+            "            }"
+    },
+    {
+        file: "src/plugins/betterFolders/index.tsx",
+        obsoleteWhen: content => content.includes("Discord can replace the sorted-guild store during DM/group navigation."),
+        find: "return SortedGuildStore.getGuildFolders().find(folder => folder.guildIds.includes(id));",
+        replace:
+            "try {\n" +
+            "        const folders = SortedGuildStore.getGuildFolders?.();\n" +
+            "        return folders?.find(folder =>\n" +
+            "            folder.guildIds?.some(guildId => normalizeFolderId(guildId) === normalizeFolderId(id))\n" +
+            "        );\n" +
+            "    } catch {\n" +
+            "        // Discord can replace the sorted-guild store during DM/group navigation.\n" +
+            "        return undefined;\n" +
+            "    }"
+    },
+    {
+        file: "src/plugins/betterFolders/index.tsx",
+        obsoleteWhen: content => content.includes("Discordmaxxer: keep route selection native."),
         find: "if (guildFolder?.folderId) {",
         replace: "if (guildFolder?.folderId !== null && guildFolder?.folderId !== undefined) {"
     },
     {
         file: "src/plugins/betterFolders/index.tsx",
+        obsoleteWhen: content => content.includes("Discordmaxxer: guard close-other-folder transitions.") || content.includes("Discordmaxxer: keep folder toggle native."),
         find: "for (const id of expandedFolders) if (id !== data.folderId)",
         replace: "for (const id of expandedFolders) if (!hasFolderId([id], data.folderId))"
     },
     {
         file: "src/plugins/betterFolders/index.tsx",
+        marker: "Discordmaxxer: remove stale BetterFolders wrapper declaration.",
+        find:
+            "        const folderNodeId = node?.type === \"folder\"\n" +
+            "            ? node.id ?? node.folderId ?? node.folderNode?.folderId\n" +
+            "            : node.parentId ?? node.folderId ?? node.guild?.folderId ?? node.folderNode?.folderId;\n",
+        replace: ""
+    },
+    {
+        file: "src/plugins/betterFolders/index.tsx",
+        // The clean source can already contain the fail-open wrapper from a
+        // prior local build. Treat that transformed contract as idempotent so
+        // strict release builds do not fail on a stale pre-transform matcher.
+        obsoleteWhen: content =>
+            content.includes("Discordmaxxer: classify BetterFolders nodes fail open.") ||
+            content.includes("Discordmaxxer: use the same direct expanded-ID contract as the"),
         marker: "Fail open during a renderer transition.",
         find:
             "if (\n" +
             "            !isBetterFolders ||\n" +
-            "            node.type === \"folder\" && expandedFolderIds?.has(node.id) ||\n" +
-            "            node.type === \"guild\" && expandedFolderIds?.has(node.parentId)\n" +
+            "            // Discordmaxxer: fail open during a renderer transition.\n" +
+            "            // Missing/empty props must not blank the dedicated sidebar.\n" +
+            "            expandedFolderIds == null ||\n" +
+            "            expandedFolderIds.size === 0 ||\n" +
+            "            node.type === \"folder\" && (isFolderExpandedId(folderNodeId) || hasFolderId(expandedFolderIds, folderNodeId)) ||\n" +
+            "            node.type === \"guild\" && (isFolderExpandedId(folderNodeId) || hasFolderId(expandedFolderIds, folderNodeId))\n" +
             "        ) {",
         replace:
-            "if (\n" +
+            "const nodeType = String(node?.type ?? \"\");\n" +
+            "        const folderNodeId = nodeType === \"folder\"\n" +
+            "            ? node.id ?? node.folderId ?? node.folderNode?.folderId\n" +
+            "            : node.parentId ?? node.folderId ?? node.guild?.folderId ?? node.folderNode?.folderId;\n" +
+            "        if (\n" +
             "            !isBetterFolders ||\n" +
-            "            // Discordmaxxer: fail open during a renderer transition.\n" +
-            "            // Missing props must not blank the dedicated sidebar.\n" +
             "            expandedFolderIds == null ||\n" +
-            "            node.type === \"folder\" && hasFolderId(expandedFolderIds, node.id) ||\n" +
-            "            node.type === \"guild\" && hasFolderId(expandedFolderIds, node.parentId)\n" +
+            "            nodeType !== \"folder\" && nodeType !== \"guild\" ||\n" +
+            "            nodeType === \"folder\" ||\n" +
+            "            nodeType === \"guild\" && folderNodeId == null ||\n" +
+            "            hasFolderId(expandedFolderIds, folderNodeId) ||\n" +
+            "            isFolderExpandedId(folderNodeId)\n" +
             "        ) {"
     },
     {
-        file: "src/plugins/betterFolders/FolderSideBar.tsx",
-        find: "import { ExpandedGuildFolderStore, settings, SortedGuildStore } from \".\";",
-        replace: "import { ExpandedGuildFolderStore, hasFolderId, normalizeFolderId, settings, SortedGuildStore } from \".\";"
+        file: "src/plugins/betterFolders/index.tsx",
+        obsoleteWhen: content => content.includes("Discordmaxxer: fail open when expanded folder state is unavailable."),
+        marker: "Discordmaxxer: fail open when expanded folder state is unavailable.",
+        find: "        if (!isBetterFolders || expandedFolderIds == null) return originalComponent();",
+        replace:
+            "        // Discordmaxxer: fail open when expanded folder state is unavailable.\n" +
+            "        // A transient empty store must not hide the normal guild list.\n" +
+            "        if (!isBetterFolders || expandedFolderIds == null || expandedFolderIds.size === 0) return originalComponent();",
+    },
+    {
+        file: "src/plugins/betterFolders/index.tsx",
+        marker: "Discordmaxxer: close folder store transitions safely.",
+        find:
+            "function closeFolders() {\n" +
+            "    for (const id of ExpandedGuildFolderStore.getExpandedFolders())\n" +
+            "        FolderUtils.toggleGuildFolderExpand(id);\n" +
+            "}",
+        replace:
+            "function closeFolders() {\n" +
+            "    // Discordmaxxer: close folder store transitions safely.\n" +
+            "    try {\n" +
+            "        const expanded = ExpandedGuildFolderStore.getExpandedFolders?.();\n" +
+            "        if (!expanded || typeof expanded[Symbol.iterator] !== \"function\") return;\n" +
+            "        for (const id of expanded) {\n" +
+            "            try {\n" +
+            "                FolderUtils.toggleGuildFolderExpand(id);\n" +
+            "            } catch {\n" +
+            "                // A folder may disappear while Discord is changing routes.\n" +
+            "            }\n" +
+            "        }\n" +
+            "    } catch {\n" +
+            "        // A partially disposed store must not take down the renderer.\n" +
+            "    }\n" +
+            "}",
+    },
+    {
+        file: "src/plugins/betterFolders/index.tsx",
+        marker: "Discordmaxxer: guard close-other-folder transitions.",
+        obsoleteWhen: content => content.includes("Discordmaxxer: keep folder toggle native."),
+        find:
+            "                    const expandedFolders = ExpandedGuildFolderStore.getExpandedFolders();\n\n" +
+            "                    if (expandedFolders.size > 1) {\n" +
+            "                        for (const id of expandedFolders) if (!hasFolderId([id], data.folderId))\n" +
+            "                            FolderUtils.toggleGuildFolderExpand(id);\n" +
+            "                    }",
+        replace:
+            "                    const expandedFolders = ExpandedGuildFolderStore.getExpandedFolders?.();\n" +
+            "                    const expandedIds = expandedFolders && typeof expandedFolders[Symbol.iterator] === \"function\"\n" +
+            "                        ? [...expandedFolders]\n" +
+            "                        : [];\n\n" +
+            "                    // Discordmaxxer: guard close-other-folder transitions.\n" +
+            "                    if (expandedIds.length > 1) {\n" +
+            "                        for (const id of expandedIds) if (!hasFolderId([id], data.folderId)) {\n" +
+            "                            try {\n" +
+            "                                FolderUtils.toggleGuildFolderExpand(id);\n" +
+            "                            } catch {\n" +
+            "                                // The folder can disappear during navigation.\n" +
+            "                            }\n" +
+            "                        }\n" +
+            "                    }"
     },
     {
         file: "src/plugins/betterFolders/FolderSideBar.tsx",
+        obsoleteWhen: content => content.includes("normalizeFolderId"),
+        find: "import { ExpandedGuildFolderStore, settings, SortedGuildStore } from \".\";",
+        replace: "import { ExpandedGuildFolderStore, hasFolderId, isFolderExpandedId, normalizeFolderId, settings, SortedGuildStore } from \".\";"
+    },
+    {
+        file: "src/plugins/betterFolders/FolderSideBar.tsx",
+        obsoleteWhen: content =>
+            content.includes("Discordmaxxer: guard folder sidebar store transitions.") ||
+            content.includes("Discordmaxxer: read the expanded-folder store directly.") ||
+            content.includes("Discordmaxxer: restore catalog folder IDs."),
         find:
             "        if (expandedFolders.has(folder.folderId) && folder.guildIds?.length) {\n" +
             "            expandedFolderIds.add(folder.folderId);",
         replace:
-            "        const folderId = normalizeFolderId(folder.folderId);\n" +
-            "        if (folderId && hasFolderId(expandedFolders, folderId) && folder.guildIds?.length) {\n" +
+            "        const folderRecord = folder as any;\n" +
+            "        const folderId = normalizeFolderId(folderRecord.folderId ?? folderRecord.id ?? folderRecord.folder?.id);\n" +
+            "        const guildIds = folderRecord.guildIds ?? folderRecord.guilds?.map((guild: any) => guild.id ?? guild);\n" +
+            "        if (folderId && (isFolderExpandedId(folderId) || hasFolderId(expandedFolders, folderId)) && guildIds?.length) {\n" +
             "            expandedFolderIds.add(folderId);"
     }
     ,
+    {
+        file: "src/plugins/betterFolders/FolderSideBar.tsx",
+        obsoleteWhen: content =>
+            content.includes("Discordmaxxer: read the expanded-folder store directly.") ||
+            content.includes("Discordmaxxer: restore catalog folder IDs."),
+        marker: "Discordmaxxer: guard folder sidebar store transitions.",
+        find:
+            "function getExpandedFolderIds() {\n" +
+            "    const expandedFolders = ExpandedGuildFolderStore.getExpandedFolders();\n" +
+            "    const folders = SortedGuildStore.getGuildFolders();\n\n" +
+            "    const expandedFolderIds = new Set<string>();\n\n" +
+            "    for (const folder of folders) {\n" +
+            "        const folderRecord = folder as any;\n" +
+            "        const folderId = normalizeFolderId(folderRecord.folderId ?? folderRecord.id ?? folderRecord.folder?.id);\n" +
+            "        const guildIds = folderRecord.guildIds ?? folderRecord.guilds?.map((guild: any) => guild.id ?? guild);\n" +
+            "        if (folderId && (isFolderExpandedId(folderId) || hasFolderId(expandedFolders, folderId)) && guildIds?.length) {\n" +
+            "            expandedFolderIds.add(folderId);\n" +
+            "        }\n" +
+            "    }\n\n" +
+            "    return expandedFolderIds;\n" +
+            "}",
+        replace:
+            "function getExpandedFolderIds() {\n" +
+            "    // Discordmaxxer: read the expanded-folder store directly. Do not\n" +
+            "    // intersect it with SortedGuildStore during a click transition: Discord\n" +
+            "    // can publish those stores on adjacent React commits, which made the\n" +
+            "    // folder sidebar disappear even though the folder was open.\n" +
+            "    try {\n" +
+            "        const expandedFolders = ExpandedGuildFolderStore.getExpandedFolders?.();\n" +
+            "        const expandedFolderIds = new Set<string>();\n" +
+            "        if (expandedFolders && typeof (expandedFolders as any)[Symbol.iterator] === \"function\") {\n" +
+            "            for (const id of expandedFolders as Iterable<unknown>) {\n" +
+            "                const normalized = normalizeFolderId(id);\n" +
+            "                if (normalized !== null) expandedFolderIds.add(normalized);\n" +
+            "            }\n" +
+            "        }\n\n" +
+            "        if (expandedFolders && typeof expandedFolders === \"object\" && typeof (expandedFolders as any)[Symbol.iterator] !== \"function\") {\n" +
+            "            for (const [id, entry] of Object.entries(expandedFolders as any)) {\n" +
+            "                if (entry !== false) {\n" +
+            "                    const normalized = normalizeFolderId(id);\n" +
+            "                    if (normalized !== null) expandedFolderIds.add(normalized);\n" +
+            "                }\n" +
+            "            }\n" +
+            "        }\n\n" +
+            "        return expandedFolderIds;\n" +
+            "    } catch (error) {\n" +
+            "        console.warn(\"[Discordmaxxer] BetterFolders state unavailable; keeping the sidebar interactive.\", error);\n" +
+            "        return new Set<string>();\n" +
+            "    }\n" +
+            "}",
+    },
+    {
+        file: "src/plugins/betterFolders/FolderSideBar.tsx",
+        obsoleteWhen: content => content.includes("Discordmaxxer: restore catalog folder IDs."),
+        marker: "Discordmaxxer: restore catalog folder IDs.",
+        find:
+            "        const expandedFolderIds = new Set<string>();\n" +
+            "        if (expandedFolders && typeof (expandedFolders as any)[Symbol.iterator] === \"function\") {\n" +
+            "            for (const id of expandedFolders as Iterable<unknown>) {\n" +
+            "                const normalized = normalizeFolderId(id);\n" +
+            "                if (normalized !== null) expandedFolderIds.add(normalized);\n" +
+            "            }\n" +
+            "        }\n\n" +
+            "        if (expandedFolders && typeof expandedFolders === \"object\" && typeof (expandedFolders as any)[Symbol.iterator] !== \"function\") {\n" +
+            "            for (const [id, entry] of Object.entries(expandedFolders as any)) {\n" +
+            "                if (entry !== false) {\n" +
+            "                    const normalized = normalizeFolderId(id);\n" +
+            "                    if (normalized !== null) expandedFolderIds.add(normalized);\n" +
+            "                }\n" +
+            "            }\n" +
+            "        }\n",
+        replace:
+            "        const expandedFolderIds = new Set<string>();\n\n" +
+            "        const folders = SortedGuildStore.getGuildFolders?.();\n" +
+            "        if (folders && typeof (folders as any)[Symbol.iterator] === \"function\") {\n" +
+            "            for (const folder of folders as Iterable<unknown>) {\n" +
+            "                const folderRecord = folder as any;\n" +
+            "                const folderId = normalizeFolderId(\n" +
+            "                    folderRecord?.folderId ??\n" +
+            "                    folderRecord?.id ??\n" +
+            "                    folderRecord?.folder?.id ??\n" +
+            "                    folderRecord?.folderNode?.folderId,\n" +
+            "                );\n" +
+            "                const guildIds =\n" +
+            "                    folderRecord?.guildIds ??\n" +
+            "                    folderRecord?.guildIdsInFolder ??\n" +
+            "                    folderRecord?.guilds?.map((guild: any) => guild?.id ?? guild);\n\n" +
+            "                if (\n" +
+            "                    folderId &&\n" +
+            "                    (isFolderExpandedId(folderId) || hasFolderId(expandedFolders, folderId)) &&\n" +
+            "                    (!guildIds || guildIds.length > 0)\n" +
+            "                ) {\n" +
+            "                    expandedFolderIds.add(folderId);\n" +
+            "                }\n" +
+            "            }\n" +
+            "        }\n\n" +
+            "        // Fallback for Discord revisions where the catalog is not ready yet,\n" +
+            "        // or where the store returns raw IDs instead of folder records.\n" +
+            "        if (expandedFolderIds.size === 0) {\n" +
+            "            if (expandedFolders && typeof (expandedFolders as any)[Symbol.iterator] === \"function\") {\n" +
+            "                for (const id of expandedFolders as Iterable<unknown>) {\n" +
+            "                    const normalized = normalizeFolderId(id);\n" +
+            "                    if (normalized !== null) expandedFolderIds.add(normalized);\n" +
+            "                }\n" +
+            "            }\n" +
+            "            if (\n" +
+            "                expandedFolders &&\n" +
+            "                typeof expandedFolders === \"object\" &&\n" +
+            "                typeof (expandedFolders as any)[Symbol.iterator] !== \"function\"\n" +
+            "            ) {\n" +
+            "                for (const [id, entry] of Object.entries(expandedFolders as any)) {\n" +
+            "                    if (entry !== false) {\n" +
+            "                        const normalized = normalizeFolderId(id);\n" +
+            "                        if (normalized !== null) expandedFolderIds.add(normalized);\n" +
+            "                    }\n" +
+            "                }\n" +
+            "            }\n" +
+            "        }\n",
+    },
+    {
+        file: "src/plugins/betterFolders/FolderSideBar.tsx",
+        obsoleteWhen: content => content.includes("Discordmaxxer: isolate catalog lookup during transitions."),
+        marker: "Discordmaxxer: isolate catalog lookup during transitions.",
+        find: "        const folders = SortedGuildStore.getGuildFolders?.();",
+        replace:
+            "        // Discordmaxxer: isolate catalog lookup during transitions.\n" +
+            "        let folders: Iterable<unknown> | null = null;\n" +
+            "        try {\n" +
+            "            folders = SortedGuildStore.getGuildFolders?.() as Iterable<unknown> | null;\n" +
+            "        } catch {\n" +
+            "            // The sorted-guild catalog can be unavailable for one render commit.\n" +
+            "        }",
+    },
+    {
+        file: "src/plugins/betterFolders/FolderSideBar.tsx",
+        allowOnStable: true,
+        obsoleteWhen: content => content.includes("Discordmaxxer: guard FolderSideBar DOM lookup."),
+        find: "    const guilds = document.querySelector(guildsBarProps.className.split(\" \").map(c => \`.\${c}\`).join(\"\"));",
+        find: "    const guilds = document.querySelector(guildsBarProps.className.split(\" \").map(c => \`.\${c}\`).join(\"\"));",
+        replace:
+            "    // Discordmaxxer: guard FolderSideBar DOM lookup.\n" +
+            "    // Discord can render this helper during a route transition with partial\n" +
+            "    // props. A missing/invalid className must not take down the renderer.\n" +
+            "    let guilds: Element | null = null;\n" +
+            "    try {\n" +
+            "        const className = typeof guildsBarProps?.className === \"string\" ? guildsBarProps.className : \"\";\n" +
+            "        if (className) guilds = document.querySelector(className.split(\" \").filter(Boolean).map(c => \`.\${c}\`).join(\"\"));\n" +
+            "    } catch {\n" +
+            "        guilds = null;\n" +
+            "    }",
+    },
     // Plugin info modals must not construct Discord User records just to show
     // authors. The native summary/avatar path is both visually oversized in
     // this client and unsafe for plugin manifests with partial author data;
@@ -1531,7 +2627,727 @@ const PATCHES = [
         file: "src/components/settings/tabs/plugins/PluginModal.tsx",
         find: 'import { Constructor } from "type-fest";\n',
         replace: ""
-    }
+    },
+    {
+        file: "src/plugins/betterFolders/index.tsx",
+        allowOnStable: true,
+        marker: "Discordmaxxer: stable-safe BetterFolders guild lookup.",
+        find:
+            "function getGuildFolder(id: string) {\n" +
+            "    return SortedGuildStore.getGuildFolders().find(folder => folder.guildIds.includes(id));\n" +
+            "}",
+        replace:
+            "function getGuildFolder(id: string | null | undefined) {\n" +
+            "    if (!id) return undefined;\n" +
+            "    try {\n" +
+            "        const folders = SortedGuildStore?.getGuildFolders?.();\n" +
+            "        return Array.isArray(folders) ? folders.find(folder => folder?.guildIds?.includes(id)) : undefined;\n" +
+            "    } catch {\n" +
+            "        // DM/group routes can publish a partial guild store for one tick.\n" +
+            "        return undefined;\n" +
+            "    }\n" +
+            "}",
+    },
+    {
+        file: "src/plugins/betterFolders/index.tsx",
+        allowOnStable: true,
+        marker: "Discordmaxxer: stable-safe BetterFolders close.",
+        alreadyAppliedWhen: content => content.includes("Discordmaxxer: leave native folder lifecycle untouched.") ||
+            content.includes("Discordmaxxer: close folder store transitions safely.") ||
+            content.includes("Discordmaxxer: stable-safe BetterFolders close."),
+        find:
+            "function closeFolders() {\n" +
+            "    for (const id of ExpandedGuildFolderStore.getExpandedFolders())\n" +
+            "        FolderUtils.toggleGuildFolderExpand(id);\n" +
+            "}",
+        replace:
+            "function closeFolders() {\n" +
+            "    try {\n" +
+            "        const expanded = ExpandedGuildFolderStore?.getExpandedFolders?.();\n" +
+            "        if (!expanded || typeof expanded[Symbol.iterator] !== \"function\") return;\n" +
+            "        for (const id of expanded) {\n" +
+            "            try {\n" +
+            "                FolderUtils.toggleGuildFolderExpand(id);\n" +
+            "            } catch {\n" +
+            "                // A folder can disappear while Discord changes routes.\n" +
+            "            }\n" +
+            "        }\n" +
+            "    } catch {\n" +
+            "        // A partial folder store must not take down the renderer.\n" +
+            "    }\n" +
+            "}",
+    },
+    {
+        file: "src/plugins/betterFolders/index.tsx",
+        allowOnStable: true,
+        marker: "Discordmaxxer: stable-safe BetterFolders route selection.",
+        alreadyAppliedWhen: content => content.includes("Discordmaxxer: leave native folder route selection untouched.") ||
+            content.includes("Discordmaxxer: keep route selection native.") ||
+            content.includes("Discordmaxxer: native DM route ownership.") ||
+            content.includes("Discordmaxxer: stable-safe BetterFolders route selection."),
+        find:
+            "        CHANNEL_SELECT(data) {\n" +
+            "            if (!settings.store.closeAllFolders && !settings.store.forceOpen)\n" +
+            "                return;\n\n" +
+            "            if (lastGuildId !== data.guildId) {\n" +
+            "                lastGuildId = data.guildId;\n" +
+            "                const guildFolder = getGuildFolder(data.guildId);\n\n" +
+            "                if (guildFolder?.folderId) {\n" +
+            "                    if (settings.store.forceOpen && !ExpandedGuildFolderStore.isFolderExpanded(guildFolder.folderId)) {\n" +
+            "                        FolderUtils.toggleGuildFolderExpand(guildFolder.folderId);\n" +
+            "                    }\n" +
+            "                } else if (settings.store.closeAllFolders) {\n" +
+            "                    closeFolders();\n" +
+            "                }\n" +
+            "            }\n" +
+            "        },",
+        replace:
+            "        CHANNEL_SELECT(data) {\n" +
+            "            try {\n" +
+            "                if (!settings.store.closeAllFolders && !settings.store.forceOpen) return;\n" +
+            "                const guildId = data?.guildId;\n" +
+            "                if (lastGuildId === guildId) return;\n" +
+            "                lastGuildId = guildId ?? null;\n" +
+            "                const guildFolder = getGuildFolder(guildId);\n" +
+            "                if (guildFolder?.folderId) {\n" +
+            "                    if (settings.store.forceOpen && !ExpandedGuildFolderStore?.isFolderExpanded?.(guildFolder.folderId)) {\n" +
+            "                        try { FolderUtils.toggleGuildFolderExpand(guildFolder.folderId); } catch { /* fail open */ }\n" +
+            "                    }\n" +
+            "                } else if (settings.store.closeAllFolders) {\n" +
+            "                    closeFolders();\n" +
+            "                }\n" +
+            "            } catch {\n" +
+            "                // DM/group-chat selection is not a guild-folder transition.\n" +
+            "            }\n" +
+            "        },",
+    },
+    {
+        file: "src/plugins/betterFolders/index.tsx",
+        allowOnStable: true,
+        marker: "Discordmaxxer: stable-safe BetterFolders folder toggle.",
+        alreadyAppliedWhen: content => content.includes("Discordmaxxer: leave native folder toggle untouched.") ||
+            content.includes("Discordmaxxer: keep folder toggle native.") ||
+            content.includes("Discordmaxxer: native folder expansion ownership.") ||
+            content.includes("Discordmaxxer: stable-safe BetterFolders folder toggle."),
+        find:
+            "        TOGGLE_GUILD_FOLDER_EXPAND(data) {\n" +
+            "            if (settings.store.closeOthers && !dispatchingFoldersClose) {\n" +
+            "                dispatchingFoldersClose = true;\n\n" +
+            "                FluxDispatcher.wait(() => {\n" +
+            "                    const expandedFolders = ExpandedGuildFolderStore.getExpandedFolders();\n\n" +
+            "                    if (expandedFolders.size > 1) {\n" +
+            "                        for (const id of expandedFolders) if (id !== data.folderId)\n" +
+            "                            FolderUtils.toggleGuildFolderExpand(id);\n" +
+            "                    }\n\n" +
+            "                    dispatchingFoldersClose = false;\n" +
+            "                });\n" +
+            "            }\n" +
+            "        },",
+        replace:
+            "        TOGGLE_GUILD_FOLDER_EXPAND(data) {\n" +
+            "            if (settings.store.closeOthers && !dispatchingFoldersClose) {\n" +
+            "                dispatchingFoldersClose = true;\n" +
+            "                FluxDispatcher.wait(() => {\n" +
+            "                    try {\n" +
+            "                        const expandedFolders = ExpandedGuildFolderStore?.getExpandedFolders?.();\n" +
+            "                        const expandedIds = expandedFolders && typeof expandedFolders[Symbol.iterator] === \"function\"\n" +
+            "                            ? [...expandedFolders]\n" +
+            "                            : [];\n" +
+            "                        if (expandedIds.length > 1) {\n" +
+            "                            for (const id of expandedIds) if (id !== data?.folderId) {\n" +
+            "                                try { FolderUtils.toggleGuildFolderExpand(id); } catch { /* fail open */ }\n" +
+            "                            }\n" +
+            "                        }\n" +
+            "                    } catch {\n" +
+            "                        // A partial store must not crash folder clicks.\n" +
+            "                    } finally {\n" +
+            "                        dispatchingFoldersClose = false;\n" +
+            "                    }\n" +
+            "                });\n" +
+            "            }\n" +
+            "        },",
+    },
+    {
+        file: "src/plugins/betterFolders/index.tsx",
+        allowOnStable: true,
+        marker: "Discordmaxxer: stable-safe BetterFolders node guard.",
+        find:
+            "        if (\n" +
+            "            !isBetterFolders ||\n" +
+            "            node.type === \"folder\" && expandedFolderIds?.has(node.id) ||\n" +
+            "            node.type === \"guild\" && expandedFolderIds?.has(node.parentId)\n" +
+            "        ) {",
+        replace:
+            "        const nodeType = node?.type;\n" +
+            "        if (\n" +
+            "            !isBetterFolders ||\n" +
+            "            nodeType == null ||\n" +
+            "            nodeType !== \"folder\" && nodeType !== \"guild\" ||\n" +
+            "            nodeType === \"folder\" && expandedFolderIds?.has(node.id) ||\n" +
+            "            nodeType === \"guild\" && expandedFolderIds?.has(node.parentId)\n" +
+            "        ) {",
+    },
+    {
+        file: "src/plugins/betterFolders/FolderSideBar.tsx",
+        allowOnStable: true,
+        marker: "Discordmaxxer: stable-safe BetterFolders sidebar stores.",
+        find:
+            "function getExpandedFolderIds() {\n" +
+            "    const expandedFolders = ExpandedGuildFolderStore.getExpandedFolders();\n" +
+            "    const folders = SortedGuildStore.getGuildFolders();\n\n" +
+            "    const expandedFolderIds = new Set<string>();\n\n" +
+            "    for (const folder of folders) {\n" +
+            "        if (expandedFolders.has(folder.folderId) && folder.guildIds?.length) {\n" +
+            "            expandedFolderIds.add(folder.folderId);\n" +
+            "        }\n" +
+            "    }\n\n" +
+            "    return expandedFolderIds;\n" +
+            "}",
+        replace:
+            "function getExpandedFolderIds() {\n" +
+            "    try {\n" +
+            "        const expandedFolders = ExpandedGuildFolderStore?.getExpandedFolders?.();\n" +
+            "        const folders = SortedGuildStore?.getGuildFolders?.();\n" +
+            "        if (!expandedFolders || typeof expandedFolders.has !== \"function\" || !Array.isArray(folders)) return new Set<string>();\n\n" +
+            "        const expandedFolderIds = new Set<string>();\n" +
+            "        for (const folder of folders) {\n" +
+            "            if (folder?.folderId && expandedFolders.has(folder.folderId) && folder.guildIds?.length) {\n" +
+            "                expandedFolderIds.add(folder.folderId);\n" +
+            "            }\n" +
+            "        }\n\n" +
+            "        return expandedFolderIds;\n" +
+            "    } catch {\n" +
+            "        // Keep the native Discord shell alive while stores settle.\n" +
+            "        return new Set<string>();\n" +
+            "    }\n" +
+            "}",
+    },
+    {
+        file: "src/plugins/betterFolders/index.tsx",
+        allowOnStable: true,
+        marker: "Discordmaxxer: stable-safe BetterFolders normalized IDs.",
+        find:
+            "function getGuildFolder(id: string | null | undefined) {\n" +
+            "    if (!id) return undefined;\n" +
+            "    try {\n" +
+            "        const folders = SortedGuildStore?.getGuildFolders?.();\n" +
+            "        return Array.isArray(folders) ? folders.find(folder => folder?.guildIds?.includes(id)) : undefined;\n" +
+            "    } catch {\n" +
+            "        // DM/group routes can publish a partial guild store for one tick.\n" +
+            "        return undefined;\n" +
+            "    }\n" +
+            "}\n",
+        replace:
+            "function getGuildFolder(id: string | null | undefined) {\n" +
+            "    if (typeof id !== \"string\" || id.length === 0) return undefined;\n" +
+            "    try {\n" +
+            "        const folders = SortedGuildStore?.getGuildFolders?.();\n" +
+            "        return Array.isArray(folders)\n" +
+            "            ? folders.find(folder => Array.isArray(folder?.guildIds) && folder.guildIds.some(guildId => String(guildId) === id))\n" +
+            "            : undefined;\n" +
+            "    } catch {\n" +
+            "        // DM/group routes can publish a partial guild store for one tick.\n" +
+            "        return undefined;\n" +
+            "    }\n" +
+            "}\n\n" +
+            "function isExpandedFolderId(expandedFolderIds: Set<any> | undefined, value: unknown) {\n" +
+            "    if (!expandedFolderIds || value == null) return false;\n" +
+            "    try {\n" +
+            "        return expandedFolderIds.has(value) || expandedFolderIds.has(String(value));\n" +
+            "    } catch {\n" +
+            "        return false;\n" +
+            "    }\n" +
+            "}\n",
+    },
+    {
+        file: "src/plugins/betterFolders/index.tsx",
+        allowOnStable: true,
+        marker: "Discordmaxxer: stable-safe BetterFolders DM route guard.",
+        alreadyAppliedWhen: content =>
+            content.includes("Discordmaxxer: leave native folder route selection untouched.") ||
+            content.includes("Discordmaxxer: keep route selection native.") ||
+            content.includes("Discordmaxxer: native DM route ownership.") ||
+            content.includes("CHANNEL_SELECT()"),
+        find:
+            "        CHANNEL_SELECT(data) {\n" +
+            "            try {\n" +
+            "                if (!settings.store.closeAllFolders && !settings.store.forceOpen) return;\n" +
+            "                const guildId = data?.guildId;\n" +
+            "                if (lastGuildId === guildId) return;\n" +
+            "                lastGuildId = guildId ?? null;\n" +
+            "                const guildFolder = getGuildFolder(guildId);\n" +
+            "                if (guildFolder?.folderId) {\n" +
+            "                    if (settings.store.forceOpen && !ExpandedGuildFolderStore?.isFolderExpanded?.(guildFolder.folderId)) {\n" +
+            "                        try { FolderUtils.toggleGuildFolderExpand(guildFolder.folderId); } catch { /* fail open */ }\n" +
+            "                    }\n" +
+            "                } else if (settings.store.closeAllFolders) {\n" +
+            "                    closeFolders();\n" +
+            "                }\n" +
+            "            } catch {\n" +
+            "                // DM/group-chat selection is not a guild-folder transition.\n" +
+            "            }\n" +
+            "        },",
+        replace:
+            "        CHANNEL_SELECT(data) {\n" +
+            "            try {\n" +
+            "                if (!settings.store.closeAllFolders && !settings.store.forceOpen) return;\n" +
+            "                const guildId = data?.guildId;\n" +
+            "                // DM and group-DM selections do not have a guild folder. Do not\n" +
+            "                // query or mutate the folder stores during that route transition.\n" +
+            "                if (typeof guildId !== \"string\" || guildId.length === 0) {\n" +
+            "                    lastGuildId = null;\n" +
+            "                    return;\n" +
+            "                }\n" +
+            "                if (lastGuildId === guildId) return;\n" +
+            "                lastGuildId = guildId;\n" +
+            "                const guildFolder = getGuildFolder(guildId);\n" +
+            "                if (guildFolder?.folderId) {\n" +
+            "                    if (settings.store.forceOpen && !ExpandedGuildFolderStore?.isFolderExpanded?.(guildFolder.folderId)) {\n" +
+            "                        try { FolderUtils.toggleGuildFolderExpand(guildFolder.folderId); } catch { /* fail open */ }\n" +
+            "                    }\n" +
+            "                } else if (settings.store.closeAllFolders) {\n" +
+            "                    closeFolders();\n" +
+            "                }\n" +
+            "            } catch {\n" +
+            "                // DM/group-chat selection is not a guild-folder transition.\n" +
+            "            }\n" +
+            "        },",
+    },
+    {
+        file: "src/plugins/betterFolders/index.tsx",
+        allowOnStable: true,
+        marker: "Discordmaxxer: stable-safe BetterFolders toggle payload.",
+        alreadyAppliedWhen: content =>
+            content.includes("Discordmaxxer: leave native folder toggle untouched.") ||
+            content.includes("Discordmaxxer: keep folder toggle native.") ||
+            content.includes("Discordmaxxer: native folder expansion ownership.") ||
+            content.includes("TOGGLE_GUILD_FOLDER_EXPAND()"),
+        find:
+            "        TOGGLE_GUILD_FOLDER_EXPAND(data) {\n" +
+            "            if (settings.store.closeOthers && !dispatchingFoldersClose) {\n" +
+            "                dispatchingFoldersClose = true;\n" +
+            "                FluxDispatcher.wait(() => {\n" +
+            "                    try {\n" +
+            "                        const expandedFolders = ExpandedGuildFolderStore?.getExpandedFolders?.();\n" +
+            "                        const expandedIds = expandedFolders && typeof expandedFolders[Symbol.iterator] === \"function\"\n" +
+            "                            ? [...expandedFolders]\n" +
+            "                            : [];\n" +
+            "                        if (expandedIds.length > 1) {\n" +
+            "                            for (const id of expandedIds) if (id !== data?.folderId) {\n" +
+            "                                try { FolderUtils.toggleGuildFolderExpand(id); } catch { /* fail open */ }\n" +
+            "                            }\n" +
+            "                        }\n" +
+            "                    } catch {\n" +
+            "                        // A partial store must not crash folder clicks.\n" +
+            "                    } finally {\n" +
+            "                        dispatchingFoldersClose = false;\n" +
+            "                    }\n" +
+            "                });\n" +
+            "            }\n" +
+            "        },",
+        replace:
+            "        TOGGLE_GUILD_FOLDER_EXPAND(data) {\n" +
+            "            if (data?.folderId == null) return;\n" +
+            "            if (settings.store.closeOthers && !dispatchingFoldersClose) {\n" +
+            "                dispatchingFoldersClose = true;\n" +
+            "                FluxDispatcher.wait(() => {\n" +
+            "                    try {\n" +
+            "                        const expandedFolders = ExpandedGuildFolderStore?.getExpandedFolders?.();\n" +
+            "                        const expandedIds = expandedFolders && typeof expandedFolders[Symbol.iterator] === \"function\"\n" +
+            "                            ? [...expandedFolders]\n" +
+            "                            : [];\n" +
+            "                        if (expandedIds.length > 1) {\n" +
+            "                            for (const id of expandedIds) if (String(id) !== String(data.folderId)) {\n" +
+            "                                try { FolderUtils.toggleGuildFolderExpand(id); } catch { /* fail open */ }\n" +
+            "                            }\n" +
+            "                        }\n" +
+            "                    } catch {\n" +
+            "                        // A partial store must not crash folder clicks.\n" +
+            "                    } finally {\n" +
+            "                        dispatchingFoldersClose = false;\n" +
+            "                    }\n" +
+            "                });\n" +
+            "            }\n" +
+            "        },",
+    },
+    {
+        file: "src/plugins/betterFolders/index.tsx",
+        allowOnStable: true,
+        marker: "Discordmaxxer: stable-safe BetterFolders render fallback.",
+        find:
+            "        if (\n" +
+            "            !isBetterFolders ||\n" +
+            "            nodeType == null ||\n" +
+            "            nodeType !== \"folder\" && nodeType !== \"guild\" ||\n" +
+            "            nodeType === \"folder\" && expandedFolderIds?.has(node.id) ||\n" +
+            "            nodeType === \"guild\" && expandedFolderIds?.has(node.parentId)\n" +
+            "        ) {",
+        replace:
+            "        if (\n" +
+            "            !isBetterFolders ||\n" +
+            "            expandedFolderIds == null ||\n" +
+            "            nodeType == null ||\n" +
+            "            nodeType !== \"folder\" && nodeType !== \"guild\" ||\n" +
+            "            nodeType === \"folder\" && isExpandedFolderId(expandedFolderIds, node.id) ||\n" +
+            "            nodeType === \"guild\" && isExpandedFolderId(expandedFolderIds, node.parentId)\n" +
+            "        ) {",
+    },
+    {
+        file: "src/plugins/betterFolders/FolderSideBar.tsx",
+        allowOnStable: true,
+        marker: "Discordmaxxer: stable-safe BetterFolders expanded ID normalization.",
+        find:
+            "function getExpandedFolderIds() {\n" +
+            "    try {\n" +
+            "        const expandedFolders = ExpandedGuildFolderStore?.getExpandedFolders?.();\n" +
+            "        const folders = SortedGuildStore?.getGuildFolders?.();\n" +
+            "        if (!expandedFolders || typeof expandedFolders.has !== \"function\" || !Array.isArray(folders)) return new Set<string>();\n\n" +
+            "        const expandedFolderIds = new Set<string>();\n" +
+            "        for (const folder of folders) {\n" +
+            "            if (folder?.folderId && expandedFolders.has(folder.folderId) && folder.guildIds?.length) {\n" +
+            "                expandedFolderIds.add(folder.folderId);\n" +
+            "            }\n" +
+            "        }\n\n" +
+            "        return expandedFolderIds;\n" +
+            "    } catch {\n" +
+            "        // Keep the native Discord shell alive while stores settle.\n" +
+            "        return new Set<string>();\n" +
+            "    }\n" +
+            "}",
+        replace:
+            "function normalizedId(value: unknown): string | null {\n" +
+            "    if (value == null) return null;\n" +
+            "    if (typeof value === \"object\") {\n" +
+            "        const record = value as Record<string, unknown>;\n" +
+            "        value = record.folderId ?? record.id ?? record.guildId;\n" +
+            "    }\n" +
+            "    return value == null ? null : String(value);\n" +
+            "}\n\n" +
+            "function collectExpandedIds(expandedFolders: unknown) {\n" +
+            "    const ids = new Set<string>();\n" +
+            "    const add = (value: unknown) => {\n" +
+            "        const id = normalizedId(value);\n" +
+            "        if (id) ids.add(id);\n" +
+            "    };\n\n" +
+            "    try {\n" +
+            "        if (expandedFolders && typeof (expandedFolders as any)[Symbol.iterator] === \"function\") {\n" +
+            "            for (const entry of expandedFolders as Iterable<unknown>) {\n" +
+            "                if (Array.isArray(entry)) {\n" +
+            "                    if (entry[1] === false) continue;\n" +
+            "                    add(entry[0]);\n" +
+            "                } else {\n" +
+            "                    add(entry);\n" +
+            "                }\n" +
+            "            }\n" +
+            "        } else if (expandedFolders && typeof expandedFolders === \"object\") {\n" +
+            "            for (const [key, value] of Object.entries(expandedFolders)) {\n" +
+            "                if (value !== false) add(key);\n" +
+            "            }\n" +
+            "        }\n" +
+            "    } catch {\n" +
+            "        // Store shape can be partial during startup or a route transition.\n" +
+            "    }\n\n" +
+            "    return ids;\n" +
+            "}\n\n" +
+            "function getExpandedFolderIds() {\n" +
+            "    try {\n" +
+            "        const expandedFolders = ExpandedGuildFolderStore?.getExpandedFolders?.();\n" +
+            "        const folders = SortedGuildStore?.getGuildFolders?.();\n" +
+            "        const rawExpandedIds = collectExpandedIds(expandedFolders);\n" +
+            "        if (!Array.isArray(folders)) return rawExpandedIds;\n\n" +
+            "        const expandedFolderIds = new Set<string>();\n" +
+            "        for (const folder of folders) {\n" +
+            "            const folderId = normalizedId(folder?.folderId ?? folder?.id);\n" +
+            "            if (folderId && rawExpandedIds.has(folderId) && Array.isArray(folder?.guildIds) && folder.guildIds.length) {\n" +
+            "                expandedFolderIds.add(folderId);\n" +
+            "            }\n" +
+            "        }\n\n" +
+            "        // If Discord has published the expanded IDs before its sorted guild\n" +
+            "        // catalog, retain them for this render. The store subscription will\n" +
+            "        // reconcile the catalog on the next update instead of hiding the\n" +
+            "        // folder sidebar permanently.\n" +
+            "        return expandedFolderIds.size ? expandedFolderIds : rawExpandedIds;\n" +
+            "    } catch {\n" +
+            "        // Keep the native Discord shell alive while stores settle.\n" +
+            "        return new Set<string>();\n" +
+            "    }\n" +
+            "}",
+    },
+    {
+        file: "src/plugins/betterFolders/index.tsx",
+        allowOnStable: true,
+        marker: "Discordmaxxer: native DM route ownership.",
+        alreadyAppliedWhen: content =>
+            content.includes("Discordmaxxer: native DM route ownership.") ||
+            content.includes("Discordmaxxer: leave native folder route selection untouched.") ||
+            content.includes("Discordmaxxer: keep route selection native.") ||
+            (!content.includes("lastGuildId") && content.includes("CHANNEL_SELECT()")),
+        find:
+            "        CHANNEL_SELECT(data) {\n" +
+            "            try {\n" +
+            "                if (!settings.store.closeAllFolders && !settings.store.forceOpen) return;\n" +
+            "                const guildId = data?.guildId;\n" +
+            "                // DM and group-DM selections do not have a guild folder. Do not\n" +
+            "                // query or mutate the folder stores during that route transition.\n" +
+            "                if (typeof guildId !== \"string\" || guildId.length === 0) {\n" +
+            "                    lastGuildId = null;\n" +
+            "                    return;\n" +
+            "                }\n" +
+            "                if (lastGuildId === guildId) return;\n" +
+            "                lastGuildId = guildId;\n" +
+            "                const guildFolder = getGuildFolder(guildId);\n" +
+            "                if (guildFolder?.folderId) {\n" +
+            "                    if (settings.store.forceOpen && !ExpandedGuildFolderStore?.isFolderExpanded?.(guildFolder.folderId)) {\n" +
+            "                        try { FolderUtils.toggleGuildFolderExpand(guildFolder.folderId); } catch { /* fail open */ }\n" +
+            "                    }\n" +
+            "                } else if (settings.store.closeAllFolders) {\n" +
+            "                    closeFolders();\n" +
+            "                }\n" +
+            "            } catch {\n" +
+            "                // DM/group-chat selection is not a guild-folder transition.\n" +
+            "            }\n" +
+            "        },",
+        replace:
+            "        CHANNEL_SELECT() {\n" +
+            "            // Discordmaxxer: native DM route ownership.\n" +
+            "            // DM and group-DM navigation belongs entirely to Discord.\n" +
+            "            // BetterFolders must not inspect guild stores on this event.\n" +
+            "        },",
+    },
+    {
+        file: "src/plugins/betterFolders/index.tsx",
+        allowOnStable: true,
+        marker: "Discordmaxxer: native folder expansion ownership.",
+        alreadyAppliedWhen: content =>
+            content.includes("Discordmaxxer: native folder expansion ownership.") ||
+            content.includes("Discordmaxxer: leave native folder toggle untouched.") ||
+            content.includes("Discordmaxxer: keep folder toggle native.") ||
+            (!content.includes("dispatchingFoldersClose") && content.includes("TOGGLE_GUILD_FOLDER_EXPAND()")),
+        find:
+            "        TOGGLE_GUILD_FOLDER_EXPAND(data) {\n" +
+            "            if (data?.folderId == null) return;\n" +
+            "            if (settings.store.closeOthers && !dispatchingFoldersClose) {\n" +
+            "                dispatchingFoldersClose = true;\n" +
+            "                FluxDispatcher.wait(() => {\n" +
+            "                    try {\n" +
+            "                        const expandedFolders = ExpandedGuildFolderStore?.getExpandedFolders?.();\n" +
+            "                        const expandedIds = expandedFolders && typeof expandedFolders[Symbol.iterator] === \"function\"\n" +
+            "                            ? [...expandedFolders]\n" +
+            "                            : [];\n" +
+            "                        if (expandedIds.length > 1) {\n" +
+            "                            for (const id of expandedIds) if (String(id) !== String(data.folderId)) {\n" +
+            "                                try { FolderUtils.toggleGuildFolderExpand(id); } catch { /* fail open */ }\n" +
+            "                            }\n" +
+            "                        }\n" +
+            "                    } catch {\n" +
+            "                        // A partial store must not crash folder clicks.\n" +
+            "                    } finally {\n" +
+            "                        dispatchingFoldersClose = false;\n" +
+            "                    }\n" +
+            "                });\n" +
+            "            }\n" +
+            "        },",
+        replace:
+            "        TOGGLE_GUILD_FOLDER_EXPAND() {\n" +
+            "            // Discordmaxxer: native folder expansion ownership.\n" +
+            "            // BetterFolders never dispatches a second toggle. The sidebar\n" +
+            "            // observes Discord's native action as a render fallback.\n" +
+            "        },",
+    },
+    {
+        file: "src/plugins/betterFolders/index.tsx",
+        allowOnStable: true,
+        find: 'import { FluxDispatcher } from "@webpack/common";\n',
+        replace: "",
+    },
+    {
+        file: "src/plugins/betterFolders/index.tsx",
+        allowOnStable: true,
+        find: "let lastGuildId = null as string | null;\nlet dispatchingFoldersClose = false;\n\n",
+        replace: "",
+    },
+    {
+        file: "src/plugins/betterFolders/index.tsx",
+        allowOnStable: true,
+        find:
+            "function getGuildFolder(id: string | null | undefined) {\n" +
+            "    if (typeof id !== \"string\" || id.length === 0) return undefined;\n" +
+            "    try {\n" +
+            "        const folders = SortedGuildStore?.getGuildFolders?.();\n" +
+            "        return Array.isArray(folders)\n" +
+            "            ? folders.find(folder => Array.isArray(folder?.guildIds) && folder.guildIds.some(guildId => String(guildId) === id))\n" +
+            "            : undefined;\n" +
+            "    } catch {\n" +
+            "        // DM/group routes can publish a partial guild store for one tick.\n" +
+            "        return undefined;\n" +
+            "    }\n" +
+            "}\n",
+        replace: "",
+    },
+    {
+        file: "src/plugins/betterFolders/FolderSideBar.tsx",
+        allowOnStable: true,
+        marker: "Discordmaxxer: native folder toggle render fallback import.",
+        alreadyAppliedWhen: content => content.includes("FluxDispatcher.subscribe(\"TOGGLE_GUILD_FOLDER_EXPAND\"") ,
+        find: 'import { Animations, ChannelRTCStore, useStateFromStores } from "@webpack/common";',
+        replace:
+            'import { Animations, ChannelRTCStore, FluxDispatcher, useEffect, useState, useStateFromStores } from "@webpack/common";\n' +
+            "// Discordmaxxer: native folder toggle render fallback import.\n",
+    },
+    {
+        file: "src/plugins/betterFolders/FolderSideBar.tsx",
+        allowOnStable: true,
+        marker: "Discordmaxxer: guard unsupported custom folder sidebar.",
+        alreadyAppliedWhen: content => content.includes("DISCORDMAXXER_CUSTOM_SIDEBAR_SUPPORTED"),
+        obsoleteWhen: content =>
+            !content.includes('import { ExpandedGuildFolderStore, hasFolderId, normalizeFolderId, settings, SortedGuildStore } from ".";'),
+        find: "import { ExpandedGuildFolderStore, hasFolderId, normalizeFolderId, settings, SortedGuildStore } from \".\";",
+        replace: "import { DISCORDMAXXER_CUSTOM_SIDEBAR_SUPPORTED, ExpandedGuildFolderStore, hasFolderId, normalizeFolderId, settings, SortedGuildStore } from \".\";"
+    },
+    {
+        file: "src/plugins/betterFolders/FolderSideBar.tsx",
+        allowOnStable: true,
+        marker: "Discordmaxxer: use shared folder ID helper in toggle fallback.",
+        alreadyAppliedWhen: content =>
+            content.includes("const folderId = normalizeFolderId(data?.folderId ?? data?.id);") ||
+            content.includes("const folderId = normalizedId(data?.folderId ?? data?.id);"),
+        obsoleteWhen: content =>
+            (content.includes("Discordmaxxer: native folder toggle render fallback.") &&
+                content.includes("const folderId = normalizedId(data?.folderId ?? data?.id);")) ||
+            content.includes("const expandedFolderIds = useStateFromStores([ExpandedGuildFolderStore, SortedGuildStore], () => getExpandedFolderIds());"),
+        find: "const folderId = normalizedId(data?.folderId ?? data?.id);",
+        replace: "const folderId = normalizeFolderId(data?.folderId ?? data?.id);"
+    },
+    {
+        file: "src/plugins/betterFolders/FolderSideBar.tsx",
+        allowOnStable: true,
+        marker: "Discordmaxxer: disable unsupported custom folder sidebar.",
+        alreadyAppliedWhen: content =>
+            content.includes("if (!DISCORDMAXXER_CUSTOM_SIDEBAR_SUPPORTED) return null;") ||
+            content.includes("Discordmaxxer: final custom folder sidebar capability guard."),
+        obsoleteWhen: content =>
+            (content.includes("const expandedFolderIds = new Set([...storeExpandedFolderIds, ...manualExpandedFolderIds]);") &&
+                content.includes("const Sidebar = (") &&
+                !content.includes("const isFullscreen = useStateFromStores([ChannelRTCStore], () => ChannelRTCStore.isFullscreenInContext());")) ||
+            (content.includes("const expandedFolderIds = useStateFromStores([ExpandedGuildFolderStore, SortedGuildStore], () => getExpandedFolderIds());") &&
+                content.includes("const Sidebar = (")),
+        find:
+            "        } catch {\n" +
+            "            // Discord can expose the dispatcher during plugin startup without\n" +
+            "            // its subscription methods being ready for one render.\n" +
+            "            return undefined;\n" +
+            "        }\n" +
+            "    }, []);\n\n" +
+            "    const expandedFolderIds = new Set([...storeExpandedFolderIds, ...manualExpandedFolderIds]);\n" +
+            "    const isFullscreen = useStateFromStores([ChannelRTCStore], () => ChannelRTCStore.isFullscreenInContext());\n\n" +
+            "    const Sidebar = (",
+        replace:
+            "        } catch {\n" +
+            "            // Discord can expose the dispatcher during plugin startup without\n" +
+            "            // its subscription methods being ready for one render.\n" +
+            "            return undefined;\n" +
+            "        }\n" +
+            "    }, []);\n\n" +
+            "    const expandedFolderIds = new Set([...storeExpandedFolderIds, ...manualExpandedFolderIds]);\n" +
+            "    const isFullscreen = useStateFromStores([ChannelRTCStore], () => ChannelRTCStore.isFullscreenInContext());\n\n" +
+            "    // Discordmaxxer: the custom sidebar is intentionally unsupported until\n" +
+            "    // the native folder contract is stable across client revisions.\n" +
+            "    if (!DISCORDMAXXER_CUSTOM_SIDEBAR_SUPPORTED) return null;\n\n" +
+            "    const Sidebar = ("
+    },
+    {
+        file: "src/plugins/betterFolders/FolderSideBar.tsx",
+        allowOnStable: true,
+        marker: "Discordmaxxer: native folder toggle render fallback.",
+        alreadyAppliedWhen: content => content.includes("Discordmaxxer: native folder toggle render fallback."),
+        obsoleteWhen: content =>
+            content.includes("storeExpandedFolderIds") &&
+            content.includes("FluxDispatcher.subscribe(\"TOGGLE_GUILD_FOLDER_EXPAND\""),
+        find:
+            "export default ErrorBoundary.wrap(guildsBarProps => {\n" +
+            "    const expandedFolderIds = useStateFromStores([ExpandedGuildFolderStore, SortedGuildStore], () => getExpandedFolderIds());",
+        replace:
+            "export default ErrorBoundary.wrap(guildsBarProps => {\n" +
+            "    const storeExpandedFolderIds = useStateFromStores([ExpandedGuildFolderStore, SortedGuildStore], () => getExpandedFolderIds());\n" +
+            "    const [manualExpandedFolderIds, setManualExpandedFolderIds] = useState<Set<string>>(() => new Set());\n\n" +
+            "    // Discord's folder store can publish the toggle action before its public\n" +
+            "    // selector has updated. Keep a render-only fallback for that transition;\n" +
+            "    // the native store remains authoritative whenever it has the ID.\n" +
+            "    // Discordmaxxer: native folder toggle render fallback.\n" +
+            "    useEffect(() => {\n" +
+            "        const onFolderToggle = (data: any) => {\n" +
+            "            const folderId = normalizedId(data?.folderId ?? data?.id);\n" +
+            "            if (!folderId) return;\n\n" +
+            "            setManualExpandedFolderIds(previous => {\n" +
+            "                const next = new Set(previous);\n" +
+            "                if (data?.expanded === false) next.delete(folderId);\n" +
+            "                else if (data?.expanded === true) next.add(folderId);\n" +
+            "                else if (next.has(folderId)) next.delete(folderId);\n" +
+            "                else next.add(folderId);\n" +
+            "                return next;\n" +
+            "            });\n" +
+            "        };\n\n" +
+            "        try {\n" +
+            "            FluxDispatcher.subscribe(\"TOGGLE_GUILD_FOLDER_EXPAND\", onFolderToggle);\n" +
+            "            return () => FluxDispatcher.unsubscribe(\"TOGGLE_GUILD_FOLDER_EXPAND\", onFolderToggle);\n" +
+            "        } catch {\n" +
+            "            // Discord can expose the dispatcher during plugin startup without\n" +
+            "            // its subscription methods being ready for one render.\n" +
+            "            return undefined;\n" +
+            "        }\n" +
+            "    }, []);\n\n" +
+            "    const expandedFolderIds = new Set([...storeExpandedFolderIds, ...manualExpandedFolderIds]);",
+    },
+    {
+        file: "src/plugins/betterFolders/FolderSideBar.tsx",
+        allowOnStable: true,
+        marker: "Discordmaxxer: final custom folder sidebar capability import.",
+        alreadyAppliedWhen: content => content.includes("DISCORDMAXXER_CUSTOM_SIDEBAR_SUPPORTED"),
+        find: 'import { ExpandedGuildFolderStore, settings, SortedGuildStore } from ".";',
+        replace: 'import { DISCORDMAXXER_CUSTOM_SIDEBAR_SUPPORTED, ExpandedGuildFolderStore, settings, SortedGuildStore } from ".";'
+    },
+    {
+        file: "src/plugins/betterFolders/FolderSideBar.tsx",
+        allowOnStable: true,
+        marker: "Discordmaxxer: final custom folder sidebar capability guard.",
+        alreadyAppliedWhen: content => content.includes("if (!DISCORDMAXXER_CUSTOM_SIDEBAR_SUPPORTED) return null;"),
+        find: "    const Sidebar = (",
+        replace:
+            "    // Discordmaxxer: native Discord owns the folder child-row lifecycle.\n" +
+            "    // Keep the optional custom sidebar fail-closed until its contract is stable.\n" +
+            "    if (!DISCORDMAXXER_CUSTOM_SIDEBAR_SUPPORTED) return null;\n\n" +
+            "    const Sidebar = ("
+    },
+    {
+        file: "src/plugins/betterFolders/index.tsx",
+        allowOnStable: true,
+        marker: "Discordmaxxer: fail open on empty folder state.",
+        alreadyAppliedWhen: content => content.includes("Discordmaxxer: fail open on empty folder state."),
+        obsoleteWhen: content =>
+            content.includes("expandedFolderIds.size === 0") &&
+            content.includes("expandedFolderIds == null"),
+        find:
+            "        if (\n" +
+            "            !isBetterFolders ||\n" +
+            "            expandedFolderIds == null ||\n" +
+            "            nodeType == null ||\n" +
+            "            nodeType !== \"folder\" && nodeType !== \"guild\" ||\n" +
+            "            nodeType === \"folder\" && isExpandedFolderId(expandedFolderIds, node.id) ||\n" +
+            "            nodeType === \"guild\" && isExpandedFolderId(expandedFolderIds, node.parentId)\n" +
+            "        ) {",
+        replace:
+            "        if (\n" +
+            "            !isBetterFolders ||\n" +
+            "            expandedFolderIds == null ||\n" +
+            "            // Discordmaxxer: fail open on empty folder state.\n" +
+            "            // A transient empty store must not hide the native guild list.\n" +
+            "            expandedFolderIds.size === 0 ||\n" +
+            "            nodeType == null ||\n" +
+            "            nodeType !== \"folder\" && nodeType !== \"guild\" ||\n" +
+            "            nodeType === \"folder\" && isExpandedFolderId(expandedFolderIds, node.id) ||\n" +
+            "            nodeType === \"guild\" && isExpandedFolderId(expandedFolderIds, node.parentId)\n" +
+            "        ) {",
+    },
 ];
 
 let patched = 0;
@@ -1539,6 +3355,11 @@ let skipped = 0;
 const warnings = [];
 
 for (const p of PATCHES) {
+    if (USE_STABLE_BETTER_FOLDERS && p.file.startsWith("src/plugins/betterFolders/") && !p.allowOnStable) {
+        skipped++;
+        continue;
+    }
+
     const path = join(VENCORD_SRC, p.file);
     if (!existsSync(path)) {
         warnings.push(`File not found: ${p.file}`);
@@ -1546,7 +3367,45 @@ for (const p of PATCHES) {
     }
     let content = readFileSync(path, "utf-8");
 
+    // The stable candidate is intentionally maintained as a clean, already-
+    // hardened BetterFolders source. Historical stable-safe patches are kept
+    // in this script so a fresh pinned extraction can still be repaired, but
+    // they must not warn when the final native-ownership implementation is
+    // already present. Do not skip the final cleanup patches below: those
+    // remove obsolete imports/state from a fresh extraction.
+    const stableBetterFoldersFinalized =
+        content.includes("Discordmaxxer: native DM route ownership.") ||
+        content.includes("Discordmaxxer: native folder expansion ownership.") ||
+        content.includes("Discordmaxxer: native folder toggle render fallback.") ||
+        content.includes("Discordmaxxer: fail open on empty folder state.") ||
+        // The isolated stable source may contain the same final code after a
+        // prior clean-up pass without retaining the overlay marker comments.
+        // Recognize those source shapes so historical patches remain quiet and
+        // cannot be mistaken for a failed fresh-build patch.
+        (p.file.endsWith("src/plugins/betterFolders/index.tsx") &&
+            content.includes("CHANNEL_SELECT()") &&
+            content.includes("TOGGLE_GUILD_FOLDER_EXPAND()") &&
+            !content.includes("lastGuildId")) ||
+        (p.file.endsWith("src/plugins/betterFolders/FolderSideBar.tsx") &&
+            content.includes("storeExpandedFolderIds") &&
+            content.includes("FluxDispatcher.subscribe(\"TOGGLE_GUILD_FOLDER_EXPAND\""));
+    if (
+        USE_STABLE_BETTER_FOLDERS &&
+        p.file.startsWith("src/plugins/betterFolders/") &&
+        p.allowOnStable &&
+        p.marker?.startsWith("Discordmaxxer: stable-safe") &&
+        stableBetterFoldersFinalized
+    ) {
+        skipped++;
+        continue;
+    }
+
     if (p.marker && content.includes(p.marker)) {
+        skipped++;
+        continue;
+    }
+
+    if (p.alreadyAppliedWhen?.(content)) {
         skipped++;
         continue;
     }
@@ -1562,7 +3421,7 @@ for (const p of PATCHES) {
     }
 
     if (!content.includes(p.find)) {
-        warnings.push(`Patch target not found in ${p.file}: "${p.find.slice(0, 60)}..."`);
+        warnings.push(`Patch target not found in ${p.file}${p.marker ? ` [${p.marker}]` : ""}: "${p.find.slice(0, 60)}..."`);
         continue;
     }
 

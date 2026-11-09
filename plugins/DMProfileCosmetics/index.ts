@@ -736,7 +736,11 @@ function scheduleReconcile(delay = 80): void {
     if (!started || reconcileTimer) return;
     reconcileTimer = setTimeout(() => {
         reconcileTimer = null;
-        reconcileAll();
+        try {
+            reconcileAll();
+        } catch (error) {
+            console.warn("[DMProfileCosmetics] guarded route reconciliation", error);
+        }
     }, delay);
 }
 
@@ -1924,8 +1928,12 @@ export default definePlugin({
         window.addEventListener("discordmaxxer:tournament-mode-changed", onTournamentModeChange);
 
         observer = new MutationObserver(records => {
-            if (document.hidden) return;
-            if (records.some(mutationLooksRelevant)) scheduleReconcile();
+            try {
+                if (document.hidden) return;
+                if (records.some(mutationLooksRelevant)) scheduleReconcile();
+            } catch (error) {
+                console.warn("[DMProfileCosmetics] observer ignored during navigation:", error);
+            }
         });
         if (document.body) observer.observe(document.body, { childList: true, subtree: true });
         document.addEventListener("visibilitychange", handleDocumentVisibilityChange);

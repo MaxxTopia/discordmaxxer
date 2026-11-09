@@ -215,8 +215,18 @@ export default definePlugin({
     settings,
 
     start() {
-        void syncSnapshot().finally(() => refresh());
-        pollTimer = setInterval(syncSnapshot, POLL_INTERVAL_MS);
+        void syncSnapshot()
+            .catch(error => console.warn("[PlaylistmaxxingPresence] initial sync ignored during navigation:", error))
+            .finally(() => {
+                try {
+                    refresh();
+                } catch (error) {
+                    console.warn("[PlaylistmaxxingPresence] initial refresh ignored during navigation:", error);
+                }
+            });
+        pollTimer = setInterval(() => {
+            void syncSnapshot().catch(error => console.warn("[PlaylistmaxxingPresence] poll ignored during navigation:", error));
+        }, POLL_INTERVAL_MS);
         connect();
     },
 

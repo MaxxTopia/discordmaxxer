@@ -768,17 +768,26 @@ function scheduleInject() {
     if (document.getElementById(FAB_ID)?.isConnected) return;
     injectScheduled = true;
     injectRaf = requestAnimationFrame(() => {
-        injectScheduled = false;
-        injectRaf = 0;
-        injectButton();
+        try {
+            injectButton();
+        } catch (error) {
+            console.warn("[DMHub] animation-frame injection ignored during navigation:", error);
+        } finally {
+            injectScheduled = false;
+            injectRaf = 0;
+        }
     });
 }
 
 function startObserver() {
     if (observer) return;
     observer = new MutationObserver(() => {
-        if (document.getElementById(FAB_ID)?.isConnected) return;
-        scheduleInject();
+        try {
+            if (document.getElementById(FAB_ID)?.isConnected) return;
+            scheduleInject();
+        } catch (error) {
+            console.warn("[DMHub] observer ignored during navigation:", error);
+        }
     });
     observer.observe(document.body, { childList: true, subtree: true });
     injectButton(); // initial pass

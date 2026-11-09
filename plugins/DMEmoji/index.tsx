@@ -14,7 +14,7 @@ import { ChatBarButton, ChatBarButtonFactory } from "@api/ChatButtons";
 import { definePluginSettings } from "@api/Settings";
 import ErrorBoundary from "@components/ErrorBoundary";
 import { Devs } from "@utils/constants";
-import { copyWithToast, insertTextIntoChatInputBox, sendMessage } from "@utils/discord";
+import { copyWithToast, insertTextIntoChatInputBox } from "@utils/discord";
 import { ModalCloseButton, ModalContent, ModalHeader, ModalRoot, ModalSize } from "@utils/modal";
 import definePlugin, { IconComponent, OptionType } from "@utils/types";
 import type { CloudUpload } from "@vencord/discord-types";
@@ -23,28 +23,41 @@ import {
     Button,
     ChannelStore,
     DraftType,
-    DraftStore,
     EmojiStore,
     Forms,
     GuildStore,
     MessageActions,
     openModal,
-    PendingReplyStore,
     ReactDOM,
-    SelectedChannelStore,
-    Toasts as DiscordToasts,
     UploadAttachmentStore,
     UploadHandler,
     useEffect,
     useMemo,
     useRef,
     useState,
-    useStateFromStores
 } from "@webpack/common";
 
 import { showDiscordmaxxerStatusToast } from "../_dm-shared/statusToast";
 
-const Toasts = { ...DiscordToasts, show: showDiscordmaxxerStatusToast };
+// Keep this plugin's toast facade independent from Discord's lazy webpack
+// Toasts proxy. During route changes the proxy can briefly be unresolved;
+// spreading it or reading Toasts.Type in a click handler then throws before
+// the handler can send the message.
+const Toasts = {
+    Type: {
+        MESSAGE: "message",
+        SUCCESS: "success",
+        FAILURE: "failure"
+    } as const,
+    genId: () => `dmemoji-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    show: (options: { message: string; type?: string; id?: string }) => {
+        try {
+            showDiscordmaxxerStatusToast(options);
+        } catch (error) {
+            console.error("[DMEmoji] Could not render status toast", error);
+        }
+    }
+};
 
 const RECORDS_KEY = "Discordmaxxer_DMEmoji_records";
 const FILE_KEY_PREFIX = "Discordmaxxer_DMEmoji_file_";
@@ -967,12 +980,24 @@ function isVisibleComposerElement(element: HTMLElement): boolean {
     if (element.getAttribute("aria-hidden") === "true") return false;
     const style = window.getComputedStyle(element);
     const rect = element.getBoundingClientRect();
+    if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0") return false;
+    if (rect.width > 0 && rect.height > 0) return true;
+
+    // Discord can temporarily report a zero-width editor while the chat bar
+    // is being reflowed (especially after opening a DM or group DM). It is
+    // still the active editor when its message label and visible composer
+    // shell are present. Rejecting it here made the added mouse-send button
+    // look inert even though Discord's native composer was ready.
+    const label = [element.getAttribute("aria-label"), element.getAttribute("placeholder")]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+    const composer = element.closest('[class*="channelTextArea" i]');
+    const composerRect = composer?.getBoundingClientRect();
     return (
-        style.display !== "none" &&
-        style.visibility !== "hidden" &&
-        style.opacity !== "0" &&
-        rect.width > 0 &&
-        rect.height > 0
+        rect.height > 0 &&
+        /message|chat|reply|type/.test(label) &&
+        Boolean(composer && composerRect && composerRect.width > 0 && composerRect.height > 0)
     );
 }
 
@@ -1030,11 +1055,60 @@ function findComposerSubmitButton(input: HTMLElement): HTMLElement | undefined {
     return undefined;
 }
 
+function triggerNativeComposerSend(input: HTMLElement): void {
+    const nativeSendButton = findComposerSubmitButton(input);
+    if (nativeSendButton) {
+        nativeSendButton.click();
+        return;
+    }
+
+    // Current Discord builds do not render a native Send button. Their real
+    // composer sends from the same unmodified Enter key path used by the
+    // keyboard, including replies, attachments, drafts, and upload state.
+    // Calling the old webpack MessageActions.sendMessage proxy is unreliable:
+    // its module signature changed and can throw before Discord gets the
+    // message. Dispatch a browser keyboard event instead so Discord's own
+    // React composer handler remains the source of truth.
+    input.focus({ preventScroll: true });
+    const event = new KeyboardEvent("keydown", {
+        key: "Enter",
+        code: "Enter",
+        bubbles: true,
+        cancelable: true,
+        shiftKey: false,
+        ctrlKey: false,
+        altKey: false,
+        metaKey: false,
+        repeat: false
+    });
+    for (const [property, value] of [
+        ["keyCode", 13],
+        ["which", 13]
+    ] as const) {
+        try {
+            Object.defineProperty(event, property, { configurable: true, value });
+        } catch {
+            // Chromium normally permits these legacy fields. If a future
+            // runtime makes them non-configurable, the key/code fields still
+            // allow Discord's current handler to identify Enter.
+        }
+    }
+    input.dispatchEvent(event);
+    if (!event.defaultPrevented) {
+        console.warn("[DMEmoji] Native composer did not cancel the synthetic Enter event");
+    }
+}
+
 function getPendingMessageUploads(channelId: string): CloudUpload[] {
     try {
-        return UploadAttachmentStore.getUploads(channelId, DraftType.ChannelMessage) ?? [];
-    } catch (error) {
-        console.warn("[DMEmoji] Could not read pending message uploads", error);
+        const store = UploadAttachmentStore as unknown as { getUploads?: unknown };
+        const getUploads = store && typeof store.getUploads === "function" ? store.getUploads : null;
+        if (!getUploads) return [];
+        return getUploads.call(store, channelId, DraftType.ChannelMessage) ?? [];
+    } catch {
+        // UploadAttachmentStore is a lazy webpack proxy. It can legitimately
+        // be unavailable during DM navigation; the native composer remains
+        // usable and the preview will retry on its next poll.
         return [];
     }
 }
@@ -1087,10 +1161,35 @@ type PendingAttachmentPreviewItem = {
 };
 
 function PendingAttachmentPreview({ channelId }: { channelId: string }) {
-    const uploads = useStateFromStores([UploadAttachmentStore], () => getPendingMessageUploads(channelId));
+    // Do not subscribe to UploadAttachmentStore here. It is a lazy webpack
+    // proxy, and Discord can mount ChatBarButtons before that store exists
+    // while a DM/group-DM route is changing. Even reading a property from the
+    // proxy can throw and take down the shared chat layer. Poll only through
+    // the existing try/catch accessor so a missing store is harmless.
+    const [uploads, setUploads] = useState<CloudUpload[]>([]);
     const [portalHost, setPortalHost] = useState<HTMLElement | null>(null);
     const [nativePreviewVisible, setNativePreviewVisible] = useState(false);
     const [expandedId, setExpandedId] = useState<string | null>(null);
+
+    useEffect(() => {
+        let cancelled = false;
+        const refresh = () => {
+            try {
+                const nextUploads = getPendingMessageUploads(channelId);
+                if (!cancelled) setUploads(nextUploads);
+            } catch (error) {
+                if (!cancelled) setUploads([]);
+                console.warn("[DMEmoji] attachment store unavailable during navigation:", error);
+            }
+        };
+
+        refresh();
+        const refreshTimer = window.setInterval(refresh, 500);
+        return () => {
+            cancelled = true;
+            window.clearInterval(refreshTimer);
+        };
+    }, [channelId]);
 
     const previewItems = useMemo<PendingAttachmentPreviewItem[]>(
         () =>
@@ -1152,7 +1251,13 @@ function PendingAttachmentPreview({ channelId }: { channelId: string }) {
             };
 
             updateNativePreviewState();
-            observer = new MutationObserver(updateNativePreviewState);
+            observer = new MutationObserver(() => {
+                try {
+                    updateNativePreviewState();
+                } catch (error) {
+                    console.warn("[DMEmoji] native preview observer ignored during navigation:", error);
+                }
+            });
             observer.observe(form, {
                 childList: true,
                 subtree: true,
@@ -1164,9 +1269,13 @@ function PendingAttachmentPreview({ channelId }: { channelId: string }) {
 
         if (!attach()) {
             retryTimer = window.setInterval(() => {
-                if (attach() && retryTimer !== undefined) {
-                    window.clearInterval(retryTimer);
-                    retryTimer = undefined;
+                try {
+                    if (attach() && retryTimer !== undefined) {
+                        window.clearInterval(retryTimer);
+                        retryTimer = undefined;
+                    }
+                } catch (error) {
+                    console.warn("[DMEmoji] composer attachment retry ignored during navigation:", error);
                 }
             }, 250);
         }
@@ -1258,7 +1367,7 @@ function PendingAttachmentPreview({ channelId }: { channelId: string }) {
     );
 }
 
-async function sendCurrentMessage() {
+async function sendCurrentMessage(channelId: string) {
     const inputs = Array.from(
         document.querySelectorAll<HTMLElement>(
             '[role="textbox"][contenteditable="true"], [contenteditable="true"], textarea'
@@ -1284,32 +1393,7 @@ async function sendCurrentMessage() {
         return;
     }
 
-    const sendButton = findComposerSubmitButton(input);
-
-    if (sendButton) {
-        if (sendButton.getAttribute("aria-disabled") === "true" || (sendButton as HTMLButtonElement).disabled) {
-            Toasts.show({
-                message: "There is no message ready to send",
-                id: Toasts.genId(),
-                type: Toasts.Type.FAILURE
-            });
-            return;
-        }
-        sendButton.click();
-        return;
-    }
-
-    const channelId = SelectedChannelStore.getChannelId();
-    if (!channelId) {
-        Toasts.show({
-            message: "Could not find the active message channel",
-            id: Toasts.genId(),
-            type: Toasts.Type.FAILURE
-        });
-        return;
-    }
-
-    const content = DraftStore.getDraft(channelId, DraftType.ChannelMessage) || composerText(input);
+    const content = composerText(input);
     const pendingUploads = getPendingMessageUploads(channelId);
     if (!content.trim() && pendingUploads.length === 0) {
         Toasts.show({
@@ -1321,13 +1405,7 @@ async function sendCurrentMessage() {
     }
 
     try {
-        const pendingReply = PendingReplyStore.getPendingReply(channelId);
-        const replyOptions = pendingReply ? MessageActions.getSendMessageOptionsForReply(pendingReply) : undefined;
-        await sendMessage(channelId, { content }, true, {
-            ...(replyOptions ?? {}),
-            attachmentsToUpload: pendingUploads
-        });
-        Toasts.show({ message: "Message sent", id: Toasts.genId(), type: Toasts.Type.SUCCESS });
+        triggerNativeComposerSend(input);
     } catch (error) {
         console.error("[DMEmoji] Could not send message", error);
         Toasts.show({ message: "Discord could not send that message", id: Toasts.genId(), type: Toasts.Type.FAILURE });
@@ -1364,7 +1442,16 @@ const DMEmojiButton: ChatBarButtonFactory = ({ isAnyChat, channel }) => {
             {showSendButton && (
                 <ChatBarButton
                     tooltip="Send message"
-                    onClick={() => void sendCurrentMessage()}
+                    onClick={() =>
+                        void sendCurrentMessage(channelId).catch(error => {
+                            console.error("[DMEmoji] Send button handler failed", error);
+                            Toasts.show({
+                                message: "Discord could not send that message",
+                                id: Toasts.genId(),
+                                type: Toasts.Type.FAILURE
+                            });
+                        })
+                    }
                     buttonProps={{ "data-dmemoji-send-button": "true" }}
                 >
                     <SendMessageIcon />

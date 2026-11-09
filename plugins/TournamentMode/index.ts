@@ -399,7 +399,11 @@ export default definePlugin({
         // Track voice/call state so the perf bridge protects renderer WebRTC
         // threads during calls/streaming across server voice, DMs, and Group DMs.
         const checkVoice = () => {
-            reportVoiceActive(isVoiceOrCallActive());
+            try {
+                reportVoiceActive(isVoiceOrCallActive());
+            } catch (error) {
+                console.warn("[TournamentMode] voice-state refresh ignored during navigation:", error);
+            }
         };
 
         checkVoice();
@@ -422,7 +426,13 @@ export default definePlugin({
                                 reportVoiceActive(true);
                             } else if (this.connectionState === "disconnected" || this.connectionState === "closed" || this.connectionState === "failed") {
                                 (globalThis as any).__dmActiveRtcConnected = false;
-                                setTimeout(checkVoice, 500);
+                                setTimeout(() => {
+                                    try {
+                                        checkVoice();
+                                    } catch (error) {
+                                        console.warn("[TournamentMode] delayed voice refresh ignored during navigation:", error);
+                                    }
+                                }, 500);
                             }
                         });
                     }

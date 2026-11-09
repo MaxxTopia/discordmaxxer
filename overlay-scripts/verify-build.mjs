@@ -93,10 +93,136 @@ const rendererPath = join(VDIST, "vencordDesktopRenderer.js");
 if (existsSync(rendererPath)) {
     const renderer = readFileSync(rendererPath, "utf8");
     // Critical custom plugins — if any of these is absent, the overlay is broken.
-    const REQUIRED_PLUGINS = ["TournamentMode", "DMVoiceKeybinds", "DMVoiceGuard", "DMHub", "DMTierFlair", "DMProfileCosmetics", "DMDisplayNameStyle", "DMEmoji", "DMTranslate"];
+    const REQUIRED_PLUGINS = ["TournamentMode", "DMVoiceKeybinds", "DMVoiceGuard", "DMHub", "DMTierFlair", "DMProfileCosmetics", "DMDisplayNameStyle", "DMEmoji", "DMTranslate", "DMImageContext"];
     for (const name of REQUIRED_PLUGINS) {
         if (renderer.includes(name)) ok(`plugin "${name}" compiled into renderer`);
         else fail(`plugin "${name}" NOT found in renderer bundle — overlay failed to include custom plugins`);
+    }
+}
+
+// 2b) Regression contracts for native Discord interaction paths. These are
+// deliberately source-level assertions: the renderer bundle can still be a
+// valid JavaScript file after an overlay silently reclaims a native menu or
+// hides a folder child. Fail the release before that behavior reaches users.
+// Keep the source contract check on the same Vencord checkout used by the
+// overlay builder. CI uses the repository-local clone; local release checks
+// may intentionally point at a fresh pinned checkout when the cached source
+// tree has older generated edits.
+const overlaySourceRoot = join(resolve(process.env.DISCORDMAXXER_VENCORD_SRC ?? join(ROOT, "vencord-src")), "src");
+if (!existsSync(overlaySourceRoot)) {
+    fail("vencord-src is missing — native interaction regression contracts could not be verified");
+} else {
+    const readOverlaySource = relativePath => {
+        const path = join(overlaySourceRoot, relativePath);
+        if (!existsSync(path)) {
+            fail(`missing overlay source ${relativePath} — native interaction contracts could not be verified`);
+            return "";
+        }
+        return readFileSync(path, "utf8");
+    };
+    const webContextMenusSource = readOverlaySource("plugins/webContextMenus.web/index.ts");
+    const dmImageContextSource = readFileSync(join(ROOT, "plugins", "DMImageContext", "index.tsx"), "utf8");
+    if (webContextMenusSource.includes("const shouldAddBackMenus = () => false;")) {
+        ok("desktop image/message context menus remain on Discord's native path (compatibility hook hard-disabled)");
+    } else {
+        fail("desktop native context-menu path is missing or the web replacement is forced on");
+    }
+    const imageMenuPredicates = webContextMenusSource.match(/predicate: shouldAddImageMenus,/g)?.length ?? 0;
+    if (imageMenuPredicates >= 3) {
+        ok("built-in image context-menu route is scoped and available (" + imageMenuPredicates + " predicates)");
+    } else {
+        fail("built-in image context-menu route is missing or not scoped away from the global listener swap");
+    }
+    const safeImageMenuMarkers = [
+    'window.addEventListener("contextmenu", imageContextMenuHandler, true)',
+        "nodeType === 1",
+        'id: "dm-copy-image"',
+        'label: "Copy Image"',
+        "ContextMenuApi.openContextMenu",
+        "navigator.clipboard.write"
+    ];
+    const missingSafeImageMenuMarkers = safeImageMenuMarkers.filter(marker => !dmImageContextSource.includes(marker));
+    if (missingSafeImageMenuMarkers.length === 0) {
+        ok("safe attachment-image menu includes a real Copy Image clipboard action");
+    } else {
+        fail(`safe attachment-image menu is incomplete: missing ${missingSafeImageMenuMarkers.join(", ")}`);
+    }
+
+    const desktopImageMenuMarkers = [
+        'name: "DMImageContext"',
+        "required: true",
+        'window.addEventListener("contextmenu", imageContextMenuHandler, true)',
+        'id: "dm-copy-image"',
+        'label: "Copy Image"',
+        "ContextMenuApi.openContextMenu",
+        "nativeClipboard.copyImage"
+    ];
+    const missingDesktopImageMenuMarkers = desktopImageMenuMarkers.filter(marker => !dmImageContextSource.includes(marker));
+    if (missingDesktopImageMenuMarkers.length === 0) {
+        ok("required desktop image menu includes native Copy Image handling");
+    } else {
+        fail(`required desktop image menu is incomplete: missing ${missingDesktopImageMenuMarkers.join(", ")}`);
+    }
+    if (webContextMenusSource.includes("required: IS_DISCORD_DESKTOP || IS_VESKTOP,") && webContextMenusSource.includes("enabledByDefault: true,")) {
+        ok("native composer menu bridge is required and enabled by default on desktop");
+    } else {
+        fail("native composer menu bridge is not enabled on the desktop path");
+    }
+    if (webContextMenusSource.includes("const shouldAddBackMenus = () => IS_DISCORD_DESKTOP || IS_VESKTOP || settings.store.addBack;")) {
+        fail("web context menus still intercept the desktop native path");
+    }
+    const guardedWebContextPatches = [
+        ...(webContextMenusSource.match(/predicate: shouldAddBackMenus,/g) ?? []),
+        ...(webContextMenusSource.match(/predicate: shouldAddComposerMenus,/g) ?? [])
+    ].length;
+    if (guardedWebContextPatches >= 9) {
+        ok(`web context-menu patches are fail-open guarded (${guardedWebContextPatches} predicates)`);
+    } else {
+        fail("one or more web context-menu patches can still modify native Discord menus");
+    }
+    const composerMarkers = [
+        "const shouldAddComposerMenus = () => IS_DISCORD_DESKTOP || IS_VESKTOP || settings.store.addBack;",
+        "function isComposerTarget(event: Event)",
+        "let composerContextMenuRouter: ((event: MouseEvent) => void) | null = null;",
+        "window.addEventListener(\"contextmenu\", router)",
+        "predicate: shouldAddComposerMenus,"
+    ];
+    const missingComposerMarkers = composerMarkers.filter(marker => !webContextMenusSource.includes(marker));
+    if (missingComposerMarkers.length === 0) {
+        ok("message composer uses a narrow native context-menu bridge while other menus stay fail-open");
+    } else {
+        fail(`native composer context-menu bridge is incomplete: missing ${missingComposerMarkers.join(", ")}`);
+    }
+    const pluginManagerSource = readOverlaySource("api/PluginManager.ts");
+    if (/DISCORDMAXXER_NATIVE_MENU_IDS\.has\(navId\) && name !== ["']WebContextMenus["']/.test(pluginManagerSource)) {
+        ok("third-party message/image menu patches stay blocked while the built-in image route is allowed");
+    } else {
+        fail("PluginManager does not preserve the native menu boundary around WebContextMenus");
+    }
+    const imageZoomSource = readOverlaySource("plugins/imageZoom/index.tsx");
+    if (imageZoomSource.includes("Discordmaxxer: preserve native attachment image node.")) {
+        ok("ImageZoom preserves Discord's native attachment image node");
+    } else {
+        fail("ImageZoom native attachment image-node safeguard is missing");
+    }
+    if (imageZoomSource.includes('"image-context": imageContextMenuPatch')) {
+        fail("ImageZoom still owns Discord's native image context-menu route");
+    }
+
+    const betterFoldersSource = readOverlaySource("plugins/betterFolders/index.tsx");
+    const guardedFolderPredicates = betterFoldersSource.match(/predicate: \(\) => settings\.store\.sidebar && DISCORDMAXXER_CUSTOM_SIDEBAR_SUPPORTED/g)?.length ?? 0;
+    if (betterFoldersSource.includes("export const DISCORDMAXXER_CUSTOM_SIDEBAR_SUPPORTED = false;") && guardedFolderPredicates >= 3) {
+        ok(`BetterFolders custom interception is fail-open guarded (${guardedFolderPredicates} predicates)`);
+    } else {
+        fail("BetterFolders custom interception is not fully guarded behind the disabled sidebar bridge");
+    }
+
+    const folderSidebarSource = readOverlaySource("plugins/betterFolders/FolderSideBar.tsx");
+    if (folderSidebarSource.includes("if (!DISCORDMAXXER_CUSTOM_SIDEBAR_SUPPORTED) return null;") &&
+        folderSidebarSource.includes("const folderId = normalizedId(data?.folderId ?? data?.id);")) {
+        ok("unsupported custom folder sidebar fails open and uses the shared ID helper");
+    } else {
+        fail("custom folder sidebar still has an unsafe mount or undefined folder-ID helper");
     }
 }
 

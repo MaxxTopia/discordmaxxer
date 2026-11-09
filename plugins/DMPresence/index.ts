@@ -234,10 +234,18 @@ export default definePlugin({
     settings,
 
     start() {
-        refresh();
-        timer = setInterval(() => {
-            if (document.hidden) return;
+        try {
             refresh();
+        } catch (error) {
+            console.warn("[DMPresence] initial refresh ignored during navigation:", error);
+        }
+        timer = setInterval(() => {
+            try {
+                if (document.hidden) return;
+                refresh();
+            } catch (error) {
+                console.warn("[DMPresence] refresh ignored during navigation:", error);
+            }
         }, REFRESH_MS);
     },
 

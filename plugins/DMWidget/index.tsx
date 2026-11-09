@@ -37,7 +37,8 @@
 import { definePluginSettings } from "@api/Settings";
 import definePlugin, { OptionType, PluginNative } from "@utils/types";
 import * as DataStore from "@api/DataStore";
-import { Button, React, RestAPI, Toasts, UserStore } from "@webpack/common";
+import { Button, React, RestAPI, Toasts, UserProfileStore, UserStore } from "@webpack/common";
+import { fetchUserProfile } from "@utils/discord";
 
 import { makePersistentValue } from "../_dm-shared/persist";
 import { WIDGET_STYLE_PRESETS, type WidgetStylePreset, widgetStylePreset } from "../_dm-shared/widgetStylePresets";
@@ -171,10 +172,26 @@ const legacyIdentity = makePersistentValue<WidgetIdentity>("dm-widget-identity",
 
 let slotsMigrated = false;
 let activeSlotsAccountId = "";
+
+// Discord's lazy webpack proxies can throw while the client is changing
+// routes (especially when the current build has not exposed a store yet).
+// DMWidget has several fire-and-forget reconciliation paths, so never let a
+// missing optional store take down Discord's renderer. A null user simply
+// means that reconciliation waits for the next scheduled pass.
+function currentUserSafe(): any | null {
+    try {
+        const getCurrentUser = (UserStore as any)?.getCurrentUser;
+        return typeof getCurrentUser === "function" ? getCurrentUser.call(UserStore) ?? null : null;
+    } catch (error) {
+        console.warn("[DMWidget] current user store unavailable; deferring reconciliation", error);
+        return null;
+    }
+}
+
 async function ensureSlots(): Promise<void> {
     await slots.ready; await accountSlots.ready; await legacyIdentity.ready;
 
-    const accountId = String(UserStore.getCurrentUser()?.id ?? "");
+    const accountId = String(currentUserSafe()?.id ?? "");
     if (accountId && activeSlotsAccountId !== accountId) {
         const previousAccountId = activeSlotsAccountId;
         const previousSlots = slots.get();
@@ -339,7 +356,7 @@ function heroUrlFor(tpl: string, id: WidgetIdentity, choiceOverride?: string): s
     // every other account, Automatic keeps the account's remembered hero (or
     // the normal game default), so this repair cannot rewrite other users'
     // Fortnite widgets.
-    if (tpl === "fortnite" && choice === "auto" && String(UserStore.getCurrentUser()?.id ?? "") === DIGGYAI_ACCOUNT_ID) {
+    if (tpl === "fortnite" && choice === "auto" && String(currentUserSafe()?.id ?? "") === DIGGYAI_ACCOUNT_ID) {
         return DEFAULT_HEROES.fortnite;
     }
     const preset = presetHeroUrl(tpl, choice);
@@ -449,17 +466,176 @@ function impersonationError(name: string): string | null {
     return null;
 }
 
-const apiGet = async (url: string): Promise<any> => (await RestAPI.get({ url })).body;
-const apiPost = async (url: string, body: any): Promise<any> => (await RestAPI.post({ url, body })).body;
-const apiPatch = async (url: string, body: any): Promise<any> => (await RestAPI.patch({ url, body })).body;
-const apiPut = async (url: string, body: any): Promise<any> => (await RestAPI.put({ url, body })).body;
+type RestMethod = "get" | "post" | "patch" | "put";
+
+const warnedRestMethods = new Set<RestMethod>();
+
+function restMethodSafe(method: RestMethod): ((options: any) => Promise<any>) | null {
+    try {
+        const client = RestAPI as any;
+        if (client === null || (typeof client !== "object" && typeof client !== "function")) return null;
+        const fn = client?.[method];
+        return typeof fn === "function" ? fn.bind(client) : null;
+    } catch (error) {
+        // A stale Discord module graph can throw during lazy property lookup.
+        // Treat that as an unavailable optional API instead of a renderer
+        // exception during a DM/profile transition.
+        if (!warnedRestMethods.has(method)) {
+            warnedRestMethods.add(method);
+            console.warn(`[DMWidget] Discord REST ${method} API unavailable`, error);
+        }
+        return null;
+    }
+}
+
+// Some Discord builds expose a lazy REST proxy that can throw while the
+// renderer is changing routes. Keep a same-session authenticated fetch path
+// for read-only metadata so foreign-profile skin discovery is not dependent
+// on that optional webpack module being ready.
+function discordApiOrigin(): string {
+    try {
+        const origin = String((globalThis as any)?.location?.origin ?? "");
+        // The renderer can be in a file/dev origin during startup. Do not send
+        // Discord API requests to that origin; use Discord's authenticated API
+        // host instead. Preserve canary/PTB when Discord actually loaded there.
+        if (/^https:\/\/(?:canary\.|ptb\.)?discord\.com$/i.test(origin)) return origin;
+    } catch { /* use the stable API host */ }
+    return "https://discord.com";
+}
+
+async function directDiscordGet(url: string): Promise<any> {
+    if (typeof fetch !== "function") return null;
+    const route = url.startsWith("/api/v9/") ? url : `/api/v9${url.startsWith("/") ? url : `/${url}`}`;
+    const requestUrl = /^https?:\/\//i.test(route) ? route : `${discordApiOrigin()}${route}`;
+    try {
+        const response = await fetch(requestUrl, {
+            credentials: "include",
+            cache: "no-store",
+            headers: {
+                Accept: "application/json",
+                "Cache-Control": "no-cache"
+            }
+        });
+        if (!response.ok) {
+            console.warn("[DMWidget] direct REST GET returned HTTP status", response.status, requestUrl);
+            return null;
+        }
+        return await response.json();
+    } catch (error) {
+        console.warn("[DMWidget] direct REST GET fallback skipped", requestUrl, error);
+        return null;
+    }
+}
+
+// GETs are used by background skin discovery and profile reconciliation. They
+// must fail closed: a temporarily unavailable Discord REST module should leave
+// the native card visible and retry later, never crash the route.
+const apiGet = async (url: string): Promise<any> => {
+    const get = restMethodSafe("get");
+    if (get) {
+        try {
+            const response = await get({ url });
+            const nativeBody = response && Object.prototype.hasOwnProperty.call(response, "body")
+                ? response.body
+                : response;
+            // Discord's lazy REST proxy can resolve successfully with an
+            // empty/undefined body while its backing module is still being
+            // swapped during a profile transition. That is not proof that a
+            // foreign user's profile or application metadata is absent. Give
+            // the authenticated fetch path a chance before failing closed.
+            if (nativeBody && typeof nativeBody === "object") return nativeBody;
+            const direct = await directDiscordGet(url);
+            return direct ?? (nativeBody ?? null);
+        } catch (error) {
+            console.warn("[DMWidget] background REST GET skipped; using direct fallback", url, error);
+        }
+    }
+    return directDiscordGet(url);
+};
+
+// Mutating calls remain error-reporting operations for the editor. Callers
+// already classify and surface these failures, but the lazy lookup itself is
+// now contained so it cannot escape as an unhandled webpack-proxy exception.
+const apiPost = async (url: string, body: any): Promise<any> => {
+    const post = restMethodSafe("post");
+    if (!post) throw new Error("Discord REST POST API unavailable");
+    return (await post({ url, body }))?.body;
+};
+const apiPatch = async (url: string, body: any): Promise<any> => {
+    const patch = restMethodSafe("patch");
+    if (!patch) throw new Error("Discord REST PATCH API unavailable");
+    return (await patch({ url, body }))?.body;
+};
+const apiPut = async (url: string, body: any): Promise<any> => {
+    const put = restMethodSafe("put");
+    if (!put) throw new Error("Discord REST PUT API unavailable");
+    return (await put({ url, body }))?.body;
+};
+
+// Keep this named helper for the application/profile hydration call sites so
+// their intent stays clear; the shared direct GET path also backs the native
+// REST failure case above.
+async function directApplicationMetadataGet(url: string): Promise<any> {
+    return directDiscordGet(url);
+}
+
+// Profile widgets are exposed by Discord's authenticated profile route. The
+// explicit `with_mutual_guilds=false` form is the stable shape used by the
+// client when it hydrates another user's profile; the bare route can return a
+// shell without the widget board on some client/API versions. Try the exact
+// client shape first, then the alternate query, and only then the legacy form.
+async function directProfileMetadataGet(userId: string): Promise<any> {
+    const paths = [
+        `/users/${userId}/profile?with_mutual_guilds=false`,
+        `/users/${userId}/profile?with_mutual_guilds=true&with_mutual_friends_count=false`,
+        `/users/${userId}/profile`
+    ];
+    for (const path of paths) {
+        const profile = await directApplicationMetadataGet(path);
+        // Foreign-profile hydration is read-only. Discord has returned a
+        // partially decorated widget list here on some client/API versions;
+        // accept only the entries whose application IDs we can prove, while
+        // keeping the strict parser for every mutation below.
+        // An empty `widgets: []` shell is a valid cached profile response, but
+        // it is not proof that Discord's foreign Board has been resolved. Keep
+        // trying the alternate authenticated routes so a later response can
+        // supply the owner's published widget marker.
+        if (foreignProfileWidgetEntries(profile, userId)?.length) return profile;
+    }
+    return null;
+}
 
 async function fetchApplicationMetadata(appId: string): Promise<any> {
     if (!SNOWFLAKE.test(appId)) return null;
+    let rpc: any = null;
     try {
-        return await apiGet(`/applications/${appId}/rpc`);
+        rpc = await apiGet(`/applications/${appId}/rpc`);
+    } catch { /* fall through to the canonical application route */ }
+
+    // Discord's RPC route is useful for the public card, but newer clients
+    // sometimes return a partial RPC object without the application
+    // description. The DMWidget marker lives in that description, so a
+    // successful RPC response is not enough to say that the owner's skin is
+    // absent. Read the canonical metadata whenever the RPC response does not
+    // contain our marker, while retaining the RPC result as a fallback for
+    // app-name/slot discovery.
+    if (remoteWidgetStyleFromApplication(rpc)) return rpc;
+    try {
+        const canonical = await apiGet(`/applications/${appId}`);
+        if (remoteWidgetStyleFromApplication(canonical)) return canonical;
+        // A null or partial native response is not proof that the owner's
+        // marker is missing. Ask the same authenticated route directly even
+        // when Discord's REST module returned no object at all; that is the
+        // failure mode that otherwise makes every foreign card look native.
+        const directRpc = await directApplicationMetadataGet(`/applications/${appId}/rpc`);
+        if (remoteWidgetStyleFromApplication(directRpc)) return directRpc;
+        const directCanonical = await directApplicationMetadataGet(`/applications/${appId}`);
+        if (remoteWidgetStyleFromApplication(directCanonical)) return directCanonical;
+        return canonical ?? rpc ?? directCanonical ?? directRpc;
     } catch {
-        return await apiGet(`/applications/${appId}`);
+        const directRpc = await directApplicationMetadataGet(`/applications/${appId}/rpc`);
+        if (remoteWidgetStyleFromApplication(directRpc)) return directRpc;
+        return rpc ?? directRpc;
     }
 }
 
@@ -844,7 +1020,7 @@ function nextWidgetStylePublishRequest(slotKey: string): number {
 function isCurrentWidgetStylePublishRequest(slotKey: string, accountId: string, request: number): boolean {
     return widgetStylePublishSerial.get(slotKey) === request
         && !!accountId
-        && String(UserStore.getCurrentUser()?.id ?? "") === accountId
+        && String(currentUserSafe()?.id ?? "") === accountId
         && activeSlotsAccountId === accountId;
 }
 
@@ -898,14 +1074,14 @@ type OwnerWidgetStyleBootstrap = {
 async function syncMissingOwnerWidgetStyleMarker(candidate: OwnerWidgetStyleBootstrap): Promise<void> {
     const { appId, slotKey, accountId, preset, updatedAt } = candidate;
     if (!SNOWFLAKE.test(appId) || !accountId) return;
-    if (String(UserStore.getCurrentUser()?.id ?? "") !== accountId || activeSlotsAccountId !== accountId) return;
+    if (String(currentUserSafe()?.id ?? "") !== accountId || activeSlotsAccountId !== accountId) return;
     const key = `${accountId}:${appId}`;
     const lastAttempt = ownerWidgetStyleBootstrapAt.get(key) ?? 0;
     if (lastAttempt && Date.now() - lastAttempt < OWNER_WIDGET_STYLE_BOOTSTRAP_RETRY_MS) return;
     ownerWidgetStyleBootstrapAt.set(key, Date.now());
     try {
         const application = await fetchApplicationMetadata(appId);
-        if (String(UserStore.getCurrentUser()?.id ?? "") !== accountId || activeSlotsAccountId !== accountId) return;
+        if (String(currentUserSafe()?.id ?? "") !== accountId || activeSlotsAccountId !== accountId) return;
         const remoteStyle = remoteWidgetStyleFromApplication(application);
         if (remoteStyle && remoteStyle.updatedAt > updatedAt) return;
         const current = getSlot(slotKey);
@@ -978,7 +1154,7 @@ async function republishSelectedWidgetStyleUnsafe(slotKey: string): Promise<void
     // DataStore migration even though the widget is still attached to this
     // account's profile. Recover it before deciding that the skin is preview-only.
     await refreshAttachedWidgetStyles(true);
-    const accountId = String(UserStore.getCurrentUser()?.id ?? "");
+    const accountId = String(currentUserSafe()?.id ?? "");
     if (!isCurrentWidgetStylePublishRequest(slotKey, accountId, request)) return;
     const id = getSlot(slotKey);
     const basePreset = WIDGET_STYLE_PRESETS.find(item => item.id === id.widgetStyle) ?? selectedWidgetPreset();
@@ -1155,7 +1331,7 @@ function scheduleStatsRefresh(): void {
 
 // ---- the whole flow --------------------------------------------------------
 async function deployWidget(): Promise<void> {
-    const me = UserStore.getCurrentUser();
+    const me = currentUserSafe();
     if (!me?.id) { toast("Not logged in yet — try again in a moment.", Toasts.Type.FAILURE); return; }
     const appName = String((settings.store as any).appName ?? "").trim();
     const nameErr = impersonationError(appName);
@@ -1290,7 +1466,7 @@ async function deployWidget(): Promise<void> {
 
 async function removeFromProfile(): Promise<void> {
     await ensureSlots();
-    const me = UserStore.getCurrentUser();
+    const me = currentUserSafe();
     const slotKey = slotKeyOf();
     const id = getSlot(slotKey);
     if (!id.appId) { toast("No widget to remove.", Toasts.Type.MESSAGE); return; }
@@ -1311,7 +1487,7 @@ async function removeFromProfile(): Promise<void> {
 // entry to the front and keep the rest in their existing order.
 async function moveToTop(): Promise<void> {
     await ensureSlots();
-    const me = UserStore.getCurrentUser();
+    const me = currentUserSafe();
     const slotKey = slotKeyOf();
     const id = getSlot(slotKey);
     if (!me?.id || !SNOWFLAKE.test(id.appId)) { toast("Create this widget first.", Toasts.Type.FAILURE); return; }
@@ -1713,9 +1889,99 @@ function applicationDescription(application: any): string | null {
         application?.data?.description,
         application?.application?.description,
         application?.application?.data?.description,
+        application?.rpc?.description,
+        application?.rpc?.data?.description,
+        application?.rpc?.application?.description,
+        application?.rpc?.application?.data?.description,
+        application?.rpc_application?.description,
+        application?.application_data?.description,
+        application?.data?.application?.description,
+        application?.application?.rpc?.description,
     ];
-    const description = candidates.find(value => typeof value === "string");
-    return typeof description === "string" ? description : null;
+    const descriptions = candidates.filter((value): value is string => typeof value === "string");
+
+    // Discord can return an empty top-level description while the same
+    // application payload carries the real description under `rpc`, `data`,
+    // or `application`. Prefer the marker-bearing value so foreign profile
+    // cards do not silently fall back to the native, unskinned widget.
+    const marked = descriptions.find(value => REMOTE_WIDGET_STYLE_RE.test(value));
+    if (marked) return marked;
+
+    // Discord has returned application/RPC metadata in several different
+    // envelopes over time. Search only known metadata containers, with a
+    // bounded traversal, so unrelated IDs in the response cannot become a
+    // foreign profile owner or widget-style value.
+    const metadataKeys = [
+        "description",
+        "data",
+        "application",
+        "rpc",
+        "rpc_application",
+        "application_data",
+        "widget",
+        "widget_data",
+        "widgetData",
+        "game",
+        "game_widget",
+        "gameWidget",
+        "payload",
+        "result",
+        "response",
+        "metadata",
+        "attributes",
+        "details",
+        "config",
+        "value"
+    ] as const;
+    const seen = new WeakSet<object>();
+    let budget = 384;
+    const findMarkedDescription = (value: unknown, depth = 0): string | null => {
+        if (value == null || depth > 6 || budget-- <= 0) return null;
+        if (typeof value === "string") {
+            return REMOTE_WIDGET_STYLE_RE.test(value) ? value : null;
+        }
+        if (typeof value !== "object" || seen.has(value)) return null;
+        seen.add(value);
+        if (Array.isArray(value)) {
+            for (const item of value.slice(0, 64)) {
+                const found = findMarkedDescription(item, depth + 1);
+                if (found) return found;
+            }
+            return null;
+        }
+        const record = value as Record<string, unknown>;
+        for (const key of metadataKeys) {
+            if (!(key in record)) continue;
+            const found = findMarkedDescription(record[key], depth + 1);
+            if (found) return found;
+        }
+        return null;
+    };
+    const nestedMarked = findMarkedDescription(application);
+    if (nestedMarked) return nestedMarked;
+
+    const nonEmpty = descriptions.find(value => value.trim().length > 0);
+    return nonEmpty ?? null;
+}
+
+function applicationDisplayName(application: any): string {
+    const candidates = [
+        application?.name,
+        application?.data?.name,
+        application?.application?.name,
+        application?.application?.data?.name,
+        application?.rpc?.name,
+        application?.rpc?.data?.name,
+        application?.rpc?.application?.name,
+        application?.rpc?.application?.data?.name,
+        application?.rpc_application?.name,
+        application?.application_data?.name,
+        application?.data?.application?.name,
+        application?.application?.rpc?.name,
+    ];
+    return candidates
+        .map(value => String(value ?? "").trim())
+        .find(value => value.length >= 2) ?? "";
 }
 
 function remoteWidgetStyleFromApplication(application: any): { style: string; topLayout: "hero" | "contained"; bottomLayout: "stats" | "progress"; updatedAt: number; } | null {
@@ -2131,6 +2397,8 @@ const widgetApplicationCache = new WeakMap<HTMLElement, {
 }>();
 let widgetApplicationCacheEpoch = 0;
 const widgetOwnerCache = new WeakMap<HTMLElement, { userId: string | null; checkedAt: number; }>();
+type WidgetUserIdentity = { id: string; names: string[]; };
+let widgetUserIdentityIndex: { expiresAt: number; entries: WidgetUserIdentity[]; } | null = null;
 let widgetSkinStyleElement: HTMLStyleElement | null = null;
 let widgetSkinObserver: MutationObserver | null = null;
 let widgetSkinProfileMountObserver: MutationObserver | null = null;
@@ -2167,7 +2435,10 @@ let widgetSkinRun = 0;
 let widgetSkinRendererSuspended = false;
 let widgetSkinLegacyCleanupDone = false;
 const WIDGET_SKIN_RECONCILE_INTERVAL_MS = 3000;
-const WIDGET_SKIN_PROFILE_MOUNT_WATCH_MS = 2500;
+// Profile popouts/Boards are portal-mounted and their cards can arrive after
+// the avatar shell. Keep the targeted observer alive long enough to catch the
+// delayed commit without restoring a broad document polling loop.
+const WIDGET_SKIN_PROFILE_MOUNT_WATCH_MS = 8000;
 const WIDGET_SKIN_PROFILE_SURFACE_MAX = 16;
 const WIDGET_SKIN_PROFILE_EXPLICIT_CANDIDATE_MAX = 32;
 const WIDGET_SKIN_PROFILE_CARD_CANDIDATE_MAX = 64;
@@ -2215,10 +2486,18 @@ let visibleWidgetSurfaceSerial = 0;
 const VISIBLE_WIDGET_STYLE_STALE_GRACE_MS = 120_000;
 const ATTACHED_WIDGET_EMPTY_GRACE_MS = 120_000;
 const visibleWidgetStyleRequests = new Map<string, Promise<void>>();
+const visibleWidgetOwnerProfileRequests = new Map<string, Promise<void>>();
+const visibleWidgetOwnerProfileCheckedAt = new Map<string, number>();
+const visibleWidgetOwnerProfileMisses = new Map<string, { count: number; firstAt: number }>();
+const visibleWidgetOwnerProfileRetryTimers = new Map<string, number>();
 const VISIBLE_WIDGET_STYLE_CACHE_MS = 30_000;
 const VISIBLE_WIDGET_STYLE_MISS_RETRY_MS = 15_000;
 const VISIBLE_WIDGET_STYLE_MAX = 24;
 const VISIBLE_WIDGET_STYLE_BATCH_MAX = 8;
+const VISIBLE_WIDGET_OWNER_PROFILE_CACHE_MS = 30_000;
+const VISIBLE_WIDGET_OWNER_PROFILE_MISS_RETRY_DELAY_MS = 2_000;
+const VISIBLE_WIDGET_OWNER_PROFILE_MISS_RETRY_MAX = 3;
+const VISIBLE_WIDGET_OWNER_PROFILE_MAX = 8;
 let attachedWidgetProfileAccountId = "";
 let attachedWidgetProfileVerifiedAt = 0;
 let attachedWidgetProfileEmptySince = 0;
@@ -2244,11 +2523,16 @@ function visibleWidgetOwnerKey(surface: HTMLElement | null): string {
 }
 
 function visibleWidgetCacheKey(appId: string, ownerKey: string): string {
-    return `${ownerKey}|${appId}`;
+    // The same app can be shown in several profiles at once. Keep each
+    // owner's published marker separate so one person's skin cannot hide,
+    // replace, or leak into another person's widget.
+    const normalizedAppId = String(appId ?? "").trim();
+    const normalizedOwnerKey = String(ownerKey ?? "").trim();
+    return normalizedOwnerKey ? `${normalizedOwnerKey}:${normalizedAppId}` : `app:${normalizedAppId}`;
 }
 
 function attachedWidgetProfileIsFresh(): boolean {
-    const accountId = String(UserStore.getCurrentUser()?.id ?? "");
+    const accountId = String(currentUserSafe()?.id ?? "");
     return !!accountId
         && accountId === activeSlotsAccountId
         && accountId === attachedWidgetProfileAccountId
@@ -2310,8 +2594,14 @@ function presetForSlot(slotKey: string): WidgetStylePreset {
     return presetWithLayouts(preset, slot.topLayout, slot.bottomLayout);
 }
 
-function profileWidgetEntries(profile: any): any[] | null {
+function profileWidgetEntries(profile: any, options: { allowPartial?: boolean; displayOnly?: boolean } = {}): any[] | null {
     if (!profile || typeof profile !== "object") return null;
+    // The renderer may receive a normalized Board entry whose application id
+    // is exposed as the entry's own `id` plus an explicit widget/application
+    // type. That shape is safe for read-only foreign-profile discovery, but
+    // it is not safe for the /users/@me/widgets writer because a generic id
+    // can also be a user, message, or configuration id.
+    const applicationIdForScan = options.displayOnly ? profileWidgetDisplayApplicationId : profileWidgetApplicationId;
     const candidates: Array<{ entries: any[]; appCount: number; explicit: boolean; complete: boolean; }> = [];
     const visited = new WeakSet<object>();
     const queuedArrays = new WeakMap<object, number>();
@@ -2330,7 +2620,7 @@ function profileWidgetEntries(profile: any): any[] | null {
         if (Array.isArray(value)) {
             const existingIndex = queuedArrays.get(value);
             if (widgetContext || existingIndex === undefined) {
-                const appCount = value.reduce((count, widget) => count + (profileWidgetApplicationId(widget) ? 1 : 0), 0);
+                const appCount = value.reduce((count, widget) => count + (applicationIdForScan(widget) ? 1 : 0), 0);
                 if (widgetContext || appCount > 0) {
                     if (existingIndex === undefined) {
                         queuedArrays.set(value, candidates.length);
@@ -2365,9 +2655,85 @@ function profileWidgetEntries(profile: any): any[] | null {
     }
     // A partial/unknown non-empty array is not proof of the complete Board.
     // Preserve last-good state rather than styling a subset or writing a
-    // truncated list back through Add/Remove/Reorder.
-    if (candidates.some(candidate => candidate.entries.length > 0)) return null;
+    // truncated list back through Add/Remove/Reorder. Read-only foreign
+    // profile hydration may use the narrower discovery helper below, which
+    // filters out every entry whose application ID cannot be proven.
+    if (candidates.some(candidate => candidate.entries.length > 0)) {
+        if (!options.allowPartial) return null;
+        const partial = populated
+            .slice()
+            .sort((a, b) => Number(b.explicit) - Number(a.explicit) || b.appCount - a.appCount || b.entries.length - a.entries.length)
+            .map(candidate => candidate.entries.filter(widget => SNOWFLAKE.test(applicationIdForScan(widget))))
+            .find(entries => entries.length > 0);
+        return partial ?? null;
+    }
     return [];
+}
+
+// Display-only profile widget discovery. This must never be used by a caller
+// that sends /users/@me/widgets because a partial list would drop cards. It is
+// intentionally limited to entries with a proven application ID so a foreign
+// profile can hydrate its published skin without borrowing the viewer's local
+// style or guessing at unrelated profile data.
+function profileWidgetDiscoveryEntries(profile: any): any[] | null {
+    return profileWidgetEntries(profile, { allowPartial: true, displayOnly: true });
+}
+
+// Discord also exposes the resolved Board list through UserProfileStore. The
+// raw profile payload can omit that list or leave it under a wrapper that is
+// not safe to use for writes, while the store has already normalized the
+// exact cards rendered in a foreign profile. This path is display-only:
+// callers must never feed it to /users/@me/widgets mutation requests.
+function profileWidgetStoreEntries(userId: string): any[] | null {
+    if (!SNOWFLAKE.test(String(userId ?? ""))) return null;
+    try {
+        const store = UserProfileStore as any;
+        if (!store) return null;
+        const lists: unknown[][] = [];
+        if (typeof store.getWidgets === "function") {
+            const widgets = store.getWidgets(userId);
+            if (Array.isArray(widgets)) lists.push(widgets);
+        }
+        if (typeof store.getUserProfile === "function") {
+            const userProfile = store.getUserProfile(userId);
+            // The store shape has changed across Discord builds. Prefer the
+            // same bounded display-only discovery used for the network
+            // payload before checking the historical flat fields. This lets
+            // a normalized foreign profile such as { profile: { widgets } }
+            // hydrate its published skin without making the store parser a
+            // writer or accepting arbitrary IDs.
+            const discovered = profileWidgetDiscoveryEntries(userProfile);
+            if (discovered?.length) return discovered;
+            for (const widgets of [
+                userProfile?.widgets,
+                userProfile?.gameWidgets,
+                userProfile?.profile?.widgets,
+                userProfile?.profile?.gameWidgets,
+                userProfile?.data?.widgets,
+                userProfile?.data?.gameWidgets
+            ]) {
+                if (Array.isArray(widgets)) lists.push(widgets);
+            }
+        }
+        for (const widgets of lists) {
+            const proven = widgets
+                .slice(0, 32)
+                .filter(widget => SNOWFLAKE.test(profileWidgetDisplayApplicationId(widget)));
+            if (proven.length) return proven;
+        }
+        return null;
+    } catch (error) {
+        // Store hydration is optional. A stale Discord module graph must not
+        // take down a profile route just because this cache is unavailable.
+        console.warn("[DMWidget] profile widget store fallback skipped", userId, error);
+        return null;
+    }
+}
+
+function foreignProfileWidgetEntries(profile: any, userId: string): any[] | null {
+    const discovered = profileWidgetDiscoveryEntries(profile);
+    if (discovered?.length) return discovered;
+    return profileWidgetStoreEntries(userId);
 }
 
 function profileWidgetApplicationId(widget: any): string {
@@ -2417,6 +2783,97 @@ function profileWidgetApplicationId(widget: any): string {
             if (child && typeof child === "object") {
                 const childInsideApplication = insideApplication || normalizedKey === "application" || normalizedKey === "app";
                 pending.push({ value: child, depth: depth + 1, insideApplication: childInsideApplication });
+            }
+        }
+    }
+    return "";
+}
+
+// Display-only fallback for normalized foreign-profile entries. Discord has
+// shipped Board lists where the entry looks like `{ type: "application", id
+// }` (or uses widgetType/widget_type) instead of nesting the id under
+// `application_id`. Keep this resolver separate from the strict writer path:
+// only an explicit widget/application semantic permits the direct id, and the
+// result is never sent back in a mutation request.
+function profileWidgetDisplayApplicationId(widget: any): string {
+    const strict = profileWidgetApplicationId(widget);
+    if (strict) return strict;
+    if (!widget || typeof widget !== "object") return "";
+
+    const values = [
+        widget?.type,
+        widget?.widgetType,
+        widget?.widget_type,
+        widget?.kind,
+        widget?.data?.type,
+        widget?.data?.widgetType,
+        widget?.data?.widget_type,
+        widget?.data?.kind
+    ].map(value => String(value ?? "").toLowerCase());
+    const hasExplicitWidgetType = ["widgetType", "widget_type", "applicationType", "application_type"]
+        .some(key => Object.prototype.hasOwnProperty.call(widget, key) || Object.prototype.hasOwnProperty.call(widget?.data ?? {}, key));
+    const hasWidgetSemantic = values.some(value => /application|widget|activity/.test(value))
+        || hasExplicitWidgetType
+        || !!widget?.widget
+        || !!widget?.data?.widget;
+    if (!hasWidgetSemantic) return "";
+
+    const directCandidates = [
+        widget?.id,
+        widget?.data?.id,
+        widget?.widget?.id,
+        widget?.data?.widget?.id,
+        widget?.application?.id,
+        widget?.data?.application?.id
+    ];
+    const directId = directCandidates.map(value => String(value ?? "")).find(value => SNOWFLAKE.test(value));
+    if (directId && values.some(value => /application|widget|activity|game|rich.?presence|rpc/.test(value))) return directId;
+
+    // Some profile payloads wrap the application in an activity/game envelope
+    // and only expose `id` several levels down. This is intentionally a
+    // display-only, bounded walk: explicit application_id/app_id fields are
+    // always safe, while a generic `id` is accepted only below a semantic
+    // application/widget/activity/game container. Nothing from this resolver
+    // is used by the profile mutation path.
+    const semanticKeys = new Set([
+        "application",
+        "app",
+        "widget",
+        "activity",
+        "activities",
+        "game",
+        "gamewidget",
+        "game_widget",
+        "richpresence",
+        "rich_presence",
+        "rpc",
+        "rpcapplication",
+        "rpc_application"
+    ]);
+    const explicitIdKeys = new Set(["applicationid", "application_id", "appid", "app_id"]);
+    const seen = new WeakSet<object>();
+    const pending: Array<{ value: any; depth: number; semantic: boolean }> = [{ value: widget, depth: 0, semantic: false }];
+    let budget = 192;
+    while (pending.length && budget-- > 0) {
+        const current = pending.shift();
+        if (!current) break;
+        const { value, depth, semantic } = current;
+        if (!value || typeof value !== "object" || depth > 5) continue;
+        if (seen.has(value)) continue;
+        seen.add(value);
+        const entries = Array.isArray(value) ? value.entries() : Object.entries(value);
+        for (const entry of entries) {
+            const key = Array.isArray(value) ? String(entry[0]) : String(entry[0]);
+            const child = Array.isArray(value) ? entry[1] : entry[1];
+            const normalizedKey = key.toLowerCase().replace(/[^a-z0-9]/g, "");
+            const childText = typeof child === "string" || typeof child === "number" ? String(child) : "";
+            if (explicitIdKeys.has(normalizedKey) && SNOWFLAKE.test(childText)) return childText;
+            if (normalizedKey === "id" && semantic && SNOWFLAKE.test(childText)) return childText;
+            if (child && typeof child === "object" && depth < 5) {
+                const childSemantic = semantic
+                    || semanticKeys.has(normalizedKey)
+                    || /^(application|app|widget|activity|game|rich.?presence|rpc)/.test(normalizedKey);
+                pending.push({ value: child, depth: depth + 1, semantic: childSemantic });
             }
         }
     }
@@ -2711,7 +3168,7 @@ async function refreshAttachedWidgetStyles(force = false): Promise<void> {
     attachedWidgetRefreshAt = Date.now();
     const task = (async () => {
         await ensureSlots();
-        const me = UserStore.getCurrentUser();
+        const me = currentUserSafe();
         if (!me?.id) {
             attachedWidgetStyles.clear();
             attachedWidgetSlots.clear();
@@ -2724,7 +3181,7 @@ async function refreshAttachedWidgetStyles(force = false): Promise<void> {
         }
         const accountId = String(me.id);
         const profile = await apiGet(`/users/${accountId}/profile`);
-        if (String(UserStore.getCurrentUser()?.id ?? "") !== accountId || activeSlotsAccountId !== accountId) return;
+        if (String(currentUserSafe()?.id ?? "") !== accountId || activeSlotsAccountId !== accountId) return;
         const widgets = profileWidgetEntries(profile);
         if (!widgets) {
             console.warn("[DMWidget] profile widget list missing; keeping the last attached skin map");
@@ -2767,12 +3224,12 @@ async function refreshAttachedWidgetStyles(force = false): Promise<void> {
         const nextHints = new Map<string, string[]>();
         const ownerStyleBootstrapCandidates: OwnerWidgetStyleBootstrap[] = [];
         for (const appId of ids) {
-            if (String(UserStore.getCurrentUser()?.id ?? "") !== accountId || activeSlotsAccountId !== accountId) return;
+            if (String(currentUserSafe()?.id ?? "") !== accountId || activeSlotsAccountId !== accountId) return;
             const hasStoredSlot = stored.has(appId);
             let slotKey = stored.get(appId) ?? "";
             let application: any = null;
             try { application = await fetchApplicationMetadata(appId); } catch { /* a private app may reject metadata */ }
-            if (String(UserStore.getCurrentUser()?.id ?? "") !== accountId || activeSlotsAccountId !== accountId) return;
+            if (String(currentUserSafe()?.id ?? "") !== accountId || activeSlotsAccountId !== accountId) return;
             if (!slotKey) slotKey = inferWidgetSlot(application);
             const remoteStyle = remoteWidgetStyleFromApplication(application);
             if (slotKey === "none" && !hasStoredSlot) {
@@ -2790,7 +3247,7 @@ async function refreshAttachedWidgetStyles(force = false): Promise<void> {
             }
             const entry = entries.find(item => item.appId === appId);
             await recoverAttachedWidgetIdentity(slotKey, appId, entry?.configId ?? "");
-            if (String(UserStore.getCurrentUser()?.id ?? "") !== accountId || activeSlotsAccountId !== accountId) return;
+            if (String(currentUserSafe()?.id ?? "") !== accountId || activeSlotsAccountId !== accountId) return;
             const current = getSlot(slotKey);
             const sameLocalApp = current.appId === appId;
             const localUpdatedAt = Number(current.widgetStyleUpdatedAt ?? 0);
@@ -2841,7 +3298,7 @@ async function refreshAttachedWidgetStyles(force = false): Promise<void> {
                 .filter(value => value.length >= 3);
             nextHints.set(appId, Array.from(new Set(labels)));
         }
-        if (String(UserStore.getCurrentUser()?.id ?? "") !== accountId || activeSlotsAccountId !== accountId) return;
+        if (String(currentUserSafe()?.id ?? "") !== accountId || activeSlotsAccountId !== accountId) return;
         attachedWidgetStyles.clear();
         attachedWidgetSlots.clear();
         attachedWidgetHints.clear();
@@ -2883,7 +3340,7 @@ async function refreshAttachedWidgetStyles(force = false): Promise<void> {
  */
 async function repairOwnedWidgetStyleMarkers(): Promise<void> {
     await ensureSlots();
-    const accountId = String(UserStore.getCurrentUser()?.id ?? "");
+    const accountId = String(currentUserSafe()?.id ?? "");
     if (!accountId || !attachedWidgetProfileIsFresh()) return;
     if (ownedWidgetMarkerRepairAccountId === accountId
         && Date.now() - ownedWidgetMarkerRepairAt < OWNED_WIDGET_MARKER_REPAIR_INTERVAL_MS) return;
@@ -2903,7 +3360,7 @@ async function repairOwnedWidgetStyleMarkers(): Promise<void> {
             appIdsBySlot.set(slotKey, ids);
         }
         for (const [slotKey, appIds] of appIdsBySlot) {
-            if (String(UserStore.getCurrentUser()?.id ?? "") !== accountId || activeSlotsAccountId !== accountId) break;
+            if (String(currentUserSafe()?.id ?? "") !== accountId || activeSlotsAccountId !== accountId) break;
             const current = getSlot(slotKey);
             const basePreset = WIDGET_STYLE_PRESETS.find(item => item.id === current.widgetStyle) ?? presetForSlot(slotKey);
             const rawUpdatedAt = Number(current.widgetStyleUpdatedAt ?? 0);
@@ -3056,12 +3513,12 @@ const WIDGET_APPLICATION_ID_ATTRIBUTES = [
     "application_id"
 ];
 
-function visibleProfileWidgetStyles(ownerKey?: string, ownerId?: string | null): Map<string, WidgetStylePreset> {
+function visibleProfileWidgetStyles(ownerKey?: string): Map<string, WidgetStylePreset> {
     const out = new Map<string, WidgetStylePreset>();
     const now = Date.now();
     for (const [cacheKey, record] of visibleWidgetStyles) {
+        if (ownerKey && record.ownerKey !== ownerKey) continue;
         if (!SNOWFLAKE.test(record.appId)) continue;
-        if (ownerKey && record.ownerKey !== ownerKey && (record.ownerId && ownerId && record.ownerId !== ownerId)) continue;
         const fresh = now - record.checkedAt <= VISIBLE_WIDGET_STYLE_CACHE_MS;
         const miss = visibleWidgetStyleMisses.get(cacheKey);
         const staleGrace = miss && now - miss.firstMissedAt <= VISIBLE_WIDGET_STYLE_STALE_GRACE_MS;
@@ -3071,22 +3528,21 @@ function visibleProfileWidgetStyles(ownerKey?: string, ownerId?: string | null):
         // account being viewed, so a viewer's local selection is never an
         // acceptable fallback while the owner's published marker is loading,
         // missing, or unreadable. Missing markers leave the card native.
-        out.set(record.appId, record.preset);
+        const previous = out.get(record.appId);
+        if (!previous || record.updatedAt >= previous.updatedAt) out.set(record.appId, record.preset);
     }
     return out;
 }
 
-function visibleProfileWidgetHints(
-    local: Map<string, string[]>,
-    ownerKey?: string,
-    ownerId?: string | null
-): Map<string, string[]> {
+function visibleProfileWidgetHints(local: Map<string, string[]>, ownerKey?: string): Map<string, string[]> {
     const out = new Map<string, string[]>();
-    for (const [appId, labels] of local) out.set(appId, Array.from(new Set(labels)));
+    if (!ownerKey) {
+        for (const [appId, labels] of local) out.set(appId, Array.from(new Set(labels)));
+    }
     const now = Date.now();
     for (const [, miss] of visibleWidgetStyleMisses) {
+        if (ownerKey && miss.ownerKey !== ownerKey) continue;
         if (!SNOWFLAKE.test(miss.appId) || !miss.hints.length) continue;
-        if (ownerKey && miss.ownerKey !== ownerKey && (miss.ownerId && ownerId && miss.ownerId !== ownerId)) continue;
         const current = out.get(miss.appId) ?? [];
         for (const label of miss.hints) {
             const clean = String(label ?? "").trim();
@@ -3095,8 +3551,8 @@ function visibleProfileWidgetHints(
         if (current.length) out.set(miss.appId, current);
     }
     for (const [cacheKey, record] of visibleWidgetStyles) {
+        if (ownerKey && record.ownerKey !== ownerKey) continue;
         if (!SNOWFLAKE.test(record.appId)) continue;
-        if (ownerKey && record.ownerKey !== ownerKey && (record.ownerId && ownerId && record.ownerId !== ownerId)) continue;
         const fresh = now - record.checkedAt <= VISIBLE_WIDGET_STYLE_CACHE_MS;
         const miss = visibleWidgetStyleMisses.get(cacheKey);
         const staleGrace = miss && now - miss.firstMissedAt <= VISIBLE_WIDGET_STYLE_STALE_GRACE_MS;
@@ -3155,6 +3611,11 @@ type VisibleWidgetStyleHydrationRequest = {
     appId: string;
     ownerKey: string;
     ownerId: string | null;
+    // Some profile responses already embed the public application/RPC
+    // envelope beside the Board entry. Keep it as a display-only hint so a
+    // foreign skin can render without waiting for a second metadata request.
+    // This value is never used by the profile writer.
+    applicationHint?: any;
 };
 
 function queueVisibleWidgetStyleHydration(requests: Iterable<VisibleWidgetStyleHydrationRequest>): void {
@@ -3168,6 +3629,27 @@ function queueVisibleWidgetStyleHydration(requests: Iterable<VisibleWidgetStyleH
         const { appId, ownerKey, ownerId } = request;
         const cached = visibleWidgetStyles.get(cacheKey);
         if (cached && now - cached.checkedAt <= VISIBLE_WIDGET_STYLE_CACHE_MS) continue;
+
+        const embeddedApplication = request.applicationHint;
+        const embeddedStyle = remoteWidgetStyleFromApplication(embeddedApplication);
+        if (embeddedStyle) {
+            const remotePreset = WIDGET_STYLE_PRESETS.find(item => item.id === embeddedStyle.style) ?? WIDGET_STYLE_PRESETS[0];
+            const appName = applicationDisplayName(embeddedApplication);
+            rememberVisibleWidgetStyle(cacheKey, {
+                appId,
+                ownerKey,
+                ownerId,
+                preset: presetWithLayouts(remotePreset, embeddedStyle.topLayout, embeddedStyle.bottomLayout),
+                updatedAt: embeddedStyle.updatedAt,
+                checkedAt: Date.now(),
+                hints: appName ? [appName] : []
+            });
+            widgetApplicationCacheEpoch++;
+            scheduleWidgetSkinProfileFastScan();
+            scheduleWidgetSkinScan(true);
+            continue;
+        }
+
         const missAt = visibleWidgetStyleMisses.get(cacheKey)?.checkedAt ?? 0;
         if (missAt && now - missAt <= VISIBLE_WIDGET_STYLE_MISS_RETRY_MS) continue;
         if (visibleWidgetStyleRequests.has(cacheKey)) continue;
@@ -3176,7 +3658,7 @@ function queueVisibleWidgetStyleHydration(requests: Iterable<VisibleWidgetStyleH
             const remoteStyle = remoteWidgetStyleFromApplication(application);
             if (remoteStyle) {
                 const remotePreset = WIDGET_STYLE_PRESETS.find(item => item.id === remoteStyle.style) ?? WIDGET_STYLE_PRESETS[0];
-                const appName = String(application?.name ?? application?.application?.name ?? "").trim();
+                const appName = applicationDisplayName(application);
                 rememberVisibleWidgetStyle(cacheKey, {
                     appId,
                     ownerKey,
@@ -3190,7 +3672,7 @@ function queueVisibleWidgetStyleHydration(requests: Iterable<VisibleWidgetStyleH
                 // A missing marker means the owner's choice is not available
                 // to this client. Retry later; viewed profile cards remain
                 // native until the owner's marker is readable.
-                const appName = String(application?.name ?? application?.application?.name ?? "").trim();
+                const appName = applicationDisplayName(application);
                 rememberVisibleWidgetStyleMiss(cacheKey, { appId, ownerKey, ownerId }, appName ? [appName] : []);
             }
             widgetApplicationCacheEpoch++;
@@ -3211,6 +3693,113 @@ function queueVisibleWidgetStyleHydration(requests: Iterable<VisibleWidgetStyleH
     }
 }
 
+async function fetchUserProfileMetadata(userId: string): Promise<any> {
+    let native: any = null;
+    try {
+        // Use Discord/Vencord's own profile-fetch path first. Unlike a raw
+        // REST call, this dispatches USER_PROFILE_FETCH_SUCCESS and hydrates
+        // UserProfileStore, which is where Discord resolves widgets for a
+        // foreign profile popout. Keep this read-only: no profile mutation
+        // action is dispatched here.
+        native = await fetchUserProfile(userId, {
+            with_mutual_guilds: false,
+            with_mutual_friends_count: false
+        });
+        // Do not stop on a cached profile shell whose widget list is empty;
+        // UserProfileStore can be populated by the next route below.
+        if (foreignProfileWidgetEntries(native, userId)?.length) return native;
+    } catch { /* fall through to the authenticated route fallbacks below */ }
+    try {
+        native = await apiGet(`/users/${userId}/profile?with_mutual_guilds=false`);
+        if (foreignProfileWidgetEntries(native, userId)?.length) return native;
+    } catch { /* use the authenticated route fallback below */ }
+    const direct = await directProfileMetadataGet(userId);
+    return direct ?? native;
+}
+
+function clearVisibleWidgetOwnerProfileRetry(ownerId: string): void {
+    visibleWidgetOwnerProfileMisses.delete(ownerId);
+    const timer = visibleWidgetOwnerProfileRetryTimers.get(ownerId);
+    if (timer === undefined) return;
+    window.clearTimeout(timer);
+    visibleWidgetOwnerProfileRetryTimers.delete(ownerId);
+}
+
+function scheduleVisibleWidgetOwnerProfileRetry(ownerId: string): void {
+    const previous = visibleWidgetOwnerProfileMisses.get(ownerId);
+    const miss = previous ?? { count: 0, firstAt: Date.now() };
+    if (miss.count >= VISIBLE_WIDGET_OWNER_PROFILE_MISS_RETRY_MAX) return;
+    miss.count += 1;
+    visibleWidgetOwnerProfileMisses.set(ownerId, miss);
+    if (visibleWidgetOwnerProfileRetryTimers.has(ownerId)) return;
+
+    const timer = window.setTimeout(() => {
+        visibleWidgetOwnerProfileRetryTimers.delete(ownerId);
+        if ((visibleWidgetOwnerProfileMisses.get(ownerId)?.count ?? 0) >= VISIBLE_WIDGET_OWNER_PROFILE_MISS_RETRY_MAX) return;
+        // The profile store can be populated a moment after the first card
+        // mount. Let the normal bounded visual scan discover it again instead
+        // of keeping a foreign owner permanently marked as checked.
+        visibleWidgetOwnerProfileCheckedAt.delete(ownerId);
+        scheduleWidgetSkinProfileFastScan();
+    }, VISIBLE_WIDGET_OWNER_PROFILE_MISS_RETRY_DELAY_MS);
+    visibleWidgetOwnerProfileRetryTimers.set(ownerId, timer);
+}
+
+function queueVisibleWidgetOwnerProfileHydration(ownerId: string | null): void {
+    const normalized = validWidgetOwnerId(ownerId);
+    if (!normalized) return;
+    const currentId = validWidgetOwnerId(currentUserSafe()?.id);
+    if (currentId && normalized === currentId) return;
+
+    const now = Date.now();
+    const checkedAt = visibleWidgetOwnerProfileCheckedAt.get(normalized) ?? 0;
+    if (now - checkedAt <= VISIBLE_WIDGET_OWNER_PROFILE_CACHE_MS) return;
+    if (visibleWidgetOwnerProfileRequests.has(normalized)) return;
+    if (visibleWidgetOwnerProfileRequests.size >= VISIBLE_WIDGET_OWNER_PROFILE_MAX) return;
+    visibleWidgetOwnerProfileCheckedAt.set(normalized, now);
+    while (visibleWidgetOwnerProfileCheckedAt.size > VISIBLE_WIDGET_STYLE_MAX) {
+        const oldest = visibleWidgetOwnerProfileCheckedAt.keys().next().value;
+        if (typeof oldest !== "string") break;
+        visibleWidgetOwnerProfileCheckedAt.delete(oldest);
+    }
+
+    const task = fetchUserProfileMetadata(normalized).then(profile => {
+        const widgets = foreignProfileWidgetEntries(profile, normalized);
+        if (!widgets) {
+            scheduleVisibleWidgetOwnerProfileRetry(normalized);
+            return;
+        }
+        const hydrationRequests = new Map<string, VisibleWidgetStyleHydrationRequest>();
+        for (const widget of widgets.slice(0, 32)) {
+            const appId = profileWidgetDisplayApplicationId(widget);
+            if (!SNOWFLAKE.test(appId)) continue;
+            hydrationRequests.set(appId, {
+                appId,
+                ownerKey: `owner:${normalized}`,
+                ownerId: normalized,
+                applicationHint: widget
+            });
+        }
+        if (!hydrationRequests.size) {
+            scheduleVisibleWidgetOwnerProfileRetry(normalized);
+            return;
+        }
+        clearVisibleWidgetOwnerProfileRetry(normalized);
+        queueVisibleWidgetStyleHydration(hydrationRequests.values());
+    }).catch(error => {
+        // Foreign profile reads are best-effort. A user without a published
+        // DMWidget marker must remain native, and a transient 403/route race
+        // must not affect the rest of Discord.
+        console.warn("[DMWidget] foreign profile widget metadata fallback skipped", normalized, error);
+        scheduleVisibleWidgetOwnerProfileRetry(normalized);
+    }).finally(() => {
+        visibleWidgetOwnerProfileRequests.delete(normalized);
+        widgetApplicationCacheEpoch++;
+        scheduleWidgetSkinProfileFastScan();
+    });
+    visibleWidgetOwnerProfileRequests.set(normalized, task);
+}
+
 function applicationIdCandidate(value: unknown, known: Set<string>, allowUnknown: boolean): string | null {
     const candidate = String(value ?? "").trim();
     if (!SNOWFLAKE.test(candidate)) return null;
@@ -3223,6 +3812,99 @@ function explicitWidgetApplicationId(element: Element, known: Set<string>, allow
         if (value) return value;
     }
     return null;
+}
+
+// Some Board/profile-card releases moved the application marker into a
+// generic test/list attribute (for example data-list-item-id="application-…")
+// instead of one of the explicit application-id attributes above. Keep this
+// fallback deliberately narrow: only application/activity/widget-labelled
+// attributes are inspected, and an id is accepted only when exactly one
+// Snowflake can be recovered from the bounded card subtree. This prevents a
+// user, message, channel, or guild id from becoming a widget skin key.
+const GENERIC_WIDGET_APPLICATION_ATTRIBUTE_NAMES = new Set([
+    "data-list-item-id",
+    "data-testid",
+    "aria-label",
+    "id"
+]);
+const GENERIC_WIDGET_APPLICATION_SELECTOR = "[data-list-item-id],[data-testid],[aria-label],[id]";
+const GENERIC_WIDGET_APPLICATION_ATTRIBUTE_RE = /(?:application|app|activity|widget)/i;
+const GENERIC_WIDGET_APPLICATION_ID_RE = /(?:application|app|activity|widget)[^\d]{0,32}(\d{17,20})(?!\d)/i;
+const GENERIC_WIDGET_APPLICATION_URL_RE = /\/applications?\/(\d{17,20})(?:[/?#]|$)/i;
+
+function genericWidgetApplicationId(element: Element, includeDescendants = true): string | null {
+    const ids = new Set<string>();
+    const inspect = (node: Element) => {
+        try {
+            for (const attribute of Array.from(node.attributes)) {
+                const name = attribute.name.toLowerCase();
+                const value = attribute.value.trim();
+                if (!value) continue;
+                if (!GENERIC_WIDGET_APPLICATION_ATTRIBUTE_NAMES.has(name)
+                    && !GENERIC_WIDGET_APPLICATION_ATTRIBUTE_RE.test(name)) continue;
+
+                const direct = applicationIdCandidate(value, new Set(), true);
+                if (direct) ids.add(direct);
+                const labelled = value.match(GENERIC_WIDGET_APPLICATION_ID_RE)?.[1];
+                if (labelled && SNOWFLAKE.test(labelled)) ids.add(labelled);
+                const urlId = value.match(GENERIC_WIDGET_APPLICATION_URL_RE)?.[1];
+                if (urlId && SNOWFLAKE.test(urlId)) ids.add(urlId);
+                if (ids.size > 1) return;
+            }
+        } catch { /* ignore a node that is being removed */ }
+    };
+
+    inspect(element);
+    if (ids.size > 1 || !includeDescendants) return ids.size === 1 ? ids.values().next().value ?? null : null;
+    try {
+        for (const node of Array.from(element.querySelectorAll(GENERIC_WIDGET_APPLICATION_SELECTOR)).slice(0, 64)) {
+            inspect(node);
+            if (ids.size > 1) return null;
+        }
+    } catch { /* ignore a tearing/partially-mounted profile card */ }
+    return ids.size === 1 ? ids.values().next().value ?? null : null;
+}
+
+// The full profile Board currently omits application-id attributes from the
+// rendered card. Its app icon is still served from Discord's public
+// /app-icons/<snowflake>/ (or /app-assets/<snowflake>/) CDN path, so use that
+// narrow media contract as a fallback instead of walking a whole profile
+// wrapper and accidentally assigning one widget's skin to another.
+function applicationIdFromWidgetMedia(value: unknown): string | null {
+    const source = String(value ?? "");
+    const match = source.match(/\/(?:app-icons|app-assets)\/(\d{17,20})(?:[/?#]|$)/i);
+    return match?.[1] ?? null;
+}
+
+function mediaWidgetApplicationId(element: Element): string | null {
+    const ids = new Set<string>();
+    let iconId: string | null = null;
+    const inspect = (node: Element) => {
+        const values: unknown[] = [];
+        try {
+            values.push(node.getAttribute("src"));
+            values.push(node.getAttribute("srcset"));
+            if (node instanceof HTMLImageElement) {
+                values.push(node.currentSrc);
+                values.push(node.src);
+            }
+        } catch { /* ignore a node that is being removed */ }
+        for (const value of values) {
+            const id = applicationIdFromWidgetMedia(value);
+            if (!id) continue;
+            ids.add(id);
+            if (!iconId && /\/app-icons\//i.test(String(value ?? ""))) iconId = id;
+        }
+    };
+
+    inspect(element);
+    try {
+        for (const node of Array.from(element.querySelectorAll("img")).slice(0, 48)) inspect(node);
+    } catch { /* ignore a tearing/partially-mounted profile card */ }
+
+    // Prefer the canonical app icon when a card also includes an app-assets
+    // image. Otherwise require one unambiguous app id in this card subtree.
+    return iconId ?? (ids.size === 1 ? ids.values().next().value ?? null : null);
 }
 
 // The full profile Board sometimes keeps the application id in a plain DOM
@@ -3253,6 +3935,8 @@ function domApplicationId(element: Element, known: Set<string>, allowUnknown = f
         const id = node.getAttribute("id");
         if (id && known.has(id)) return id;
     }
+    const mediaId = mediaWidgetApplicationId(element);
+    if (mediaId && (allowUnknown || known.has(mediaId))) return mediaId;
     // A few Board wrappers expose the id only in a short aria/data payload.
     // Avoid serializing a large profile surface during routine scans.
     try {
@@ -3319,13 +4003,34 @@ function visibleWidgetApplicationId(element: HTMLElement): string | null {
         }
         if (ids.size === 1) return ids.values().next().value ?? null;
     } catch { /* ignore a tearing/partially-mounted profile card */ }
+    const generic = genericWidgetApplicationId(element);
+    if (generic) return generic;
+    const mediaId = mediaWidgetApplicationId(element);
+    if (mediaId) return mediaId;
     const directReact = reactApplicationId(element, empty, 450, 8, true);
     if (directReact) return directReact;
     for (let current: HTMLElement | null = element.parentElement, depth = 0; current && depth < WIDGET_CARD_MAX_ANCESTOR_DEPTH; depth++, current = current.parentElement) {
-        const id = explicitWidgetApplicationId(current, empty, true) ?? reactApplicationId(current, empty, 240, 6, true);
+        const id = explicitWidgetApplicationId(current, empty, true)
+            ?? genericWidgetApplicationId(current, false)
+            ?? reactApplicationId(current, empty, 240, 6, true);
         if (id) return id;
     }
     return null;
+}
+
+function visibleWidgetHydrationApplicationId(
+    element: HTMLElement,
+    localHints: Map<string, string[]>
+): string | null {
+    const explicit = visibleWidgetApplicationId(element);
+    if (explicit) return explicit;
+    // A foreign profile Board often omits the application id from the visible
+    // card DOM. The card still carries a unique game label, however, and the
+    // signed-in viewer's local map knows which public application owns that
+    // label. Use that match only to request the owner's remote marker; the
+    // foreign renderer still requires a successful remote marker before it
+    // can apply any preset, so this never borrows the viewer's skin.
+    return hintedWidgetApplicationId(element, localHints);
 }
 
 // Discord reuses the same widget card component in three places: the small
@@ -3357,6 +4062,10 @@ const WIDGET_CARD_FALLBACK_SELECTOR = `${WIDGET_CARD_SELECTOR}`;
 const WIDGET_SURFACE_SELECTOR = [
     '[class*="profile"]',
     '[class*="Profile"]',
+    // Discord's current profile sidebar uses this stable semantic token
+    // alongside hashed wrappers. Keep it explicit so a profile already open
+    // when the renderer starts is still treated as a widget surface.
+    "[class*='user-profile-sidebar' i]",
     '[class*="popout"]',
     '[class*="Popout"]',
     '[class*="board"]',
@@ -3382,6 +4091,49 @@ const WIDGET_OWNER_ATTRIBUTES = [
     "data-dm-flair-theme-owner-id"
 ];
 
+// A few Discord profile/popout shells contain only hashed class names. Keep
+// these extra boundary signals separate from WIDGET_SURFACE_SELECTOR so the
+// general widget scanner does not start treating every user/message node as a
+// profile surface. They are used only by the profile-card discovery pass.
+const WIDGET_PROFILE_SURFACE_EXTRA_SELECTOR = [
+    "[aria-label*='profile' i]",
+    "[aria-label*='popout' i]",
+    "[aria-label*='user card' i]",
+    "[data-profile-user-id]",
+    "[data-profile-userid]",
+    "[data-dm-flair-avatar-user-id]",
+    "[data-dm-flair-profile-owner-id]",
+    "[data-dm-flair-banner-user-id]",
+    "[data-dm-flair-banner-owner-id]",
+    "[data-dm-flair-theme-owner-id]",
+    "[class*='user-profile-sidebar' i]",
+    "aside[aria-label*='profile' i]",
+    // Discord has used camel-cased, hashed wrapper tokens such as
+    // accountPopout/userProfile/profileContent. Keep these case-insensitive
+    // so a foreign profile is still a discoverable surface when the class
+    // naming variant changes between Discord builds.
+    "[class*='accountPopout' i]",
+    "[class*='userPopout' i]",
+    "[class*='userProfile' i]",
+    "[class*='profilePopout' i]",
+    "[class*='profileContent' i]",
+    "[data-user-id][class*='profile' i]",
+    "[data-userid][class*='popout' i]"
+].join(",");
+const WIDGET_PROFILE_SURFACE_SELECTOR = [
+    WIDGET_SURFACE_SELECTOR,
+    WIDGET_PROFILE_SURFACE_EXTRA_SELECTOR
+].join(",");
+
+function widgetSurfaceBoundaryLike(element: Element | null): boolean {
+    if (!element) return false;
+    try {
+        return element.matches(WIDGET_PROFILE_SURFACE_SELECTOR);
+    } catch {
+        return false;
+    }
+}
+
 function validWidgetOwnerId(value: unknown): string | null {
     const id = String(value ?? "").trim();
     return /^\d{17,20}$/.test(id) ? id : null;
@@ -3399,18 +4151,263 @@ function widgetOwnerIdFromNode(node: Element): string | null {
     const hrefMatch = href.match(/\/users?\/(\d{17,20})(?:\/|$)/i);
     if (hrefMatch) return validWidgetOwnerId(hrefMatch[1]);
     if (node instanceof HTMLImageElement) {
-        const source = node.currentSrc || node.src || "";
-        const avatarMatch = source.match(/\/avatars\/(\d{17,20})\//i);
+        // Discord's profile avatar proxy uses a dm-media:// src while the
+        // canonical Discord avatar URL is retained in CSS custom properties
+        // on the same image. Prefer both sources so a foreign profile can be
+        // identified after a modal remount instead of silently falling back
+        // to the viewer's local widget map.
+        const sources = [
+            node.currentSrc,
+            node.src,
+            node.getAttribute("style"),
+            node.style.cssText
+        ].filter(Boolean).join(" ");
+        const avatarMatch = sources.match(/\/avatars\/(\d{17,20})\//i);
         if (avatarMatch) return validWidgetOwnerId(avatarMatch[1]);
     }
     return null;
+}
+
+// A Discord profile can use a default avatar or a paint-only avatar wrapper,
+// so there is no reliable CDN URL to identify the account. In that case the
+// profile's React props/fiber still carry the user object. Keep this probe
+// deliberately narrow: inspect only identity-shaped keys, cap recursion, and
+// never walk the document or use an arbitrary numeric value from a card as an
+// owner id.
+function widgetOwnerIdFromReactValue(
+    value: unknown,
+    depth = 0,
+    seen = new Set<object>(),
+    budget = { left: 360 }
+): string | null {
+    if (depth > 5 || budget.left-- <= 0 || value == null) return null;
+    // Only accept a scalar at the root. Nested React arrays contain many
+    // unrelated snowflakes (message, application, and component IDs); those
+    // must never be mistaken for the profile owner.
+    if (depth === 0) {
+        const direct = validWidgetOwnerId(value);
+        if (direct) return direct;
+    }
+    if (typeof value !== "object" || seen.has(value)) return null;
+    seen.add(value);
+    if (Array.isArray(value)) {
+        for (const item of value.slice(0, 80)) {
+            const found = widgetOwnerIdFromReactValue(item, depth + 1, seen, budget);
+            if (found) return found;
+        }
+        return null;
+    }
+    const record = value as Record<string, unknown>;
+    for (const key of ["userId", "user_id", "profileUserId", "profile_user_id"]) {
+        const found = validWidgetOwnerId(record[key]);
+        if (found) return found;
+    }
+    const identityKeys = [
+        "user", "profile", "account", "profileUser", "userData", "author",
+        "recipient", "member", "memberUser", "userInfo"
+    ];
+    for (const key of identityKeys) {
+        const nested = record[key];
+        if (!nested || typeof nested !== "object") continue;
+        const nestedRecord = nested as Record<string, unknown>;
+        const nestedId = validWidgetOwnerId(nestedRecord.id) ?? validWidgetOwnerId(nestedRecord.userId);
+        if (nestedId) return nestedId;
+        const found = widgetOwnerIdFromReactValue(nested, depth + 1, seen, budget);
+        if (found) return found;
+    }
+    for (const key of ["props", "memoizedProps", "pendingProps", "children", "child", "sibling", "return", "memoizedState"]) {
+        const nested = record[key];
+        if (!nested || typeof nested !== "object") continue;
+        const found = widgetOwnerIdFromReactValue(nested, depth + 1, seen, budget);
+        if (found) return found;
+    }
+    return null;
+}
+
+function widgetOwnerIdFromReactNode(node: Element): string | null {
+    let keys: string[];
+    try {
+        keys = Object.keys(node).filter(key => key.startsWith("__reactProps$") || key.startsWith("__reactFiber$"));
+    } catch {
+        return null;
+    }
+    for (const key of keys) {
+        try {
+            const found = widgetOwnerIdFromReactValue((node as any)[key]);
+            if (found) return found;
+        } catch { /* ignore a tearing React node */ }
+    }
+    return null;
+}
+
+function widgetIdentityNames(user: any): string[] {
+    const values = [
+        user?.username,
+        user?.globalName,
+        user?.global_name,
+        user?.displayName,
+        user?.display_name
+    ];
+    return Array.from(new Set(values
+        .map(value => String(value ?? "").trim().replace(/\s+/g, " ").toLocaleLowerCase())
+        .filter(value => value.length >= 2)));
+}
+
+function widgetUserIdentityEntries(): WidgetUserIdentity[] {
+    const now = Date.now();
+    if (widgetUserIdentityIndex && widgetUserIdentityIndex.expiresAt > now) return widgetUserIdentityIndex.entries;
+    try {
+        const getUsers = (UserStore as any)?.getUsers;
+        const users = typeof getUsers === "function" ? getUsers.call(UserStore) : null;
+        const byId = new Map<string, WidgetUserIdentity>();
+        if (users && typeof users === "object") {
+            for (const user of Object.values(users as Record<string, any>).slice(0, 4096)) {
+                const id = validWidgetOwnerId(user?.id);
+                const names = widgetIdentityNames(user);
+                if (!id || !names.length) continue;
+                const existing = byId.get(id);
+                if (existing) {
+                    existing.names = Array.from(new Set([...existing.names, ...names]));
+                } else {
+                    byId.set(id, { id, names });
+                }
+            }
+        }
+        const entries = Array.from(byId.values());
+        widgetUserIdentityIndex = { expiresAt: now + 5_000, entries };
+        return entries;
+    } catch {
+        widgetUserIdentityIndex = { expiresAt: now + 1_000, entries: [] };
+        return [];
+    }
+}
+
+function widgetSurfaceContainsIdentity(text: string, identity: string): boolean {
+    let start = text.indexOf(identity);
+    while (start >= 0) {
+        const before = start > 0 ? text[start - 1] : " ";
+        const after = text[start + identity.length] ?? " ";
+        if (!/[a-z0-9_]/i.test(before) && !/[a-z0-9_]/i.test(after)) return true;
+        start = text.indexOf(identity, start + 1);
+    }
+    return false;
+}
+
+function widgetProfileOwnerIdFromHeaderIdentity(surface: HTMLElement): string | null {
+    const entries = widgetUserIdentityEntries();
+    if (!entries.length) return null;
+
+    // A full profile board can contain the viewer, the profile owner, and
+    // several widget/game labels. Looking through all of its text makes the
+    // username fallback ambiguous. Restrict this probe to the visible header
+    // area above the first widget card, where Discord renders the profile
+    // owner's username/avatar.
+    let surfaceRect: DOMRect | null = null;
+    let firstWidgetTop = Number.POSITIVE_INFINITY;
+    try {
+        surfaceRect = surface.getBoundingClientRect();
+        const cardSelector = [
+            "article",
+            "[role='article']",
+            "[role='listitem']",
+            "[class*='card' i]",
+            "[class*='widget' i]",
+            "[class*='application' i]"
+        ].join(",");
+        for (const node of Array.from(surface.querySelectorAll<HTMLElement>(cardSelector)).slice(0, 96)) {
+            const rect = node.getBoundingClientRect();
+            if (rect.width < 120 || rect.height < 40) continue;
+            // Some Discord builds put a generic `card`/`widget` class on the
+            // entire profile shell. It is a container, not the first widget;
+            // treating it as the boundary would hide the header usernames and
+            // make the exact cached-user fallback fail. Ignore nodes that
+            // effectively cover the whole surface and keep looking for a
+            // real card inside it.
+            if (surfaceRect.width > 0 && surfaceRect.height > 0
+                && rect.width >= surfaceRect.width * 0.82
+                && rect.height >= surfaceRect.height * 0.82) continue;
+            if (surfaceRect.width > 0 && surfaceRect.height > 0
+                && rect.top >= surfaceRect.top - 4 && rect.top < firstWidgetTop) {
+                firstWidgetTop = rect.top;
+            }
+        }
+    } catch { /* Discord can replace the portal while the probe is running. */ }
+
+    const selectors = [
+        "[role='heading']",
+        "[aria-label*='avatar' i]",
+        "[class*='avatar' i]",
+        "[class*='header' i]",
+        "[class*='profile' i]",
+        "[class*='username' i]",
+        "[class*='userName' i]",
+        "[class*='name' i]"
+    ].join(",");
+    const nodes: HTMLElement[] = [];
+    try {
+        nodes.push(...Array.from(surface.querySelectorAll<HTMLElement>(selectors)).slice(0, 140));
+    } catch { /* the profile portal may be replacing this subtree */ }
+    if (!nodes.length) nodes.push(surface);
+
+    const usableSurfaceRect = !!surfaceRect && surfaceRect.width > 0 && surfaceRect.height > 0;
+    let match: string | null = null;
+    const seen = new Set<HTMLElement>();
+    for (const node of nodes) {
+        if (seen.has(node)) continue;
+        seen.add(node);
+
+        if (usableSurfaceRect) {
+            const rect = node.getBoundingClientRect();
+            if (rect.width > 0 && rect.height > 0
+                && (rect.bottom <= (surfaceRect?.top ?? 0) || rect.top >= firstWidgetTop + 8)) {
+                continue;
+            }
+        }
+
+        const text = `${node.getAttribute("aria-label") ?? ""} ${node.getAttribute("alt") ?? ""} ${node.textContent ?? ""}`
+            .replace(/\s+/g, " ")
+            .toLocaleLowerCase()
+            .slice(0, 700);
+        // A broad profile shell can contain multiple usernames. Only use a
+        // compact header node for the exact-name fallback; the full shell is
+        // a last resort when Discord exposes no header descendants at all.
+        if (node !== surface && text.length > 240) continue;
+        if (text.length < 3 || text.length > 700) continue;
+
+        for (const entry of entries) {
+            if (!entry.names.some(name => widgetSurfaceContainsIdentity(text, name))) continue;
+            if (match && match !== entry.id) return null;
+            match = entry.id;
+        }
+    }
+    return match;
+}
+
+function widgetProfileOwnerIdFromVisibleIdentity(surface: HTMLElement): string | null {
+    const surfaceText = `${surface.getAttribute("aria-label") ?? ""} ${surface.textContent ?? ""}`
+        .replace(/\s+/g, " ")
+        .toLocaleLowerCase()
+        .slice(0, 16_000);
+    if (surfaceText.length < 3) return null;
+
+    let match: string | null = null;
+    for (const entry of widgetUserIdentityEntries()) {
+        if (!entry.names.some(name => widgetSurfaceContainsIdentity(surfaceText, name))) continue;
+        if (match && match !== entry.id) return null;
+        match = entry.id;
+    }
+    return match;
 }
 
 function widgetProfileOwnerId(surface: HTMLElement | null): string | null {
     if (!surface) return null;
     const now = Date.now();
     const cached = widgetOwnerCache.get(surface);
-    const cacheTtl = cached?.userId ? 900 : 300;
+    // A profile portal can be mounted before Discord commits its avatar. Do
+    // not keep that first, incomplete owner probe for a full reconciliation
+    // interval: the later Board/card commit must be allowed to resolve the
+    // foreign account and hydrate its published widget skin.
+    const cacheTtl = cached?.userId ? 900 : 80;
     if (cached && now - cached.checkedAt < cacheTtl) return cached.userId;
 
     const nodes: Element[] = [];
@@ -3421,7 +4418,8 @@ function widgetProfileOwnerId(surface: HTMLElement | null): string | null {
     }
     try {
         const selector = WIDGET_OWNER_ATTRIBUTES.map(attribute => `[${attribute}]`).join(",")
-            + ",[href*='/users/'],[id*='user-'],[id*='profile-'],img";
+            + ",[href*='/users/'],[id*='user-'],[id*='profile-'],img"
+            + ",[role='img'],[aria-label*='avatar' i],[class*='avatar' i],[class*='profile' i]";
         for (const node of Array.from(surface.querySelectorAll<HTMLElement>(selector)).slice(0, 180)) {
             if (!seen.has(node)) { seen.add(node); nodes.push(node); }
         }
@@ -3454,14 +4452,53 @@ function widgetProfileOwnerId(surface: HTMLElement | null): string | null {
         }
         if (avatarIds.size === 1) userId = avatarIds.values().next().value ?? null;
     }
+    if (!userId) {
+        // Default-avatar profile popouts have no `/avatars/<id>/` URL. Probe
+        // the profile shell and bounded identity-bearing descendants after
+        // the stable DOM signals above. Some Discord builds put the user only
+        // on a header/avatar React wrapper, not on the outer dialog. Keep the
+        // probe inside profile-shaped nodes so a message author or widget app
+        // id cannot become the owner by accident.
+        const reactProbeNodes: Element[] = [];
+        const reactProbeSeen = new Set<Element>();
+        const addReactProbe = (node: Element) => {
+            if (reactProbeNodes.length >= 48 || reactProbeSeen.has(node)) return;
+            reactProbeSeen.add(node);
+            reactProbeNodes.push(node);
+        };
+        for (const node of directNodes) addReactProbe(node);
+        try {
+            for (const node of Array.from(surface.querySelectorAll<HTMLElement>(
+                "[role='img'],[aria-label*='avatar' i],[class*='avatar' i],[class*='profile' i],[class*='header' i]"
+            )).slice(0, 32)) addReactProbe(node);
+        } catch { /* the profile portal may be replacing this subtree */ }
+        for (const node of reactProbeNodes) {
+            userId = widgetOwnerIdFromReactNode(node);
+            if (userId) break;
+        }
+    }
+    if (!userId && widgetSurfaceBoundaryLike(surface)) {
+        // A few compact profile builds keep the owner only in rendered text:
+        // no data-user-id, avatar URL, or React prop survives on the outer
+        // portal shell. Resolve only a unique, exact cached username from
+        // Discord's UserStore; never guess from a display name or a generic
+        // message author label.
+        userId = widgetProfileOwnerIdFromHeaderIdentity(surface)
+            ?? widgetProfileOwnerIdFromVisibleIdentity(surface);
+    }
     widgetOwnerCache.set(surface, { userId, checkedAt: now });
     return userId;
 }
 
 function widgetSurfaceForCard(card: HTMLElement): HTMLElement | null {
     const surfaces: HTMLElement[] = [];
-    for (let current: HTMLElement | null = card.parentElement, depth = 0; current && depth < 10; depth++, current = current.parentElement) {
-        if (current.matches(WIDGET_SURFACE_SELECTOR)) surfaces.push(current);
+    // Board/profile cards can sit behind several portal wrappers. Twelve
+    // ancestors was enough for the viewer's own popout but regularly stopped
+    // before the foreign profile boundary, leaving its card on the native
+    // path. This remains bounded and only walks ancestors of an identified
+    // widget card.
+    for (let current: HTMLElement | null = card.parentElement, depth = 0; current && depth < 24; depth++, current = current.parentElement) {
+        if (widgetSurfaceBoundaryLike(current)) surfaces.push(current);
     }
     // Prefer the nearest surface that actually carries the profile owner. A
     // Board card is often nested inside an outer dialog whose owner marker is
@@ -3485,7 +4522,33 @@ function widgetSurfaceLooksProfileOwned(surface: HTMLElement | null): boolean {
     // different account while the owner's published marker is hydrating.
     const ownerSelector = WIDGET_OWNER_ATTRIBUTES.map(attribute => `[${attribute}]`).join(",");
     const hasExplicitOwner = surface.matches(ownerSelector) || Boolean(surface.querySelector(ownerSelector));
-    return role === "dialog" || hasExplicitOwner || /profile|popout|user.?card|account.?popout|user.?profile|board/i.test(semantic);
+    return role === "dialog"
+        || hasExplicitOwner
+        || widgetSurfaceBoundaryLike(surface)
+        || /profile|popout|user.?card|account.?popout|user.?profile|board/i.test(semantic);
+}
+
+function widgetSurfaceBelongsToCurrentUser(surface: HTMLElement | null): boolean {
+    if (!surface) return false;
+    const current = currentUserSafe();
+    const currentId = validWidgetOwnerId(current?.id);
+    const ownerId = widgetProfileOwnerId(surface);
+    if (ownerId && currentId) return ownerId === currentId;
+    if (!current) return false;
+
+    // Some Discord profile shells do not expose a user id until after their
+    // first paint. Use the signed-in account's exact display identity as a
+    // short-lived fallback so the user's own Playing card does not remain
+    // native for one or more scans. This is intentionally scoped to the
+    // profile surface and never affects foreign cards when a remote marker is
+    // available by application id.
+    const names = widgetIdentityNames(current);
+    if (!names.length) return false;
+    const surfaceText = `${surface.getAttribute("aria-label") ?? ""} ${surface.textContent ?? ""}`
+        .replace(/\s+/g, " ")
+        .toLocaleLowerCase()
+        .slice(0, 16000);
+    return names.some(name => surfaceText.includes(name));
 }
 
 function widgetStylesForSurface(
@@ -3499,13 +4562,10 @@ function widgetStylesForSurface(
     // profile. This prevents DiggyT's local Fort skin from appearing on
     // DiggyAI while still making the viewer's own profile render immediately.
     if (!widgetSurfaceLooksProfileOwned(surface)) return new Map(local);
+    if (widgetSurfaceBelongsToCurrentUser(surface)) return new Map(local);
     const ownerId = widgetProfileOwnerId(surface);
-    const out = new Map(visibleProfileWidgetStyles(visibleWidgetOwnerKey(surface), ownerId));
-    const currentId = validWidgetOwnerId(UserStore.getCurrentUser()?.id);
-    if (ownerId && currentId && ownerId === currentId) {
-        for (const [appId, preset] of local) out.set(appId, preset);
-    }
-    return out;
+    if (!ownerId) return new Map();
+    return visibleProfileWidgetStyles(`owner:${ownerId}`);
 }
 
 function widgetHintsForSurface(
@@ -3513,14 +4573,10 @@ function widgetHintsForSurface(
     surface: HTMLElement | null
 ): Map<string, string[]> {
     if (!widgetSurfaceLooksProfileOwned(surface)) return new Map(local);
-    const ownerKey = visibleWidgetOwnerKey(surface);
+    if (widgetSurfaceBelongsToCurrentUser(surface)) return new Map(local);
     const ownerId = widgetProfileOwnerId(surface);
-    const currentId = validWidgetOwnerId(UserStore.getCurrentUser()?.id);
-    return visibleProfileWidgetHints(
-        ownerId && currentId && ownerId === currentId ? local : new Map(),
-        ownerKey,
-        ownerId
-    );
+    if (!ownerId) return new Map();
+    return visibleProfileWidgetHints(new Map(), `owner:${ownerId}`);
 }
 // The compact account popout and profile modal can contain a branded Playing
 // card after enough ordinary profile nodes that the general surface-card
@@ -3530,10 +4586,10 @@ function widgetHintsForSurface(
 const PLAYING_CARD_SELECTOR = '[class*="card__"], [class*="card_"], article, [role="article"]';
 const PLAYING_CARD_PROFILE_SURFACE_SELECTOR = [
     '[role="dialog"]',
-    '[class*="accountPopout"]',
-    '[class*="userProfile"]',
-    '[class*="profilePopout"]',
-    '[class*="profileContent"]'
+    "[class*='accountPopout' i]",
+    "[class*='userProfile' i]",
+    "[class*='profilePopout' i]",
+    "[class*='profileContent' i]"
 ].join(",");
 // Keep this list deliberately specific. The chrome layer is intentionally limited
 // to the open conversation name and the user's account panel. A generic
@@ -4022,7 +5078,12 @@ function hintedWidgetApplicationId(element: HTMLElement, hints: Map<string, stri
     return null;
 }
 
-function widgetApplicationMatch(element: HTMLElement, known: Set<string>, hints: Map<string, string[]>): WidgetCardMatch | null {
+function widgetApplicationMatch(
+    element: HTMLElement,
+    known: Set<string>,
+    hints: Map<string, string[]>,
+    preferredAppId = ""
+): WidgetCardMatch | null {
     const now = Date.now();
     const cached = widgetApplicationCache.get(element);
     const knownSignature = Array.from(known).sort().join(",");
@@ -4041,6 +5102,15 @@ function widgetApplicationMatch(element: HTMLElement, known: Set<string>, hints:
         if (match && match.root !== element) widgetApplicationCache.set(match.root, value);
         return match;
     };
+    // The full profile Board can expose the application id only through the
+    // card's CDN media URL. Discovery already recovered that bounded id for
+    // remote-style hydration, so preserve it through the final match instead
+    // of asking React/attribute probes to rediscover it and silently returning
+    // a negative cache entry.
+    if (preferredAppId && known.has(preferredAppId)) {
+        const match = remember(preferredAppId, element);
+        if (match) return match;
+    }
     // Prefer the visible card. The DOM fallback covers the full Board's
     // application wrapper, where Discord may not expose the id on the first
     // React host node at all.
@@ -4366,11 +5436,50 @@ function visibleWidgetSkinProfileSurface(element: HTMLElement): boolean {
     }
 }
 
+function profileWidgetSurfaceActuallyMounted(): boolean {
+    if (!document.body) return false;
+    try {
+        const roots = Array.from(document.querySelectorAll<HTMLElement>([
+            "[role='dialog']",
+            "[class*='profileContent' i]",
+            "[class*='user-profile-sidebar' i]",
+            "[class*='userProfile' i]",
+            "[class*='profilePopout' i]",
+            "[class*='accountPopout' i]"
+        ].join(","))).slice(0, 16);
+        for (const root of roots) {
+            const signal = `${root.getAttribute("role") ?? ""} ${typeof root.className === "string" ? root.className : ""}`;
+            if (!/profile|popout|dialog|accountPopout|userProfile|userPopout|board/i.test(signal)) continue;
+            const rootStyle = window.getComputedStyle(root);
+            if (rootStyle.display === "none" || rootStyle.visibility === "hidden") continue;
+            const cards = Array.from(root.querySelectorAll<HTMLElement>(WIDGET_CARD_SELECTOR)).slice(0, 96);
+            for (const card of cards) {
+                const rect = card.getBoundingClientRect();
+                if (rect.width < 120 || rect.height < 40 || rect.right <= 0 || rect.bottom <= 0) continue;
+                const style = window.getComputedStyle(card);
+                if (style.display === "none" || style.visibility === "hidden") continue;
+                return true;
+            }
+        }
+    } catch { /* ignore a profile tree being replaced during navigation */ }
+    return false;
+}
+
+function profileWidgetScanPaused(): boolean {
+    // Chromium can report this Electron document as hidden while the native
+    // window is visibly foregrounded. Keep the normal background safeguards,
+    // but allow the narrow profile-card path when a real, visible Board card
+    // is mounted. No profile card means no hidden-window work is performed.
+    return widgetSkinEditorOpen()
+        || widgetSkinRendererSuspended
+        || (document.hidden && !profileWidgetSurfaceActuallyMounted());
+}
+
 function profileMountNodeLike(element: Element): boolean {
     const className = typeof (element as HTMLElement).className === "string" ? (element as HTMLElement).className : "";
     const role = element.getAttribute("role") ?? "";
     const signal = `${className} ${role} ${element.getAttribute("aria-label") ?? ""}`;
-    return /profile|popout|dialog|accountPopout|userPopout|board/i.test(signal);
+    return widgetSurfaceBoundaryLike(element) || /profile|popout|dialog|accountPopout|userPopout|board/i.test(signal);
 }
 
 function profileMountMutationRelevant(records: MutationRecord[]): boolean {
@@ -4378,9 +5487,9 @@ function profileMountMutationRelevant(records: MutationRecord[]): boolean {
         if (record.type !== "childList") continue;
         const target = record.target instanceof Element ? record.target : null;
         if (target?.closest?.(".vc-settings-tab, [class*='standardSidebarView']")) continue;
-        if (target?.closest(WIDGET_SURFACE_SELECTOR)) return true;
+        if (target?.closest(WIDGET_PROFILE_SURFACE_SELECTOR)) return true;
         for (const node of Array.from(record.addedNodes).slice(0, 12)) {
-            if (node instanceof Element && profileMountNodeLike(node)) return true;
+            if (node instanceof Element && (profileMountNodeLike(node) || !!node.querySelector?.(WIDGET_PROFILE_SURFACE_SELECTOR))) return true;
         }
     }
     return false;
@@ -4393,7 +5502,7 @@ function profileMountMutationRelevant(records: MutationRecord[]): boolean {
 // label. This lets the card receive its marker on the first relevant commit
 // without bringing the broad React-fiber scan back onto the click path.
 function scanVisibleProfileWidgetCards(): number {
-    if (!document.body || document.hidden || widgetSkinEditorOpen() || widgetSkinRendererSuspended) return 0;
+    if (!document.body || profileWidgetScanPaused()) return 0;
     const localActive = knownWidgetStyles();
     const localHints = knownWidgetHints();
     // The first pass can discover a profile card before its application
@@ -4412,9 +5521,9 @@ function scanVisibleProfileWidgetCards(): number {
         candidates.add(candidate);
         list.push(candidate);
     };
+    const surfaces: HTMLElement[] = [];
     try {
-        const surfaces: HTMLElement[] = [];
-        for (const candidate of Array.from(document.querySelectorAll<HTMLElement>(`${WIDGET_SURFACE_SELECTOR},${PLAYING_CARD_PROFILE_SURFACE_SELECTOR}`)).slice(0, 32)) {
+        for (const candidate of Array.from(document.querySelectorAll<HTMLElement>(`${WIDGET_PROFILE_SURFACE_SELECTOR},${PLAYING_CARD_PROFILE_SURFACE_SELECTOR}`)).slice(0, 48)) {
             if (!visibleWidgetSkinProfileSurface(candidate)) continue;
             // Broad profile selectors often return every nested wrapper in a
             // popout. Scan the outer visible surface once instead of repeating
@@ -4423,7 +5532,34 @@ function scanVisibleProfileWidgetCards(): number {
             surfaces.push(candidate);
             if (surfaces.length >= WIDGET_SKIN_PROFILE_SURFACE_MAX) break;
         }
+        // Some profile portals expose only hashed wrapper classes. They will
+        // not be returned by the semantic surface selector above, but their
+        // widget card can still carry an application id or a known app label.
+        // Use those bounded card candidates to recover the nearest explicit
+        // profile boundary, then let the same owner/marker path process it.
+        if (surfaces.length < WIDGET_SKIN_PROFILE_SURFACE_MAX) {
+            for (const card of Array.from(document.querySelectorAll<HTMLElement>(WIDGET_CARD_SELECTOR)).slice(0, 160)) {
+                if (!visibleWidgetSkinProfileSurface(card)) continue;
+                const isCandidate = !!visibleWidgetApplicationId(card)
+                    || isDiscordmaxxerPlayingCard(card)
+                    || widgetSkinCardCandidate(card, initialHintLabels);
+                if (!isCandidate) continue;
+                const surface = widgetSurfaceForCard(card);
+                if (!surface || !widgetSurfaceLooksProfileOwned(surface)) continue;
+                if (surfaces.some(existing => existing === surface || existing.contains(surface) || surface.contains(existing))) continue;
+                surfaces.push(surface);
+                if (surfaces.length >= WIDGET_SKIN_PROFILE_SURFACE_MAX) break;
+            }
+        }
         for (const surface of surfaces) {
+            // A foreign profile can render its widget card before Discord has
+            // exposed an application id in the card DOM. Start the read-only
+            // owner-profile lookup from the profile shell itself so the
+            // published marker can still be discovered for that account.
+            const ownerId = widgetProfileOwnerId(surface);
+            if (ownerId && widgetSurfaceLooksProfileOwned(surface)) {
+                queueVisibleWidgetOwnerProfileHydration(ownerId);
+            }
             if (surface.matches(explicitSelector)) addCandidate(explicitCandidates, surface, WIDGET_SKIN_PROFILE_EXPLICIT_CANDIDATE_MAX);
             for (const node of Array.from(surface.querySelectorAll<HTMLElement>(explicitSelector)).slice(0, 32)) {
                 addCandidate(explicitCandidates, node, WIDGET_SKIN_PROFILE_EXPLICIT_CANDIDATE_MAX);
@@ -4440,7 +5576,7 @@ function scanVisibleProfileWidgetCards(): number {
     } catch { /* ignore a profile surface that is being replaced */ }
     const discovered = new Map<string, VisibleWidgetStyleHydrationRequest>();
     for (const candidate of [...explicitCandidates, ...hintedCardCandidates].slice(0, WIDGET_SKIN_PROFILE_MATCH_MAX)) {
-        const appId = visibleWidgetApplicationId(candidate);
+        const appId = visibleWidgetHydrationApplicationId(candidate, initialHints);
         // A profile opened for another account can use the same application id
         // as the viewer's own widget. The local map is only a startup fallback;
         // it is not proof that this visible card belongs to the viewer. Always
@@ -4471,7 +5607,12 @@ function scanVisibleProfileWidgetCards(): number {
         const surface = widgetSurfaceForCard(candidate);
         const effectiveActive = widgetStylesForSurface(localActive, surface);
         const effectiveHints = widgetHintsForSurface(localHints, surface);
-        const match = widgetApplicationMatch(candidate, new Set(effectiveActive.keys()), effectiveHints);
+        const match = widgetApplicationMatch(
+            candidate,
+            new Set(effectiveActive.keys()),
+            effectiveHints,
+            visibleWidgetApplicationId(candidate) ?? ""
+        );
         if (!match) continue;
         const preset = effectiveActive.get(match.appId);
         const root = match.root;
@@ -4794,7 +5935,7 @@ function playingCardPreset(active: Map<string, WidgetStylePreset>, seen: Set<HTM
         try {
             for (const candidate of Array.from(scope.querySelectorAll<HTMLElement>(WIDGET_CARD_SELECTOR)).slice(0, 96)) {
                 if (isDiscordmaxxerPlayingCard(candidate)) continue;
-                const appId = visibleWidgetApplicationId(candidate);
+                const appId = visibleWidgetHydrationApplicationId(candidate, localHints);
                 const preset = appId ? active.get(appId) : undefined;
                 if (preset) return preset;
             }
@@ -4808,9 +5949,7 @@ function playingCardPreset(active: Map<string, WidgetStylePreset>, seen: Set<HTM
     // account while the owner's widget marker is still hydrating. Wait for a
     // same-surface owner card in that case instead of leaking a viewer or
     // neighbouring user's skin.
-    const ownerId = scope ? widgetProfileOwnerId(scope) : null;
-    const currentId = validWidgetOwnerId(UserStore.getCurrentUser()?.id);
-    if (!scope || (ownerId && currentId && ownerId === currentId)) {
+    if (!scope || widgetSurfaceBelongsToCurrentUser(scope)) {
         return active.values().next().value ?? null;
     }
     return null;
@@ -4878,13 +6017,26 @@ function scanWidgetSkinCards(budgetMs = 120): number {
     };
     const queryWithinSurfaces = (selector: string, limit: number): HTMLElement[] => {
         if (!withinBudget()) { complete = false; return []; }
-        const surfaces = query(WIDGET_SURFACE_SELECTOR, 24);
+        const rawSurfaces = query(WIDGET_PROFILE_SURFACE_SELECTOR, 48);
+        // Prefer the outermost visible profile boundary. Discord often nests
+        // hashed profile wrappers; scanning every nested wrapper consumes the
+        // candidate budget before the actual foreign widget card is reached.
+        const surfaces = rawSurfaces.filter(surface => !rawSurfaces.some(other => other !== surface && other.contains(surface)));
         const out: HTMLElement[] = [];
+        const outSeen = new Set<HTMLElement>();
         for (const surface of surfaces) {
             if (out.length >= limit || !withinBudget()) { complete = false; break; }
             try {
-                if (surface.matches(selector)) out.push(surface);
-                out.push(...Array.from(surface.querySelectorAll<HTMLElement>(selector)).slice(0, limit - out.length));
+                if (surface.matches(selector) && !outSeen.has(surface)) {
+                    outSeen.add(surface);
+                    out.push(surface);
+                }
+                for (const candidate of Array.from(surface.querySelectorAll<HTMLElement>(selector)).slice(0, limit - out.length)) {
+                    if (outSeen.has(candidate)) continue;
+                    outSeen.add(candidate);
+                    out.push(candidate);
+                    if (out.length >= limit) break;
+                }
             } catch { /* ignore a tearing/partially-mounted profile surface */ }
         }
         return out.slice(0, limit);
@@ -5001,15 +6153,17 @@ function scanWidgetSkinCards(budgetMs = 120): number {
                 ...surfaceCards,
                 ...directPlayingCandidates
             ]))) {
-                const appId = visibleWidgetApplicationId(candidate);
-                if (!appId) continue;
                 const surface = widgetSurfaceForCard(candidate);
                 if (!widgetSurfaceLooksProfileOwned(surface)) continue;
+                const ownerId = widgetProfileOwnerId(surface);
+                if (ownerId) queueVisibleWidgetOwnerProfileHydration(ownerId);
+                const appId = visibleWidgetHydrationApplicationId(candidate, discoveryHints);
+                if (!appId) continue;
                 const ownerKey = visibleWidgetOwnerKey(surface);
                 hydrationRequests.set(visibleWidgetCacheKey(appId, ownerKey), {
                     appId,
                     ownerKey,
-                    ownerId: widgetProfileOwnerId(surface)
+                    ownerId
                 });
             }
             queueVisibleWidgetStyleHydration(hydrationRequests.values());
@@ -5025,7 +6179,12 @@ function scanWidgetSkinCards(budgetMs = 120): number {
                     const surface = widgetSurfaceForCard(candidate);
                     const effectiveActive = widgetStylesForSurface(localActive, surface);
                     const effectiveHints = widgetHintsForSurface(localHints, surface);
-                    const match = widgetApplicationMatch(candidate, new Set(effectiveActive.keys()), effectiveHints);
+                    const match = widgetApplicationMatch(
+                        candidate,
+                        new Set(effectiveActive.keys()),
+                        effectiveHints,
+                        visibleWidgetApplicationId(candidate) ?? ""
+                    );
                     const preset = match ? effectiveActive.get(match.appId) : undefined;
                     if (!match || !preset || seen.has(match.root)) continue;
                     const root = match.root;
@@ -5234,12 +6393,18 @@ function syncWidgetSkinPlayingCardObserver(root: HTMLElement | null): void {
         }
         if (!widgetSkinPlayingCardObserver) {
             widgetSkinPlayingCardObserver = new MutationObserver(records => {
-                if (!playingCardMutationRelevant(records)) return;
-                // The observer is scoped to the current profile surface. It
-                // wakes only for a card replacement, not for timer text inside
-                // the tracked card, so normal-mode Discord stays responsive.
-                widgetSkinLastScanAt = 0;
-                scheduleWidgetSkinScan(true);
+                try {
+                    if (!playingCardMutationRelevant(records)) return;
+                    // The observer is scoped to the current profile surface. It
+                    // wakes only for a card replacement, not for timer text inside
+                    // the tracked card, so normal-mode Discord stays responsive.
+                    widgetSkinLastScanAt = 0;
+                    scheduleWidgetSkinScan(true);
+                } catch (error) {
+                    // Discord can dispose a profile surface between mutation
+                    // delivery and reconciliation while navigating a DM.
+                    console.warn("[DMWidget] playing-card observer ignored during navigation:", error);
+                }
             });
             widgetSkinPlayingCardObserver.observe(host, { childList: true, subtree: true });
         }
@@ -5287,6 +6452,39 @@ function widgetSkinMutationRelevant(records: MutationRecord[]): boolean {
     return false;
 }
 
+function visibleProfileWidgetCardNeedsScan(): boolean {
+    if (profileWidgetScanPaused()) return false;
+    try {
+        // This is intentionally narrower than the normal widget scan. It
+        // exists for Discord's reused profile portal, where the avatar/header
+        // is already mounted and the Board cards arrive through a class or
+        // visibility update that does not produce a useful body-level mount.
+        const roots = Array.from(document.querySelectorAll<HTMLElement>([
+            "[role='dialog']",
+            "[class*='profileContent' i]",
+            "[class*='user-profile-sidebar' i]",
+            "[class*='userProfile' i]",
+            "[class*='profilePopout' i]",
+            "[class*='accountPopout' i]"
+        ].join(","))).slice(0, 16);
+        for (const root of roots) {
+            if (!visibleWidgetSkinProfileSurface(root)) continue;
+            const cards = Array.from(root.querySelectorAll<HTMLElement>(WIDGET_CARD_SELECTOR)).slice(0, 96);
+            for (const candidate of cards) {
+                if (candidate.closest<HTMLElement>('[data-dm-widget-card-root="true"]')) continue;
+                const rect = candidate.getBoundingClientRect();
+                if (rect.width < 120 || rect.height < 40 || rect.bottom <= 0 || rect.right <= 0) continue;
+                if (!visibleWidgetApplicationId(candidate)
+                    && !isDiscordmaxxerPlayingCard(candidate)
+                    && !widgetCardLike(candidate)) continue;
+                const surface = widgetSurfaceForCard(candidate);
+                if (widgetSurfaceLooksProfileOwned(surface)) return true;
+            }
+        }
+    } catch { /* ignore a profile tree being replaced during navigation */ }
+    return false;
+}
+
 function widgetSkinSurfaceNeedsScan(): boolean {
     if (document.hidden || widgetSkinEditorOpen()) return false;
     try {
@@ -5302,6 +6500,7 @@ function widgetSkinSurfaceNeedsScan(): boolean {
         }
         const active = knownWidgetStyles();
         const remoteActive = visibleProfileWidgetStyles();
+        const profileNeedsScan = visibleProfileWidgetCardNeedsScan();
         const surfacePreset = selectedSurfacePreset(active);
         if (surfacePreset) {
             const surfaces = Array.from(document.querySelectorAll<HTMLElement>(WIDGET_SURFACE_SKIN_SELECTOR)).slice(0, 140);
@@ -5315,7 +6514,7 @@ function widgetSkinSurfaceNeedsScan(): boolean {
                         && !!findHeaderAvatarSibling(candidate) !== (candidate.dataset.dmWidgetHeaderWithAvatar === "true"))) return true;
             }
         }
-        if (!active.size && !remoteActive.size) return false;
+        if (!active.size && !remoteActive.size) return profileNeedsScan;
         const hintLabels = Array.from(visibleProfileWidgetHints(knownWidgetHints()).values()).flat().filter(label => label.length >= 3);
         // Keep the periodic probe cheap while the user is in ordinary Discord
         // views. The card scan is only useful when at least one bounded widget
@@ -5329,7 +6528,7 @@ function widgetSkinSurfaceNeedsScan(): boolean {
                 && surfaceRect.bottom > 0
                 && surfaceRect.right > 0;
         });
-        if (!visibleSurfaces.length) return false;
+        if (!visibleSurfaces.length) return profileNeedsScan;
         for (const surface of visibleSurfaces) {
             const candidates = Array.from(surface.querySelectorAll<HTMLElement>(WIDGET_CARD_SELECTOR)).slice(0, 240);
             for (const candidate of candidates) {
@@ -5341,11 +6540,24 @@ function widgetSkinSurfaceNeedsScan(): boolean {
                     || !widgetCardLike(candidate) || widgetCardContainerLike(candidate)) continue;
                 const rect = candidate.getBoundingClientRect();
                 if (rect.width < 120 || rect.height < 40 || rect.bottom <= 0 || rect.right <= 0) continue;
+                // A foreign profile can render the card before its text labels
+                // or metadata-derived hints. Its app id is still available on
+                // the card, so use the published style map as a cheap trigger
+                // for the targeted scan. The ownership check keeps ordinary
+                // home/activity cards out of this path; the actual renderer
+                // still enforces the remote-marker contract before styling.
+                const visibleAppId = visibleWidgetApplicationId(candidate);
+                if (visibleAppId) {
+                    const profileSurface = widgetSurfaceForCard(candidate);
+                    if (widgetSurfaceLooksProfileOwned(profileSurface)
+                        && (remoteActive.has(visibleAppId) || active.has(visibleAppId))) return true;
+                }
                 if (isDiscordmaxxerPlayingCard(candidate)) return true;
                 const text = String(candidate.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 1200);
                 if (widgetTextMatchesHints(text, hintLabels)) return true;
             }
         }
+        if (profileNeedsScan) return true;
     } catch { /* ignore a profile subtree that is being replaced */ }
     return false;
 }
@@ -5390,9 +6602,15 @@ function startWidgetSkinRenderer(): void {
         .replace(/\[data-dm-widget-motion-paused/g, '[data-dm-widget-card-root="true"][data-dm-widget-motion-paused');
     (document.head || document.documentElement).appendChild(widgetSkinStyleElement);
     const onProfileTrigger = (event: Event) => {
-        const conversationTrigger = widgetSkinConversationTriggerLike(event.target);
-        if (conversationTrigger) activeDiscordConversationRowCache = null;
-        if (conversationTrigger || widgetSkinProfileTriggerLike(event.target)) queueWidgetSkinProfileScan();
+        try {
+            const conversationTrigger = widgetSkinConversationTriggerLike(event.target);
+            if (conversationTrigger) activeDiscordConversationRowCache = null;
+            if (conversationTrigger || widgetSkinProfileTriggerLike(event.target)) queueWidgetSkinProfileScan();
+        } catch (error) {
+            // A transient React/DOM shape must never turn a DM click into a
+            // renderer-level exception.
+            console.warn("[DMWidget] profile trigger ignored during navigation:", error);
+        }
     };
     // Discord commonly reuses the profile portal instead of mounting a new
     // body child. These listeners provide an event-driven fast path for the
@@ -5409,7 +6627,11 @@ function startWidgetSkinRenderer(): void {
         if (run !== widgetSkinRun || document.hidden || widgetSkinRendererSuspended || !document.body || widgetSkinObserver) return;
         startWidgetSkinVisibilityObserver();
         widgetSkinObserver = new MutationObserver(records => {
-            if (widgetSkinMutationRelevant(records)) scheduleWidgetSkinScan(true);
+            try {
+                if (widgetSkinMutationRelevant(records)) scheduleWidgetSkinScan(true);
+            } catch (error) {
+                console.warn("[DMWidget] widget observer ignored during navigation:", error);
+            }
         });
         // Observe only direct body mounts. A subtree observer receives a
         // callback for ordinary chat/activity mutations across the whole
@@ -5417,18 +6639,45 @@ function startWidgetSkinRenderer(): void {
         // reconciliation probe below handles Board trees reused in place.
         widgetSkinObserver.observe(document.body, { childList: true, subtree: false });
         scheduleWidgetSkinScan();
+        // The profile portal can already be mounted before this renderer is
+        // attached (especially after a reload or when Discord reuses the
+        // sidebar). Run the bounded owner-aware pass immediately and keep a
+        // short mount watch for the separate Board/card commit.
+        startWidgetSkinProfileMountObserver();
+        scheduleWidgetSkinProfileFastScan();
         // Discord sometimes reuses an already-mounted profile tree and only
         // flips its visibility/class state; that path can produce no useful
         // childList signal for the observer. A cheap surface-only check closes
         // that gap without scanning React fibers or touching ordinary cards.
         widgetSkinRescanTimer = window.setInterval(() => {
-            if (document.hidden) return;
-            if (!widgetSkinSurfaceNeedsScan()) return;
-            widgetSkinLastScanAt = 0;
-            // Only reconcile when the cheap surface probe finds an unmarked
-            // visible candidate. Do not run a full scan every second while
-            // the user is simply chatting or browsing Discord.
-            scheduleWidgetSkinScan(true);
+            try {
+                // Chromium can report the Electron document as hidden while
+                // the native window is visibly foregrounded. Keep the normal
+                // hidden-window guard for broad work, but allow the bounded
+                // foreign-profile reconciliation while a real Board card is
+                // mounted. This is the path that hydrates another user's
+                // published widget skin after Discord reuses the profile
+                // portal without emitting a mount mutation.
+                if (profileWidgetSurfaceActuallyMounted()) {
+                    if (visibleProfileWidgetCardNeedsScan()) {
+                        widgetSkinLastScanAt = 0;
+                        scheduleWidgetSkinProfileFastScan();
+                    }
+                    return;
+                }
+                if (document.hidden) return;
+                if (!widgetSkinSurfaceNeedsScan()) return;
+                widgetSkinLastScanAt = 0;
+                // Only reconcile when the cheap surface probe finds an unmarked
+                // visible candidate. Do not run a full scan every second while
+                // the user is simply chatting or browsing Discord.
+                scheduleWidgetSkinProfileFastScan();
+                scheduleWidgetSkinScan(true);
+            } catch (error) {
+                // A store/DOM transition during DM navigation must not escape
+                // the timer callback and take down the renderer.
+                console.warn("[DMWidget] scheduled surface scan ignored during navigation:", error);
+            }
         }, WIDGET_SKIN_RECONCILE_INTERVAL_MS);
     };
     const onVisibilityChange = () => {
@@ -5529,6 +6778,9 @@ function widgetSkinProfileTriggerLike(target: EventTarget | null): boolean {
         const userId = current.getAttribute("data-user-id") ?? current.getAttribute("data-userid") ?? "";
         const signal = `${className} ${role} ${ariaLabel} ${title} ${listItemId}`;
         if (userId || /avatar|profile|popout|user[-_ ]?(?:panel|profile|info)|member[-_ ]?list/i.test(signal)) return true;
+        const titleWrapper = current.closest<HTMLElement>("[class*='titleWrapper' i]");
+        if (titleWrapper?.getAttribute("role") === "button"
+            && titleWrapper.parentElement?.querySelector<HTMLElement>("[class*='hiddenVisually' i]")?.textContent?.includes("Direct Message")) return true;
         if (role === "tab" && /profile|board|activity|app|widget/i.test(`${ariaLabel} ${title} ${current.textContent?.slice(0, 80) ?? ""}`)) return true;
     }
     return false;
@@ -5555,20 +6807,28 @@ function scheduleWidgetSkinProfileFastScan(): void {
     if (widgetSkinProfileFastScanTimer !== null) return;
     widgetSkinProfileFastScanTimer = window.setTimeout(() => {
         widgetSkinProfileFastScanTimer = null;
-        if (document.hidden || widgetSkinEditorOpen() || widgetSkinRendererSuspended) return;
+        if (profileWidgetScanPaused()) return;
         try { scanVisibleProfileWidgetCards(); } catch (error) { console.warn("[DMWidget] profile widget fast scan failed:", error); }
     }, 0);
 }
 
 function startWidgetSkinProfileMountObserver(): void {
-    if (!document.body || document.hidden || widgetSkinEditorOpen() || widgetSkinRendererSuspended) return;
+    // Keep this observer available for the short portal-mount window even if
+    // Chromium reports the document as hidden. The observer itself only
+    // reacts to profile-like additions and is released shortly afterwards;
+    // the scan still requires a visible Board card before doing work.
+    if (!document.body || widgetSkinEditorOpen() || widgetSkinRendererSuspended) return;
     if (!widgetSkinProfileMountObserver) {
         widgetSkinProfileMountObserver = new MutationObserver(records => {
-            if (!profileMountMutationRelevant(records)) return;
-            // The card can arrive in a later React commit than the avatar and
-            // banner. Scan only the visible profile surface on that commit;
-            // the broad renderer remains on its normal bounded schedule.
-            scheduleWidgetSkinProfileFastScan();
+            try {
+                if (!profileMountMutationRelevant(records)) return;
+                // The card can arrive in a later React commit than the avatar and
+                // banner. Scan only the visible profile surface on that commit;
+                // the broad renderer remains on its normal bounded schedule.
+                scheduleWidgetSkinProfileFastScan();
+            } catch (error) {
+                console.warn("[DMWidget] profile mount observer ignored during navigation:", error);
+            }
         });
         widgetSkinProfileMountObserver.observe(document.body, { childList: true, subtree: true });
     }
@@ -5589,7 +6849,7 @@ function clearWidgetSkinProfileScanTimers(): void {
 }
 
 function queueWidgetSkinProfileScan(): void {
-    if (document.hidden || widgetSkinEditorOpen() || widgetSkinRendererSuspended) return;
+    if (widgetSkinEditorOpen() || widgetSkinRendererSuspended) return;
     widgetSkinPlayingCardProbeRequested = true;
     startWidgetSkinProfileMountObserver();
     scheduleWidgetSkinProfileFastScan();
@@ -5598,10 +6858,13 @@ function queueWidgetSkinProfileScan(): void {
     // the fast path remains a small burst rather than a new polling loop.
     if (now - widgetSkinProfileScanQueuedAt < 250) return;
     widgetSkinProfileScanQueuedAt = now;
-    for (const delay of [32, 180]) {
+    // React may commit the profile shell, Board, and widget card in separate
+    // portal updates. These are bounded targeted passes, not a steady-state
+    // polling loop, and stop when the profile observer is released.
+    for (const delay of [32, 180, 600, 1400]) {
         const timer = window.setTimeout(() => {
             widgetSkinProfileScanTimers.delete(timer);
-            if (document.hidden || widgetSkinEditorOpen() || widgetSkinRendererSuspended) return;
+            if (profileWidgetScanPaused()) return;
             activeDiscordConversationRowCache = null;
             try { scanWidgetSurfaceSkin(); } catch (error) { console.warn("[DMWidget] surface skin fast pass failed:", error); }
             try { scanVisibleProfileWidgetCards(); } catch (error) { console.warn("[DMWidget] profile widget fast scan failed:", error); }
@@ -6509,12 +7772,19 @@ export default definePlugin({
             // Cover a profile that was already mounted before the observer
             // attached, then keep the coalesced observer pass for later React
             // commits that add the cards themselves.
+            try { scanVisibleProfileWidgetCards(); } catch (error) { console.warn("[DMWidget] startup profile widget skin scan failed:", error); }
             try { scanWidgetSkinCards(220); } catch (error) { console.warn("[DMWidget] startup widget skin scan failed:", error); }
             scheduleWidgetSkinScan(true);
         }).catch(error => console.warn("[DMWidget] startup recovery failed:", error));
         widgetStyleRefreshTimer = window.setInterval(() => {
-            if (document.hidden) return;
-            void refreshAttachedWidgetStyles();
+            try {
+                if (document.hidden) return;
+                void refreshAttachedWidgetStyles().catch(error => {
+                    console.warn("[DMWidget] guarded style refresh", error);
+                });
+            } catch (error) {
+                console.warn("[DMWidget] guarded style refresh timer", error);
+            }
         }, ATTACHED_WIDGET_REFRESH_INTERVAL_MS);
         if (statsWarmupTimer !== null) clearTimeout(statsWarmupTimer);
         statsWarmupTimer = window.setTimeout(() => {
@@ -6522,8 +7792,12 @@ export default definePlugin({
             if (!document.hidden) scheduleStatsRefresh();
         }, 20_000);
         fnRefreshTimer = setInterval(() => {
-            if (document.hidden) return;
-            scheduleStatsRefresh();
+            try {
+                if (document.hidden) return;
+                scheduleStatsRefresh();
+            } catch (error) {
+                console.warn("[DMWidget] guarded stats refresh timer", error);
+            }
         }, 30 * 60_000);
         // Let DMHub (or any surface) trigger a manual stats refresh — mirrors the
         // __dmReopenWelcome hook DMWelcome exposes for the hub's "Open Tour" row.
@@ -6553,7 +7827,7 @@ export default definePlugin({
             // complete, slightly longer pass immediately so a just-mounted
             // profile does not have to wait for the scheduler or lose to the
             // short background budget while Discord is still settling.
-            const applied = scanWidgetSkinCards(220);
+            const applied = scanVisibleProfileWidgetCards() + scanWidgetSkinCards(220);
             scheduleWidgetSkinScan();
             return applied;
         };

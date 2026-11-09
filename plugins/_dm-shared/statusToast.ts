@@ -31,7 +31,7 @@ function hideStatusToast(): void {
  */
 export function showDiscordmaxxerStatusToast(
     messageOrOptions: string | LegacyStatusToastOptions,
-    type: any = Toasts.Type.MESSAGE,
+    type: any = "message",
     duration = 3200
 ): void {
     if (typeof document === "undefined") return;
@@ -85,8 +85,18 @@ export function showDiscordmaxxerStatusToast(
         mount.appendChild(statusToast);
     }
 
-    const failure = resolvedType === Toasts.Type.FAILURE;
-    const success = resolvedType === Toasts.Type.SUCCESS;
+    const normalizedType = typeof resolvedType === "string" ? resolvedType.toLowerCase() : "";
+    let nativeFailure = false;
+    let nativeSuccess = false;
+    try {
+        nativeFailure = resolvedType === Toasts.Type.FAILURE;
+        nativeSuccess = resolvedType === Toasts.Type.SUCCESS;
+    } catch {
+        // Discord's lazy Toasts module can be unresolved while a route is
+        // changing. String status types still render correctly in that state.
+    }
+    const failure = nativeFailure || normalizedType.includes("failure") || normalizedType.includes("error");
+    const success = nativeSuccess || normalizedType.includes("success");
     statusToast.textContent = message;
     statusToast.style.background = failure
         ? "linear-gradient(135deg, #8e2632, #5b1824)"

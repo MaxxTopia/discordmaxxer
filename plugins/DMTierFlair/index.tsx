@@ -454,23 +454,27 @@ function scanRoot(root: ParentNode = document) {
 function startObserver() {
     if (observer) return;
     observer = new MutationObserver(mutations => {
-        if (document.hidden || tournamentModeActive()) return;
-        for (const m of mutations) {
-            if ((m.target as Element)?.closest?.(".vc-settings-tab, [class*='standardSidebarView']")) {
-                continue;
-            }
-            if (m.type === "attributes") {
-                // A recycled row whose data-user-id changed in place.
-                if (m.target instanceof Element) tagElement(m.target);
-                continue;
-            }
-            for (const node of m.addedNodes) {
-                if (!(node instanceof Element)) continue;
-                if (node.hasAttribute("data-user-id")) tagElement(node);
-                if (node.firstElementChild) {
-                    node.querySelectorAll("[data-user-id]").forEach(tagElement);
+        try {
+            if (document.hidden || tournamentModeActive()) return;
+            for (const m of mutations) {
+                if ((m.target as Element)?.closest?.(".vc-settings-tab, [class*='standardSidebarView']")) {
+                    continue;
+                }
+                if (m.type === "attributes") {
+                    // A recycled row whose data-user-id changed in place.
+                    if (m.target instanceof Element) tagElement(m.target);
+                    continue;
+                }
+                for (const node of m.addedNodes) {
+                    if (!(node instanceof Element)) continue;
+                    if (node.hasAttribute("data-user-id")) tagElement(node);
+                    if (node.firstElementChild) {
+                        node.querySelectorAll("[data-user-id]").forEach(tagElement);
+                    }
                 }
             }
+        } catch (error) {
+            console.warn("[DMTierFlair] observer ignored during navigation:", error);
         }
     });
 
@@ -515,8 +519,12 @@ function startObserver() {
         // stopped while it is active rather than waking every five seconds.
         if (!rescanTimer) {
             rescanTimer = setInterval(() => {
-                if (document.hidden || tournamentModeActive()) return;
-                scanRoot(document);
+                try {
+                    if (document.hidden || tournamentModeActive()) return;
+                    scanRoot(document);
+                } catch (error) {
+                    console.warn("[DMTierFlair] guarded route rescan", error);
+                }
             }, 5000);
         }
     };

@@ -1,5 +1,155 @@
 # Discordmaxxer — RESUME
 
+## 2026-11-08 — foreign-profile store hydration and bounded retry candidate
+
+Scope: make widget skins appear on other users' profile popouts when Discord's
+profile data arrives asynchronously, without borrowing the viewer's local
+skin or changing profile-write behavior.
+
+Implementation:
+- The owner resolver now probes the visible profile header/avatar/name area
+  before scanning the full board text. This avoids rejecting a valid foreign
+  owner when a Board modal also contains the viewer or other usernames.
+- `plugins/DMWidget/index.tsx` now reads Discord's resolved foreign widget list
+  from `UserProfileStore.getWidgets(userId)`, `getUserProfile(userId).widgets`,
+  and `gameWidgets` as display-only sources. The strict parser used by profile
+  writes is unchanged.
+- Foreign owner hydration now retries at most three times, two seconds apart,
+  when the profile shell mounts before Discord has populated its widget store.
+  A successful resolved list clears the retry state; a profile with no
+  published widget marker remains native.
+
+Verification:
+- `pnpm testTypes` passed.
+- `pnpm overlay:vencord` passed; all 29 custom plugins staged.
+- `node overlay-scripts/verify-build.mjs` passed, including artifact,
+  manifest/version `0.7.129`, source-fingerprint, staged-hash,
+  startup-recovery, and required-plugin gates.
+- The staged renderer contains the new store lookup, bounded retry, and
+  header-scoped owner fallback.
+- The normal build reports 12 pre-existing stale rebrand matchers for
+  `imageZoom`/`betterFolders`; strict rebrand mode correctly refuses those
+  unrelated warnings, so they were not changed in this scoped repair.
+
+Proof boundary:
+- This is still an isolated E: candidate only. Public v0.7.129 is unchanged
+  and unpublished; the canonical C: checkout remains untouched.
+- Runtime visual proof on a foreign profile whose owner has published a
+  `[DMWSTYLE1:...]` marker is still pending. Source/build proof does not prove
+  the signed-in, second-PC, or vanilla-recipient result.
+
+Next action: reload the exact E: candidate, open a foreign Discordmaxxer profile
+with a published Val or Fortnite widget skin, wait up to six seconds, and
+verify its Board and Playing cards. If they remain native, capture the new
+candidate `electron-debug.log` lines around `[DMWidget]` and the profile-open
+event so the remaining failure can be separated into owner discovery, profile
+store population, or missing remote marker.
+
+## 2026-11-08 — foreign-profile boundary/card-scan hardening candidate
+
+Scope: restore published widget skins on foreign profile popouts and their
+Val/Fortnite/Playing cards without borrowing the viewer's local skin.
+
+Implementation:
+- `plugins/DMWidget/index.tsx` now recognizes Discord's camel-cased account,
+  user-profile, profile-popout, and profile-content wrappers in addition to the
+  older profile selectors.
+- Foreign profile cards now walk farther toward the profile boundary, prefer an
+  owner-bearing outer surface, and use the outermost profile surface during the
+  broad card scan so nested wrappers cannot consume the scan budget first.
+- The remote metadata and bounded React-owner fallbacks from the earlier entry
+  remain in place: foreign styling still requires that user's published
+  `[DMWSTYLE1:...]` application marker and never falls back to the viewer's
+  local style.
+
+Verification:
+- `pnpm testTypes` passed.
+- Explicit pinned `pnpm overlay:vencord` passed; all 29 custom plugins staged.
+- `node overlay-scripts/verify-build.mjs` passed, including the manifest,
+  source-fingerprint, staged-hash, startup-recovery, and required-plugin gates.
+- `node --check overlay-scripts/rebrand-vencord.mjs` passed.
+- `git diff --check` remains noisy because the dirty worktree contains
+  pre-existing LF/CRLF and trailing-whitespace reports; no line-ending cleanup
+  was performed.
+
+Proof boundary:
+- This is an isolated E: candidate only. Public v0.7.129 is unchanged and
+  unpublished; the canonical C: checkout remains untouched.
+- The exact rebuilt bundle has not yet passed a visual acceptance check on a
+  foreign profile whose owner has published a Discordmaxxer widget marker.
+  A foreign profile without that marker is expected to remain native.
+
+Next action: reload the exact E: candidate, open a foreign profile with a
+published Val or Fortnite widget skin, wait two seconds, and verify the Board
+and Playing cards. If they remain native, capture the candidate runtime log
+around `remoteWidgetStyles`/`widgetProfileOwnerId` rather than changing the
+renderer again.
+
+## 2026-11-08 — foreign-profile widget metadata fallback candidate
+
+Scope: restore published widget skins on other users' profile popouts, Board,
+and Playing cards while preserving local ownership rules.
+
+Implementation:
+- The prior candidate runtime log showed the concrete blocker: Discord's lazy
+  `RestAPI.get` proxy threw `Reflect.get called on non-object`, so the old
+  read path returned null before foreign profile/application metadata could be
+  discovered. That explains why the local user's skin rendered while another
+  user's card stayed native.
+- `plugins/DMWidget/index.tsx` now has a shared authenticated `fetch` fallback
+  for read-only Discord `/api/v9` GETs. `apiGet` uses the native REST response
+  when valid and falls back directly when the lazy module is missing or throws;
+  application/profile hydration reuses that same path.
+- The fallback is read-only and account-scoped by the current Discord session;
+  it does not copy the viewer's local style onto a foreign profile. A foreign
+  card is styled only when its application carries a valid `[DMWSTYLE1:...]`
+  marker published by that account.
+- The latest candidate also includes a bounded React-owner fallback for
+  default-avatar and paint-only foreign profile shells.
+- Foreign-profile hydration now requests Discord's explicit
+  `with_mutual_guilds=false` profile shape first, then bounded authenticated
+  query fallbacks, instead of relying on the bare route's sometimes-empty
+  shell.
+- The React-owner fallback also probes bounded avatar/profile/header wrappers,
+  which covers default-avatar shells that expose the owner only on a nested
+  React boundary while avoiding document-wide ID scans.
+- `plugins/DMWidget/index.tsx` now prefers marker-bearing nested application
+  descriptions instead of accepting an empty top-level description.
+- The remote metadata lookup has an authenticated `/api/v9/applications/:id`
+  and `/rpc` fallback even when Discord's native REST wrapper returns null or
+  a partial object.
+- Existing bounded late-mount profile scans remain in place, including the
+  manual reskin path. No styling or ownership rule was changed.
+
+Verification:
+- Explicit pinned `pnpm overlay:vencord` passed; all 29 custom plugins were
+  staged. Build manifest: `0.7.129-eae6a8165934-c552d3c3a33a2a42`.
+- `pnpm testTypes` passed.
+- `node overlay-scripts/verify-build.mjs` passed, including artifact,
+  manifest, source-fingerprint, staged-hash, startup-recovery, and required
+  plugin checks.
+- `node --check overlay-scripts/rebrand-vencord.mjs` passed.
+- The REST fallback and owner-fallback patches are included in the rebuilt
+  staged candidate with manifest
+  `0.7.129-eae6a8165934-e7569364f46c5692`.
+- `git diff --check` is not a clean gate because this dirty worktree contains
+  existing LF/CRLF and trailing-whitespace reports; no line-ending cleanup was
+  performed.
+
+Proof boundary:
+- The prior logged-in candidate showed a foreign profile widget in the
+  accessibility tree, but its CSS skin was not visually provable because the
+  screenshot timed out and the debug port was not attached to that logged-in
+  window. The latest bundle is staged after the direct-GET fix, but no visual
+  foreign-profile acceptance pass has been run against this exact bundle yet.
+- Public v0.7.129 is unchanged and unpublished. The canonical C: checkout is
+  dirty and untouched.
+
+Next action: reload the exact E: candidate, open another user's profile with a
+  published Val or Fortnite widget skin, wait two seconds, and visually verify
+  the foreign card before considering a release. If the owner has not
+  published a Discordmaxxer marker, native Discord styling is expected.
+
 ## 2026-11-05 — DMEmoji send and pending attachment preview candidate
 
 Scope: restore the custom DMEmoji mouse-send action and make a selected local
@@ -3783,3 +3933,336 @@ Release/proof boundary:
 - The public release is https://github.com/MaxxTopia/discordmaxxer/releases/tag/v0.7.129. It contains the Windows installer, `latest.yml`, blockmap, Windows ZIP, and ARM64 ZIP. The public updater manifest reports `version: 0.7.129` and installer size `211870023` bytes.
 - The canonical dirty checkout `C:\Users\Diggy\projects\discordmaxxer` was not edited intentionally. Temporary source/build/smoke directories remain untracked in the isolated E: workspace and were preserved rather than broadly deleted.
 - Diggy-owed acceptance: update both PCs from the public channel and confirm session retention; cold start without a blank window; DMHub/Profile Cosmetics route; default profile-gradient layout; animated widget skins/flair/display names; normal and image/fullscreen image right-click menus; send button and image attachment preview; DMEmoji send; screenshare selected-game audio plus 720p60/1080p60 motion quality; DMTrim ad removal; Tournament Mode; and theme visibility. Any failure should become a focused v0.7.130 hotfix, not an untracked local edit.
+
+## 2026-11-07 - profile-flair preview, theme palette, and BetterFolders candidate
+
+Scope:
+- Make DMProfileFlair's paid presentation controls show their real effect in the live preview above the controls, using the same crop, fit, position, scale, speed, and finish values that Save applies.
+- Improve the DMTheme preset palettes for contrast and nested-surface readability without taking over the palette of an external BetterDiscord theme when visibility-only mode is selected.
+- Repair BetterFolders expansion when Discord exposes folder IDs as numbers, objects, or transitional store values; a temporary or mismatched expansion state must not blank the only clickable server row.
+
+Implementation:
+- `plugins/DMProfileFlair/index.tsx` now treats the preview panes as the applied-settings showcase. Video playback rate is previewed for real video sources; GIF timing remains native because this client does not transcode GIFs. Avatar scanline treatment matches the runtime filter, and scanline is no longer falsely rendered over the avatar when the saved effect is banner-only.
+- `plugins/DMWidget/index.tsx` resolves remote widget metadata by application identity, merges local styles only for the current user, and uses the application identity for cache keys so other users' Board cards and Playing cards can retain their own skin metadata.
+- `plugins/_dm-shared/themes.ts` contains the lifted DMTheme palette pass and visibility-only/strong/showcase visibility modes.
+- `plugins/DMTrim/index.ts` recognizes reward-CTA promotional cards when the card has media or an interactive control, while retaining brand/label matching and avoiding generic message text.
+- `overlay-scripts/rebrand-vencord.mjs` normalizes BetterFolders IDs across string/number/object forms, probes Discord's expansion store, continues through iterable fallbacks after a raw lookup miss, and fails open during a renderer transition instead of hiding the server row.
+
+Verification completed:
+- Strict `pnpm overlay:vencord` passed from the isolated pinned Vencord source tree; all 29 custom plugins synced, both renderer bundles compiled, six files staged, and rebrand reported `applied=0`, `skipped(idempotent)=135`, `warnings=0` on the repeat build.
+- `node overlay-scripts/verify-build.mjs` passed artifact, manifest/version/source-fingerprint, staged-hash, required-plugin, startup-recovery, watchdog, timeout, and error-reporting checks.
+- `pnpm testTypes` passed.
+- `node --check overlay-scripts/rebrand-vencord.mjs` passed; targeted ESLint completed with no errors and only the known ignored-plugin warnings; `git diff --check` passed.
+- The folder helper passed six direct cases covering Set/array/object IDs, numeric/string normalization, mismatch, and undefined state.
+
+Release/proof boundary:
+- These source changes are uncommitted in `E:/discordmaxxer-dmemoji-fix-20261105-b`; the canonical dirty C: checkout was not edited intentionally. Public v0.7.129 remains unchanged. No push, package publication, or live-client replacement was made for this candidate.
+- Build proof does not yet equal signed-in visual proof. Diggy still needs to open DMProfileFlair and verify each paid control visibly changes the showcase and remains correct after Save; compare Profile gradient/default, Widget card, and at least one finish/speed combination. GIF speed should remain native; a real video is required to verify playback-rate control.
+- Diggy also needs to click a server folder repeatedly, during and after the opening animation, and enter every server in it. If the folder still blanks, capture whether the folder is expanded in Discord's native rail and whether the issue is limited to a particular theme or layout.
+- Best next move: run those two focused runtime checks in the local candidate, then either authorize a release or create a narrow hotfix from the failing path. Do not publish based on the build checks alone.
+
+## 2026-11-07 - exact v0.7.129 candidate reopened for runtime testing
+
+- The running test window is the isolated candidate at
+  `E:/discordmaxxer-dmemoji-fix-20261105-b`, launched through
+  `overlay-scripts/launch-verified.mjs`.
+- The candidate identity is `0.7.129-eae6a8165934-df95cdb3cb01950e` and its
+  staged Vencord bundle is the candidate's own `vencord-dist`. The renderer
+  command line includes the candidate app path, so this is not the older
+  public shortcut or the canonical dirty C: checkout.
+- The Electron executable itself is reused from
+  `C:/Users/Diggy/projects/discordmaxxer/node_modules/electron`; that is only
+  the shared runtime binary. The app path and loaded bundle remain the E:
+  candidate above.
+- The main window was responding with title `Discord` and stayed alive for a
+  20-second stability observation. This proves the correct candidate is open
+  and usable for initial testing, not that every signed-in interaction is
+  fixed.
+- No public release, push, or updater replacement was made for this candidate.
+- Next user test: use the already-open window for DMHub/Profile Cosmetics,
+  normal and image message context menus, server-folder expansion, and the
+  profile/widget visuals. Report any failure against this exact candidate
+  before any release decision.
+
+## 2026-11-07 - native message menus and BetterFolders lifecycle hardening
+
+- Rebuilt the isolated candidate after adding the missing PluginManager stop
+  guard. Native Discord `message`, `message-actions`, and `image-context`
+  menus are now skipped symmetrically when plugins start or stop, so a plugin
+  toggle cannot re-register or remove the native Reply/Forward/image menu
+  path that was implicated in renderer crashes.
+- The WebContextMenus desktop swap remains disabled for these native menus,
+  and BetterFolders retains its fail-open folder-row guard plus guarded store
+  transitions. Unknown or transitional folder state must leave the row
+  clickable rather than blanking its servers.
+- Strict `pnpm overlay:vencord` passed with `applied=1`,
+  `skipped(idempotent)=128`, and `warnings=0`; all 29 custom plugins synced.
+  `pnpm testTypes`, `node overlay-scripts/verify-build.mjs`, and
+  `node --check overlay-scripts/rebrand-vencord.mjs` passed. The generic
+  `git diff --check` still reports the existing CRLF/trailing-whitespace
+  backlog in older dirty edits; no new source parse or type error was found.
+- Candidate build identity is
+  `0.7.129-eae6a8165934-0ccf5299c3209603`, with the staged bundle loaded from
+  `E:/discordmaxxer-dmemoji-fix-20261105-b/vencord-dist`. The exact candidate
+  was relaunched through `overlay-scripts/launch-verified.mjs`; public v0.7.129
+  was not changed or published.
+- Runtime proof is still pending: click a normal message/person and use its
+  native context menu, right-click an inline and fullscreen image, then open a
+  server folder and enter each child server. Build and process identity do not
+  prove those signed-in interactions; any remaining failure should be logged
+  against this candidate before authorizing a public hotfix.
+
+## 2026-11-07 - rebuilt candidate relaunched after navigation/folder hardening
+
+- Rebuilt the isolated E-drive candidate after the navigation observer guards,
+  native context-menu symmetry guard, and BetterFolders expansion/store fixes.
+- Strict overlay generation completed with `applied=0`,
+  `skipped(idempotent)=130`, and `warnings=0`; `pnpm testTypes`,
+  `node overlay-scripts/verify-build.mjs`, and `node --check
+  overlay-scripts/rebrand-vencord.mjs` passed.
+- The current staged identity is
+  `0.7.129-eae6a8165934-5e17e20e552dd4c0`, generated at
+  `2026-11-07T22:35:37.010Z`. The exact E-drive candidate was restarted after
+  the build, and its renderer command line points to
+  `E:/discordmaxxer-dmemoji-fix-20261105-b`; the old pre-build process was
+  stopped. Public v0.7.129 remains unchanged.
+- User acceptance is still required: click a normal DM name, a group-chat
+  name, and a server folder, then enter a child server from the expanded row.
+  This local run is the correct candidate, but static/build proof cannot prove
+  those signed-in interactions.
+- Best next move: Diggy performs those three click tests in the already-open
+  candidate. If any still fails, capture the exact action and console/runtime
+  error before another release decision.
+
+## 2026-11-07 - DM/group navigation and folder expansion runtime verification
+
+- Scope was narrowed to the two regressions reported by Diggy: clicking a
+  direct or group DM could take down the renderer, and opening a server folder
+  could leave its child servers hidden or unclickable.
+- The optional custom BetterFolders sidebar is disabled in the staged Vencord
+  source with `DISCORDMAXXER_CUSTOM_SIDEBAR_SUPPORTED = false`. Discord's
+  native folder tree remains the source of truth; the existing fail-open
+  expansion/store guards remain in place so transitional state cannot blank a
+  folder row. PinDMs also keeps the null-safe user/store guards added for DM
+  navigation.
+- `pnpm overlay:vencord`, `pnpm build:dev`, `pnpm verify:build`,
+  `pnpm testTypes`, and `node --check overlay-scripts/rebrand-vencord.mjs`
+  passed using `E:/vencord-src-overlay-current-20261107`. The verified bundle
+  is staged at `E:/discordmaxxer-dmemoji-fix-20261105-b/vencord-dist`.
+- Runtime proof in the exact E-drive candidate: a physical click on the C
+  direct-message row stayed on the DM route; a physical click on the
+  `DIGGY T, fusion` group row stayed on the group route; a physical folder
+  click collapsed and then expanded the folder; and selecting its
+  `Fortnite-API.com` child opened `#info` without a renderer crash. DOM checks
+  also confirmed `aria-expanded=true` and visible child tree items after
+  expansion.
+- Public v0.7.129 was not changed, pushed, or published. The canonical dirty
+  C: checkout was not edited intentionally; existing candidate work and
+  untracked test/source archives were preserved.
+- Diggy's remaining acceptance gate is to repeat the direct DM, group DM,
+  folder expansion, and child-server click in the already-open candidate. If
+  those pass, explicitly authorize the release; if one fails, capture the
+  exact target and runtime error before publishing.
+
+## 2026-11-07 - DMEmoji send-button hardening
+
+- Fixed the added DMEmoji send button's two failure paths: it no longer reads
+  Discord's lazy Toasts proxy during the click, and it accepts Discord's
+  temporarily zero-width message editor when its visible composer container
+  is still present. Channel, draft, pending-reply, and fallback send lookups
+  are guarded so a transient Discord store state produces a visible status
+  toast instead of a renderer exception.
+- Hardened the shared Discordmaxxer status-toast adapter to handle local
+  string toast types as well as native Discord toast enums without forcing a
+  lazy webpack proxy read.
+- Strict `pnpm overlay:vencord` completed with `applied=0`,
+  `skipped(idempotent)=167`, and `warnings=0`; `pnpm testTypes`,
+  `node overlay-scripts/verify-build.mjs`, and `node --check
+  overlay-scripts/rebrand-vencord.mjs` passed. The verified staged identity is
+  `0.7.129-eae6a8165934-af713c33b7785db2`.
+- Runtime proof in the exact E-drive candidate: the DMEmoji send control was
+  present and its React callback ran without the previous `Reflect.get called
+  on non-object` page error. With an empty composer it displayed
+  `Type a message or attach a file first` through the visible toast path.
+  A real message send remains a user-acceptance gate because this agent did
+  not send content into Diggy's Discord account.
+- Public v0.7.129 was not changed, pushed, or published. The exact candidate
+  remains at `E:/discordmaxxer-dmemoji-fix-20261105-b`; next test is to type a
+  harmless message in the already-open candidate and click the added button,
+  then verify it appears once and the input clears. If that passes, the send
+  path is ready for the broader release gate.
+
+## 2026-11-07 - DMEmoji send button native composer path
+
+- Replaced the unstable direct `MessageActions.sendMessage` call used by the
+  DMEmoji mouse-send control. The old webpack proxy is not available in this
+  Discord build and was the source of the `Reflect.get called on non-object`
+  error and red `Discord could not send that message` toast.
+- The button now uses Discord's own composer path: it clicks a real native
+  send control when one is rendered, otherwise dispatches the same Enter
+  keyboard event used by the message editor. This keeps Discord responsible
+  for drafts, replies, attachments, validation, and delivery.
+- `pnpm overlay:vencord`, `pnpm testTypes`, `node overlay-scripts/verify-build.mjs`,
+  and `node --check overlay-scripts/rebrand-vencord.mjs` passed. The verified
+  staged identity is `0.7.129-eae6a8165934-41efdad801cc46f3`; the exact
+  candidate is running from `E:/discordmaxxer-dmemoji-fix-20261105-b`.
+- Runtime proof: clicking the custom control with an empty composer shows the
+  visible status `Type a message or attach a file first` and does not crash.
+  A protected probe with a temporary local draft confirmed the control emits
+  `Enter`, `code=Enter`, `keyCode=13`, and `which=13`; the probe intercepted it
+  before delivery and the draft was cleared afterward. No real message was
+  sent by the agent.
+- Public v0.7.129 was not changed, pushed, or published. Diggy's acceptance
+  gate is to type a harmless message in the already-open exact candidate,
+  click the added send control once, and confirm one message posts and the
+  composer clears. Only after that and the broader release checks should this
+  change be authorized for publication.
+
+## 2026-11-08 - Foreign widget-skin discovery candidate
+
+- The remaining foreign-profile gap is isolated to discovery: the visible
+  profile Board card often has no application id in its DOM, so the client
+  could not request the other user's remote widget-skin marker even though the
+  viewer's own card worked. Added a display-only fallback that matches the
+  card's game label against the viewer's known application hints solely to
+  discover the remote owner marker. Foreign surfaces still apply only a
+  successfully hydrated remote style; the viewer's local skin is never used as
+  a foreign fallback.
+- Also widened the display-only profile metadata/store traversal and moved
+  direct Discord REST fallbacks to an explicit discord.com origin with session
+  credentials. Writer paths remain strict and unchanged.
+- `pnpm testTypes`, `pnpm overlay:vencord`, `node overlay-scripts/verify-build.mjs`,
+  and `pnpm verifyPlugins` passed. The staged renderer contains the new
+  `applicationHint` hydration path. The repository-wide `pnpm test` remains
+  blocked by pre-existing CRLF/header lint errors across `src/` (11,424
+  errors); no broad line-ending rewrite was made.
+- Public v0.7.129 remains unchanged; no new push or deployment was made, and
+  this candidate is not published. A second-account profile/popout visual
+  check is still required before calling foreign widget skins fixed. Other
+  previously scoped repairs remain candidate-only until their corresponding
+  real-user acceptance checks pass.
+- The exact candidate was launched for Diggy from this worktree. Startup
+  verified build `0.7.129-eae6a8165934-c65990e164ac1905` and logged
+  `vencord-dist -> MATCH`; no public release was changed.
+
+## 2026-11-09 - Native image menu and folder fail-open candidate
+
+- Scope: restore Discord's native image/message context menus, stop the custom
+  folder sidebar from intercepting folder clicks, and keep foreign widget-skin
+  discovery owner-scoped.
+- Source changes: the desktop web-context-menu compatibility plugin is now
+  optional and functionally hard-disabled; ImageZoom no longer patches image
+  context menus or replaces the native attachment image node; BetterFolders'
+  custom sidebar and Flux folder handlers fail open so Discord owns folder
+  expansion and child-server selection. DMWidget retains owner-specific
+  foreign-profile hydration instead of borrowing the viewer's skin.
+- Verification: `pnpm overlay:vencord` completed and staged the candidate;
+  `pnpm testTypes`, `pnpm verifyPlugins`, and `pnpm verify:build` passed.
+  The exact candidate launched with `vencord-dist -> MATCH`, reached
+  `https://discord.com/channels/@me`, and reported `renderer-ready`.
+  Repository-wide `pnpm test` remains blocked by pre-existing CRLF/header
+  lint noise (11,424 errors); no broad line-ending rewrite was made.
+- Proof boundary: no manual acceptance has yet confirmed fullscreen-image
+  Copy Image, normal message actions, folder child selection, or another
+  user's widget skin in this candidate. Public v0.7.129 remains untouched,
+  unpublished, and not overwritten.
+- Next action: Diggy should test those three paths in the exact candidate;
+  publish only after they pass and after the release checks are rerun.
+
+## 2026-11-09 - Scoped native image-menu rebuild
+
+- Scope: address the remaining fullscreen-image right-click regression without
+  restoring the broad web context-menu replacement that caused normal message
+  menus and stability to regress.
+- Source changes: the global WebContextMenus listener swap remains disabled;
+  only Discord's three built-in image-menu patch routes are selectively
+  available. PluginManager blocks third-party message, message-actions, and
+  image-context replacements while allowing the built-in image route.
+  ImageZoom continues to preserve Discord's native attachment image node, and
+  BetterFolders remains fail-open so native folder expansion owns child-server
+  selection.
+- Verification: pnpm testTypes, pnpm verifyPlugins, and the updated
+  pnpm verify:build passed. pnpm overlay:vencord rebuilt and staged the
+  candidate; the source counts are 9 general fail-open predicates, 3 image
+  predicates, no duplicate image predicate, and the PluginManager exception
+  is present. The exact candidate launched with build
+  0.7.129-eae6a8165934-c6aa9ca14f7230f6, vencord-dist -> MATCH,
+  renderer-ready, and authenticated navigation to
+  https://discord.com/channels/@me.
+- Proof boundary: source, build, and authenticated startup are verified, but
+  manual UI acceptance is still required for normal-message menus,
+  fullscreen-image Copy Image/Save Image, folder child navigation, and
+  another user's widget skin. Public v0.7.129 remains untouched and
+  unpublished.
+- Next action: Diggy should test those four paths in the open candidate. Do
+  not publish until the right-click image path is confirmed not to crash and
+  the native actions are visible.
+
+## 2026-11-09 - Foreign widget skin and native Copy Image verification
+
+- The foreign-profile repair was rechecked against three fresh profile
+  mounts before the image-only desktop change: each mount showed both native
+  widget cards and attached the other user's published skin, frame, motion,
+  and owner-scoped metadata. The latest image-menu change does not touch the
+  DMWidget renderer or its hydration path.
+- Added the required hidden `DMImageContext` plugin. It runs at window-capture
+  order, resolves Discord's transparent `a[data-role='img']` overlay and lazy
+  placeholder image, and opens a narrow native-style menu with Copy Image,
+  Copy Image Link, and Save Image As. Ordinary message menus are ignored.
+- Candidate verification passed: `pnpm testTypes`, `pnpm overlay:vencord`,
+  and `pnpm verify:build`. The required plugin is enabled in the exact
+  candidate and the image-menu static checks pass. A real Discord CDN
+  attachment fetched as PNG, the native `VesktopNative.clipboard.copyImage`
+  bridge accepted 887,957 bytes, Windows reported an actual image on the
+  clipboard, and the menu action path remained alive. A synthetic normal
+  message context event still opened Discord's normal menu with Add Reaction,
+  Bookmark Message, Create Reminder, Apps, Mark Unread, Copy Message Link,
+  and Copy Message ID.
+- Automation limitation: Puppeteer's hidden page cannot produce a physical
+  mouse right-click, so thumbnail/fullscreen physical-click acceptance still
+  belongs to Diggy. The source handler covers both thumbnail and fullscreen
+  image targets. Public v0.7.129 remains untouched, unpublished, and not
+  overwritten.
+- Next action: on the open exact candidate at
+  `E:/discordmaxxer-dmemoji-fix-20261105-b`, right-click a real attachment
+  thumbnail and choose Copy Image, paste into Paint or Discord, repeat in the
+  fullscreen viewer, then right-click a normal message and confirm Reply and
+  reactions remain available. Separately open another user's profile and
+  confirm both widget cards retain that user's skin. Publish only after those
+  visible checks pass.
+
+## 2026-11-09 - Diggy acceptance gate passed
+
+- Diggy confirmed all four candidate acceptance checks passed: foreign-profile
+  widget skins are visible, thumbnail Copy Image works, fullscreen Copy Image
+  works, and normal message context actions remain available.
+- The candidate is therefore accepted for release. Public v0.7.129 remains
+  unchanged and unpublished; publication still requires an explicit release
+  instruction.
+
+## 2026-11-09 - Native composer context-menu release candidate
+
+- Scope: restore the normal desktop right-click menu inside Discord's message
+  composer so Paste, cut, copy, spellcheck, and language actions are available;
+  leave normal message and attachment-image menus on their protected native
+  paths.
+- Source changes: the WebContextMenus overlay now routes only composer targets
+  through Discord's native callback, with a fail-open fallback to the web menu
+  and cleanup on plugin stop. The three composer-specific Vencord patch points
+  use the same narrow predicate. The build verifier now counts both the six
+  general fail-open predicates and three composer predicates, and verifies the
+  composer markers explicitly.
+- Verification: type checks and plugin-registry checks passed. A clean pinned
+  Vencord overlay completed with `1 applied, 202 idempotent, 0 warnings`; the
+  staged build verifier passed all native image, composer, folder, plugin,
+  fingerprint, and startup-recovery contracts. Full repository lint remains
+  blocked only by the pre-existing CRLF/header baseline (11,424 errors), with
+  no broad line-ending rewrite.
+- Release boundary: version `0.7.130` is prepared but not yet committed,
+  tagged, published, or verified through GitHub Actions. The final user test
+  after publication is right-clicking the composer and choosing Paste, then
+  confirming normal-message Reply/reactions, image Copy Image, folder child
+  navigation, and foreign widget skins still work.
+- Next action: run the Windows packaging gate, review/stage only the accepted
+  source and release files, commit, tag `v0.7.130`, push the authorized public
+  release, and verify the GitHub asset/updater manifest.

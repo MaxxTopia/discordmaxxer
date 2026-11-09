@@ -133,23 +133,27 @@ function scanRoot(root: ParentNode = document) {
 function startObserver() {
     if (observer) return;
     observer = new MutationObserver(mutations => {
-        for (const m of mutations) {
-            if ((m.target as Element)?.closest?.(".vc-settings-tab, [class*='standardSidebarView']")) {
-                continue;
-            }
-            for (const node of m.addedNodes) {
-                if (!(node instanceof Element)) continue;
-                if (node.classList?.contains("vc-typing-user")) {
-                    decorateTypingUser(node as HTMLElement);
-                } else {
-                    const cls = typeof node.className === "string" ? node.className : "";
-                    if (cls.includes("typing") || cls.includes("chat") || node.firstElementChild) {
-                        if (cls.includes("typing") || node.querySelector?.(".vc-typing-user, [class*='typing']")) {
-                            scanRoot(node);
+        try {
+            for (const m of mutations) {
+                if ((m.target as Element)?.closest?.(".vc-settings-tab, [class*='standardSidebarView']")) {
+                    continue;
+                }
+                for (const node of m.addedNodes) {
+                    if (!(node instanceof Element)) continue;
+                    if (node.classList?.contains("vc-typing-user")) {
+                        decorateTypingUser(node as HTMLElement);
+                    } else {
+                        const cls = typeof node.className === "string" ? node.className : "";
+                        if (cls.includes("typing") || cls.includes("chat") || node.firstElementChild) {
+                            if (cls.includes("typing") || node.querySelector?.(".vc-typing-user, [class*='typing']")) {
+                                scanRoot(node);
+                            }
                         }
                     }
                 }
             }
+        } catch (error) {
+            console.warn("[DMTyping] observer ignored during navigation:", error);
         }
     });
     observer.observe(document.body, { childList: true, subtree: true });

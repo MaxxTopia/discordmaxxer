@@ -4,6 +4,9 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
  * Eight named themes, each a complete Discord color-palette override.
+ * The v0.7.130 palette pass keeps each identity intact while lifting muted
+ * text, nested surfaces, and focus borders so custom themes remain legible
+ * over wallpapers and translucent UI.
  * Five free (maxxer/val/sonic/dmc/bo3); three MAXXER+ exclusives
  * (akatsuki/dmcdt/eminence) added v0.6.4.
  *
@@ -88,19 +91,19 @@ export const THEMES: Record<ThemeId, Theme> = {
             brandDark: "#b81bd6",
             brandTrans: "rgba(226, 91, 255, 0.18)",
             bgPrimary: "#15101e",
-            bgSecondary: "#1a1428",
+            bgSecondary: "#211832",
             bgSecondaryAlt: "#120c1a",
-            bgTertiary: "#0a0612",
-            bgFloating: "#1c1530",
-            bgInput: "#241a3a",
+            bgTertiary: "#100a1a",
+            bgFloating: "#261b3d",
+            bgInput: "#2e2148",
             textNormal: "#fbefff",
-            textMuted: "#c8a8e6",
-            textSubtle: "#8b6aad",
+            textMuted: "#d9bfee",
+            textSubtle: "#ad8dca",
             textLink: "#e25bff",
-            channelText: "#a890c4",
+            channelText: "#bea7d5",
             channelTextHover: "#fbefff",
-            border: "rgba(226, 91, 255, 0.18)",
-            borderGlow: "rgba(226, 91, 255, 0.45)"
+            border: "rgba(226, 91, 255, 0.26)",
+            borderGlow: "rgba(226, 91, 255, 0.58)"
         }
     },
     val: {
@@ -115,19 +118,19 @@ export const THEMES: Record<ThemeId, Theme> = {
             brandDark: "#b3303c",
             brandTrans: "rgba(255, 70, 85, 0.2)",
             bgPrimary: "#0d1418",
-            bgSecondary: "#16252c",
+            bgSecondary: "#1b3038",
             bgSecondaryAlt: "#0a0f12",
-            bgTertiary: "#08111a",
-            bgFloating: "#1a2a32",
-            bgInput: "#1e2f38",
+            bgTertiary: "#0b151d",
+            bgFloating: "#203640",
+            bgInput: "#25404a",
             textNormal: "#ece8e1",
-            textMuted: "#c8b89a",
-            textSubtle: "#8e8579",
+            textMuted: "#d9c9aa",
+            textSubtle: "#aaa08f",
             textLink: "#ff7a87",
-            channelText: "#a8a094",
+            channelText: "#c0b5a4",
             channelTextHover: "#ff4655",
-            border: "rgba(255, 70, 85, 0.18)",
-            borderGlow: "rgba(255, 70, 85, 0.4)"
+            border: "rgba(255, 70, 85, 0.26)",
+            borderGlow: "rgba(255, 70, 85, 0.55)"
         }
     },
     sonic: {
@@ -142,19 +145,19 @@ export const THEMES: Record<ThemeId, Theme> = {
             brandDark: "#cca400",
             brandTrans: "rgba(255, 215, 0, 0.22)",
             bgPrimary: "#051e3e",
-            bgSecondary: "#0a3a73",
+            bgSecondary: "#0e4788",
             bgSecondaryAlt: "#031530",
-            bgTertiary: "#020a1a",
-            bgFloating: "#0f4080",
-            bgInput: "#114a8e",
+            bgTertiary: "#031027",
+            bgFloating: "#145095",
+            bgInput: "#1859a0",
             textNormal: "#ffffff",
-            textMuted: "#c5d6f0",
-            textSubtle: "#7e9ec8",
+            textMuted: "#d8e6fb",
+            textSubtle: "#a5c0e5",
             textLink: "#ffd700",
-            channelText: "#9bb4d8",
+            channelText: "#b5ccec",
             channelTextHover: "#ffd700",
-            border: "rgba(255, 215, 0, 0.22)",
-            borderGlow: "rgba(255, 215, 0, 0.5)"
+            border: "rgba(255, 215, 0, 0.3)",
+            borderGlow: "rgba(255, 215, 0, 0.62)"
         }
     },
     dmc: {
@@ -169,19 +172,19 @@ export const THEMES: Record<ThemeId, Theme> = {
             brandDark: "#7a0008",
             brandTrans: "rgba(179, 0, 12, 0.22)",
             bgPrimary: "#0a0506",
-            bgSecondary: "#1a0e10",
+            bgSecondary: "#221216",
             bgSecondaryAlt: "#070304",
             bgTertiary: "#040202",
-            bgFloating: "#241318",
-            bgInput: "#2a161c",
+            bgFloating: "#2e181f",
+            bgInput: "#351b24",
             textNormal: "#f4ecd8",
-            textMuted: "#c4b89a",
-            textSubtle: "#8a7c66",
+            textMuted: "#d9cbae",
+            textSubtle: "#aa997c",
             textLink: "#e63946",
-            channelText: "#a89878",
+            channelText: "#bcae8d",
             channelTextHover: "#b3000c",
-            border: "rgba(179, 0, 12, 0.22)",
-            borderGlow: "rgba(179, 0, 12, 0.55)"
+            border: "rgba(179, 0, 12, 0.3)",
+            borderGlow: "rgba(179, 0, 12, 0.65)"
         },
         headingFont: "'Cormorant Garamond', Georgia, serif"
     },
@@ -197,19 +200,19 @@ export const THEMES: Record<ThemeId, Theme> = {
             brandDark: "#b34a0e",
             brandTrans: "rgba(255, 107, 26, 0.22)",
             bgPrimary: "#0e0f0a",
-            bgSecondary: "#1c1d15",
+            bgSecondary: "#25271b",
             bgSecondaryAlt: "#080905",
             bgTertiary: "#040402",
-            bgFloating: "#252618",
-            bgInput: "#2c2d1c",
+            bgFloating: "#30321f",
+            bgInput: "#383a23",
             textNormal: "#e9e8df",
-            textMuted: "#b3b09e",
-            textSubtle: "#7e7c6c",
+            textMuted: "#cbc8b5",
+            textSubtle: "#9e9b87",
             textLink: "#ff6b1a",
-            channelText: "#9b9989",
+            channelText: "#b7b49f",
             channelTextHover: "#ff6b1a",
-            border: "rgba(255, 107, 26, 0.22)",
-            borderGlow: "rgba(255, 107, 26, 0.5)"
+            border: "rgba(255, 107, 26, 0.3)",
+            borderGlow: "rgba(255, 107, 26, 0.62)"
         }
     },
 
@@ -228,19 +231,19 @@ export const THEMES: Record<ThemeId, Theme> = {
             brandDark: "#7e1f18",
             brandTrans: "rgba(200, 51, 43, 0.22)",
             bgPrimary: "#0a0709",
-            bgSecondary: "#15101a",
+            bgSecondary: "#1e1522",
             bgSecondaryAlt: "#070406",
             bgTertiary: "#020203",
-            bgFloating: "#1c1620",
-            bgInput: "#221823",
+            bgFloating: "#281b2d",
+            bgInput: "#2f2034",
             textNormal: "#f0e4d8",
-            textMuted: "#a08770",
-            textSubtle: "#6c5a4c",
+            textMuted: "#c4aa91",
+            textSubtle: "#927966",
             textLink: "#e54a3f",
-            channelText: "#7a6a5e",
+            channelText: "#a88d78",
             channelTextHover: "#c8332b",
-            border: "rgba(200, 51, 43, 0.20)",
-            borderGlow: "rgba(200, 51, 43, 0.50)"
+            border: "rgba(200, 51, 43, 0.3)",
+            borderGlow: "rgba(200, 51, 43, 0.65)"
         },
         headingFont: "'Cinzel', 'Cormorant Garamond', Georgia, serif"
     },
@@ -258,19 +261,19 @@ export const THEMES: Record<ThemeId, Theme> = {
             brandDark: "#7a0a1c",
             brandTrans: "rgba(204, 20, 48, 0.24)",
             bgPrimary: "#0c0608",
-            bgSecondary: "#1c1014",
+            bgSecondary: "#241419",
             bgSecondaryAlt: "#080405",
             bgTertiary: "#040203",
-            bgFloating: "#28161c",
-            bgInput: "#2e1820",
+            bgFloating: "#321b24",
+            bgInput: "#3a202b",
             textNormal: "#f8efe0",
-            textMuted: "#c2b29a",
-            textSubtle: "#8a7a64",
+            textMuted: "#d8c8ad",
+            textSubtle: "#a6957a",
             textLink: "#3a8eff",
-            channelText: "#a89678",
+            channelText: "#baa987",
             channelTextHover: "#cc1430",
-            border: "rgba(204, 20, 48, 0.25)",
-            borderGlow: "rgba(58, 142, 255, 0.45)"
+            border: "rgba(204, 20, 48, 0.32)",
+            borderGlow: "rgba(58, 142, 255, 0.6)"
         },
         headingFont: "'Cinzel', 'Cormorant Garamond', Georgia, serif"
     },
@@ -288,19 +291,19 @@ export const THEMES: Record<ThemeId, Theme> = {
             brandDark: "#8a1cb0",
             brandTrans: "rgba(214, 58, 255, 0.22)",
             bgPrimary: "#080608",
-            bgSecondary: "#15101c",
+            bgSecondary: "#1e1629",
             bgSecondaryAlt: "#050306",
             bgTertiary: "#020103",
-            bgFloating: "#1e1830",
-            bgInput: "#241c38",
+            bgFloating: "#28203e",
+            bgInput: "#30264a",
             textNormal: "#ece6f5",
-            textMuted: "#a89cba",
-            textSubtle: "#766a8a",
+            textMuted: "#cdbfe0",
+            textSubtle: "#9d8eb3",
             textLink: "#5ae3ff",
-            channelText: "#7e7290",
+            channelText: "#aa9abb",
             channelTextHover: "#d63aff",
-            border: "rgba(214, 58, 255, 0.20)",
-            borderGlow: "rgba(90, 227, 255, 0.50)"
+            border: "rgba(214, 58, 255, 0.3)",
+            borderGlow: "rgba(90, 227, 255, 0.65)"
         },
         headingFont: "'Cinzel Decorative', 'Cinzel', Georgia, serif"
     }

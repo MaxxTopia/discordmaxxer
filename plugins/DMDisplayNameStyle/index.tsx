@@ -1318,17 +1318,21 @@ function scheduleScan(root: ParentNode = document) {
     const now = performance.now();
     const delay = Math.max(0, 100 - (now - lastScanTime));
     scanRaf = window.setTimeout(() => {
-        scanRaf = 0;
-        lastScanTime = performance.now();
-        const roots = fullScanRequested
-            ? [document]
-            : Array.from(pendingScanRoots);
-        fullScanRequested = false;
-        pendingScanRoots.clear();
-        for (const scanTarget of roots) {
-            if (scanTarget === document || !(scanTarget instanceof Element) || scanTarget.isConnected) {
-                scanRoot(scanTarget, scanTarget === document);
+        try {
+            scanRaf = 0;
+            lastScanTime = performance.now();
+            const roots = fullScanRequested
+                ? [document]
+                : Array.from(pendingScanRoots);
+            fullScanRequested = false;
+            pendingScanRoots.clear();
+            for (const scanTarget of roots) {
+                if (scanTarget === document || !(scanTarget instanceof Element) || scanTarget.isConnected) {
+                    scanRoot(scanTarget, scanTarget === document);
+                }
             }
+        } catch (error) {
+            console.warn("[DMDisplayNameStyle] guarded route scan", error);
         }
     }, delay) as any;
 }
@@ -1376,9 +1380,13 @@ function startObserver() {
     if (observer || !document.body) return;
     startVisibilityObserver();
     observer = new MutationObserver(mutations => {
-        for (const m of mutations) {
-            const root = scanRootForMutation(m);
-            if (root) scheduleScan(root);
+        try {
+            for (const m of mutations) {
+                const root = scanRootForMutation(m);
+                if (root) scheduleScan(root);
+            }
+        } catch (error) {
+            console.warn("[DMDisplayNameStyle] observer ignored during navigation:", error);
         }
     });
     observer.observe(document.body, {

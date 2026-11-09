@@ -68,12 +68,15 @@ function isPromotionalCard(element: Element): boolean {
     const text = normalizeText(element.textContent ?? "");
     if (text.length < 4 || text.length > 900) return false;
 
-    // Fanduel's card has no stable public selector in some Discord builds,
-    // but it does have a distinctive brand + reward CTA. Requiring both
-    // avoids hiding an ordinary message that merely mentions the brand.
-    if (PROMO_BRAND_RE.test(text)) return PROMO_ACTION_RE.test(text);
+    // Some reward placements omit the Sponsored/Promoted label and rotate
+    // their brand text, but still combine a reward CTA with a media/control
+    // element. Require all three signals for this fallback so an ordinary
+    // message that merely mentions a reward is left alone.
+    const hasAction = PROMO_ACTION_RE.test(text);
+    if (!hasAction) return false;
+    if (PROMO_BRAND_RE.test(text) || PROMO_LABEL_RE.test(text)) return true;
 
-    return PROMO_LABEL_RE.test(text) && PROMO_ACTION_RE.test(text);
+    return element.querySelector("img, video, button, a, [role=\"button\"]") !== null;
 }
 
 function findPromotionalTarget(element: Element): HTMLElement | null {
@@ -162,18 +165,30 @@ function clearPromotionalMarkers(): void {
 }
 
 function flushPromotionalScan(): void {
-    promoScanTimer = undefined;
-    const nodes = [...pendingPromoNodes];
-    pendingPromoNodes.clear();
+    try {
+        promoScanTimer = undefined;
+        const nodes = [...pendingPromoNodes];
+        pendingPromoNodes.clear();
 
-    for (const node of nodes.slice(0, 40)) scanPromotionalNode(node);
+        for (const node of nodes.slice(0, 40)) scanPromotionalNode(node);
+    } catch (error) {
+        promoScanTimer = undefined;
+        console.warn("[DMTrim] promotional scan ignored during navigation:", error);
+    }
 }
 
 function schedulePromotionalScan(nodes: Node[]): void {
     nodes.forEach(node => pendingPromoNodes.add(node));
     if (promoScanTimer !== undefined) return;
 
-    promoScanTimer = setTimeout(flushPromotionalScan, 100);
+    promoScanTimer = setTimeout(() => {
+        try {
+            flushPromotionalScan();
+        } catch (error) {
+            promoScanTimer = undefined;
+            console.warn("[DMTrim] promotional scan timer ignored during navigation:", error);
+        }
+    }, 100);
 }
 
 function stopPromotionalObserver(): void {
@@ -207,32 +222,40 @@ function startPromotionalObserver(): void {
     for (const delay of [350, 1200]) {
         promoInitialScanTimers.push(
             setTimeout(() => {
-                if (document.visibilityState !== "hidden" && document.body) schedulePromotionalScan([document.body]);
+                try {
+                    if (document.visibilityState !== "hidden" && document.body) schedulePromotionalScan([document.body]);
+                } catch (error) {
+                    console.warn("[DMTrim] initial promotional scan ignored during navigation:", error);
+                }
             }, delay)
         );
     }
 
     promoObserver = new MutationObserver(records => {
-        const nodes: Node[] = [];
-        for (const record of records) {
-            if (record.type === "childList") {
-                for (const node of record.addedNodes) {
-                    if (node.nodeType === Node.TEXT_NODE) {
-                        if (hasPromotionalSignal(node.nodeValue ?? "")) nodes.push(node.parentElement ?? node);
-                    } else {
-                        nodes.push(node);
+        try {
+            const nodes: Node[] = [];
+            for (const record of records) {
+                if (record.type === "childList") {
+                    for (const node of record.addedNodes) {
+                        if (node.nodeType === Node.TEXT_NODE) {
+                            if (hasPromotionalSignal(node.nodeValue ?? "")) nodes.push(node.parentElement ?? node);
+                        } else {
+                            nodes.push(node);
+                        }
                     }
+                } else if (record.type === "characterData") {
+                    if (hasPromotionalSignal(record.target.nodeValue ?? "")) {
+                        nodes.push(record.target.parentElement ?? record.target);
+                    }
+                } else if (record.type === "attributes" && record.target instanceof Element) {
+                    const value = record.target.getAttribute(record.attributeName ?? "") ?? "";
+                    if (PROMO_ATTRIBUTE_RE.test(value)) nodes.push(record.target);
                 }
-            } else if (record.type === "characterData") {
-                if (hasPromotionalSignal(record.target.nodeValue ?? "")) {
-                    nodes.push(record.target.parentElement ?? record.target);
-                }
-            } else if (record.type === "attributes" && record.target instanceof Element) {
-                const value = record.target.getAttribute(record.attributeName ?? "") ?? "";
-                if (PROMO_ATTRIBUTE_RE.test(value)) nodes.push(record.target);
             }
+            if (nodes.length) schedulePromotionalScan(nodes);
+        } catch (error) {
+            console.warn("[DMTrim] promotional observer ignored during navigation:", error);
         }
-        if (nodes.length) schedulePromotionalScan(nodes);
     });
     promoObserver.observe(document.body, {
         childList: true,
