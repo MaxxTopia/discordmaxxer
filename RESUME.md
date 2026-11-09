@@ -4258,11 +4258,12 @@ Release/proof boundary:
   fingerprint, and startup-recovery contracts. Full repository lint remains
   blocked only by the pre-existing CRLF/header baseline (11,424 errors), with
   no broad line-ending rewrite.
-- Release boundary: version `0.7.130` is prepared but not yet committed,
-  tagged, published, or verified through GitHub Actions. The final user test
-  after publication is right-clicking the composer and choosing Paste, then
-  confirming normal-message Reply/reactions, image Copy Image, folder child
-  navigation, and foreign widget skins still work.
-- Next action: run the Windows packaging gate, review/stage only the accepted
-  source and release files, commit, tag `v0.7.130`, push the authorized public
-  release, and verify the GitHub asset/updater manifest.
+- Release boundary: version `0.7.130` is committed as `c8cec36`, tagged,
+  and publicly released. GitHub Actions run `42690105491` completed
+  successfully; the public installer, blockmap, `latest.yml`, and Windows
+  ZIP assets are present at the GitHub release. The final user test is
+  right-clicking the composer and choosing Paste, then confirming
+  normal-message Reply/reactions, image Copy Image, folder child navigation,
+  and foreign widget skins still work.
+- Next action: Diggy tests the public auto-updater/client and reports the
+  composer Paste menu plus the remaining visual/runtime acceptance checks.
