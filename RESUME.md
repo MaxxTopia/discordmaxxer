@@ -4297,3 +4297,34 @@ Release/proof boundary:
   pause/resume or change tracks; reload Discord; and confirm ordinary promo
   cards elsewhere are still removed. Also check that the old red “Failed to
   render Spotify Modal” surface does not return during startup/reconnect.
+
+## 2026-11-09 - v0.7.131 public release
+
+- Scope: publish the reviewed Spotify/DMTrim hardening and account-panel
+  isolation changes together with the already-verified native composer menu,
+  native attachment-image menu, folder navigation, foreign widget skin, and
+  startup-recovery fixes. The candidate was built in the isolated
+  `E:/discordmaxxer-dmemoji-fix-20261105-b` checkout; the dirty canonical
+  checkout was not modified.
+- Public state: commit `88cea34642d5c18db03455c806bba2571df3fea7` is on
+  GitHub `main`, and tag `v0.7.131` points to that exact commit. GitHub Actions
+  run `42751421054` passed the strict overlay, integrity, app-build,
+  artifact-verification, Electron Builder, release-note, and notification
+  gates in 5m12s.
+- Release: public at
+  `https://github.com/MaxxTopia/discordmaxxer/releases/tag/v0.7.131`.
+  The updater manifest is reachable with HTTP 200 and reports
+  `version: 0.7.131`; installer, blockmap, Windows ZIP, and arm64 ZIP assets
+  are published.
+- Verification boundary: source type checks, plugin-registry checks, strict
+  overlay, build verification, and the authoritative CI packaging passed.
+  The local `pnpm package:dir` process produced a complete unpacked build but
+  did not exit cleanly; CI Electron Builder is the authoritative packaging
+  result. Full repository lint remains at the known pre-existing CRLF/header
+  baseline (11,424 errors), with no broad line-ending rewrite.
+- Diggy test owed: update both PCs through the normal updater, then verify
+  Spotify playback/modal and DMTrim independently; native message and image
+  context menus; folder child-server navigation; widget skins on own and
+  other profiles; display-name/theme rendering; ad trimming; composer send
+  and paste; and screenshare quality/audio. Report any failure with the
+  version shown in the About screen and the exact path that failed.
