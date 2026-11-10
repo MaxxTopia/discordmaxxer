@@ -59,7 +59,7 @@ export const CUSTOM_PLUGIN_HEALTH: readonly CustomPluginHealth[] = [
     { id: "DMVipClaim", label: "VIP Claim", kind: "conditional", note: "The worker remains the authority for code validity, binding, and expiry." },
     { id: "DMVoiceGuard", label: "Voice Guard", kind: "ready", note: "Detects suspicious voice failures and surfaces a report; it cannot repair every upstream break." },
     { id: "DMVoiceKeybinds", label: "Voice Keybinds", kind: "conditional", note: "Global shortcuts need OS registration; the focused-window fallback is used when registration is unavailable." },
-    { id: "DMMicMonitor", label: "Mic Monitor", kind: "conditional", note: "Opt-in local sidetone and level meter; use headphones to avoid feedback. Outgoing Discord microphone audio is unchanged." },
+    { id: "DMMicMonitor", label: "Mic Monitor", kind: "conditional", note: "Opt-in outgoing mic boost plus local sidetone and level meter; use headphones to avoid feedback. Screen-share audio is not intercepted." },
     { id: "DMVotes", label: "Feature Votes", kind: "conditional", note: "Requires the poll endpoint and MAXXER++ access." },
     { id: "DMWelcome", label: "Plugin Tour", kind: "ready", note: "Local onboarding and discovery UI." },
     { id: "DMWidget", label: "Profile Widgets", kind: "experimental", note: "Uses an undocumented Discord profile surface plus external game-stat providers." },

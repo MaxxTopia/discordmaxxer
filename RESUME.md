@@ -4329,30 +4329,37 @@ Release/proof boundary:
   and paste; and screenshare quality/audio. Report any failure with the
   version shown in the About screen and the exact path that failed.
 
-## 2026-11-10 - Mic monitor and single-key keybind candidate
+## 2026-11-10 - Mic boost and single-key keybind candidate
 
-- Scope: add an opt-in local microphone sidetone/level monitor and allow
-  DMVoiceKeybinds to accept unmodified keys such as `]`, while retaining
-  modifier combinations. The monitor uses a separate Web Audio graph with a
-  bounded 0.5x-3x local gain, compressor, live level meter, and explicit
-  headphone warning. It never replaces or modifies Discord's outgoing
-  microphone MediaStream; the feature is off until the user enables it.
-- Source changes: added `plugins/DMMicMonitor/index.tsx`, exposed it from
-  DMHub under Voice & input, registered it in defaults/build requirements,
-  and added its health row. DMVoiceKeybinds now normalizes named keys and
-  punctuation and validates both single keys and modifier combinations.
-- Verification: `pnpm overlay:vencord`, `node overlay-scripts/verify-build.mjs`,
-  `pnpm testTypes`, `pnpm verifyPlugins`, `pnpm build`, and `git diff --check`
-  passed. The overlay manifest confirms `DMMicMonitor` is compiled into the
-  renderer. Full `pnpm test` remains blocked by the checkout's existing
-  repository-wide CRLF/header lint baseline; no mass formatting was applied.
+- Scope: add an opt-in outgoing microphone boost plus local sidetone/level
+  monitor, and allow DMVoiceKeybinds to accept unmodified keys such as `]`
+  while retaining modifier combinations. The outgoing path uses a bounded
+  1.0x-2.5x gain, compressor, and Web Audio destination track; the local
+  monitor remains separate and has its own bounded gain and headphone warning.
+  Screen-share video/audio is not intercepted by the mic path. The feature is
+  off until the user enables it.
+- Source changes: `plugins/DMMicMonitor/index.tsx` now wraps only microphone
+  `getUserMedia` requests and returns the processed audio track to Discord;
+  Web Audio startup failure falls back to the untouched native stream. DMHub,
+  plugin health, defaults, and the Linux screen-share/mic guards describe the
+  new behavior. DMVoiceKeybinds normalizes named keys and punctuation and
+  validates both single keys and modifier combinations.
+- Verification: `pnpm testTypes`, `pnpm verifyPlugins`, native
+  `node --test packages/winaudio/test.js`, strict `pnpm overlay:vencord`,
+  `node overlay-scripts/verify-build.mjs`, `pnpm build`, and `git diff --check`
+  pass. The native audio test now passes after building `winaudio.node`.
+  Full `pnpm test` remains blocked by the checkout's existing repository-wide
+  CRLF/header lint baseline; no mass formatting was applied.
 - Release boundary: candidate-only in
-  `E:/discordmaxxer-dmemoji-fix-20261105-b`; public v0.7.131 was not changed,
-  published, or installed. No live microphone, voice-call, screenshare, or
-  account-specific widget acceptance has been claimed.
-- Diggy test owed: open DMHub -> Voice & input -> Mic sidetone & level monitor;
-  enable it with headphones, speak, adjust monitor gain, and confirm the meter
-  moves while a voice-call recipient hears the unchanged outgoing signal.
-  Also test a single-key mute/deafen/share binding. Existing Spotify modal,
-  Board/widget hydration, actual screenshare auto-start, and other runtime
-  regressions remain separate acceptance gates.
+  `E:/discordmaxxer-dmemoji-fix-20261105-b`; public v0.7.131 is unchanged
+  until the v0.7.132 package and release workflow are verified. No live
+  microphone, voice-call, screenshare, or account-specific widget acceptance
+  has been claimed.
+- Diggy test owed: open DMHub -> Voice & input -> Mic boost, sidetone & level
+  monitor; enable outgoing boost, choose a conservative value first, use
+  headphones for local monitoring, and have a recipient confirm that your
+  voice is louder without clipping. Reconnect voice after enabling if already
+  in a call. Confirm screenshare still carries only the selected capture/audio
+  behavior and that a single-key mute/deafen/share binding works. Existing
+  Spotify modal, Board/widget hydration, and other runtime gates remain
+  separate acceptance checks.

@@ -65,19 +65,26 @@ if (isLinux) {
             .catch(e => logger.error("Failed to apply constraints.", e));
 
         if (id) {
-            const audio = await navigator.mediaDevices.getUserMedia({
-                audio: {
-                    deviceId: {
-                        exact: id
-                    },
-                    autoGainControl: false,
-                    echoCancellation: false,
-                    noiseSuppression: false,
-                    channelCount: 2,
-                    sampleRate: 48000,
-                    sampleSize: 16
-                }
-            });
+            const previousScreenShareCapture = (globalThis as any).__dmScreenShareAudioCapture === true;
+            (globalThis as any).__dmScreenShareAudioCapture = true;
+            let audio: MediaStream;
+            try {
+                audio = await navigator.mediaDevices.getUserMedia({
+                    audio: {
+                        deviceId: {
+                            exact: id
+                        },
+                        autoGainControl: false,
+                        echoCancellation: false,
+                        noiseSuppression: false,
+                        channelCount: 2,
+                        sampleRate: 48000,
+                        sampleSize: 16
+                    }
+                });
+            } finally {
+                (globalThis as any).__dmScreenShareAudioCapture = previousScreenShareCapture;
+            }
 
             stream.getAudioTracks().forEach(t => stream.removeTrack(t));
             stream.addTrack(audio.getAudioTracks()[0]);

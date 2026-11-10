@@ -75,7 +75,7 @@ const PLUGINS_DEFAULT_ON: string[] = [
     "DMTyping", // MAXXER perk: [VIP]/[VIP+]/[MVP++] prefix in typing indicator
     "DMStreamMute", // local mute toggle for incoming screenshare audio (Ctrl+Shift+M)
     "DMVoiceKeybinds", // GLOBAL mute/deafen hotkeys that work in a fullscreen game (Ctrl+Alt+M / Ctrl+Alt+D)
-    "DMMicMonitor", // opt-in local microphone sidetone + level meter; outgoing Discord mic remains untouched
+    "DMMicMonitor", // opt-in outgoing microphone boost plus local sidetone + level meter; screen-share audio is untouched
     "DMVoiceGuard", // safeguard: surfaces a banner when voice silently fails (e.g. Discord change the build can't handle)
     "DMTranslate", // right-click any message -> translate; no helper app or download
     "DMEmoji", // local animated emoji library & chat attachment button

@@ -144,6 +144,10 @@ async function applyRnnoise(inputStream: MediaStream): Promise<MediaStream> {
 // screenShareFixes / Discord use for screenshare audio — never filter those).
 function isPlainMicRequest(constraints: MediaStreamConstraints | undefined): boolean {
     if (!constraints?.audio) return false;
+    // The Linux screen-share compatibility path acquires a virtual loopback
+    // through getUserMedia. It is marked by screenShareFixes so neither
+    // RNNoise nor the optional outgoing mic boost can alter shared media.
+    if ((globalThis as any).__dmScreenShareAudioCapture === true) return false;
     if (constraints.video) return false; // camera/screen capture, not a mic
     const { audio } = constraints;
     if (typeof audio === "object" && ((audio as any).mandatory || (audio as any).optional)) return false;

@@ -1,12 +1,12 @@
 /*
- * Discordmaxxer - microphone sidetone and level monitor
+ * Discordmaxxer - outgoing microphone boost, sidetone and level monitor
  * Copyright (c) 2026 Diggy
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * This is deliberately a local monitor. It never replaces Discord's
- * outgoing MediaStream, so changing the monitor gain cannot unexpectedly
- * change what other people hear. It is off by default and is intended for
- * headphones to avoid acoustic feedback.
+ * The outgoing path is deliberately opt-in. When enabled, only microphone
+ * streams returned by getUserMedia are processed; getDisplayMedia and screen
+ * share audio are never intercepted. A limiter protects voice from hard
+ * clipping, but it cannot repair a microphone that is already clipping.
  */
 
 import { definePluginSettings } from "@api/Settings";
@@ -18,6 +18,18 @@ import { showDiscordmaxxerStatusToast } from "../_dm-shared/statusToast";
 const Toasts = { ...DiscordToasts, show: showDiscordmaxxerStatusToast };
 
 type MonitorState = "off" | "starting" | "running" | "error";
+
+type AudioContextConstructor = new (options?: AudioContextOptions) => AudioContext;
+
+interface OutgoingGraph {
+    context: AudioContext;
+    input: MediaStream;
+    output: MediaStream;
+    gain: GainNode;
+    compressor: DynamicsCompressorNode;
+    analyser: AnalyserNode;
+    closed: boolean;
+}
 
 let monitorRun = 0;
 let monitorState: MonitorState = "off";
@@ -31,6 +43,11 @@ let monitorCompressor: DynamicsCompressorNode | null = null;
 let monitorAnalyser: AnalyserNode | null = null;
 let monitorFrame: number | null = null;
 let monitorBuffer: Float32Array | null = null;
+
+let originalGetUserMedia: typeof navigator.mediaDevices.getUserMedia | null = null;
+let outgoingGraphs = new Set<OutgoingGraph>();
+let outgoingCleanupTimer: number | null = null;
+let bypassOutgoingProcessing = false;
 const monitorListeners = new Set<() => void>();
 
 function notifyMonitorListeners() {
@@ -48,9 +65,159 @@ function setMonitorLevel(level: number) {
     notifyMonitorListeners();
 }
 
+function numberSetting(name: string, fallback: number, min: number, max: number) {
+    const value = Number((settings.store as any)[name]);
+    return Number.isFinite(value) ? Math.max(min, Math.min(max, value)) : fallback;
+}
+
 function monitorGainValue(): number {
-    const value = Number((settings.store as any).monitorGain);
-    return Number.isFinite(value) ? Math.max(0.5, Math.min(3, value)) : 1;
+    return numberSetting("monitorGain", 1, 0.5, 3);
+}
+
+function outgoingGainValue(): number {
+    return numberSetting("outgoingBoost", 1.25, 1, 2.5);
+}
+
+function outgoingBoostEnabled(): boolean {
+    return (settings.store as any).outgoingBoostEnabled === true;
+}
+
+function audioContextConstructor(): AudioContextConstructor | null {
+    return (window.AudioContext ?? (window as any).webkitAudioContext) as AudioContextConstructor | null;
+}
+
+function calculateLevel(analyser: AnalyserNode, buffer: Float32Array) {
+    analyser.getFloatTimeDomainData(buffer);
+    let sum = 0;
+    let peak = 0;
+    for (const sample of buffer) {
+        sum += sample * sample;
+        peak = Math.max(peak, Math.abs(sample));
+    }
+    const rms = Math.sqrt(sum / buffer.length);
+    return Math.min(1, Math.max(rms * 4, peak * 0.7));
+}
+
+function configureVoiceCompressor(compressor: DynamicsCompressorNode) {
+    // A conservative limiter keeps a 1-2.5x boost from producing harsh digital
+    // clipping. Discord's own voice processing remains in the capture chain.
+    compressor.threshold.value = -6;
+    compressor.knee.value = 10;
+    compressor.ratio.value = 12;
+    compressor.attack.value = 0.003;
+    compressor.release.value = 0.12;
+}
+
+function releaseGraph(graph: OutgoingGraph, stopInput = true) {
+    if (graph.closed) return;
+    graph.closed = true;
+    outgoingGraphs.delete(graph);
+    graph.analyser.disconnect();
+    graph.compressor.disconnect();
+    graph.gain.disconnect();
+    try {
+        // The output keeps the caller's video tracks. Stopping every input
+        // track here would unexpectedly turn off a webcam when the voice
+        // capture graph is released; only retire the audio source we own.
+        if (stopInput) graph.input.getAudioTracks().forEach(track => track.stop());
+    } catch {}
+    if (graph.context.state !== "closed") void graph.context.close().catch(() => undefined);
+}
+
+function cleanupOutgoingGraphs() {
+    for (const graph of outgoingGraphs) {
+        if (graph.closed || graph.output.getAudioTracks().every(track => track.readyState === "ended") || graph.input.getTracks().every(track => track.readyState === "ended")) {
+            releaseGraph(graph);
+        }
+    }
+    if (outgoingGraphs.size === 0 && outgoingCleanupTimer !== null) {
+        window.clearInterval(outgoingCleanupTimer);
+        outgoingCleanupTimer = null;
+    }
+}
+
+function ensureOutgoingCleanupTimer() {
+    if (outgoingCleanupTimer === null) outgoingCleanupTimer = window.setInterval(cleanupOutgoingGraphs, 5000);
+}
+
+function updateOutgoingGraphGain() {
+    const target = outgoingBoostEnabled() ? outgoingGainValue() : 1;
+    for (const graph of outgoingGraphs) {
+        if (graph.closed) continue;
+        graph.gain.gain.setTargetAtTime(target, graph.context.currentTime, 0.03);
+    }
+}
+
+async function createOutgoingGraph(input: MediaStream): Promise<MediaStream> {
+    const Constructor = audioContextConstructor();
+    const audioTracks = input.getAudioTracks();
+    if (!Constructor || audioTracks.length === 0 || !outgoingBoostEnabled()) return input;
+
+    try {
+        const context = new Constructor({ latencyHint: "interactive" });
+        const source = context.createMediaStreamSource(new MediaStream(audioTracks));
+        const gain = context.createGain();
+        const compressor = context.createDynamicsCompressor();
+        const analyser = context.createAnalyser();
+        const destination = context.createMediaStreamDestination();
+        analyser.fftSize = 1024;
+        analyser.smoothingTimeConstant = 0.72;
+        gain.gain.setValueAtTime(outgoingGainValue(), context.currentTime);
+        configureVoiceCompressor(compressor);
+
+        source.connect(gain);
+        gain.connect(compressor);
+        compressor.connect(analyser);
+        analyser.connect(destination);
+
+        const output = new MediaStream([
+            ...input.getVideoTracks(),
+            ...destination.stream.getAudioTracks()
+        ]);
+        const graph: OutgoingGraph = { context, input, output, gain, compressor, analyser, closed: false };
+        outgoingGraphs.add(graph);
+        ensureOutgoingCleanupTimer();
+        try {
+            await context.resume();
+            if (context.state !== "running") throw new Error(`Audio context is ${context.state}`);
+        } catch (error) {
+            // Autoplay policy can refuse a new AudioContext outside a user
+            // gesture. Never hand Discord a suspended destination (which can
+            // look like a dead microphone); restore the native stream instead.
+            releaseGraph(graph, false);
+            console.warn("[DMMicMonitor] outgoing boost unavailable; using Discord's native stream", error);
+            return input;
+        }
+
+        for (const track of input.getAudioTracks()) {
+            track.addEventListener("ended", () => releaseGraph(graph), { once: true });
+        }
+        return output;
+    } catch (error) {
+        console.warn("[DMMicMonitor] outgoing microphone boost could not start; using Discord's native stream", error);
+        return input;
+    }
+}
+
+function installOutgoingCapture() {
+    if (originalGetUserMedia || !navigator.mediaDevices?.getUserMedia) return;
+    originalGetUserMedia = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+    const nativeGetUserMedia = originalGetUserMedia;
+    navigator.mediaDevices.getUserMedia = async constraints => {
+        const stream = await nativeGetUserMedia(constraints);
+        if (bypassOutgoingProcessing || (globalThis as any).__dmScreenShareAudioCapture === true || !constraints?.audio || !outgoingBoostEnabled()) return stream;
+        return createOutgoingGraph(stream);
+    };
+}
+
+function uninstallOutgoingCapture() {
+    if (originalGetUserMedia && navigator.mediaDevices) navigator.mediaDevices.getUserMedia = originalGetUserMedia;
+    originalGetUserMedia = null;
+    for (const graph of outgoingGraphs) releaseGraph(graph);
+    if (outgoingCleanupTimer !== null) {
+        window.clearInterval(outgoingCleanupTimer);
+        outgoingCleanupTimer = null;
+    }
 }
 
 function releaseAudioGraph() {
@@ -88,17 +255,7 @@ function startMeter(run: number) {
 
     const tick = () => {
         if (run !== monitorRun || monitorAnalyser !== analyser) return;
-        analyser.getFloatTimeDomainData(buffer);
-        let sum = 0;
-        let peak = 0;
-        for (const sample of buffer) {
-            sum += sample * sample;
-            peak = Math.max(peak, Math.abs(sample));
-        }
-        const rms = Math.sqrt(sum / buffer.length);
-        // A combined RMS/peak display is easier to read for normal speech
-        // than a raw waveform amplitude and still reacts to loud peaks.
-        setMonitorLevel(Math.min(1, Math.max(rms * 4, peak * 0.7)));
+        setMonitorLevel(calculateLevel(analyser, buffer));
         monitorFrame = window.requestAnimationFrame(tick);
     };
 
@@ -111,27 +268,32 @@ async function startMonitor() {
     setMonitorState("starting");
 
     try {
-        if (!navigator.mediaDevices?.getUserMedia) throw new Error("This client does not expose microphone capture.");
-        const AudioContextCtor = window.AudioContext ?? (window as any).webkitAudioContext;
-        if (!AudioContextCtor) throw new Error("This client does not expose an audio monitor.");
+        if (!originalGetUserMedia) throw new Error("Microphone capture is not ready yet.");
+        const Constructor = audioContextConstructor();
+        if (!Constructor) throw new Error("This client does not expose an audio monitor.");
 
-        // Echo cancellation and noise suppression protect speakers if a user
-        // accidentally enables this without headphones. Headphones are still
-        // strongly recommended. Discord's own outgoing stream is untouched.
-        const stream = await navigator.mediaDevices.getUserMedia({
-            audio: {
-                channelCount: 1,
-                echoCancellation: true,
-                noiseSuppression: true,
-                autoGainControl: false
-            }
-        });
+        // This is the optional local sidetone capture. Bypass the outgoing
+        // wrapper so the monitor does not recursively create a second graph.
+        bypassOutgoingProcessing = true;
+        let stream: MediaStream;
+        try {
+            stream = await originalGetUserMedia({
+                audio: {
+                    channelCount: 1,
+                    echoCancellation: true,
+                    noiseSuppression: true,
+                    autoGainControl: false
+                }
+            });
+        } finally {
+            bypassOutgoingProcessing = false;
+        }
         if (run !== monitorRun || !(settings.store as any).monitorEnabled) {
-            for (const track of stream.getTracks()) track.stop();
+            stream.getTracks().forEach(track => track.stop());
             return;
         }
 
-        const context: AudioContext = new AudioContextCtor();
+        const context = new Constructor({ latencyHint: "interactive" });
         await context.resume().catch(() => undefined);
         const source = context.createMediaStreamSource(stream);
         const gain = context.createGain();
@@ -140,11 +302,7 @@ async function startMonitor() {
         analyser.fftSize = 1024;
         analyser.smoothingTimeConstant = 0.72;
         gain.gain.setValueAtTime(monitorGainValue(), context.currentTime);
-        compressor.threshold.value = -7;
-        compressor.knee.value = 12;
-        compressor.ratio.value = 8;
-        compressor.attack.value = 0.004;
-        compressor.release.value = 0.18;
+        configureVoiceCompressor(compressor);
 
         source.connect(gain);
         gain.connect(compressor);
@@ -160,7 +318,7 @@ async function startMonitor() {
         setMonitorState("running");
         startMeter(run);
         Toasts.show({
-            message: "🎙️ Mic monitor enabled — headphones recommended; outgoing Discord mic unchanged",
+            message: "🎙️ Mic monitor enabled — headphones recommended; outgoing boost is separate",
             type: Toasts.Type.SUCCESS,
             id: Toasts.genId(),
             options: { duration: 2200, position: Toasts.Position.TOP }
@@ -185,14 +343,24 @@ function onMonitorEnabledChange(enabled: boolean) {
 }
 
 function onMonitorGainChange(value: number) {
-    if (monitorGain && monitorContext) {
-        monitorGain.gain.setTargetAtTime(value, monitorContext.currentTime, 0.02);
-    }
+    if (monitorGain && monitorContext) monitorGain.gain.setTargetAtTime(value, monitorContext.currentTime, 0.02);
+}
+
+function onOutgoingBoostChange() {
+    updateOutgoingGraphGain();
+    Toasts.show({
+        message: outgoingBoostEnabled()
+            ? "🎙️ Outgoing mic boost changed — active voice uses it now; reconnect voice if needed"
+            : "🎙️ Outgoing mic boost disabled",
+        type: Toasts.Type.MESSAGE,
+        id: Toasts.genId(),
+        options: { duration: 2200, position: Toasts.Position.TOP }
+    });
 }
 
 function MicMonitorShowroom() {
     const [, forceRender] = React.useState(0);
-    const live = settings.use(["monitorEnabled", "monitorGain", "showMeter"]);
+    const live = settings.use(["outgoingBoostEnabled", "outgoingBoost", "monitorEnabled", "monitorGain", "showMeter"]);
 
     React.useEffect(() => {
         const update = () => forceRender(value => value + 1);
@@ -200,8 +368,9 @@ function MicMonitorShowroom() {
         return () => monitorListeners.delete(update);
     }, []);
 
-    const enabled = live.monitorEnabled === true;
-    const gain = Number(live.monitorGain ?? 1);
+    const boostEnabled = live.outgoingBoostEnabled === true;
+    const boost = Number(live.outgoingBoost ?? 1.25);
+    const monitorGain = Number(live.monitorGain ?? 1);
     const stateLabel = monitorState === "running"
         ? "Running"
         : monitorState === "starting"
@@ -222,20 +391,24 @@ function MicMonitorShowroom() {
             color: "#effcff"
         }
     },
-    React.createElement("div", { style: { fontWeight: 800, fontSize: 13 } }, "🎙️ Microphone sidetone + level monitor"),
+    React.createElement("div", { style: { fontWeight: 800, fontSize: 13 } }, "🎙️ Microphone boost + sidetone monitor"),
     React.createElement("div", { style: { fontSize: 11, lineHeight: 1.45, color: "#bfeef4" } },
-        "Hear a local preview while you tune the monitor gain. This does not change Discord's outgoing microphone volume. Use headphones to prevent feedback."),
+        "Outgoing boost changes the microphone track Discord sends to other people. The separate monitor lets you hear yourself while tuning it. Screen-share audio is not intercepted. Use headphones to prevent feedback."),
+    React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8, fontSize: 11 } },
+        React.createElement("span", { style: { width: 8, height: 8, borderRadius: "50%", background: boostEnabled ? "#4cf78a" : "#778399" } }),
+        React.createElement("span", null, boostEnabled ? "Outgoing boost enabled" : "Outgoing boost off"),
+        React.createElement("span", { style: { marginLeft: "auto", color: "#ffe28a", fontWeight: 700 } }, `${boost.toFixed(2)}x outgoing`)),
+    React.createElement("div", { style: { fontSize: 10, color: "#9fb3c2" } }, "Reconnect voice after first enabling this if Discord already has an active microphone stream."),
     React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8, fontSize: 11 } },
         React.createElement("span", { style: { width: 8, height: 8, borderRadius: "50%", background: monitorState === "running" ? "#4cf78a" : monitorState === "error" ? "#ff6b83" : "#778399" } }),
         React.createElement("span", null, stateLabel),
-        React.createElement("span", { style: { marginLeft: "auto", color: "#ffe28a", fontWeight: 700 } }, `${gain.toFixed(1)}x monitor gain`)),
+        React.createElement("span", { style: { marginLeft: "auto", color: "#ffe28a", fontWeight: 700 } }, `${monitorGain.toFixed(1)}x monitor`)),
     live.showMeter !== false && React.createElement("div", null,
         React.createElement("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 10, color: "#bfeef4", marginBottom: 4 } },
-            React.createElement("span", null, "Live monitor level"),
+            React.createElement("span", null, "Live microphone level"),
             React.createElement("span", null, `${Math.round(monitorLevel * 100)}%`)),
         React.createElement("div", { style: { height: 9, borderRadius: 999, overflow: "hidden", background: "rgba(0,0,0,.38)", border: "1px solid rgba(255,255,255,.12)" } },
-            React.createElement("div", { style: { width: meterWidth, height: "100%", borderRadius: 999, background: "linear-gradient(90deg, #48e0c2, #f7e36e 72%, #ff6b83)", transition: "width 80ms linear" } }))),
-    React.createElement("div", { style: { fontSize: 10, color: "#9fb3c2" } }, enabled ? "Change Monitor gain below while speaking to hear the difference." : "Enable Monitor sidetone below to request microphone permission."));
+            React.createElement("div", { style: { width: meterWidth, height: "100%", borderRadius: 999, background: "linear-gradient(90deg, #48e0c2, #f7e36e 72%, #ff6b83)", transition: "width 80ms linear" } }))));
 }
 
 const settings = definePluginSettings({
@@ -244,9 +417,23 @@ const settings = definePluginSettings({
         description: "",
         component: MicMonitorShowroom
     },
+    outgoingBoostEnabled: {
+        type: OptionType.BOOLEAN,
+        description: "Boost the microphone track sent to other people. Applies only to Discord microphone capture, never screen-share audio. Reconnect voice after enabling if already in a call.",
+        default: false,
+        onChange: onOutgoingBoostChange
+    },
+    outgoingBoost: {
+        type: OptionType.SLIDER,
+        description: "Outgoing microphone multiplier. Start at 1.25x and ask a recipient to check for clarity before using more.",
+        markers: [1, 1.1, 1.25, 1.5, 1.75, 2, 2.5],
+        default: 1.25,
+        stickToMarkers: false,
+        onChange: onOutgoingBoostChange
+    },
     monitorEnabled: {
         type: OptionType.BOOLEAN,
-        description: "Hear your microphone locally through the monitor. Off by default; headphones are recommended. Discord's outgoing microphone stream is not modified.",
+        description: "Hear your microphone locally through the monitor. Off by default; headphones are recommended to avoid feedback.",
         default: false,
         onChange: onMonitorEnabledChange
     },
@@ -267,15 +454,17 @@ const settings = definePluginSettings({
 
 export default definePlugin({
     name: "DMMicMonitor",
-    description: "🎙️ Optional local microphone sidetone with a live level meter and adjustable monitor gain. Uses a separate local audio path and never replaces Discord's outgoing microphone stream.",
+    description: "🎙️ Optional outgoing microphone boost plus local sidetone and level meter. Boost is limited and screen-share audio is left untouched.",
     authors: [{ name: "Diggy", id: 0n }],
     settings,
 
     start() {
-        if ((settings.store as any).monitorEnabled) void startMonitor();
+        installOutgoingCapture();
+        if ((settings.store.monitorEnabled as boolean)) void startMonitor();
     },
 
     stop() {
         stopMonitor();
+        uninstallOutgoingCapture();
     }
 });

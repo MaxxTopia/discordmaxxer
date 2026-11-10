@@ -668,10 +668,10 @@ function renderPanelHTML(): string {
         </div>
         <div class="dm-hub-info">Bind mute, deafen, and screen share without digging through the full plugin list. The default global shortcuts are Ctrl+Alt+M, Ctrl+Alt+D, and Ctrl+Alt+S.</div>
         <div class="dm-hub-row">
-            <div class="dm-hub-row-label">🎙️ Mic sidetone &amp; level monitor</div>
+            <div class="dm-hub-row-label">🎙️ Mic boost, sidetone &amp; level monitor</div>
             <button class="dm-hub-action-btn" data-action="open-dm-mic-monitor">Open</button>
         </div>
-        <div class="dm-hub-info">Hear a local microphone preview and watch a live level meter while you tune the monitor gain. It is off by default and does not change Discord's outgoing mic.</div>
+        <div class="dm-hub-info">Open the mic panel to boost the microphone other people hear, or enable the separate local preview and level meter. Outgoing boost is off by default; reconnect voice after first enabling it. Screen-share audio is not intercepted.</div>
         <div class="dm-hub-section">Maintenance</div>
         <div class="dm-hub-row">
             <div class="dm-hub-row-label">♻️ Reload Discord (frees RAM)</div>
