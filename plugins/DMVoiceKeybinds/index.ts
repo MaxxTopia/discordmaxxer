@@ -129,13 +129,61 @@ interface ParsedHotkey {
     key: string;
 }
 
+const KEY_ALIASES: Record<string, string> = {
+    control: "control",
+    esc: "escape",
+    return: "enter",
+    spacebar: " ",
+    space: " ",
+    left: "arrowleft",
+    right: "arrowright",
+    up: "arrowup",
+    down: "arrowdown"
+};
+
+const NAMED_KEYS = new Set([
+    "backspace",
+    "delete",
+    "end",
+    "enter",
+    "escape",
+    "home",
+    "insert",
+    "pagedown",
+    "pageup",
+    "tab",
+    "arrowdown",
+    "arrowleft",
+    "arrowright",
+    "arrowup",
+    "capslock",
+    "numlock",
+    "scrolllock",
+    "printscreen",
+    " ",
+    "plus"
+]);
+
+function normalizeKeyToken(key: string): string {
+    const raw = key.toLowerCase();
+    const normalized = raw.length === 1 ? raw : raw.trim();
+    return KEY_ALIASES[normalized] ?? normalized;
+}
+
+function isValidKeyToken(key: string): boolean {
+    if (NAMED_KEYS.has(key) || /^(?:f(?:[1-9]|1[0-2]))$/.test(key)) return true;
+    // A single printable key, including punctuation such as ], [, /, or -.
+    // Do not accept + because it is the hotkey separator.
+    return Array.from(key).length === 1 && !/[\\s+]/.test(key);
+}
+
 function parseHotkey(hk: string): ParsedHotkey {
-    const parts = hk.toLowerCase().split("+").map(s => s.trim());
+    const parts = hk.toLowerCase().split("+").map(s => s.trim()).filter(Boolean);
     return {
         ctrl: parts.includes("ctrl") || parts.includes("control"),
         alt: parts.includes("alt"),
         shift: parts.includes("shift"),
-        key: parts[parts.length - 1] ?? ""
+        key: normalizeKeyToken(parts[parts.length - 1] ?? "")
     };
 }
 
@@ -145,14 +193,11 @@ function validateHotkey(value: string): boolean | string {
     const modifiers = parts.slice(0, -1);
     const allowed = new Set(["ctrl", "control", "alt", "shift"]);
 
-    if (parts.length < 2 || !modifiers.some(m => allowed.has(m))) {
-        return "Use a modifier plus a key, for example ctrl+alt+m.";
-    }
     if (modifiers.some(m => !allowed.has(m))) {
         return "Supported modifiers are ctrl, alt, and shift.";
     }
-    if (!/^(?:[a-z0-9]|f(?:[1-9]|1[0-2]))$/i.test(key)) {
-        return "The final key must be A-Z, 0-9, or F1-F12.";
+    if (!key || allowed.has(key) || !isValidKeyToken(normalizeKeyToken(key))) {
+        return "Use a single key like ] or a modifier combo like ctrl+alt+m.";
     }
     return true;
 }
@@ -167,7 +212,7 @@ function matches(e: KeyboardEvent, hk: ParsedHotkey): boolean {
         e.altKey === hk.alt &&
         e.shiftKey === hk.shift &&
         !e.metaKey &&
-        e.key.toLowerCase() === hk.key
+        normalizeKeyToken(e.key) === hk.key
     );
 }
 
@@ -182,21 +227,21 @@ function reapplyKeybinds() {
 const settings = definePluginSettings({
     muteHotkey: {
         type: OptionType.STRING,
-        description: "Toggle self-mute. Use ctrl+alt+m format; supported modifiers are ctrl, alt, and shift. Works in-game when OS-level hotkeys are on.",
+        description: "Toggle self-mute. Use a single key like ] or a combo like ctrl+alt+m. Works in-game when OS-level hotkeys are on.",
         default: "ctrl+alt+m",
         isValid: validateHotkey,
         onChange: reapplyKeybinds
     },
     deafenHotkey: {
         type: OptionType.STRING,
-        description: "Toggle self-deafen. Use ctrl+alt+d format; supported modifiers are ctrl, alt, and shift. Works in-game when OS-level hotkeys are on.",
+        description: "Toggle self-deafen. Use a single key like ] or a combo like ctrl+alt+d. Works in-game when OS-level hotkeys are on.",
         default: "ctrl+alt+d",
         isValid: validateHotkey,
         onChange: reapplyKeybinds
     },
     screenshareHotkey: {
         type: OptionType.STRING,
-        description: "Open Discord's native screen-share controls. Use ctrl+alt+s format; this works in-game when OS-level hotkeys are on.",
+        description: "Open Discord's native screen-share controls. Use a single key like ] or a combo like ctrl+alt+s.",
         default: "ctrl+alt+s",
         isValid: validateHotkey,
         onChange: reapplyKeybinds

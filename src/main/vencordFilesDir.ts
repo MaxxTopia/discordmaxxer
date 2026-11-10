@@ -15,6 +15,7 @@ import { State } from "./settings";
 const REQUIRED_BUILD_PLUGINS = [
     "TournamentMode",
     "DMVoiceKeybinds",
+    "DMMicMonitor",
     "DMVoiceGuard",
     "DMHub",
     "DMTierFlair",

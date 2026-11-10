@@ -548,6 +548,29 @@ function openDMVoiceKeybindSettings() {
     }
 }
 
+function openDMMicMonitorSettings() {
+    if (!ensurePluginEnabled("DMMicMonitor")) {
+        showHubToast("Mic monitor could not be enabled in this client build.", Toasts.Type.FAILURE, 5000);
+        return;
+    }
+
+    const plugin = vencord()?.Plugins?.plugins?.DMMicMonitor;
+    if (plugin) {
+        try {
+            openPluginModal(plugin);
+            return;
+        } catch (e) {
+            console.warn("[DiscordmaxxerHub] could not open DMMicMonitor modal:", e);
+        }
+    }
+
+    try {
+        vencord()?.Webpack?.Common?.SettingsRouter?.openUserSettings?.("vencord_plugins");
+    } catch (e) {
+        console.warn("[DiscordmaxxerHub] could not open mic monitor settings:", e);
+    }
+}
+
 function renderPanelHTML(): string {
     const tier = getMyTier();
     const tierLabel = TIER_LABELS[tier];
@@ -644,6 +667,11 @@ function renderPanelHTML(): string {
             <button class="dm-hub-action-btn" data-action="open-dm-voice-keybinds">Open</button>
         </div>
         <div class="dm-hub-info">Bind mute, deafen, and screen share without digging through the full plugin list. The default global shortcuts are Ctrl+Alt+M, Ctrl+Alt+D, and Ctrl+Alt+S.</div>
+        <div class="dm-hub-row">
+            <div class="dm-hub-row-label">🎙️ Mic sidetone &amp; level monitor</div>
+            <button class="dm-hub-action-btn" data-action="open-dm-mic-monitor">Open</button>
+        </div>
+        <div class="dm-hub-info">Hear a local microphone preview and watch a live level meter while you tune the monitor gain. It is off by default and does not change Discord's outgoing mic.</div>
         <div class="dm-hub-section">Maintenance</div>
         <div class="dm-hub-row">
             <div class="dm-hub-row-label">♻️ Reload Discord (frees RAM)</div>
@@ -742,6 +770,11 @@ function ensurePanelRoot() {
         if (t.dataset.action === "open-dm-voice-keybinds") {
             panelRoot!.classList.add("hidden");
             openDMVoiceKeybindSettings();
+            return;
+        }
+        if (t.dataset.action === "open-dm-mic-monitor") {
+            panelRoot!.classList.add("hidden");
+            openDMMicMonitorSettings();
             return;
         }
         toggleQuickSetting(t);

@@ -4328,3 +4328,31 @@ Release/proof boundary:
   other profiles; display-name/theme rendering; ad trimming; composer send
   and paste; and screenshare quality/audio. Report any failure with the
   version shown in the About screen and the exact path that failed.
+
+## 2026-11-10 - Mic monitor and single-key keybind candidate
+
+- Scope: add an opt-in local microphone sidetone/level monitor and allow
+  DMVoiceKeybinds to accept unmodified keys such as `]`, while retaining
+  modifier combinations. The monitor uses a separate Web Audio graph with a
+  bounded 0.5x-3x local gain, compressor, live level meter, and explicit
+  headphone warning. It never replaces or modifies Discord's outgoing
+  microphone MediaStream; the feature is off until the user enables it.
+- Source changes: added `plugins/DMMicMonitor/index.tsx`, exposed it from
+  DMHub under Voice & input, registered it in defaults/build requirements,
+  and added its health row. DMVoiceKeybinds now normalizes named keys and
+  punctuation and validates both single keys and modifier combinations.
+- Verification: `pnpm overlay:vencord`, `node overlay-scripts/verify-build.mjs`,
+  `pnpm testTypes`, `pnpm verifyPlugins`, `pnpm build`, and `git diff --check`
+  passed. The overlay manifest confirms `DMMicMonitor` is compiled into the
+  renderer. Full `pnpm test` remains blocked by the checkout's existing
+  repository-wide CRLF/header lint baseline; no mass formatting was applied.
+- Release boundary: candidate-only in
+  `E:/discordmaxxer-dmemoji-fix-20261105-b`; public v0.7.131 was not changed,
+  published, or installed. No live microphone, voice-call, screenshare, or
+  account-specific widget acceptance has been claimed.
+- Diggy test owed: open DMHub -> Voice & input -> Mic sidetone & level monitor;
+  enable it with headphones, speak, adjust monitor gain, and confirm the meter
+  moves while a voice-call recipient hears the unchanged outgoing signal.
+  Also test a single-key mute/deafen/share binding. Existing Spotify modal,
+  Board/widget hydration, actual screenshare auto-start, and other runtime
+  regressions remain separate acceptance gates.
