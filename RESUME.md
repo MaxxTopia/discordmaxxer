@@ -1,5 +1,66 @@
 # Discordmaxxer — RESUME
 
+## 2026-11-10 — v0.7.132 public release: opt-in outgoing microphone boost
+
+Scope: add a guarded microphone boost that changes the track other voice
+participants hear, while keeping local sidetone separate and leaving
+screen-share capture untouched.
+
+Implementation:
+- `DMMicMonitor` now has an opt-in outgoing boost from 1.0x to 2.5x, with a
+  compressor/limiter before the processed microphone track is returned to
+  Discord's voice path. The default remains off.
+- Local sidetone and the level meter remain separate controls. The monitor
+  path does not feed back into the outgoing graph.
+- If Web Audio cannot start, the wrapper falls back to the original native
+  microphone stream instead of returning silence. Camera tracks are preserved
+  when the outgoing graph is released.
+- Screen-share capture is explicitly marked and excluded from the microphone
+  processing path, including the Linux compatibility loopback path.
+
+Verification:
+- `pnpm testTypes` passed.
+- `pnpm verifyPlugins` passed; all registered plugin IDs resolve.
+- `node --test packages/winaudio/test.js` passed all four native audio tests.
+- Strict Vencord overlay build and `node overlay-scripts/verify-build.mjs`
+  passed for manifest/source-fingerprint version `0.7.132`.
+- `pnpm build` passed.
+- GitHub Actions release run `42905355669` passed every step, including
+  Electron Builder, release-note attachment, and release notification.
+- Public release `v0.7.132` is not a draft or prerelease and serves the
+  installer, blockmap, Windows zip, arm64 zip, and `latest.yml` updater
+  manifest. The manifest reports version `0.7.132` and installer size
+  `211902801` bytes.
+
+Proof boundary:
+- GitHub/public source and installer proof is complete. The local
+  `electron-builder` directory and Windows package commands did not return
+  after reaching their packaging stage in this worktree; the successful CI
+  release workflow is the authoritative package proof.
+- Automated tests prove that the outgoing mic track is routed through the
+  boost and that screen-share capture is not intercepted. They cannot prove
+  perceived loudness or clarity to another person, clipping behavior on every
+  device, or the updater result on both PCs.
+
+Diggy acceptance test:
+- Update both PCs to `v0.7.132` and confirm the version on the startup/about
+  surface.
+- Open DMHub → Voice & input → `Mic boost, sidetone & level monitor`. Enable
+  outgoing boost at 1.25x, reconnect voice, and have another account compare
+  boost off/on. Confirm it is louder without clipping, pumping, or robotic
+  artifacts.
+- Use headphones for sidetone, verify the meter moves, then screenshare
+  Fortnite and a YouTube video at 720p and 1080p/60fps. Confirm the selected
+  source audio is unchanged and Discord audio is not added.
+- Recheck the release regressions: message/image right-click menus and copy,
+  paste and send controls, attachment preview, folder expansion, foreign
+  widgets/skins, Spotify modal, DMTrim, display-name styling, startup, and
+  update without an unexpected sign-in.
+
+Next action: collect the recipient-side voice result from both PCs. If loudness
+or clarity is wrong, tune the gain/compressor from that evidence rather than
+claiming the source wiring alone proves the user-facing result.
+
 ## 2026-11-08 — foreign-profile store hydration and bounded retry candidate
 
 Scope: make widget skins appear on other users' profile popouts when Discord's
