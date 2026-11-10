@@ -68,6 +68,189 @@ if (actualVencordCommit !== VENCORD_SOURCE_PIN.commit) {
 }
 
 const PATCHES = [
+    // ── SpotifyControls: fail closed while Discord's Spotify modules load ──
+    // Discord can mount the account panel before the Spotify webpack exports
+    // exist. The upstream store performed the lookup eagerly and then called
+    // through an unavailable proxy, which made the ErrorBoundary show
+    // "Failed to render Spotify Modal". Keep the player mounted and make
+    // controls no-op until Discord exposes a usable socket/API pair.
+    {
+        file: "src/plugins/spotifyControls/SpotifyStore.ts",
+        marker: "Discordmaxxer: Spotify module lookup is fail-closed.",
+        find:
+            '    const SpotifySocket = findByProps("getActiveSocketAndDevice");\n' +
+            '    const SpotifyAPI = findByPropsLazy("vcSpotifyMarker");',
+        replace:
+            '    // Discord can expose Flux before the Spotify webpack modules are ready.\n' +
+            '    // Do not resolve either module while the store is constructed: a lazy\n' +
+            '    // webpack proxy can still throw later when a property is read.\n' +
+            '    // Resolve them only inside a guarded request.\n' +
+            '    const getSpotifySocket = () => {\n' +
+            '        try { return findByProps("getActiveSocketAndDevice"); }\n' +
+            '        catch (error) {\n' +
+            '            console.warn("[Discordmaxxer] Spotify socket lookup unavailable", error);\n' +
+            '            return null;\n' +
+            '        }\n' +
+            '    };\n' +
+            '    const getSpotifyAPI = () => {\n' +
+            '        try { return findByPropsLazy("vcSpotifyMarker"); }\n' +
+            '        catch (error) {\n' +
+            '            console.warn("[Discordmaxxer] Spotify API lookup unavailable", error);\n' +
+            '            return null;\n' +
+            '        }\n' +
+            '    };'
+    },
+    {
+        file: "src/plugins/spotifyControls/SpotifyStore.ts",
+        marker: "Discordmaxxer: Spotify requests are fail-closed.",
+        find:
+            '            const { socket } = SpotifySocket.getActiveSocketAndDevice();\n' +
+            '            return SpotifyAPI[method](socket.accountId, socket.accessToken, {\n' +
+            '                url: API_BASE + route,\n' +
+            '                ...data\n' +
+            '            });',
+        replace:
+            '            try {\n' +
+            '                const spotifySocket = getSpotifySocket();\n' +
+            '                const spotifyAPI = getSpotifyAPI();\n' +
+            '                const active = spotifySocket?.getActiveSocketAndDevice?.();\n' +
+            '                const socket = active?.socket;\n' +
+            '                const request = spotifyAPI?.[method];\n' +
+            '                if (!socket?.accountId || !socket?.accessToken || typeof request !== "function") {\n' +
+            '                    console.warn("[Discordmaxxer] Spotify connection is not ready");\n' +
+            '                    return Promise.resolve();\n' +
+            '                }\n' +
+            '                return request.call(spotifyAPI, socket.accountId, socket.accessToken, {\n' +
+            '                    url: API_BASE + route,\n' +
+            '                    ...data\n' +
+            '                });\n' +
+            '            } catch (error) {\n' +
+            '                console.warn("[Discordmaxxer] Spotify request skipped", error);\n' +
+            '                return Promise.resolve();\n' +
+            '            }'
+    },
+    // ── SpotifyControls: normalize partial player state before render ──
+    {
+        file: "src/plugins/spotifyControls/SpotifyStore.ts",
+        marker: "Discordmaxxer: Spotify track validation helper.",
+        alreadyAppliedWhen: content => content.includes("Discordmaxxer: Spotify track validation helper."),
+        find: "    const store = new SpotifyStore(FluxDispatcher, {",
+        replace:
+            "    // Discordmaxxer: Spotify track validation helper.\n" +
+            "    // Discord can dispatch a partial player payload while Spotify is\n" +
+            "    // reconnecting. Keep malformed state out of React so the account\n" +
+            "    // panel does not fall into the plugin ErrorBoundary.\n" +
+            "    const normalizeTrack = (candidate: unknown): Track | null => {\n" +
+            "        if (!candidate || typeof candidate !== \"object\") return null;\n" +
+            "        const track = candidate as any;\n" +
+            "        const album = track.album;\n" +
+            "        const image = album?.image;\n" +
+            "        const artists = track.artists;\n" +
+            "        if (typeof track.id !== \"string\" || typeof track.name !== \"string\" ||\n" +
+            "            !Number.isFinite(track.duration) || !album || typeof album !== \"object\" ||\n" +
+            "            typeof album.id !== \"string\" || typeof album.name !== \"string\" ||\n" +
+            "            !image || typeof image !== \"object\" || typeof image.url !== \"string\" ||\n" +
+            "            !Array.isArray(artists) || artists.some((artist: any) => !artist || typeof artist.name !== \"string\")) {\n" +
+            "            return null;\n" +
+            "        }\n" +
+            "        return track as Track;\n" +
+            "    };\n" +
+            "\n" +
+            "    const normalizeRepeat = (value: unknown): Repeat =>\n" +
+            "        value === \"track\" || value === \"context\" ? value : \"off\";\n" +
+            "\n" +
+            "    const store = new SpotifyStore(FluxDispatcher, {"
+    },
+    {
+        file: "src/plugins/spotifyControls/SpotifyStore.ts",
+        marker: "Discordmaxxer: Spotify track dispatch normalization.",
+        find: "            store.track = e.track;",
+        replace: "            store.track = normalizeTrack(e.track);"
+    },
+    {
+        file: "src/plugins/spotifyControls/SpotifyStore.ts",
+        marker: "Discordmaxxer: Spotify repeat dispatch normalization.",
+        find: '            store.repeat = e.actual_repeat || "off";',
+        replace: "            store.repeat = normalizeRepeat(e.actual_repeat);"
+    },
+    {
+        file: "src/plugins/spotifyControls/PlayerComponent.tsx",
+        marker: "Discordmaxxer: Spotify repeat render normalization.",
+        find:
+            "    const [nextRepeat, repeatClassName] = (() => {\n" +
+            "        switch (repeat) {\n" +
+            '            case "off": return ["context", "repeat-off"] as const;\n' +
+            '            case "context": return ["track", "repeat-context"] as const;\n' +
+            '            case "track": return ["off", "repeat-track"] as const;\n' +
+            "            default: throw new Error(`Invalid repeat state ${repeat}`);\n" +
+            "        }\n" +
+            "    })();",
+        replace:
+            "    // Discord may briefly send a boolean or an unknown repeat value\n" +
+            "    // during reconnect. Treat it as off instead of crashing the panel.\n" +
+            "    const safeRepeat = repeat === \"context\" || repeat === \"track\" ? repeat : \"off\";\n" +
+            "    const [nextRepeat, repeatClassName] = (() => {\n" +
+            "        switch (safeRepeat) {\n" +
+            '            case "off": return ["context", "repeat-off"] as const;\n' +
+            '            case "context": return ["track", "repeat-context"] as const;\n' +
+            '            case "track": return ["off", "repeat-track"] as const;\n' +
+            '            default: return ["context", "repeat-off"] as const;\n' +
+            "        }\n" +
+            "    })();"
+    },
+    {
+        file: "src/plugins/spotifyControls/PlayerComponent.tsx",
+        marker: "Discordmaxxer: Spotify seek duration guard.",
+        find:
+            "function SpotifySeekBar() {\n" +
+            "    const { duration } = SpotifyStore.track!;",
+        replace:
+            "function SpotifySeekBar() {\n" +
+            "    // A reconnect can publish a track before its duration arrives.\n" +
+            "    // Keep hooks stable and give SeekBar a safe non-zero range.\n" +
+            "    const rawDuration = SpotifyStore.track?.duration;\n" +
+            "    const duration = Number.isFinite(rawDuration) ? Math.max(0, rawDuration ?? 0) : 0;\n" +
+            "    const seekMax = Math.max(duration, 1);"
+    },
+    {
+        file: "src/plugins/spotifyControls/PlayerComponent.tsx",
+        marker: "Discordmaxxer: Spotify seek range guard.",
+        find: "                maxValue={duration}",
+        replace: "                maxValue={seekMax}"
+    },
+    {
+        file: "src/plugins/spotifyControls/PlayerComponent.tsx",
+        marker: "Discordmaxxer: Spotify player surface marker.",
+        find: '        <div id={cl("player")} style={exportTrackImageStyle}>',
+        replace: '        <div id={cl("player")} data-dm-spotify-surface="true" style={exportTrackImageStyle}>'
+    },
+    {
+        file: "src/plugins/spotifyControls/index.tsx",
+        marker: "Discordmaxxer: Spotify fallback surface marker.",
+        find: '                        <div className="vc-spotify-fallback">',
+        replace: '                        <div className="vc-spotify-fallback" data-dm-spotify-surface="true">'
+    },
+    {
+        file: "src/plugins/spotifyControls/index.tsx",
+        marker: "Discordmaxxer: Spotify slot isolation wrapper.",
+        find:
+            "                <ErrorBoundary\n" +
+            "                    fallback={() => (",
+        replace:
+            "                <div data-dm-spotify-slot=\"true\" className=\"vc-spotify-slot\" style={{ display: \"contents\" }}>\n" +
+            "                    <ErrorBoundary\n" +
+            "                        fallback={() => ("
+    },
+    {
+        file: "src/plugins/spotifyControls/index.tsx",
+        marker: "Discordmaxxer: close Spotify slot isolation wrapper.",
+        find:
+            "                </ErrorBoundary>\n\n                <VencordOriginal {...props} />",
+        replace:
+            "                    </ErrorBoundary>\n" +
+            "                </div>\n\n                <VencordOriginal {...props} />"
+    },
+
     // ── Startup compatibility: Discord's current Webpack export helper ──
     // Newer Discord bundles call n.d(exports, definition, directExports),
     // while Vencord's configurable-export shim historically accepted only
@@ -1050,6 +1233,7 @@ const PATCHES = [
     },
     {
         file: "src/plugins/imageZoom/index.tsx",
+        alreadyAppliedWhen: content => content.includes("Keep Discord's native image context menu authoritative."),
         marker: "Discordmaxxer: keep native image context menus v3",
         find: '    contextMenus: {\n        "image-context": imageContextMenuPatch\n    },\n',
         replace:
@@ -1268,6 +1452,65 @@ const PATCHES = [
             "}\n" +
             "let composerContextMenuRouter: ((event: MouseEvent) => void) | null = null;"
     },
+    // Incremental candidate builds can already contain the image-route flag
+    // without the composer definitions. Converge both states explicitly so a
+    // stale idempotency check cannot leave undefined runtime references.
+    {
+        file: "src/plugins/webContextMenus.web/index.ts",
+        allowOnStable: true,
+        marker: "Discordmaxxer: converge image/composer route definitions.",
+        alreadyAppliedWhen: content => content.includes("let composerContextMenuRouter: ((event: MouseEvent) => void) | null = null;"),
+        find: "const shouldAddImageMenus = () => true;",
+        replace:
+            "// Discordmaxxer: converge image/composer route definitions.\n" +
+            "const shouldAddImageMenus = () => false;\n" +
+            "// Discordmaxxer: route only the composer through Discord's native menu.\n" +
+            "// Message, image, link, and media menus remain on Discord's normal path.\n" +
+            "const shouldAddComposerMenus = () => IS_DISCORD_DESKTOP || IS_VESKTOP || settings.store.addBack;\n" +
+            "function isComposerTarget(event: Event) {\n" +
+            "    const target = event.target as any;\n" +
+            "    return !!target && typeof target.closest === \"function\" && Boolean(target.closest('[contenteditable=\"true\"], textarea, input, [role=\"textbox\"]'));\n" +
+            "}\n" +
+            "let composerContextMenuRouter: ((event: MouseEvent) => void) | null = null;"
+    },
+    {
+        file: "src/plugins/webContextMenus.web/index.ts",
+        allowOnStable: true,
+        marker: "Discordmaxxer: converge image/composer route definitions.",
+        alreadyAppliedWhen: content => content.includes("let composerContextMenuRouter: ((event: MouseEvent) => void) | null = null;"),
+        find: "const shouldAddImageMenus = () => false;",
+        replace:
+            "// Discordmaxxer: converge image/composer route definitions.\n" +
+            "const shouldAddImageMenus = () => false;\n" +
+            "// Discordmaxxer: route only the composer through Discord's native menu.\n" +
+            "// Message, image, link, and media menus remain on Discord's normal path.\n" +
+            "const shouldAddComposerMenus = () => IS_DISCORD_DESKTOP || IS_VESKTOP || settings.store.addBack;\n" +
+            "function isComposerTarget(event: Event) {\n" +
+            "    const target = event.target as any;\n" +
+            "    return !!target && typeof target.closest === \"function\" && Boolean(target.closest('[contenteditable=\"true\"], textarea, input, [role=\"textbox\"]'));\n" +
+            "}\n" +
+            "let composerContextMenuRouter: ((event: MouseEvent) => void) | null = null;"
+    },
+    // Older generated source can retain the compatibility plugin's disabled
+    // flags even after the desktop bridge patches have run. Normalize those
+    // flags on the incremental path; clean source is already handled by the
+    // earlier desktop-aware patches and will skip these as idempotent.
+    {
+        file: "src/plugins/webContextMenus.web/index.ts",
+        allowOnStable: true,
+                marker: "Discordmaxxer: converge native composer plugin defaults.",
+        alreadyAppliedWhen: content => content.includes("enabledByDefault: true,") && content.includes("required: IS_DISCORD_DESKTOP || IS_VESKTOP,"),
+        find: "    enabledByDefault: false,",
+        replace: "    // Discordmaxxer: native composer menu bridge is enabled by default.\n    enabledByDefault: true,"
+    },
+    {
+        file: "src/plugins/webContextMenus.web/index.ts",
+        allowOnStable: true,
+                marker: "Discordmaxxer: converge native composer required flag.",
+        alreadyAppliedWhen: content => content.includes("required: IS_DISCORD_DESKTOP || IS_VESKTOP,"),
+        find: "    required: false,",
+        replace: "    // Discordmaxxer: the narrow composer bridge is required on desktop.\n    required: IS_DISCORD_DESKTOP || IS_VESKTOP,"
+    },
     {
         file: "src/plugins/webContextMenus.web/index.ts",
         allowOnStable: true,
@@ -1403,6 +1646,101 @@ const PATCHES = [
             "        }\n" +
             "    },\n\n" +
             "    stop() {\n" +
+            "        if (!this.changedListeners) return;\n" +
+            "        const callbacks = ctxMenuCallbacks as any;\n" +
+            "        const web = callbacks?.contextMenuCallbackWeb;\n" +
+            "        try {\n" +
+            "            if (composerContextMenuRouter) {\n" +
+            "                window.removeEventListener(\"contextmenu\", composerContextMenuRouter);\n" +
+            "                composerContextMenuRouter = null;\n" +
+            "            }\n" +
+            "            if (typeof web === \"function\") window.addEventListener(\"contextmenu\", web);\n" +
+            "        } catch (error) {\n" +
+            "            console.error(\"[Discordmaxxer] failed to restore web context menu path\", error);\n" +
+            "        }\n" +
+            "        this.changedListeners = false;\n" +
+            "    },"
+    },
+    // The current incremental source already has the safe attachment-image
+    // capture handler, but its old global-listener block does not match the
+    // clean-source hardening patch above. Converge that exact block to the
+    // narrow composer router without touching the image handler.
+    {
+        file: "src/plugins/webContextMenus.web/index.ts",
+        allowOnStable: true,
+        marker: "Discordmaxxer: converge native context menu listeners v2.",
+        alreadyAppliedWhen: content => content.includes("composerContextMenuRouter = router;"),
+        find:
+            "        if (!shouldAddBackMenus()) return;\n" +
+            "        const callbacks = ctxMenuCallbacks as any;\n" +
+            "        const web = callbacks?.contextMenuCallbackWeb;\n" +
+            "        const native = callbacks?.contextMenuCallbackNative;\n" +
+            "        if (typeof web !== \"function\" || typeof native !== \"function\") {\n" +
+            "            console.warn(\"[Discordmaxxer] native context menu callbacks unavailable; keeping Discord web menu path\");\n" +
+            "            this.changedListeners = false;\n" +
+            "            return;\n" +
+            "        }\n" +
+            "        try {\n" +
+            "            window.removeEventListener(\"contextmenu\", web);\n" +
+            "            window.addEventListener(\"contextmenu\", native);\n" +
+            "            this.changedListeners = true;\n" +
+            "        } catch (error) {\n" +
+            "            console.error(\"[Discordmaxxer] failed to install native context menu path\", error);\n" +
+            "            this.changedListeners = false;\n" +
+            "        }\n" +
+            "    },\n\n" +
+            "    stop() {\n" +
+            "        if (imageContextMenuHandler) {\n" +
+            "            window.removeEventListener(\"contextmenu\", imageContextMenuHandler, true);\n" +
+            "            imageContextMenuHandler = null;\n" +
+            "        }\n" +
+            "        if (!this.changedListeners) return;\n" +
+            "        const callbacks = ctxMenuCallbacks as any;\n" +
+            "        const web = callbacks?.contextMenuCallbackWeb;\n" +
+            "        const native = callbacks?.contextMenuCallbackNative;\n" +
+            "        try {\n" +
+            "            if (typeof native === \"function\") window.removeEventListener(\"contextmenu\", native);\n" +
+            "            if (typeof web === \"function\") window.addEventListener(\"contextmenu\", web);\n" +
+            "        } catch (error) {\n" +
+            "            console.error(\"[Discordmaxxer] failed to restore web context menu path\", error);\n" +
+            "        }\n" +
+            "        this.changedListeners = false;\n" +
+            "    },",
+        replace:
+            "        // Discordmaxxer: converge native context menu listeners v2.\n" +
+            "        if (!shouldAddComposerMenus()) return;\n" +
+            "        const callbacks = ctxMenuCallbacks as any;\n" +
+            "        const web = callbacks?.contextMenuCallbackWeb;\n" +
+            "        const native = callbacks?.contextMenuCallbackNative;\n" +
+            "        if (typeof web !== \"function\" || typeof native !== \"function\") {\n" +
+            "            console.warn(\"[Discordmaxxer] native context menu callbacks unavailable; keeping Discord web menu path\");\n" +
+            "            this.changedListeners = false;\n" +
+            "            return;\n" +
+            "        }\n" +
+            "        try {\n" +
+            "            const router = (event: MouseEvent) => {\n" +
+            "                try {\n" +
+            "                    if (isComposerTarget(event)) native(event);\n" +
+            "                    else web(event);\n" +
+            "                } catch (error) {\n" +
+            "                    console.error(\"[Discordmaxxer] context menu route failed; restoring Discord web menu\", error);\n" +
+            "                    web(event);\n" +
+            "                }\n" +
+            "            };\n" +
+            "            composerContextMenuRouter = router;\n" +
+            "            window.removeEventListener(\"contextmenu\", web);\n" +
+            "            window.addEventListener(\"contextmenu\", router);\n" +
+            "            this.changedListeners = true;\n" +
+            "        } catch (error) {\n" +
+            "            console.error(\"[Discordmaxxer] failed to install native context menu path\", error);\n" +
+            "            this.changedListeners = false;\n" +
+            "        }\n" +
+            "    },\n\n" +
+            "    stop() {\n" +
+            "        if (imageContextMenuHandler) {\n" +
+            "            window.removeEventListener(\"contextmenu\", imageContextMenuHandler, true);\n" +
+            "            imageContextMenuHandler = null;\n" +
+            "        }\n" +
             "        if (!this.changedListeners) return;\n" +
             "        const callbacks = ctxMenuCallbacks as any;\n" +
             "        const web = callbacks?.contextMenuCallbackWeb;\n" +
@@ -2212,6 +2550,9 @@ const PATCHES = [
     },
     {
         file: "src/plugins/betterFolders/index.tsx",
+    alreadyAppliedWhen: content =>
+        content.includes("Discordmaxxer: fail open during a renderer transition.") &&
+        content.includes("expandedFolderIds == null"),
         obsoleteWhen: content => content.includes("Discordmaxxer: fail open when expanded folder state is unavailable."),
         marker: "Discordmaxxer: fail open when expanded folder state is unavailable.",
         find: "        if (!isBetterFolders || expandedFolderIds == null) return originalComponent();",
@@ -2631,6 +2972,9 @@ const PATCHES = [
     {
         file: "src/plugins/betterFolders/index.tsx",
         allowOnStable: true,
+        alreadyAppliedWhen: content =>
+            content.includes("Discordmaxxer: BetterFolders normalized ID helpers.") &&
+            content.includes("normalizeFolderId(guildId)"),
         marker: "Discordmaxxer: stable-safe BetterFolders guild lookup.",
         find:
             "function getGuildFolder(id: string) {\n" +
@@ -2770,6 +3114,9 @@ const PATCHES = [
     {
         file: "src/plugins/betterFolders/index.tsx",
         allowOnStable: true,
+        alreadyAppliedWhen: content =>
+            content.includes("Discordmaxxer: fail open during a renderer transition.") &&
+            content.includes("hasFolderId(expandedFolderIds"),
         marker: "Discordmaxxer: stable-safe BetterFolders node guard.",
         find:
             "        if (\n" +
@@ -2825,6 +3172,9 @@ const PATCHES = [
     {
         file: "src/plugins/betterFolders/index.tsx",
         allowOnStable: true,
+        alreadyAppliedWhen: content =>
+            content.includes("Discordmaxxer: BetterFolders normalized ID helpers.") &&
+            content.includes("normalizeFolderId(guildId)"),
         marker: "Discordmaxxer: stable-safe BetterFolders normalized IDs.",
         find:
             "function getGuildFolder(id: string | null | undefined) {\n" +
@@ -2973,6 +3323,10 @@ const PATCHES = [
     {
         file: "src/plugins/betterFolders/index.tsx",
         allowOnStable: true,
+        alreadyAppliedWhen: content =>
+            content.includes("Discordmaxxer: fail open during a renderer transition.") &&
+            content.includes("expandedFolderIds == null") &&
+            content.includes("hasFolderId(expandedFolderIds"),
         marker: "Discordmaxxer: stable-safe BetterFolders render fallback.",
         find:
             "        if (\n" +
@@ -3322,7 +3676,10 @@ const PATCHES = [
         file: "src/plugins/betterFolders/index.tsx",
         allowOnStable: true,
         marker: "Discordmaxxer: fail open on empty folder state.",
-        alreadyAppliedWhen: content => content.includes("Discordmaxxer: fail open on empty folder state."),
+        alreadyAppliedWhen: content =>
+            content.includes("Discordmaxxer: fail open on empty folder state.") ||
+            content.includes("Discordmaxxer: fail open during a renderer transition.") &&
+            content.includes("expandedFolderIds == null"),
         obsoleteWhen: content =>
             content.includes("expandedFolderIds.size === 0") &&
             content.includes("expandedFolderIds == null"),

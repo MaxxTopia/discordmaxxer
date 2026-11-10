@@ -49,6 +49,34 @@ const PROMO_SELECTOR = [
     '[class*="promoted" i]'
 ].join(",");
 
+// SpotifyControls mounts immediately above the account panel, which is also
+// where Discord has placed sponsored/reward cards in some client builds. Keep
+// the ad cleanup path explicitly separate from that player. This is both a
+// runtime guard and a cheap way to avoid hiding a player wrapper when a
+// Discord class name happens to contain "advert" or "sponsor".
+const SPOTIFY_SURFACE_SELECTOR = [
+    "#vc-spotify-player",
+    ".vc-spotify-player",
+    ".vc-spotify-fallback",
+    "[data-dm-spotify-player]",
+    "[data-dm-spotify-surface]",
+    "[data-dm-spotify-slot]",
+    "[id*='spotify' i]",
+    "[class*='spotify' i]"
+].join(",");
+
+// Keep the stylesheet on stable semantic hooks only. Obfuscated class names
+// are handled by the bounded observer below, where the Spotify guard can run
+// before a node is marked. A broad CSS class selector cannot inspect its
+// descendants and was therefore capable of hiding the Spotify slot.
+const PROMO_CSS_SELECTOR = [
+    '[aria-label*="Sponsored" i]',
+    '[aria-label*="Advertisement" i]',
+    '[aria-label*="Promoted" i]',
+    '[data-testid*="sponsored" i]',
+    '[data-testid*="promoted" i]'
+].join(",");
+
 const PROMO_MARKER = "data-dmtrim-hidden-promo";
 const PROMO_BRAND_RE = /\bfanduel\b/i;
 const PROMO_LABEL_RE = /\b(?:sponsored|promoted|advertisement|ad choices)\b/i;
@@ -64,7 +92,34 @@ function hasPromotionalSignal(value: string): boolean {
     return PROMO_BRAND_RE.test(text) || PROMO_LABEL_RE.test(text) || PROMO_ACTION_RE.test(text);
 }
 
+function isSpotifySurface(element: Element | null): boolean {
+    if (!element) return false;
+
+    try {
+        return element.matches(SPOTIFY_SURFACE_SELECTOR) || element.closest(SPOTIFY_SURFACE_SELECTOR) !== null;
+    } catch {
+        // A navigation/unmount can invalidate a selector target between the
+        // mutation callback and this check. Fail safe: never hide a node when
+        // we cannot prove that it is an ordinary promotional surface.
+        return true;
+    }
+}
+
+function containsSpotifySurface(element: Element): boolean {
+    if (isSpotifySurface(element)) return true;
+
+    try {
+        return element.querySelector(SPOTIFY_SURFACE_SELECTOR) !== null;
+    } catch {
+        // A selector failure must not let the ad observer hide the account
+        // panel that contains Spotify while Discord is changing routes.
+        return true;
+    }
+}
+
 function isPromotionalCard(element: Element): boolean {
+    if (containsSpotifySurface(element)) return false;
+
     const text = normalizeText(element.textContent ?? "");
     if (text.length < 4 || text.length > 900) return false;
 
@@ -86,7 +141,7 @@ function findPromotionalTarget(element: Element): HTMLElement | null {
 
     while (candidate && candidate !== document.body && depth++ < PROMO_ANCESTOR_LIMIT) {
         const rect = candidate.getBoundingClientRect();
-        if (isPromotionalCard(candidate) && rect.width >= 180 && rect.height >= 48 && rect.height <= 420) {
+        if (!containsSpotifySurface(candidate) && isPromotionalCard(candidate) && rect.width >= 180 && rect.height >= 48 && rect.height <= 420) {
             candidates.push(candidate);
         }
         candidate = candidate.parentElement;
@@ -343,7 +398,7 @@ function buildCss(): string {
     if (settings.store.hidePromotedAds !== false) {
         parts.push(`
             /* Sponsored/reward cards. The observer covers cards with obfuscated class names. */
-            ${PROMO_SELECTOR} {
+            ${PROMO_CSS_SELECTOR} {
                 display: none !important;
             }
             [${PROMO_MARKER}] {

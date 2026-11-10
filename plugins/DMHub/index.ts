@@ -523,6 +523,31 @@ function openDMDisplayNameStyleSettings() {
     }
 }
 
+function openDMVoiceKeybindSettings() {
+    if (!ensurePluginEnabled("DMVoiceKeybinds")) {
+        showHubToast("Voice keybinds could not be enabled in this client build.", Toasts.Type.FAILURE, 5000);
+        return;
+    }
+
+    const plugin = vencord()?.Plugins?.plugins?.DMVoiceKeybinds;
+    if (plugin) {
+        try {
+            openPluginModal(plugin);
+            return;
+        } catch (e) {
+            console.warn("[DiscordmaxxerHub] could not open DMVoiceKeybinds modal:", e);
+        }
+    }
+
+    // Keep a safe fallback for the short period while the plugin registry is
+    // still mounting. The normal Vencord plugin settings page remains usable.
+    try {
+        vencord()?.Webpack?.Common?.SettingsRouter?.openUserSettings?.("vencord_plugins");
+    } catch (e) {
+        console.warn("[DiscordmaxxerHub] could not open voice keybind settings:", e);
+    }
+}
+
 function renderPanelHTML(): string {
     const tier = getMyTier();
     const tierLabel = TIER_LABELS[tier];
@@ -613,6 +638,12 @@ function renderPanelHTML(): string {
             <button class="dm-hub-action-btn" data-action="refresh-widget-stats">Refresh</button>
         </div>
         <div class="dm-hub-info">Pulls your latest Fortnite / Valorant stats and re-publishes your profile board widget now (it also auto-refreshes every 30 min).</div>
+        <div class="dm-hub-section">Voice &amp; input</div>
+        <div class="dm-hub-row">
+            <div class="dm-hub-row-label">⌨️ Voice &amp; screen-share keybinds</div>
+            <button class="dm-hub-action-btn" data-action="open-dm-voice-keybinds">Open</button>
+        </div>
+        <div class="dm-hub-info">Bind mute, deafen, and screen share without digging through the full plugin list. The default global shortcuts are Ctrl+Alt+M, Ctrl+Alt+D, and Ctrl+Alt+S.</div>
         <div class="dm-hub-section">Maintenance</div>
         <div class="dm-hub-row">
             <div class="dm-hub-row-label">♻️ Reload Discord (frees RAM)</div>
@@ -706,6 +737,11 @@ function ensurePanelRoot() {
         if (t.dataset.action === "open-dm-display-name-style") {
             panelRoot!.classList.add("hidden");
             openDMDisplayNameStyleSettings();
+            return;
+        }
+        if (t.dataset.action === "open-dm-voice-keybinds") {
+            panelRoot!.classList.add("hidden");
+            openDMVoiceKeybindSettings();
             return;
         }
         toggleQuickSetting(t);

@@ -4267,3 +4267,33 @@ Release/proof boundary:
   and foreign widget skins still work.
 - Next action: Diggy tests the public auto-updater/client and reports the
   composer Paste menu plus the remaining visual/runtime acceptance checks.
+
+## 2026-11-09 - Spotify/DMTrim account-panel regression candidate
+
+- Question investigated: whether the Spotify web player could have been
+  damaged while DMTrim was improved. The answer is plausible but not proven
+  as a single cause: both features occupy the account-panel area, and the old
+  trim CSS/observer path used broad promotional selectors. Spotify also had an
+  independent failure path when Discord exposed partial track, repeat, socket,
+  or API state during reconnect.
+- Candidate source changes: DMTrim now uses stable sponsored/promoted hooks for
+  CSS and protects explicit Spotify slot/player/fallback nodes in both the
+  stylesheet and bounded observer. Spotify module lookup and requests are
+  fail-closed, malformed track/repeat state is normalized before React sees it,
+  the seek bar always receives a safe range, and the player carries a stable
+  Spotify-surface marker. Repeated overlay builds are idempotent.
+- Verification: `pnpm exec tsc --noEmit`, `pnpm verifyPlugins`, strict
+  `pnpm overlay:vencord` twice, and `node overlay-scripts/verify-build.mjs`
+  all passed. The second overlay build reported `applied=0`, `idempotent=220`,
+  and `warnings=0`; the release-integrity verifier passed all checks.
+- Release boundary: these changes are local in
+  `E:/discordmaxxer-dmemoji-fix-20261105-b` only. Public v0.7.130 and the
+  published `main` commit were not changed or redeployed. No claim is made
+  yet that a real Spotify session works until the candidate is loaded in
+  Discord and the player is observed while starting, pausing, seeking, and
+  reconnecting.
+- Diggy test owed before publishing: with DMTrim enabled, verify that a
+  currently playing Spotify track still appears in the account-panel slot;
+  pause/resume or change tracks; reload Discord; and confirm ordinary promo
+  cards elsewhere are still removed. Also check that the old red “Failed to
+  render Spotify Modal” surface does not return during startup/reconnect.

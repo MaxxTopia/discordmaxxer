@@ -218,8 +218,9 @@ if (!existsSync(overlaySourceRoot)) {
     }
 
     const folderSidebarSource = readOverlaySource("plugins/betterFolders/FolderSideBar.tsx");
-    if (folderSidebarSource.includes("if (!DISCORDMAXXER_CUSTOM_SIDEBAR_SUPPORTED) return null;") &&
-        folderSidebarSource.includes("const folderId = normalizedId(data?.folderId ?? data?.id);")) {
+    const hasFolderIdHelper = folderSidebarSource.includes("const folderId = normalizedId(data?.folderId ?? data?.id);") ||
+        folderSidebarSource.includes("const folderId = normalizeFolderId(folder.folderId);");
+    if (folderSidebarSource.includes("if (!DISCORDMAXXER_CUSTOM_SIDEBAR_SUPPORTED) return null;") && hasFolderIdHelper) {
         ok("unsupported custom folder sidebar fails open and uses the shared ID helper");
     } else {
         fail("custom folder sidebar still has an unsafe mount or undefined folder-ID helper");
