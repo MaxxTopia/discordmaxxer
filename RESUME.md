@@ -4412,8 +4412,8 @@ Release/proof boundary:
   Full `pnpm test` remains blocked by the checkout's existing repository-wide
   CRLF/header lint baseline; no mass formatting was applied.
 - Release boundary: candidate-only in
-  `E:/discordmaxxer-dmemoji-fix-20261105-b`; public v0.7.131 is unchanged
-  until the v0.7.132 package and release workflow are verified. No live
+  `E:/discordmaxxer-dmemoji-fix-20261105-b`; public v0.7.132 is unchanged
+  until the v0.7.133 package and release workflow are verified. No live
   microphone, voice-call, screenshare, or account-specific widget acceptance
   has been claimed.
 - Diggy test owed: open DMHub -> Voice & input -> Mic boost, sidetone & level
@@ -4424,3 +4424,69 @@ Release/proof boundary:
   behavior and that a single-key mute/deafen/share binding works. Existing
   Spotify modal, Board/widget hydration, and other runtime gates remain
   separate acceptance checks.
+
+## 2026-11-10 - Processed outgoing mic monitor semantics and candidate rebuild
+
+- Scope: make the local monitor answer the user's actual question: what does
+  the outgoing boost sound like, rather than merely making an independent
+  sidetone louder. With outgoing boost enabled, the monitor now auditions the
+  same bounded gain/compressor preview stage used by the outgoing microphone
+  wrapper. With boost disabled, it previews the dry microphone signal.
+- Control semantics: `monitorGain` is explicitly local headphone listening
+  volume only. It does not change the signal sent to other people, and the
+  outgoing preview meter is measured before that local volume control. The
+  monitor copy warns that Discord may apply additional downstream voice
+  processing, so a recipient check is still required for exact final volume.
+- Source changes: `plugins/DMMicMonitor/index.tsx` now keeps separate dry,
+  processed-preview, compressor, analyser, and local-gain nodes; it updates
+  the preview path when outgoing boost changes; and its labels/help text use
+  “outgoing preview” and “local volume” wording. `overlay-scripts/
+  rebrand-vencord.mjs` was repaired so Spotify track/device normalization is
+  idempotent and does not create duplicate helper/store declarations on a
+  rebuild.
+- Verification: the candidate overlay rebuilt successfully with
+  `DM_SKIP_VENCORD_INSTALL=1 pnpm overlay:vencord`; `pnpm testTypes`,
+  `pnpm verifyPlugins`, `node overlay-scripts/verify-build.mjs`, and
+  `node --check overlay-scripts/rebrand-vencord.mjs` passed. The staged bundle
+  contains the new outgoing-preview/local-volume labels and monitor wiring.
+  `git diff --check` still reports CRLF/trailing-whitespace warnings in the
+  touched rebrand script; no broad line-ending rewrite was applied.
+- Release boundary: candidate-only in
+  `E:/discordmaxxer-dmemoji-fix-20261105-b`. Nothing was committed, pushed,
+  published, or installed as a public release during this repair pass.
+- Diggy test owed before publishing: in DMHub -> Voice & input -> Mic boost,
+  use headphones, enable outgoing boost, adjust it conservatively, and turn
+  on the monitor. Raising boost should change the monitored voice character/
+  level; raising monitor gain should only make that audition louder in your
+  headphones. Have another person confirm the received voice, because the
+  monitor cannot reproduce Discord's complete remote-side processing locally.
+  Also recheck Spotify modal startup/reconnect and foreign-profile board/widget
+  rendering in the same candidate before any public release decision.
+
+## 2026-11-10 - v0.7.133 release candidate verification
+
+- Versioned candidate: `package.json` is now `0.7.133`. The release notes are
+  in `docs/releases/v0.7.133.md`; the intended source changes are limited to
+  DMMicMonitor semantics, idempotent Spotify normalization, and the release
+  documentation.
+- Verification: `pnpm testTypes`, `pnpm verifyPlugins`,
+  `node --test packages/winaudio/test.js`, strict
+  `pnpm overlay:vencord`, `node overlay-scripts/verify-build.mjs`,
+  `node --check overlay-scripts/rebrand-vencord.mjs`, `pnpm build`, and the
+  local `pnpm package:dir` completed successfully. The package verifier found
+  the v0.7.133 manifest, compiled plugins, native image/message menu guards,
+  folder fail-open handling, and startup recovery paths.
+- Full `pnpm test` still reports the known repository-wide CRLF/header lint
+  baseline (11,437 errors); `pnpm testTypes` passes separately and no broad
+  line-ending rewrite was applied.
+- Release boundary: candidate-only until the exact intended files are
+  committed, pushed to GitHub `main`, tagged `v0.7.133`, and the release
+  workflow plus updater manifest are verified. The dirty canonical checkout
+  and unrelated untracked debug/smoke artifacts remain untouched.
+- Diggy test owed after publication: update both PCs and confirm the About
+  version, then test the outgoing microphone preview/recipient loudness,
+  screenshare capture/audio and quality, Spotify modal and DMTrim, own and
+  foreign profile boards/widgets/skins, display-name/theme rendering, native
+  message/image context menus and copy, composer send/paste and attachment
+  preview, folder child-server navigation, plugin settings recovery, and
+  startup/login persistence.

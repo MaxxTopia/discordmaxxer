@@ -1,5 +1,5 @@
 /*
- * Discordmaxxer - outgoing microphone boost, sidetone and level monitor
+ * Discordmaxxer - outgoing microphone boost, processed preview and level monitor
  * Copyright (c) 2026 Diggy
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
@@ -39,7 +39,10 @@ let monitorContext: AudioContext | null = null;
 let monitorStream: MediaStream | null = null;
 let monitorSource: MediaStreamAudioSourceNode | null = null;
 let monitorGain: GainNode | null = null;
-let monitorCompressor: DynamicsCompressorNode | null = null;
+let monitorDryGain: GainNode | null = null;
+let monitorOutgoingGain: GainNode | null = null;
+let monitorOutgoingCompressor: DynamicsCompressorNode | null = null;
+let monitorProcessedGain: GainNode | null = null;
 let monitorAnalyser: AnalyserNode | null = null;
 let monitorFrame: number | null = null;
 let monitorBuffer: Float32Array | null = null;
@@ -227,11 +230,17 @@ function releaseAudioGraph() {
     }
     monitorBuffer = null;
     monitorAnalyser?.disconnect();
-    monitorCompressor?.disconnect();
+    monitorProcessedGain?.disconnect();
+    monitorOutgoingCompressor?.disconnect();
+    monitorOutgoingGain?.disconnect();
+    monitorDryGain?.disconnect();
     monitorGain?.disconnect();
     monitorSource?.disconnect();
     monitorAnalyser = null;
-    monitorCompressor = null;
+    monitorProcessedGain = null;
+    monitorOutgoingCompressor = null;
+    monitorOutgoingGain = null;
+    monitorDryGain = null;
     monitorGain = null;
     monitorSource = null;
     for (const track of monitorStream?.getTracks() ?? []) track.stop();
@@ -296,29 +305,51 @@ async function startMonitor() {
         const context = new Constructor({ latencyHint: "interactive" });
         await context.resume().catch(() => undefined);
         const source = context.createMediaStreamSource(stream);
+        // Keep a dry path and a processed path so the monitor auditions the
+        // same boost/limiter stage used by the outgoing wrapper. The final
+        // monitor gain below is only a local listening-volume control; Discord
+        // may add its own voice processing after this stage.
+        const outgoingPreviewGain = context.createGain();
+        const outgoingPreviewCompressor = context.createDynamicsCompressor();
+        const dryGain = context.createGain();
+        const processedGain = context.createGain();
         const gain = context.createGain();
-        const compressor = context.createDynamicsCompressor();
         const analyser = context.createAnalyser();
         analyser.fftSize = 1024;
         analyser.smoothingTimeConstant = 0.72;
+        const boostEnabled = outgoingBoostEnabled();
+        outgoingPreviewGain.gain.setValueAtTime(boostEnabled ? outgoingGainValue() : 1, context.currentTime);
+        dryGain.gain.setValueAtTime(boostEnabled ? 0 : 1, context.currentTime);
+        processedGain.gain.setValueAtTime(boostEnabled ? 1 : 0, context.currentTime);
+        configureVoiceCompressor(outgoingPreviewCompressor);
         gain.gain.setValueAtTime(monitorGainValue(), context.currentTime);
-        configureVoiceCompressor(compressor);
 
-        source.connect(gain);
-        gain.connect(compressor);
-        compressor.connect(analyser);
-        analyser.connect(context.destination);
+        source.connect(dryGain);
+        dryGain.connect(analyser);
+        source.connect(outgoingPreviewGain);
+        outgoingPreviewGain.connect(outgoingPreviewCompressor);
+        outgoingPreviewCompressor.connect(processedGain);
+        processedGain.connect(analyser);
+        // Meter the processed outgoing signal before the local listening
+        // volume. Changing monitor gain must not make the outgoing meter lie.
+        analyser.connect(gain);
+        gain.connect(context.destination);
         monitorContext = context;
         monitorStream = stream;
         monitorSource = source;
         monitorGain = gain;
-        monitorCompressor = compressor;
+        monitorDryGain = dryGain;
+        monitorOutgoingGain = outgoingPreviewGain;
+        monitorOutgoingCompressor = outgoingPreviewCompressor;
+        monitorProcessedGain = processedGain;
         monitorAnalyser = analyser;
         monitorBuffer = new Float32Array(analyser.fftSize);
         setMonitorState("running");
         startMeter(run);
         Toasts.show({
-            message: "🎙️ Mic monitor enabled — headphones recommended; outgoing boost is separate",
+            message: outgoingBoostEnabled()
+                ? "🎙️ Mic monitor enabled — previewing the boosted outgoing signal; monitor gain is local only"
+                : "🎙️ Mic monitor enabled — previewing the mic signal; monitor gain is local only",
             type: Toasts.Type.SUCCESS,
             id: Toasts.genId(),
             options: { duration: 2200, position: Toasts.Position.TOP }
@@ -348,6 +379,16 @@ function onMonitorGainChange(value: number) {
 
 function onOutgoingBoostChange() {
     updateOutgoingGraphGain();
+    if (monitorOutgoingGain && monitorDryGain && monitorProcessedGain && monitorContext) {
+        const enabled = outgoingBoostEnabled();
+        monitorOutgoingGain.gain.setTargetAtTime(
+            enabled ? outgoingGainValue() : 1,
+            monitorContext.currentTime,
+            0.015,
+        );
+        monitorDryGain.gain.setTargetAtTime(enabled ? 0 : 1, monitorContext.currentTime, 0.015);
+        monitorProcessedGain.gain.setTargetAtTime(enabled ? 1 : 0, monitorContext.currentTime, 0.015);
+    }
     Toasts.show({
         message: outgoingBoostEnabled()
             ? "🎙️ Outgoing mic boost changed — active voice uses it now; reconnect voice if needed"
@@ -393,19 +434,21 @@ function MicMonitorShowroom() {
     },
     React.createElement("div", { style: { fontWeight: 800, fontSize: 13 } }, "🎙️ Microphone boost + sidetone monitor"),
     React.createElement("div", { style: { fontSize: 11, lineHeight: 1.45, color: "#bfeef4" } },
-        "Outgoing boost changes the microphone track Discord sends to other people. The separate monitor lets you hear yourself while tuning it. Screen-share audio is not intercepted. Use headphones to prevent feedback."),
+        "Outgoing boost changes the microphone track Discord sends to other people. When the monitor is enabled, it previews that boosted signal automatically; monitor gain only changes your local listening volume. Discord may apply additional voice processing. Screen-share audio is not intercepted. Use headphones to prevent feedback."),
     React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8, fontSize: 11 } },
         React.createElement("span", { style: { width: 8, height: 8, borderRadius: "50%", background: boostEnabled ? "#4cf78a" : "#778399" } }),
         React.createElement("span", null, boostEnabled ? "Outgoing boost enabled" : "Outgoing boost off"),
         React.createElement("span", { style: { marginLeft: "auto", color: "#ffe28a", fontWeight: 700 } }, `${boost.toFixed(2)}x outgoing`)),
-    React.createElement("div", { style: { fontSize: 10, color: "#9fb3c2" } }, "Reconnect voice after first enabling this if Discord already has an active microphone stream."),
+    React.createElement("div", { style: { fontSize: 10, color: "#9fb3c2" } }, "If you change this while already in a call, reconnect voice so Discord requests a fresh microphone stream."),
+    React.createElement("div", { style: { fontSize: 10, color: boostEnabled ? "#ffe28a" : "#9fb3c2" } },
+        boostEnabled ? "Monitor preview: boosted outgoing signal (approximate before Discord processing)" : "Monitor preview: microphone signal (outgoing boost is off)"),
     React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8, fontSize: 11 } },
         React.createElement("span", { style: { width: 8, height: 8, borderRadius: "50%", background: monitorState === "running" ? "#4cf78a" : monitorState === "error" ? "#ff6b83" : "#778399" } }),
         React.createElement("span", null, stateLabel),
-        React.createElement("span", { style: { marginLeft: "auto", color: "#ffe28a", fontWeight: 700 } }, `${monitorGain.toFixed(1)}x monitor`)),
+        React.createElement("span", { style: { marginLeft: "auto", color: "#ffe28a", fontWeight: 700 } }, `${monitorGain.toFixed(1)}x local volume`)),
     live.showMeter !== false && React.createElement("div", null,
         React.createElement("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 10, color: "#bfeef4", marginBottom: 4 } },
-            React.createElement("span", null, "Live microphone level"),
+            React.createElement("span", null, "Outgoing preview level"),
             React.createElement("span", null, `${Math.round(monitorLevel * 100)}%`)),
         React.createElement("div", { style: { height: 9, borderRadius: 999, overflow: "hidden", background: "rgba(0,0,0,.38)", border: "1px solid rgba(255,255,255,.12)" } },
             React.createElement("div", { style: { width: meterWidth, height: "100%", borderRadius: 999, background: "linear-gradient(90deg, #48e0c2, #f7e36e 72%, #ff6b83)", transition: "width 80ms linear" } }))));
@@ -433,13 +476,13 @@ const settings = definePluginSettings({
     },
     monitorEnabled: {
         type: OptionType.BOOLEAN,
-        description: "Hear your microphone locally through the monitor. Off by default; headphones are recommended to avoid feedback.",
+        description: "Hear the microphone locally. When outgoing boost is enabled, the monitor previews the boosted outgoing signal automatically. Off by default; headphones are recommended to avoid feedback.",
         default: false,
         onChange: onMonitorEnabledChange
     },
     monitorGain: {
         type: OptionType.SLIDER,
-        description: "Local monitor gain only. Speak while changing this value and watch the live level meter above.",
+        description: "Local listening volume only. It does not change what other people receive, and it does not change the outgoing preview meter.",
         markers: [0.5, 1, 1.5, 2, 2.5, 3],
         default: 1,
         stickToMarkers: false,
@@ -447,14 +490,14 @@ const settings = definePluginSettings({
     },
     showMeter: {
         type: OptionType.BOOLEAN,
-        description: "Show the live microphone level meter in the monitor panel.",
+        description: "Show the outgoing-signal preview meter before local monitor volume is applied.",
         default: true
     }
 });
 
 export default definePlugin({
     name: "DMMicMonitor",
-    description: "🎙️ Optional outgoing microphone boost plus local sidetone and level meter. Boost is limited and screen-share audio is left untouched.",
+    description: "🎙️ Optional outgoing microphone boost plus processed local preview and level meter. Boost is limited and screen-share audio is left untouched.",
     authors: [{ name: "Diggy", id: 0n }],
     settings,
 

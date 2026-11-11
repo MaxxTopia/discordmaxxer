@@ -132,10 +132,9 @@ const PATCHES = [
     // ── SpotifyControls: normalize partial player state before render ──
     {
         file: "src/plugins/spotifyControls/SpotifyStore.ts",
-        marker: "Discordmaxxer: Spotify track validation helper.",
-        alreadyAppliedWhen: content => content.includes("Discordmaxxer: Spotify track validation helper."),
-        find: "    const store = new SpotifyStore(FluxDispatcher, {",
-        replace:
+        marker: "Discordmaxxer: Spotify track normalization v2.",
+        alreadyAppliedWhen: content => content.includes("Discordmaxxer: Spotify track normalization v2."),
+        find:
             "    // Discordmaxxer: Spotify track validation helper.\n" +
             "    // Discord can dispatch a partial player payload while Spotify is\n" +
             "    // reconnecting. Keep malformed state out of React so the account\n" +
@@ -154,18 +153,97 @@ const PATCHES = [
             "            return null;\n" +
             "        }\n" +
             "        return track as Track;\n" +
+            "    };",
+        replace:
+            "    // Discordmaxxer: Spotify track normalization v2.\n" +
+            "    // Discord can dispatch a partial player payload while Spotify is\n" +
+            "    // reconnecting. Normalize optional fields into a render-safe Track\n" +
+            "    // instead of making React fall into the plugin ErrorBoundary.\n" +
+            "    const normalizeTrack = (candidate: unknown): Track | null => {\n" +
+            "        if (!candidate || typeof candidate !== \"object\") return null;\n" +
+            "        const track = candidate as any;\n" +
+            "        const id = typeof track.id === \"string\" ? track.id : typeof track.uri === \"string\" ? track.uri : \"\";\n" +
+            "        if (!id) return null;\n" +
+            "        const albumSource = track.album && typeof track.album === \"object\" ? track.album : {};\n" +
+            "        const imageSource = albumSource.image && typeof albumSource.image === \"object\" ? albumSource.image : {};\n" +
+            "        const artistsSource = Array.isArray(track.artists) ? track.artists : [];\n" +
+            "        const artists = artistsSource.filter((artist: any) => artist && typeof artist.name === \"string\").map((artist: any) => ({\n" +
+            "            ...artist,\n" +
+            "            id: typeof artist.id === \"string\" ? artist.id : \"\",\n" +
+            "            href: typeof artist.href === \"string\" ? artist.href : \"\",\n" +
+            "            type: typeof artist.type === \"string\" ? artist.type : \"artist\"\n" +
+            "        }));\n" +
+            "        if (artists.length === 0) artists.push({ id: \"\", href: \"\", name: \"Unknown artist\", type: \"artist\" });\n" +
+            "        return {\n" +
+            "            ...track,\n" +
+            "            id,\n" +
+            "            name: typeof track.name === \"string\" && track.name.trim() ? track.name : \"Unknown track\",\n" +
+            "            duration: Number.isFinite(track.duration) ? Math.max(0, track.duration) : 0,\n" +
+            "            album: {\n" +
+            "                ...albumSource,\n" +
+            "                id: typeof albumSource.id === \"string\" ? albumSource.id : \"\",\n" +
+            "                name: typeof albumSource.name === \"string\" ? albumSource.name : \"Unknown album\",\n" +
+            "                image: {\n" +
+            "                    ...imageSource,\n" +
+            "                    height: Number.isFinite(imageSource.height) ? imageSource.height : 0,\n" +
+            "                    width: Number.isFinite(imageSource.width) ? imageSource.width : 0,\n" +
+            "                    url: typeof imageSource.url === \"string\" ? imageSource.url : \"\"\n" +
+            "                }\n" +
+            "            },\n" +
+            "            artists\n" +
+            "        } as Track;\n" +
             "    };\n" +
             "\n" +
             "    const normalizeRepeat = (value: unknown): Repeat =>\n" +
             "        value === \"track\" || value === \"context\" ? value : \"off\";\n" +
-            "\n" +
-            "    const store = new SpotifyStore(FluxDispatcher, {"
+            ""
     },
     {
         file: "src/plugins/spotifyControls/SpotifyStore.ts",
         marker: "Discordmaxxer: Spotify track dispatch normalization.",
         find: "            store.track = e.track;",
         replace: "            store.track = normalizeTrack(e.track);"
+    },
+    {
+        file: "src/plugins/spotifyControls/SpotifyStore.ts",
+        marker: "Discordmaxxer: Spotify player state normalization.",
+        obsoleteWhen: content => content.includes("const device = e.device && typeof e.device === \"object\" ? e.device as any : null;") ||
+            content.includes("const rawDevice = e.device && typeof e.device === \"object\" ? e.device as any : null;"),
+        find:
+            "            store.device = e.device ?? null;\n" +
+            "            store.isPlaying = e.isPlaying ?? false;\n" +
+            "            store.volume = e.volumePercent ?? 0;\n" +
+            "            store.repeat = normalizeRepeat(e.actual_repeat);\n" +
+            "            store.shuffle = e.shuffle ?? false;\n" +
+            "            store.position = e.position ?? 0;",
+        replace:
+            "            const rawDevice = e.device && typeof e.device === \"object\" ? e.device as any : null;\n" +
+            "            store.device = typeof rawDevice?.id === \"string\"\n" +
+            "                ? { ...rawDevice, is_active: rawDevice.is_active !== false }\n" +
+            "                : null;\n" +
+            "            store.isPlaying = e.isPlaying === true;\n" +
+            "            store.volume = Number.isFinite(e.volumePercent) ? Math.max(0, Math.min(100, e.volumePercent)) : 0;\n" +
+            "            store.repeat = normalizeRepeat(e.actual_repeat);\n" +
+            "            store.shuffle = e.shuffle === true;\n" +
+            "            store.position = Number.isFinite(e.position) ? Math.max(0, e.position) : 0;"
+    },
+    {
+        file: "src/plugins/spotifyControls/SpotifyStore.ts",
+        marker: "Discordmaxxer: Spotify active-device normalization.",
+        alreadyAppliedWhen: content => content.includes("Discordmaxxer: Spotify active-device normalization.") ||
+            content.includes("const rawDevice = e.device && typeof e.device === \"object\" ? e.device as any : null;"),
+        find:
+            "            const device = e.device && typeof e.device === \"object\" ? e.device as any : null;\n" +
+            "            store.device = typeof device?.id === \"string\" ? device : null;",
+        replace:
+            "            // Discordmaxxer: Spotify active-device normalization.\n" +
+            "            // Discord can omit is_active on the active player event. The\n" +
+            "            // presence of a device id is enough to keep the current player\n" +
+            "            // visible; an explicit false still means inactive.\n" +
+            "            const rawDevice = e.device && typeof e.device === \"object\" ? e.device as any : null;\n" +
+            "            store.device = typeof rawDevice?.id === \"string\"\n" +
+            "                ? { ...rawDevice, is_active: rawDevice.is_active !== false }\n" +
+            "                : null;"
     },
     {
         file: "src/plugins/spotifyControls/SpotifyStore.ts",
@@ -217,6 +295,54 @@ const PATCHES = [
         marker: "Discordmaxxer: Spotify seek range guard.",
         find: "                maxValue={duration}",
         replace: "                maxValue={seekMax}"
+    },
+    {
+        file: "src/plugins/spotifyControls/PlayerComponent.tsx",
+        marker: "Discordmaxxer: Spotify seek position normalization.",
+        find:
+            "    const [storePosition, isSettingPosition, isPlaying] = useStateFromStores(\n" +
+            "        [SpotifyStore],\n" +
+            "        () => [SpotifyStore.mPosition, SpotifyStore.isSettingPosition, SpotifyStore.isPlaying]\n" +
+            "    );\n\n" +
+            "    const [position, setPosition] = useState(storePosition);\n\n" +
+            "    useEffect(() => {\n" +
+            "        if (isPlaying && !isSettingPosition) {\n" +
+            "            setPosition(SpotifyStore.position);\n" +
+            "            const interval = setInterval(() => {\n" +
+            "                setPosition(p => p + 1000);\n" +
+            "            }, 1000);\n\n" +
+            "            return () => clearInterval(interval);\n" +
+            "        }\n" +
+            "    }, [storePosition, isSettingPosition, isPlaying]);\n\n" +
+            "    const onChange = (v: number) => {\n" +
+            "        if (isSettingPosition) return;\n" +
+            "        setPosition(v);\n" +
+            "        seek(v);\n" +
+            "    };",
+        replace:
+            "    const safePosition = (value: unknown) => Number.isFinite(value)\n" +
+            "        ? Math.max(0, Math.min(Number(value), seekMax))\n" +
+            "        : 0;\n\n" +
+            "    const [storePosition, isSettingPosition, isPlaying] = useStateFromStores(\n" +
+            "        [SpotifyStore],\n" +
+            "        () => [safePosition(SpotifyStore.mPosition), SpotifyStore.isSettingPosition, SpotifyStore.isPlaying]\n" +
+            "    );\n\n" +
+            "    const [position, setPosition] = useState(safePosition(storePosition));\n\n" +
+            "    useEffect(() => {\n" +
+            "        if (isPlaying && !isSettingPosition) {\n" +
+            "            setPosition(safePosition(SpotifyStore.position));\n" +
+            "            const interval = setInterval(() => {\n" +
+            "                setPosition(p => safePosition(p + 1000));\n" +
+            "            }, 1000);\n\n" +
+            "            return () => clearInterval(interval);\n" +
+            "        }\n" +
+            "    }, [storePosition, isSettingPosition, isPlaying, seekMax]);\n\n" +
+            "    const onChange = (v: number) => {\n" +
+            "        if (isSettingPosition) return;\n" +
+            "        const nextPosition = safePosition(v);\n" +
+            "        setPosition(nextPosition);\n" +
+            "        seek(nextPosition);\n" +
+            "    };"
     },
     {
         file: "src/plugins/spotifyControls/PlayerComponent.tsx",
