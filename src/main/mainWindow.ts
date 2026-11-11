@@ -713,12 +713,17 @@ function retryUrl(url: string, description: string, error: unknown) {
 
     if (startupRecoveryShown || retryTimer !== null) return;
     if (navigationRetryCount >= MAX_STARTUP_NAVIGATION_RETRIES) {
-        failStartup(`Discord navigation failed after ${MAX_STARTUP_NAVIGATION_RETRIES} attempts (${description}).`, error);
+        failStartup(
+            `Discord navigation failed after ${MAX_STARTUP_NAVIGATION_RETRIES} attempts (${description}).`,
+            error
+        );
         return;
     }
 
     navigationRetryCount += 1;
-    console.log(`[mainWindow] retrying Discord navigation in ${retryDelay}ms (${navigationRetryCount}/${MAX_STARTUP_NAVIGATION_RETRIES})`);
+    console.log(
+        `[mainWindow] retrying Discord navigation in ${retryDelay}ms (${navigationRetryCount}/${MAX_STARTUP_NAVIGATION_RETRIES})`
+    );
     retryTimer = setTimeout(() => {
         retryTimer = null;
         if (!mainWin || mainWin.isDestroyed()) return;
@@ -792,11 +797,11 @@ async function createWindowsInternal() {
     mainWin.webContents.on("did-fail-load", (_, errorCode, errorDescription, validatedURL, isMainFrame) => {
         if (!isMainFrame || errorCode === -3) return;
 
-        retryUrl(
-            validatedURL || startupTargetUrl,
-            `${errorCode}: ${errorDescription}`,
-            { errorCode, errorDescription, validatedURL }
-        );
+        retryUrl(validatedURL || startupTargetUrl, `${errorCode}: ${errorDescription}`, {
+            errorCode,
+            errorDescription,
+            validatedURL
+        });
     });
 
     mainWin.webContents.on("did-navigate", (_, url: string, responseCode: number) => {

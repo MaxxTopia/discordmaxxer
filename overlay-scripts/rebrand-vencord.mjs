@@ -134,26 +134,7 @@ const PATCHES = [
         file: "src/plugins/spotifyControls/SpotifyStore.ts",
         marker: "Discordmaxxer: Spotify track normalization v2.",
         alreadyAppliedWhen: content => content.includes("Discordmaxxer: Spotify track normalization v2."),
-        find:
-            "    // Discordmaxxer: Spotify track validation helper.\n" +
-            "    // Discord can dispatch a partial player payload while Spotify is\n" +
-            "    // reconnecting. Keep malformed state out of React so the account\n" +
-            "    // panel does not fall into the plugin ErrorBoundary.\n" +
-            "    const normalizeTrack = (candidate: unknown): Track | null => {\n" +
-            "        if (!candidate || typeof candidate !== \"object\") return null;\n" +
-            "        const track = candidate as any;\n" +
-            "        const album = track.album;\n" +
-            "        const image = album?.image;\n" +
-            "        const artists = track.artists;\n" +
-            "        if (typeof track.id !== \"string\" || typeof track.name !== \"string\" ||\n" +
-            "            !Number.isFinite(track.duration) || !album || typeof album !== \"object\" ||\n" +
-            "            typeof album.id !== \"string\" || typeof album.name !== \"string\" ||\n" +
-            "            !image || typeof image !== \"object\" || typeof image.url !== \"string\" ||\n" +
-            "            !Array.isArray(artists) || artists.some((artist: any) => !artist || typeof artist.name !== \"string\")) {\n" +
-            "            return null;\n" +
-            "        }\n" +
-            "        return track as Track;\n" +
-            "    };",
+        find: "    const store = new SpotifyStore(FluxDispatcher, {",
         replace:
             "    // Discordmaxxer: Spotify track normalization v2.\n" +
             "    // Discord can dispatch a partial player payload while Spotify is\n" +
@@ -196,7 +177,8 @@ const PATCHES = [
             "\n" +
             "    const normalizeRepeat = (value: unknown): Repeat =>\n" +
             "        value === \"track\" || value === \"context\" ? value : \"off\";\n" +
-            ""
+            "\n" +
+            "    const store = new SpotifyStore(FluxDispatcher, {"
     },
     {
         file: "src/plugins/spotifyControls/SpotifyStore.ts",
@@ -207,16 +189,18 @@ const PATCHES = [
     {
         file: "src/plugins/spotifyControls/SpotifyStore.ts",
         marker: "Discordmaxxer: Spotify player state normalization.",
-        obsoleteWhen: content => content.includes("const device = e.device && typeof e.device === \"object\" ? e.device as any : null;") ||
+        alreadyAppliedWhen: content =>
+            content.includes("Discordmaxxer: Spotify player state normalization.") ||
             content.includes("const rawDevice = e.device && typeof e.device === \"object\" ? e.device as any : null;"),
         find:
             "            store.device = e.device ?? null;\n" +
             "            store.isPlaying = e.isPlaying ?? false;\n" +
             "            store.volume = e.volumePercent ?? 0;\n" +
-            "            store.repeat = normalizeRepeat(e.actual_repeat);\n" +
+            "            store.repeat = e.actual_repeat || \"off\";\n" +
             "            store.shuffle = e.shuffle ?? false;\n" +
             "            store.position = e.position ?? 0;",
         replace:
+            "            // Discordmaxxer: Spotify player state normalization.\n" +
             "            const rawDevice = e.device && typeof e.device === \"object\" ? e.device as any : null;\n" +
             "            store.device = typeof rawDevice?.id === \"string\"\n" +
             "                ? { ...rawDevice, is_active: rawDevice.is_active !== false }\n" +
@@ -230,24 +214,24 @@ const PATCHES = [
     {
         file: "src/plugins/spotifyControls/SpotifyStore.ts",
         marker: "Discordmaxxer: Spotify active-device normalization.",
-        alreadyAppliedWhen: content => content.includes("Discordmaxxer: Spotify active-device normalization.") ||
-            content.includes("const rawDevice = e.device && typeof e.device === \"object\" ? e.device as any : null;"),
-        find:
-            "            const device = e.device && typeof e.device === \"object\" ? e.device as any : null;\n" +
-            "            store.device = typeof device?.id === \"string\" ? device : null;",
+        alreadyAppliedWhen: content =>
+            content.includes("Discordmaxxer: Spotify active-device normalization.") ||
+            content.includes("const availableDevices = Array.isArray(devices)"),
+        find: "            store.device = devices.find(d => d.is_active) ?? devices[0] ?? null;",
         replace:
             "            // Discordmaxxer: Spotify active-device normalization.\n" +
-            "            // Discord can omit is_active on the active player event. The\n" +
-            "            // presence of a device id is enough to keep the current player\n" +
-            "            // visible; an explicit false still means inactive.\n" +
-            "            const rawDevice = e.device && typeof e.device === \"object\" ? e.device as any : null;\n" +
-            "            store.device = typeof rawDevice?.id === \"string\"\n" +
-            "                ? { ...rawDevice, is_active: rawDevice.is_active !== false }\n" +
+            "            const availableDevices = Array.isArray(devices) ? devices : [];\n" +
+            "            const activeDevice = availableDevices.find(d => d?.is_active) ?? availableDevices[0] ?? null;\n" +
+            "            store.device = activeDevice && typeof activeDevice.id === \"string\"\n" +
+            "                ? { ...activeDevice, is_active: activeDevice.is_active !== false }\n" +
             "                : null;"
     },
     {
         file: "src/plugins/spotifyControls/SpotifyStore.ts",
         marker: "Discordmaxxer: Spotify repeat dispatch normalization.",
+        alreadyAppliedWhen: content =>
+            content.includes("Discordmaxxer: Spotify repeat dispatch normalization.") ||
+            content.includes("store.repeat = normalizeRepeat(e.actual_repeat);"),
         find: '            store.repeat = e.actual_repeat || "off";',
         replace: "            store.repeat = normalizeRepeat(e.actual_repeat);"
     },
@@ -1552,7 +1536,7 @@ const PATCHES = [
         file: "src/plugins/webContextMenus.web/index.ts",
         allowOnStable: true,
         marker: "Discordmaxxer: web context menus are opt-in by default.",
-        alreadyAppliedWhen: content => content.includes("enabledByDefault: false,"),
+        alreadyAppliedWhen: content => content.includes("Discordmaxxer: native composer menu bridge is enabled by default.") || content.includes("enabledByDefault: false,"),
         find: "    enabledByDefault: true,",
         replace: "    // Discordmaxxer: native composer menu bridge is enabled by default.\n    enabledByDefault: true,"
     },

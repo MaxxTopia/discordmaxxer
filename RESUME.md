@@ -4490,3 +4490,28 @@ Release/proof boundary:
   message/image context menus and copy, composer send/paste and attachment
   preview, folder child-server navigation, plugin settings recovery, and
   startup/login persistence.
+
+## 2026-11-10 - v0.7.134 release candidate verification
+
+- Follow-up candidate: `package.json` is now `0.7.134`, with release notes in
+  `docs/releases/v0.7.134.md`. This follow-up keeps the v0.7.133 mic-monitor
+  behavior and repairs the clean-CI Spotify patch anchors plus the five
+  `mainWindow.ts` Prettier failures reported by the public workflows.
+- Release-path evidence: the actual `pnpm overlay:vencord` path against the
+  pinned Vencord source applies the Spotify fixes with `DM_STRICT_REBRAND=1`
+  and zero warnings, then syncs the 31 custom plugins and builds the overlay.
+  A direct rebrand-only invocation in a fresh worktree is not a valid gate
+  because plugin synchronization happens inside the build path; the public
+  clean CI workflow remains authoritative. The native composer patch is
+  idempotent on a second run.
+- Release boundary: v0.7.133 source/tag exist on GitHub, but its release
+  workflow failed before publishing installer assets. Do not call that tag
+  live. The intended next release is v0.7.134 after the source, test workflow,
+  release workflow, installer assets, and `latest.yml` are verified.
+- Diggy test owed after v0.7.134 publication: update both PCs and confirm the
+  About version, then test the outgoing microphone preview/recipient loudness,
+  screenshare capture/audio and quality, Spotify modal and DMTrim, own and
+  foreign profile boards/widgets/skins, display-name/theme rendering, native
+  message/image context menus and copy, composer send/paste and attachment
+  preview, folder child-server navigation, plugin settings recovery, and
+  startup/login persistence.
