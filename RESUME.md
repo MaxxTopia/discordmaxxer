@@ -2,9 +2,10 @@
 
 ## 2026-11-10 — v0.7.134 public release verified
 
-- Public source: commit `64539b1` is pushed to GitHub `main`, and immutable tag
-  `v0.7.134` points to that release candidate. The v0.7.133 release workflow
-  had failed before publishing assets; it is not the public release to test.
+- Public release source: commit `64539b1` is the immutable `v0.7.134` tag and
+  the release asset source. Documentation follow-up commit `6631466` is now
+  on GitHub `main`. The v0.7.133 release workflow had failed before publishing
+  assets; it is not the public release to test.
 - CI evidence: test workflow `42937028079` passed all tests and compile checks;
   release workflow `42937050695` passed overlay build, artifact verification,
   Electron packaging, and publication.
