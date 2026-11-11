@@ -1,5 +1,35 @@
 # Discordmaxxer — RESUME
 
+## 2026-11-10 — v0.7.134 public release verified
+
+- Public source: commit `64539b1` is pushed to GitHub `main`, and immutable tag
+  `v0.7.134` points to that release candidate. The v0.7.133 release workflow
+  had failed before publishing assets; it is not the public release to test.
+- CI evidence: test workflow `42937028079` passed all tests and compile checks;
+  release workflow `42937050695` passed overlay build, artifact verification,
+  Electron packaging, and publication.
+- Public release: [GitHub release v0.7.134](https://github.com/MaxxTopia/discordmaxxer/releases/tag/v0.7.134)
+  is published with the Windows installer, blockmap, win/arm64 zip assets,
+  and `latest.yml`. The updater manifest reports version `0.7.134` and points
+  to `Discordmaxxer-Setup-0.7.134.exe` (211,902,716 bytes).
+- Local evidence before publication: `pnpm build`, `pnpm package:dir`,
+  `pnpm testTypes`, `pnpm verifyPlugins`, native Windows-audio tests,
+  Prettier, syntax checks, and `node overlay-scripts/verify-build.mjs` passed.
+  The full repository test command still has the known CRLF/header-lint
+  baseline; it is not being represented as green.
+- Included release work: the DMMicMonitor outgoing-preview/local-monitor
+  separation and safe boost behavior, idempotent Spotify/player normalization,
+  the clean-CI rebrand anchors, and the startup/release documentation fixes.
+  The dirty canonical checkout and unrelated smoke/debug/source-archive
+  artifacts were not reset, cleaned, staged, or deleted.
+- Runtime boundary: publication is verified, but real user/recipient proof is
+  still owed for mic loudness, screenshare audio/quality, Spotify modal,
+  DMTrim, foreign profile boards/widgets/skins, native context menus and copy,
+  composer send/paste/attachment preview, folder navigation, plugin settings,
+  and startup/login persistence.
+- Best next move: update both PCs to v0.7.134, confirm the About version and
+  login persistence, then run the acceptance checklist in the handoff message.
+
 ## 2026-11-10 — v0.7.132 public release: opt-in outgoing microphone boost
 
 Scope: add a guarded microphone boost that changes the track other voice
