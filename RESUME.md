@@ -1,5 +1,25 @@
 # Discordmaxxer — RESUME
 
+## 2026-11-11 — v0.7.135 unified release candidate
+
+- Source baseline: branch `codex/fix-v0.7.135` at `fedb4c2`, matching GitHub `main`. Latest public tag is `v0.7.134`.
+- Scope of fixes for `v0.7.135`:
+  1. **DMTrim Announcement Visibility**: Stopped DMTrim from hiding legitimate announcement cards (such as `#products` posts with "Learn more" links and images). Unlabeled promotional cards now require ad-specific markup structure; generic CTAs alone no longer trigger hiding. Explicit ads (e.g. FanDuel) remain strictly filtered.
+  2. **DMWidget Token Retrieval & Static Skin Publish**: Fixed HTTP 401 Unauthorized (`Discord API error HTTP 401: {"message": "401: Unauthorized", "code": 0}`) when publishing static skins or fetching foreign profile metadata. Resolved token retrieval by importing `AuthenticationStore` directly from `@webpack/common` and calling `AuthenticationStore.getToken()`, ensuring all authenticated direct `fetch` requests carry valid `Authorization` headers.
+  3. **Foreign Profile Board Tab & Widget Cutout**: Fixed missing "Board" tab on other users' profiles. Updated `dispatchUserProfileSuccess` to dispatch `{ type: "USER_PROFILE_FETCH_SUCCESS", userProfile: body, ...body }` and `{ type: "USER_UPDATE", user: body.user }`, satisfying Discord's `UserProfileStore` reducer contract so foreign profile widgets populate and mount the Board tab and popout widget cutouts. Expanded Fiber parent walks to inspect `props.userProfile?.userId` and `props.profile?.userId`.
+  4. **Profile Popout Banner & Theme Full-Card Targeting**: Fixed missing profile gradient, horizontal streaks under banners, and own-profile status bubble mismatch. The previous container search stopped prematurely on `<header>` (~140px-210px), painting only the header (with its top covered by the banner and its bottom exposed as a bright streak). Updated `findProfileContainerFromBanner` to strictly reject header and banner elements via `isProfileHeaderOrBannerElement`, enforce `height >= 260px` (exceeding headers even when inflated by status prompt bubbles), and require true profile identity/body elements (`isProfileIdentityCandidate`). In `applyTheme`, added automatic cleanup of any stale theme markers on descendants, and added CSS transparency rules for inner profile layers (`userProfileInner`, `inner__`, `userProfileThemeInner`, `header`) so the gradient flows seamlessly behind the entire card and left modal panel.
+  5. **Profile Name Contrast & Legibility**: Resolved faded/barely readable names against vibrant profile gradients by adding high-contrast white text color, drop shadow, and brightness/contrast boosts for headings, user tags, and styled display names (`[data-dm-flair-theme-applied] [data-dm-display-name-style]`).
+  6. **DMWidget Game Credentials & Auto-Refresh**: Exposed game credentials directly in the widget editor for Valorant (Riot ID + HenrikDev API key) and Fortnite (Epic IGN + Fortnite API key) without requiring an extra toggle, with direct clickable portal links (`api.henrikdev.xyz/dashboard` and `dash.fortnite-api.com`). Unblocked "Update widget content" so users can update card layouts, restore hero character cutouts, and apply skins without being blocked by API key entry; credentials are only required for live background refreshes.
+  7. **DMWidget Game Card Skinning**: Extended `isDiscordmaxxerPlayingCard` and `playingCardPreset` to style playing cards for games like VALORANT and Fortnite in addition to Discordmaxxer Rich Presence.
+  8. **SpotifyControls Robustness**: Hardened `SeekBar` with a `SliderClass` constructor check, safe-navigated artist arrays and album names in `Info`, and converted the ErrorBoundary in the account panel to a silent fail-closed fallback so "Failed to render Spotify Modal :(" is never rendered in the account panel.
+- Verification:
+  - `pnpm testTypes` passed with 0 errors (`tsc --noEmit`).
+  - `pnpm build` passed (`scripts/build/build.mts`).
+  - `pnpm overlay:vencord` passed using pinned source `ef29bbeb6119cfb53d1273ed78147bcc97d91261` (31 plugins synced, 16 rebrand patches applied, 225 idempotent skips, 0 warnings).
+  - `node overlay-scripts/verify-build.mjs` passed all 38 structural and safety checks: staged artifact hashes, manifest version 0.7.135, fingerprint match, required plugins, native image/message context menus, BetterFolders guards, and startup recovery markers.
+  - `git -c core.whitespace=cr-at-eol diff --check` passed with 0 warnings.
+- Release boundary: Candidate build staged, verified locally, and active in the live desktop dev test instance (Session 1). Ready for Diggy's visual verification before committing, tagging, or pushing live.
+
 ## 2026-11-10 — v0.7.134 public release verified
 
 - Public release source: commit `64539b1` is the immutable `v0.7.134` tag and

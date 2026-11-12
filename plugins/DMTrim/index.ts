@@ -80,7 +80,7 @@ const PROMO_CSS_SELECTOR = [
 const PROMO_MARKER = "data-dmtrim-hidden-promo";
 const PROMO_BRAND_RE = /\bfanduel\b/i;
 const PROMO_LABEL_RE = /\b(?:sponsored|promoted|advertisement|ad choices)\b/i;
-const PROMO_ACTION_RE = /\b(?:get reward|watch\s+\d+\s*(?:s|sec|seconds)?|unlock(?:\s+\d+(?:\.\d+)?x)?|learn more)\b/i;
+const PROMO_ACTION_RE = /\b(?:get reward|watch\s+\d+\s*(?:s|sec|seconds)?|unlock(?:\s+\d+(?:\.\d+)?x)?)\b/i;
 const PROMO_ATTRIBUTE_RE = /(?:fanduel|sponsor|promot|advert|adcontainer|adcard|reward)/i;
 
 function normalizeText(value: string): string {
@@ -90,6 +90,17 @@ function normalizeText(value: string): string {
 function hasPromotionalSignal(value: string): boolean {
     const text = normalizeText(value);
     return PROMO_BRAND_RE.test(text) || PROMO_LABEL_RE.test(text) || PROMO_ACTION_RE.test(text);
+}
+
+function hasPromotionalStructure(element: Element): boolean {
+    try {
+        return element.matches(PROMO_SELECTOR)
+            || [...element.attributes].some(attribute => PROMO_ATTRIBUTE_RE.test(`${attribute.name} ${attribute.value}`));
+    } catch {
+        // DOM nodes can be replaced during navigation. If their attributes
+        // cannot be inspected, keep the content visible.
+        return false;
+    }
 }
 
 function isSpotifySurface(element: Element | null): boolean {
@@ -119,19 +130,22 @@ function containsSpotifySurface(element: Element): boolean {
 
 function isPromotionalCard(element: Element): boolean {
     if (containsSpotifySurface(element)) return false;
+    // Real chat messages in channels or DMs are never ad promos.
+    if (element.closest('[class*="messageListItem" i], [id^="chat-messages-"], [class*="chatContent" i]')) return false;
 
     const text = normalizeText(element.textContent ?? "");
     if (text.length < 4 || text.length > 900) return false;
 
-    // Some reward placements omit the Sponsored/Promoted label and rotate
-    // their brand text, but still combine a reward CTA with a media/control
-    // element. Require all three signals for this fallback so an ordinary
-    // message that merely mentions a reward is left alone.
+    // Keep the fallback limited to ad-specific actions and ad-specific
+    // markup. Generic CTAs such as "Learn more" appear in normal product
+    // announcements; a link or image alone is not evidence that a message is
+    // an advertisement.
     const hasAction = PROMO_ACTION_RE.test(text);
     if (!hasAction) return false;
     if (PROMO_BRAND_RE.test(text) || PROMO_LABEL_RE.test(text)) return true;
 
-    return element.querySelector("img, video, button, a, [role=\"button\"]") !== null;
+    return hasPromotionalStructure(element)
+        && element.querySelector("img, video, button, a, [role=\"button\"]") !== null;
 }
 
 function findPromotionalTarget(element: Element): HTMLElement | null {

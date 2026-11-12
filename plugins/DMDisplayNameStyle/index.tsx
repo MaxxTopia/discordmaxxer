@@ -761,6 +761,7 @@ function cssForProfile(profile: StyleProfile): string {
             text-decoration-thickness: 1px;
             text-underline-offset: 2px;
             text-shadow: ${shadow};
+            filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.75));
             ${outline}
             transition: color 140ms ease, text-shadow 140ms ease, filter 140ms ease;
         }

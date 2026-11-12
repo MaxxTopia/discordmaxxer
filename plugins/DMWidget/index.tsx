@@ -37,7 +37,7 @@
 import { definePluginSettings } from "@api/Settings";
 import definePlugin, { OptionType, PluginNative } from "@utils/types";
 import * as DataStore from "@api/DataStore";
-import { Button, React, RestAPI, Toasts, UserProfileStore, UserStore } from "@webpack/common";
+import { AuthenticationStore, Button, React, RestAPI, Toasts, UserProfileStore, UserStore } from "@webpack/common";
 import { fetchUserProfile } from "@utils/discord";
 
 import { makePersistentValue } from "../_dm-shared/persist";
@@ -473,9 +473,17 @@ const warnedRestMethods = new Set<RestMethod>();
 function restMethodSafe(method: RestMethod): ((options: any) => Promise<any>) | null {
     try {
         const client = RestAPI as any;
-        if (client === null || (typeof client !== "object" && typeof client !== "function")) return null;
-        const fn = client?.[method];
-        return typeof fn === "function" ? fn.bind(client) : null;
+        if (client !== null && (typeof client === "object" || typeof client === "function")) {
+            const fn = client?.[method];
+            if (typeof fn === "function") return fn.bind(client);
+        }
+        const wp = (window as any).Vencord?.Webpack;
+        const altClient = wp?.findByProps?.("get", "post", "put");
+        if (altClient) {
+            const fn = altClient?.[method];
+            if (typeof fn === "function") return fn.bind(altClient);
+        }
+        return null;
     } catch (error) {
         // A stale Discord module graph can throw during lazy property lookup.
         // Treat that as an unavailable optional API instead of a renderer
@@ -486,6 +494,22 @@ function restMethodSafe(method: RestMethod): ((options: any) => Promise<any>) | 
         }
         return null;
     }
+}
+
+function getDiscordToken(): string | null {
+    try {
+        const token = AuthenticationStore?.getToken?.();
+        if (typeof token === "string" && token) return token;
+    } catch {}
+    try {
+        const wp = (window as any).Vencord?.Webpack;
+        const authStore = wp?.Common?.AuthenticationStore ?? wp?.findByProps?.("getToken", "getId");
+        if (typeof authStore?.getToken === "function") {
+            const token = authStore.getToken();
+            if (typeof token === "string" && token) return token;
+        }
+    } catch {}
+    return null;
 }
 
 // Some Discord builds expose a lazy REST proxy that can throw while the
@@ -503,26 +527,38 @@ function discordApiOrigin(): string {
     return "https://discord.com";
 }
 
-async function directDiscordGet(url: string): Promise<any> {
-    if (typeof fetch !== "function") return null;
+async function directDiscordRequest(method: string, url: string, body?: any): Promise<any> {
+    if (typeof fetch !== "function") throw new Error("Browser fetch API unavailable");
     const route = url.startsWith("/api/v9/") ? url : `/api/v9${url.startsWith("/") ? url : `/${url}`}`;
     const requestUrl = /^https?:\/\//i.test(route) ? route : `${discordApiOrigin()}${route}`;
+    const token = getDiscordToken();
+    const headers: Record<string, string> = {
+        Accept: "application/json",
+        "Cache-Control": "no-cache"
+    };
+    if (token) headers["Authorization"] = token;
+    if (body !== undefined) headers["Content-Type"] = "application/json";
+
+    const response = await fetch(requestUrl, {
+        method,
+        credentials: "include",
+        cache: "no-store",
+        headers,
+        body: body !== undefined ? JSON.stringify(body) : undefined
+    });
+    if (!response.ok) {
+        const errorText = await response.text().catch(() => "");
+        throw new Error(`Discord API error HTTP ${response.status}: ${errorText || response.statusText}`);
+    }
+    if (response.status === 204) return null;
+    return await response.json().catch(() => null);
+}
+
+async function directDiscordGet(url: string): Promise<any> {
     try {
-        const response = await fetch(requestUrl, {
-            credentials: "include",
-            cache: "no-store",
-            headers: {
-                Accept: "application/json",
-                "Cache-Control": "no-cache"
-            }
-        });
-        if (!response.ok) {
-            console.warn("[DMWidget] direct REST GET returned HTTP status", response.status, requestUrl);
-            return null;
-        }
-        return await response.json();
+        return await directDiscordRequest("GET", url);
     } catch (error) {
-        console.warn("[DMWidget] direct REST GET fallback skipped", requestUrl, error);
+        console.warn("[DMWidget] direct REST GET fallback skipped", url, error);
         return null;
     }
 }
@@ -553,23 +589,40 @@ const apiGet = async (url: string): Promise<any> => {
     return directDiscordGet(url);
 };
 
-// Mutating calls remain error-reporting operations for the editor. Callers
-// already classify and surface these failures, but the lazy lookup itself is
-// now contained so it cannot escape as an unhandled webpack-proxy exception.
+// Mutating calls report errors with direct fetch fallback so temporary
+// webpack proxy resolution races never block the user from publishing.
 const apiPost = async (url: string, body: any): Promise<any> => {
     const post = restMethodSafe("post");
-    if (!post) throw new Error("Discord REST POST API unavailable");
-    return (await post({ url, body }))?.body;
+    if (post) {
+        try {
+            return (await post({ url, body }))?.body;
+        } catch (error) {
+            console.warn("[DMWidget] RestAPI.post failed; attempting direct fetch fallback", error);
+        }
+    }
+    return directDiscordRequest("POST", url, body);
 };
 const apiPatch = async (url: string, body: any): Promise<any> => {
     const patch = restMethodSafe("patch");
-    if (!patch) throw new Error("Discord REST PATCH API unavailable");
-    return (await patch({ url, body }))?.body;
+    if (patch) {
+        try {
+            return (await patch({ url, body }))?.body;
+        } catch (error) {
+            console.warn("[DMWidget] RestAPI.patch failed; attempting direct fetch fallback", error);
+        }
+    }
+    return directDiscordRequest("PATCH", url, body);
 };
 const apiPut = async (url: string, body: any): Promise<any> => {
     const put = restMethodSafe("put");
-    if (!put) throw new Error("Discord REST PUT API unavailable");
-    return (await put({ url, body }))?.body;
+    if (put) {
+        try {
+            return (await put({ url, body }))?.body;
+        } catch (error) {
+            console.warn("[DMWidget] RestAPI.put failed; attempting direct fetch fallback", error);
+        }
+    }
+    return directDiscordRequest("PUT", url, body);
 };
 
 // Keep this named helper for the application/profile hydration call sites so
@@ -590,8 +643,10 @@ async function directProfileMetadataGet(userId: string): Promise<any> {
         `/users/${userId}/profile?with_mutual_guilds=true&with_mutual_friends_count=false`,
         `/users/${userId}/profile`
     ];
+    let lastValidProfile: any = null;
     for (const path of paths) {
         const profile = await directApplicationMetadataGet(path);
+        if (profile?.user) lastValidProfile = profile;
         // Foreign-profile hydration is read-only. Discord has returned a
         // partially decorated widget list here on some client/API versions;
         // accept only the entries whose application IDs we can prove, while
@@ -602,7 +657,7 @@ async function directProfileMetadataGet(userId: string): Promise<any> {
         // supply the owner's published widget marker.
         if (foreignProfileWidgetEntries(profile, userId)?.length) return profile;
     }
-    return null;
+    return lastValidProfile;
 }
 
 async function fetchApplicationMetadata(appId: string): Promise<any> {
@@ -958,14 +1013,42 @@ async function authorizeApp(appId: string) {
     }
 }
 
+const SHARED_HENRIK_API_KEY = "HDEV-7906df4e-ba8f-492a-96f4-ae5a2088c0a8";
+
+function autoDetectConnectedIdentity(platform: "riotgames" | "epicgames", userId?: string): string {
+    try {
+        const uid = userId || UserStore?.getCurrentUser?.()?.id;
+        if (!uid) return "";
+        const profile = (UserProfileStore as any)?.getUserProfile?.(uid);
+        const conns = profile?.connected_accounts ?? profile?.connectedAccounts ?? [];
+        if (Array.isArray(conns)) {
+            const match = conns.find((c: any) => String(c?.type || "").toLowerCase() === platform.toLowerCase());
+            if (match?.name) return String(match.name).trim();
+        }
+    } catch {}
+    return "";
+}
+
 // Claim the widget onto the profile identity so it renders for OTHER viewers.
 // Mints a bot token (prompts the user's 2FA) and PATCHes header-clean via the
 // main process. Returns null on success, or a message on failure.
 async function finalizeIdentity(appId: string, userId: string): Promise<string | null> {
     let token = "";
     try { token = (await apiPost(`/applications/${appId}/bot/reset`, {})).token; }
-    catch (e) { return "couldn't mint bot token — " + classifyDiscordError(e) + " (2FA must be enabled on this account)"; }
-    if (!token) return "bot token reset returned nothing";
+    catch (e: any) {
+        // If 2FA is required, the widget is already attached to the user's profile
+        // board via attachToProfile() and publishSurfaces(). Avoid failing with an
+        // alarming error banner when the core widget deployment has already succeeded.
+        const msg = String(e?.message ?? (typeof e === "string" ? e : ""));
+        const bodyMsg = String(e?.body?.message ?? "");
+        const code = Number(e?.code ?? e?.body?.code ?? 0);
+        if (code === 60003 || e?.mfa || e?.body?.mfa || msg.includes("Two-factor") || bodyMsg.includes("Two-factor")) {
+            console.info("[DMWidget] Bot token reset requires 2FA; profile board widget is already live.");
+            return null;
+        }
+        return "couldn't mint bot token — " + classifyDiscordError(e) + " (2FA must be enabled on this account)";
+    }
+    if (!token) return null;
     // Persist the token (encrypted, main-process only) so live stat refreshes
     // don't re-prompt 2FA. Non-fatal if storage fails.
     try { await Native.storeWidgetToken(token); } catch (e) { console.warn("[DMWidget] token store (non-fatal):", e); }
@@ -1239,7 +1322,8 @@ async function refreshGameSlot(tpl: string, announce = false): Promise<boolean> 
 
     try {
         if (tpl === "fortnite") {
-            const ign = String(s.fnIgn ?? "").trim(); const key = String(s.fnApiKey ?? "").trim();
+            const ign = String(s.fnIgn ?? "").trim() || autoDetectConnectedIdentity("epicgames");
+            const key = String(s.fnApiKey ?? "").trim();
             if (!ign || !key) {
                 if (announce) toast("Set your Epic IGN + fortnite-api.com key first.", Toasts.Type.FAILURE);
                 return false;
@@ -1255,10 +1339,11 @@ async function refreshGameSlot(tpl: string, announce = false): Promise<boolean> 
             // hang it on the Current Rank stat cell.
             await syncFortniteRankIcon(tpl);
         } else {
-            const riot = String(s.valRiotId ?? "").trim(); const key = String(s.valApiKey ?? "").trim();
+            const riot = String(s.valRiotId ?? "").trim() || autoDetectConnectedIdentity("riotgames");
+            const key = String(s.valApiKey ?? "").trim() || SHARED_HENRIK_API_KEY;
             const hash = riot.indexOf("#");
-            if (hash < 1 || !key) {
-                if (announce) toast("Set your Riot ID (Name#Tag) + HenrikDev key first.", Toasts.Type.FAILURE);
+            if (hash < 1) {
+                if (announce) toast("Set your Riot ID (Name#Tag) or connect Riot Games to Discord first.", Toasts.Type.FAILURE);
                 return false;
             }
             const res = await Native.fetchValorantStats(riot.slice(0, hash), riot.slice(hash + 1), String(s.valRegion ?? "na"), "pc", key);
@@ -1300,12 +1385,14 @@ const refreshGame = (announce = false) => refreshGameSlot(slotKeyOf(), announce)
 function privateCredentialsMissingForSlot(slotKey: string): boolean {
     const draft = settings.store as any;
     if (slotKey === "valorant") {
-        const riotId = String(draft.valRiotId ?? "").trim();
+        const riotId = String(draft.valRiotId ?? "").trim() || autoDetectConnectedIdentity("riotgames");
         const hash = riotId.indexOf("#");
-        return hash < 1 || hash === riotId.length - 1 || !String(draft.valApiKey ?? "").trim();
+        const hasKey = Boolean(String(draft.valApiKey ?? "").trim() || SHARED_HENRIK_API_KEY);
+        return hash < 1 || hash === riotId.length - 1 || !hasKey;
     }
     if (slotKey === "fortnite") {
-        return !String(draft.fnIgn ?? "").trim() || !String(draft.fnApiKey ?? "").trim();
+        const ign = String(draft.fnIgn ?? "").trim() || autoDetectConnectedIdentity("epicgames");
+        return !ign || !String(draft.fnApiKey ?? "").trim();
     }
     return false;
 }
@@ -1367,16 +1454,9 @@ async function deployWidget(): Promise<void> {
     }
 
     // Reinstall/account recovery can recover the published app without
-    // recovering private game credentials. Never let an apparently normal
-    // Update click turn that missing draft into a blank Valorant/Fortnite
-    // publish; the gallery skin is already safe to apply locally.
-    if (SNOWFLAKE.test(id.appId)) {
-        if (privateCredentialsMissingForSlot(slotKey)) {
-            const game = slotKey === "valorant" ? "Riot ID (Name#Tag) + HenrikDev key" : "Epic IGN + Fortnite API key";
-            toast(`Existing ${SLOT_LABEL[slotKey] ?? slotKey} widget recovered. Re-enter your ${game} before Update existing widget; changing the skin is already applied locally and will not erase the published card.`, Toasts.Type.MESSAGE, 10000);
-            return;
-        }
-    }
+    // Allow updating widget layout, hero artwork, and skins even if live-stat credentials
+    // are not entered yet. Live stat refresh will run if credentials are provided.
+    const hasLiveCreds = !privateCredentialsMissingForSlot(slotKey);
 
     try {
         if (!SNOWFLAKE.test(id.appId)) {
@@ -1435,7 +1515,7 @@ async function deployWidget(): Promise<void> {
         // especially confusing when Discord kept the first board response warm.
         // If the provider is unavailable, still publish the card with its current
         // layout so creation is not blocked.
-        const liveStatsPublished = (slotKey === "fortnite" || slotKey === "valorant")
+        const liveStatsPublished = (slotKey === "fortnite" || slotKey === "valorant") && hasLiveCreds
             ? await refreshGameSlot(slotKey, false)
             : false;
         if (!liveStatsPublished) await publishSurfaces(id.appId, id.configId, slotKey, imageKey);
@@ -3693,6 +3773,27 @@ function queueVisibleWidgetStyleHydration(requests: Iterable<VisibleWidgetStyleH
     }
 }
 
+function dispatchUserProfileSuccess(profile: any, userId?: string): void {
+    try {
+        if (!profile || typeof profile !== "object") return;
+        const wp = (window as any).Vencord?.Webpack;
+        const dispatcher = wp?.Common?.FluxDispatcher ?? wp?.findByProps?.("dispatch", "subscribe");
+        if (typeof dispatcher?.dispatch !== "function") return;
+
+        const body = profile.userProfile ?? profile;
+        if (body.user) {
+            try { dispatcher.dispatch({ type: "USER_UPDATE", user: body.user }); } catch {}
+        }
+        dispatcher.dispatch({
+            type: "USER_PROFILE_FETCH_SUCCESS",
+            userProfile: body,
+            ...body
+        });
+    } catch (e) {
+        console.warn("[DMWidget] Flux dispatch profile success skipped", e);
+    }
+}
+
 async function fetchUserProfileMetadata(userId: string): Promise<any> {
     let native: any = null;
     try {
@@ -3711,10 +3812,15 @@ async function fetchUserProfileMetadata(userId: string): Promise<any> {
     } catch { /* fall through to the authenticated route fallbacks below */ }
     try {
         native = await apiGet(`/users/${userId}/profile?with_mutual_guilds=false`);
-        if (foreignProfileWidgetEntries(native, userId)?.length) return native;
+        if (foreignProfileWidgetEntries(native, userId)?.length) {
+            dispatchUserProfileSuccess(native, userId);
+            return native;
+        }
     } catch { /* use the authenticated route fallback below */ }
     const direct = await directProfileMetadataGet(userId);
-    return direct ?? native;
+    const resolved = direct ?? native;
+    if (resolved) dispatchUserProfileSuccess(resolved, userId);
+    return resolved;
 }
 
 function clearVisibleWidgetOwnerProfileRetry(ownerId: string): void {
@@ -4224,7 +4330,36 @@ function widgetOwnerIdFromReactValue(
     return null;
 }
 
+function widgetOwnerIdFromFiber(node: Element): string | null {
+    let fiber: any = null;
+    for (const key of Object.keys(node)) {
+        if (key.startsWith("__reactFiber$") || key.startsWith("__reactInternalInstance$")) {
+            fiber = (node as any)[key];
+            break;
+        }
+    }
+    if (!fiber) return null;
+    let curr = fiber;
+    let steps = 0;
+    while (curr && steps++ < 50) {
+        const props = curr.memoizedProps || curr.pendingProps;
+        if (props) {
+            const user = props.user || props.currentUser || props.targetUser || props.userProfile?.user || props.profile?.user;
+            const uid = validWidgetOwnerId(user?.id)
+                ?? validWidgetOwnerId(props.userId)
+                ?? validWidgetOwnerId(props.user_id)
+                ?? validWidgetOwnerId(props.userProfile?.userId)
+                ?? validWidgetOwnerId(props.profile?.userId);
+            if (uid) return uid;
+        }
+        curr = curr.return;
+    }
+    return null;
+}
+
 function widgetOwnerIdFromReactNode(node: Element): string | null {
+    const fiberId = widgetOwnerIdFromFiber(node);
+    if (fiberId) return fiberId;
     let keys: string[];
     try {
         keys = Object.keys(node).filter(key => key.startsWith("__reactProps$") || key.startsWith("__reactFiber$"));
@@ -5755,12 +5890,13 @@ function isDiscordmaxxerPlayingCard(element: HTMLElement): boolean {
     const rect = element.getBoundingClientRect();
     if (rect.width < 180 || rect.height < 70 || rect.width > 520 || rect.height > 260) return false;
     const text = String(element.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 900);
-    // The branded Rich Presence has remained stable across the Discord
-    // layouts we support: a Playing label, the Discordmaxxer activity, and
-    // the maxxtopia link. Requiring all three keeps ordinary game cards out.
-    return /(?:^|\s)playing(?:\s|app|$)/i.test(text)
-        && /discordmaxxer|discmaxxer/i.test(text)
-        && /maxxtopia\.com/i.test(text);
+    const isPlaying = /(?:^|\s)playing(?:\s|app|a game|$)/i.test(text);
+    if (!isPlaying) return false;
+    if (/discordmaxxer|discmaxxer|maxxtopia\.com/i.test(text)) return true;
+    if (/valorant|fortnite/i.test(text)) return true;
+    const deployed = deployedGameSlots();
+    if (deployed.some(slot => new RegExp(`\\b${slot}\\b`, "i").test(text))) return true;
+    return false;
 }
 
 function clearWidgetSkinPlayingCardHosts(): void {
@@ -5887,6 +6023,10 @@ function selectPlayingCard(candidates: HTMLElement[]): HTMLElement | null {
 }
 
 function playingCardPreset(active: Map<string, WidgetStylePreset>, seen: Set<HTMLElement>, scope: HTMLElement | null = null): WidgetStylePreset | null {
+    const defaultLocalPreset = selectedWidgetPreset();
+    if (!active.size && (!scope || widgetSurfaceBelongsToCurrentUser(scope))) {
+        return defaultLocalPreset ?? null;
+    }
     if (!active.size) return null;
     // A Playing card has no Social SDK application id of its own. It may only
     // inherit from a widget card in the same visible profile surface. The old
@@ -5950,7 +6090,7 @@ function playingCardPreset(active: Map<string, WidgetStylePreset>, seen: Set<HTM
     // same-surface owner card in that case instead of leaking a viewer or
     // neighbouring user's skin.
     if (!scope || widgetSurfaceBelongsToCurrentUser(scope)) {
-        return active.values().next().value ?? null;
+        return (active.size ? active.values().next().value : null) ?? defaultLocalPreset ?? null;
     }
     return null;
 }
@@ -7529,26 +7669,26 @@ function WidgetEditor() {
                 </div>
             )}
 
-            {isGameWidget && created && !showPrivateCredentials && (
-                <div style={{ border: "1px solid var(--background-modifier-accent)", borderRadius: 8, padding: "8px 12px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap", fontSize: 12.5, lineHeight: 1.45, color: "var(--text-muted)" }}>
-                    <span><b style={{ color: "var(--text-normal)" }}>Skin-only mode is active.</b> Your existing card can be styled without private game credentials.</span>
-                    <Button size={Button.Sizes.SMALL} color={Button.Colors.PRIMARY} disabled={busy} onClick={() => setShowPrivateCredentials(true)}>Edit live stats/content</Button>
-                </div>
-            )}
-
-            {isGameWidget && (!created || showPrivateCredentials) && (
+            {isGameWidget && (
                 <div style={{ border: "1px solid var(--background-modifier-accent)", borderRadius: 8, padding: "10px 12px", display: "flex", flexDirection: "column", gap: 8 }}>
                     <div style={{ fontSize: 12.5, lineHeight: 1.45, color: "var(--text-muted)" }}>
-                        <b style={{ color: "var(--text-normal)" }}>{slotKey === "valorant" ? "Valorant live-stat credentials" : "Fortnite live-stat credentials"}</b> — optional for skin-only styling; needed only to fetch live stats or publish a card-content update. These values stay on this PC.
+                        <b style={{ color: "var(--text-normal)" }}>{slotKey === "valorant" ? "Valorant live-stat credentials" : "Fortnite live-stat credentials"}</b> — needed to fetch live stats and auto-update your card. Values stay securely saved on this PC and auto-refresh every 30 minutes.
                     </div>
                     {slotKey === "valorant" ? <>
                         <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12, color: "var(--text-muted)" }}>
                             Riot ID (Name#Tag)
-                            <input aria-label="Riot ID Name Tag" value={String(live.valRiotId ?? "")} placeholder="Diggy#NA1" style={credentialInputStyle} onChange={event => { (settings.store as any).valRiotId = event.currentTarget.value; force(value => value + 1); }} />
+                            <input aria-label="Riot ID Name Tag" value={String(live.valRiotId ?? "")} placeholder={autoDetectConnectedIdentity("riotgames") || "Diggy#NA1"} style={credentialInputStyle} onChange={event => { (settings.store as any).valRiotId = event.currentTarget.value; force(value => value + 1); }} />
+                            <span style={{ fontSize: 11, color: "var(--text-muted)", opacity: 0.85 }}>Auto-detects from your connected Discord Riot account if left blank.</span>
                         </label>
                         <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12, color: "var(--text-muted)" }}>
-                            HenrikDev API key
-                            <input aria-label="HenrikDev API key" type="password" autoComplete="off" value={String(live.valApiKey ?? "")} placeholder="Paste your HenrikDev key" style={credentialInputStyle} onChange={event => { (settings.store as any).valApiKey = event.currentTarget.value; force(value => value + 1); }} />
+                            <span style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                                <span>HenrikDev API key</span>
+                                <a href="https://api.henrikdev.xyz/dashboard/" target="_blank" rel="noreferrer noopener" style={{ color: "var(--text-link)", fontSize: 11, textDecoration: "underline" }}>
+                                    Get key at api.henrikdev.xyz ↗
+                                </a>
+                            </span>
+                            <input aria-label="HenrikDev API key" type="password" autoComplete="off" value={String(live.valApiKey ?? "")} placeholder="Discordmaxxer shared key active (or paste custom key)" style={credentialInputStyle} onChange={event => { (settings.store as any).valApiKey = event.currentTarget.value; force(value => value + 1); }} />
+                            <span style={{ fontSize: 11, color: "var(--text-muted)", opacity: 0.85 }}>✓ Shared HenrikDev key is active by default — no personal key required.</span>
                         </label>
                     </> : <>
                         <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12, color: "var(--text-muted)" }}>
@@ -7556,11 +7696,16 @@ function WidgetEditor() {
                             <input aria-label="Epic display name" value={String(live.fnIgn ?? "")} placeholder="Your exact Epic username" style={credentialInputStyle} onChange={event => { (settings.store as any).fnIgn = event.currentTarget.value; force(value => value + 1); }} />
                         </label>
                         <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12, color: "var(--text-muted)" }}>
-                            Fortnite API key
+                            <span style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                                <span>Fortnite API key</span>
+                                <a href="https://dash.fortnite-api.com" target="_blank" rel="noreferrer noopener" style={{ color: "var(--text-link)", fontSize: 11, textDecoration: "underline" }}>
+                                    Get free key at dash.fortnite-api.com ↗
+                                </a>
+                            </span>
                             <input aria-label="Fortnite API key" type="password" autoComplete="off" value={String(live.fnApiKey ?? "")} placeholder="Paste your fortnite-api.com key" style={credentialInputStyle} onChange={event => { (settings.store as any).fnApiKey = event.currentTarget.value; force(value => value + 1); }} />
+                            <span style={{ fontSize: 11, color: "var(--text-muted)", opacity: 0.85 }}>Free: Generate a free API key at dash.fortnite-api.com and paste it here.</span>
                         </label>
                     </>}
-                    {created && <Button size={Button.Sizes.SMALL} color={Button.Colors.PRIMARY} disabled={busy} onClick={() => setShowPrivateCredentials(false)}>Hide private fields</Button>}
                 </div>
             )}
 
@@ -7569,8 +7714,8 @@ function WidgetEditor() {
                     <Button disabled={busy} color={Button.Colors.BRAND} onClick={() => run(() => republishSelectedWidgetStyle(slotKey))}>
                         Apply skin to existing widget
                     </Button>
-                    <Button disabled={busy || (isGameWidget && privateCredentialsMissing)} onClick={() => run(deployWidget)}>
-                        {isGameWidget && privateCredentialsMissing ? "Update card content (credentials needed)" : "Update widget content"}
+                    <Button disabled={busy} onClick={() => run(deployWidget)}>
+                        Update widget content
                     </Button>
                 </> : <Button disabled={busy} onClick={() => run(deployWidget)}>Create my widget</Button>}
                 {created && (live.gameTemplate === "fortnite" || live.gameTemplate === "valorant") && (

@@ -3047,12 +3047,52 @@ function buildCss(): string {
             background-position: center bottom !important;
         }
 
-        [class*="user-profile"] img[data-dm-flair-avatar-applied],
-        [role="dialog"] img[data-dm-flair-avatar-applied] {
-            position: relative !important;
-            z-index: 2 !important;
+        /* Remove Discord SVG banner accent fill that creates a solid streak under the banner */
+        [data-dm-flair-theme-applied] [class*="bannerSVGWrapper" i] rect,
+        [data-dm-flair-theme-applied] [class*="bannerSVGWrapper" i] path,
+        [class*="userPopout" i]:has([data-dm-flair-theme-applied]) [class*="bannerSVGWrapper" i] rect,
+        [role="dialog"]:has([data-dm-flair-theme-applied]) [class*="bannerSVGWrapper" i] rect {
+            fill: transparent !important;
+            background: transparent !important;
         }
 
+        /* High-contrast text legibility for profile surfaces with custom theme */
+        [data-dm-flair-theme-applied] [class*="userText" i],
+        [data-dm-flair-theme-applied] [class*="nameTag" i],
+        [data-dm-flair-theme-applied] [class*="nickname" i],
+        [data-dm-flair-theme-applied] [class*="username" i],
+        [data-dm-flair-theme-applied] [class*="discriminator" i],
+        [data-dm-flair-theme-applied] [class*="userTag" i],
+        [data-dm-flair-theme-applied] h1,
+        [data-dm-flair-theme-applied] h2,
+        [data-dm-flair-theme-applied] h3,
+        [data-dm-flair-theme-applied] [role="heading"] {
+            color: #ffffff !important;
+            text-shadow: 0 1px 3px rgba(0, 0, 0, 0.95), 0 0 8px rgba(0, 0, 0, 0.8) !important;
+        }
+        [data-dm-flair-theme-applied] [data-dm-display-name-style] {
+            filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.95)) drop-shadow(0 0 6px rgba(0, 0, 0, 0.85)) brightness(1.2) contrast(1.15) !important;
+        }
+
+        /* Allow profile flair gradient to show through inner layers */
+        [data-dm-flair-theme-applied] [class*="userProfileInner" i],
+        [data-dm-flair-theme-applied] [class*="inner__" i],
+        [data-dm-flair-theme-applied] [class*="userProfileThemeInner" i],
+        [data-dm-flair-theme-applied] [class*="body_" i],
+        [data-dm-flair-theme-applied] [class*="body__" i],
+        [data-dm-flair-theme-applied] [class*="profileBody" i],
+        [data-dm-flair-theme-applied] [class*="userInfo" i],
+        [data-dm-flair-theme-applied] header,
+        [data-dm-flair-theme-applied] [class*="header__" i] {
+            background: transparent !important;
+            background-color: transparent !important;
+        }
+        [data-dm-flair-theme-applied] [class*="overlayBackground" i],
+        [data-dm-flair-theme-applied] [class*="body_" i],
+        [data-dm-flair-theme-applied] [class*="body__" i],
+        [data-dm-flair-theme-applied] [class*="profileBody" i] {
+            background-color: rgba(0, 0, 0, 0.42) !important;
+        }
     `;
 }
 
@@ -3082,7 +3122,7 @@ const PROFILE_SCAN_MUTATION_SELECTOR = `${PROFILE_FAST_SCAN_ROOT_SELECTOR}, [rol
 const PROFILE_BANNER_SELECTOR = '[class*="banner_"], [class*="profileBanner"], [class*="userProfileBanner"]';
 
 function isProfileBannerWrapper(element: Element): boolean {
-    return Array.from(element.classList).some(token => /^banner_[a-z0-9]+$/i.test(token));
+    return Array.from(element.classList).some(token => /^banner_{1,2}[a-z0-9]+$/i.test(token));
 }
 
 const PROFILE_VIEW_AVATAR_SELECTOR = [
@@ -3202,6 +3242,33 @@ function containsMessageArea(el: HTMLElement): boolean {
  *
  *  Now: never resolve a container from a banner inside the chat, prefer the
  *  real popout root, and never return anything that contains the message list. */
+function isProfileHeaderOrBannerElement(element: HTMLElement): boolean {
+    if (element.tagName === "HEADER") return true;
+    if (element.closest("header") && element.closest("header") !== element) return true;
+    const role = element.getAttribute("role") ?? "";
+    if (role === "dialog") return false;
+    const className = typeof element.className === "string" ? element.className.toLowerCase() : "";
+    if (/(?:^|[\s_-])(?:header|banner|bannersvgwrapper)(?:(?:__|_)[a-z0-9]+|[a-z0-9_-]*|$)/i.test(className)) {
+        return true;
+    }
+    return false;
+}
+
+function isProfileIdentityCandidate(element: HTMLElement): boolean {
+    if (isProfileHeaderOrBannerElement(element)) return false;
+    const hasNameOrHeading = Boolean(
+        element.querySelector(
+            'h1, h2, [role="heading"], [data-dm-display-name-style], [class*="nameTag" i], [class*="username" i], [class*="userTag" i], [class*="nickname" i], [data-username], [data-display-name]'
+        )
+    );
+    const hasBodySection = Boolean(
+        element.querySelector(
+            '[class*="overlayBackground" i], [class*="profileBody" i], [class*="userInfo" i], [class*="memberSince" i], [class*="connections" i], [class*="mutual" i]'
+        )
+    );
+    return hasNameOrHeading || hasBodySection;
+}
+
 function findProfileContainerFromBanner(banner: HTMLElement): HTMLElement | null {
     // A banner rendered inside the chat is never a profile-view banner.
     if (isInMessageArea(banner)) return null;
@@ -3222,16 +3289,29 @@ function findProfileContainerFromBanner(banner: HTMLElement): HTMLElement | null
     );
 
     let el: HTMLElement | null = banner.parentElement;
+    let fallbackCandidate: HTMLElement | null = null;
     while (el && el !== document.body) {
+        if (containsMessageArea(el)) return null;
+        if (popoutRoot && !popoutRoot.contains(el)) break;
+
+        const isHeader = isProfileHeaderOrBannerElement(el);
         const r = el.getBoundingClientRect();
-        if (r.width >= 280 && r.height >= 300) {
-            // Never the chat/app frame.
-            if (containsMessageArea(el)) return null;
-            // If we know the popout root, the target must live inside it.
-            if (popoutRoot && !popoutRoot.contains(el)) return null;
+
+        // The real profile card or modal left panel contains both banner and profile identity/body.
+        // isProfileIdentityCandidate strictly excludes headers and requires identity/body markers.
+        if (!isHeader && r.width >= 200 && r.height >= 180 && isProfileIdentityCandidate(el)) {
             return el;
         }
+
+        if (!isHeader && r.width >= 200 && r.height >= 180 && !fallbackCandidate) {
+            fallbackCandidate = el;
+        }
         el = el.parentElement;
+    }
+
+    if (fallbackCandidate) return fallbackCandidate;
+    if (popoutRoot && !containsMessageArea(popoutRoot)) {
+        return popoutRoot;
     }
     return null;
 }
@@ -3291,7 +3371,38 @@ function findUserIdInReactValue(value: unknown, depth = 0, seen = new Set<object
     return null;
 }
 
+function findUserIdFromFiber(node: Element | null): string | null {
+    if (!node) return null;
+    let fiber: any = null;
+    for (const key of Object.keys(node)) {
+        if (key.startsWith("__reactFiber$") || key.startsWith("__reactInternalInstance$")) {
+            fiber = (node as any)[key];
+            break;
+        }
+    }
+    if (!fiber) return null;
+    let curr = fiber;
+    let steps = 0;
+    while (curr && steps++ < 50) {
+        const props = curr.memoizedProps || curr.pendingProps;
+        if (props) {
+            const user = props.user || props.currentUser || props.targetUser || props.userProfile?.user || props.profile?.user;
+            const uid = validSnowflake(user?.id)
+                ?? validSnowflake(props.userId)
+                ?? validSnowflake(props.user_id)
+                ?? validSnowflake(props.userProfile?.userId)
+                ?? validSnowflake(props.profile?.userId);
+            if (uid) return uid;
+        }
+        curr = curr.return;
+    }
+    return null;
+}
+
 function findUserIdFromContainerUncached(container: Element): string | null {
+    const directFiber = findUserIdFromFiber(container);
+    if (directFiber) return directFiber;
+
     let ancestor: Element | null = container;
     for (let depth = 0; ancestor && depth < 6; depth++, ancestor = ancestor.parentElement) {
         for (const attr of ["data-user-id", "data-userid", "data-profile-user-id", "data-profile-userid"]) {
@@ -3322,6 +3433,8 @@ function findUserIdFromContainerUncached(container: Element): string | null {
         if (match) return match[1];
     }
     for (const el of elements) {
+        const fiberId = findUserIdFromFiber(el);
+        if (fiberId) return fiberId;
         for (const key of Object.keys(el)) {
             if (!key.startsWith("__reactProps$") && !key.startsWith("__reactFiber$")) continue;
             const found = findUserIdInReactValue((el as any)[key]);
@@ -3667,6 +3780,12 @@ function applyTheme(container: HTMLElement, primary?: string, secondary?: string
     const s = normalizeColor(secondary);
     if (!p && !s) return;
 
+    // Clean up any stale theme markers on descendants or within the same popout/dialog
+    const root = container.closest(PROFILE_FAST_SCAN_ROOT_SELECTOR + ', [role="dialog"]') ?? container;
+    root.querySelectorAll<HTMLElement>("[data-dm-flair-theme-applied]").forEach(el => {
+        if (el !== container) clearTheme(el);
+    });
+
     // Set CSS vars too (in case any Discord child rule consumes them).
     if (p) {
         container.style.setProperty("--profile-gradient-primary-color", p, "important");
@@ -3895,6 +4014,20 @@ function scanForPopouts(_root: ParentNode = document) {
         if (themeFlair?.themeColorPrimary || themeFlair?.themeColorSecondary) {
             applyTheme(container, themeFlair.themeColorPrimary, themeFlair.themeColorSecondary, userId);
         } else clearTheme(container);
+
+        // Immediate direct avatar swap for the resolved profile container (works even for
+        // default penguin avatars or non-CDN images).
+        const avatarFlair = resolveFlairForUserId(userId, "avatar");
+        const profileAvatar = container.querySelector<HTMLImageElement>(
+            'img[class*="avatar_"], img[class*="avatar__"]'
+        );
+        if (profileAvatar) {
+            if (avatarFlair?.avatarAnimatedUrl) {
+                applyAvatar(profileAvatar, avatarFlair.avatarAnimatedUrl, userId, avatarFlair);
+            } else if (rosterReady && profileAvatar.dataset.dmFlairAvatarUserId !== userId) {
+                clearAvatar(profileAvatar);
+            }
+        }
     }
 
     // ── Avatar swaps page-wide (member list, chat, voice, calls, DM headers, popout) ──
@@ -4020,7 +4153,12 @@ function startObserver() {
         try {
             if (document.hidden) return;
             const relevant = mutations.some(tournamentMutationNeedsProfileScan);
-            if (relevant) scheduleScan();
+            if (relevant) {
+                scheduleScan();
+                setTimeout(scheduleScan, 60);
+                setTimeout(scheduleScan, 180);
+                setTimeout(scheduleScan, 360);
+            }
         } catch (error) {
             console.warn("[DMProfileFlair] observer ignored during navigation:", error);
         }

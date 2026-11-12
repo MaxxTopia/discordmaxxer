@@ -335,28 +335,78 @@ const PATCHES = [
         replace: '        <div id={cl("player")} data-dm-spotify-surface="true" style={exportTrackImageStyle}>'
     },
     {
-        file: "src/plugins/spotifyControls/index.tsx",
-        marker: "Discordmaxxer: Spotify fallback surface marker.",
-        find: '                        <div className="vc-spotify-fallback">',
-        replace: '                        <div className="vc-spotify-fallback" data-dm-spotify-surface="true">'
+        file: "src/plugins/spotifyControls/PlayerComponent.tsx",
+        marker: "Discordmaxxer: Spotify artists and album guard.",
+        alreadyAppliedWhen: content => content.includes("Discordmaxxer: Spotify artists and album guard."),
+        find:
+            "                {track.artists.some(a => a.name) && (\n" +
+            "                    <Paragraph className={cl([\"ellipoverflow\", \"secondary-song-info\"])}>\n" +
+            "                        <span className={cl(\"song-info-prefix\")}>by&nbsp;</span>\n" +
+            "                        {track.artists.map((a, i) => (\n" +
+            "                            <React.Fragment key={a.name}>",
+        replace:
+            "                {/* Discordmaxxer: Spotify artists and album guard. */}\n" +
+            "                {(Array.isArray(track?.artists) ? track.artists : []).some(a => a?.name) && (\n" +
+            "                    <Paragraph className={cl([\"ellipoverflow\", \"secondary-song-info\"])}>\n" +
+            "                        <span className={cl(\"song-info-prefix\")}>by&nbsp;</span>\n" +
+            "                        {(Array.isArray(track?.artists) ? track.artists : []).filter(a => a && typeof a.name === \"string\").map((a, i, arr) => (\n" +
+            "                            <React.Fragment key={a.id || a.name || i}>"
+    },
+    {
+        file: "src/plugins/spotifyControls/PlayerComponent.tsx",
+        marker: "Discordmaxxer: Spotify artists length guard.",
+        alreadyAppliedWhen: content => content.includes("arr.length - 1"),
+        find:
+            "                                {i !== track.artists.length - 1 && <span className={cl(\"comma\")}>{\", \"}</span>}",
+        replace:
+            "                                {i !== arr.length - 1 && <span className={cl(\"comma\")}>{\", \"}</span>}"
+    },
+    {
+        file: "src/plugins/spotifyControls/PlayerComponent.tsx",
+        marker: "Discordmaxxer: Spotify album name guard.",
+        alreadyAppliedWhen: content => content.includes("Boolean(track?.album?.name)"),
+        find:
+            "                {track.album.name && (",
+        replace:
+            "                {Boolean(track?.album?.name) && ("
+    },
+    {
+        file: "src/plugins/spotifyControls/SeekBar.ts",
+        marker: "Discordmaxxer: Spotify SeekBar SliderClass guard.",
+        alreadyAppliedWhen: content => content.includes("Discordmaxxer: Spotify SeekBar SliderClass guard."),
+        find:
+            "export const SeekBar = LazyComponent(() => {\n" +
+            "    const SliderClass = Slider.$$vencordGetWrappedComponent();",
+        replace:
+            "export const SeekBar = LazyComponent(() => {\n" +
+            "    // Discordmaxxer: Spotify SeekBar SliderClass guard.\n" +
+            "    const SliderClass = typeof (Slider as any)?.$$vencordGetWrappedComponent === \"function\"\n" +
+            "        ? (Slider as any).$$vencordGetWrappedComponent()\n" +
+            "        : null;\n" +
+            "    if (!SliderClass || typeof SliderClass !== \"function\" || !SliderClass.prototype) {\n" +
+            "        return () => null;\n" +
+            "    }"
     },
     {
         file: "src/plugins/spotifyControls/index.tsx",
-        marker: "Discordmaxxer: Spotify slot isolation wrapper.",
+        marker: "Discordmaxxer: Spotify slot isolation wrapper and silent fallback.",
+        alreadyAppliedWhen: content => content.includes("Discordmaxxer: Spotify slot isolation wrapper and silent fallback."),
         find:
             "                <ErrorBoundary\n" +
-            "                    fallback={() => (",
-        replace:
-            "                <div data-dm-spotify-slot=\"true\" className=\"vc-spotify-slot\" style={{ display: \"contents\" }}>\n" +
-            "                    <ErrorBoundary\n" +
-            "                        fallback={() => ("
-    },
-    {
-        file: "src/plugins/spotifyControls/index.tsx",
-        marker: "Discordmaxxer: close Spotify slot isolation wrapper.",
-        find:
+            "                    fallback={() => (\n" +
+            "                        <div className=\"vc-spotify-fallback\">\n" +
+            "                            <p>Failed to render Spotify Modal :(</p>\n" +
+            "                            <p >Check the console for errors</p>\n" +
+            "                        </div>\n" +
+            "                    )}\n" +
+            "                >\n" +
+            "                    <Player />\n" +
             "                </ErrorBoundary>\n\n                <VencordOriginal {...props} />",
         replace:
+            "                <div data-dm-spotify-slot=\"true\" className=\"vc-spotify-slot\" style={{ display: \"contents\" }}>\n" +
+            "                    {/* Discordmaxxer: Spotify slot isolation wrapper and silent fallback. */}\n" +
+            "                    <ErrorBoundary fallback={() => null}>\n" +
+            "                        <Player />\n" +
             "                    </ErrorBoundary>\n" +
             "                </div>\n\n                <VencordOriginal {...props} />"
     },
