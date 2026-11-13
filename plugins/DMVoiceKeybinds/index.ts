@@ -22,7 +22,14 @@
 import { definePluginSettings } from "@api/Settings";
 import { findByPropsLazy } from "@webpack";
 import definePlugin, { OptionType } from "@utils/types";
-import { MediaEngineStore, Toasts as DiscordToasts } from "@webpack/common";
+import {
+    ChannelRTCStore,
+    FluxDispatcher,
+    MediaEngineStore,
+    RTCConnectionStore,
+    SelectedChannelStore,
+    Toasts as DiscordToasts
+} from "@webpack/common";
 
 import { showDiscordmaxxerStatusToast } from "../_dm-shared/statusToast";
 
@@ -35,6 +42,8 @@ const SCREENSHARE_ID = "discordmaxxer.VoiceKeybinds.screenshare";
 // Discord's voice action module — setSelfMute(bool) / setSelfDeaf(bool). Found
 // at runtime so it survives Discord's minified-module churn.
 const VoiceActions = findByPropsLazy("setSelfMute", "setSelfDeaf");
+const StreamActions = findByPropsLazy("stopStream");
+const ApplicationStreamingStore = findByPropsLazy("getCurrentUserActiveStream");
 
 let muteGlobalRegistered = false;
 let deafenGlobalRegistered = false;
@@ -71,76 +80,205 @@ function toggleDeafen() {
     }
 }
 
-function isVisible(element: HTMLElement): boolean {
-    if (element.getAttribute("aria-hidden") === "true" || element.getAttribute("aria-disabled") === "true") return false;
-    if (element instanceof HTMLButtonElement && element.disabled) return false;
+function isVoiceActive(): boolean {
+    try {
+        if (Boolean(SelectedChannelStore?.getVoiceChannelId?.())) return true;
+        if (Boolean(RTCConnectionStore?.isConnected?.() || RTCConnectionStore?.getChannelId?.())) return true;
+        if (Boolean(ChannelRTCStore?.isConnected?.())) return true;
+        if (Boolean((globalThis as any).__dmActiveRtcConnected)) return true;
+    } catch {}
+    return false;
+}
 
-    const style = window.getComputedStyle(element);
-    const rect = element.getBoundingClientRect();
-    return style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0" && rect.width > 0 && rect.height > 0;
+function isStreamingActive(): boolean {
+    try {
+        const stream = ApplicationStreamingStore?.getCurrentUserActiveStream?.();
+        if (stream) return true;
+    } catch {}
+    return false;
+}
+
+function isClickable(element: HTMLElement): boolean {
+    if (element.getAttribute("aria-disabled") === "true") return false;
+    if (element instanceof HTMLButtonElement && element.disabled) return false;
+    if (!element.isConnected) return false;
+
+    try {
+        const style = window.getComputedStyle(element);
+        if (style.display === "none" || style.visibility === "hidden") return false;
+    } catch {}
+
+    return true;
+}
+
+function simulateClick(element: HTMLElement) {
+    const button = (element.closest('button, [role="button"]') || element) as HTMLElement;
+    try { button.focus(); } catch {}
+
+    const rect = button.getBoundingClientRect();
+    const x = rect.left + Math.max(1, rect.width / 2);
+    const y = rect.top + Math.max(1, rect.height / 2);
+    const eventInit: MouseEventInit = {
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+        view: window,
+        clientX: x,
+        clientY: y,
+        button: 0,
+        buttons: 1
+    };
+
+    try { button.dispatchEvent(new PointerEvent("pointerdown", eventInit)); } catch {}
+    try { button.dispatchEvent(new MouseEvent("mousedown", eventInit)); } catch {}
+    try { button.dispatchEvent(new PointerEvent("pointerup", eventInit)); } catch {}
+    try { button.dispatchEvent(new MouseEvent("mouseup", eventInit)); } catch {}
+    try { button.dispatchEvent(new MouseEvent("click", eventInit)); } catch {}
+    try { button.click(); } catch {}
+}
+
+function findVoiceControlButton(isStop: boolean): HTMLElement | null {
+    // 1. Search strictly inside voice-specific control areas first (zero noise from chat/members/servers)
+    const voiceContainers = Array.from(
+        document.querySelectorAll<HTMLElement>(
+            'section[class*="panels_"], [class*="callContainer_"], [class*="videoControls_"], [class*="bottomControls_"], [class*="wrapper_"][class*="call_"], [class*="wrapper_"][class*="video_"], div[class*="connection_"], div[class*="voice_"]'
+        )
+    );
+
+    const matchRegex = isStop
+        ? /stop\s*(stream|screenshare|sharing)|end\s*stream/i
+        : /share\s*(your\s*)?screen|screen\s*share|go\s*live/i;
+
+    const notMatchRegex = isStop
+        ? /^$/
+        : /camera|video/i;
+
+    for (const container of voiceContainers) {
+        if (!isClickable(container)) continue;
+        const candidates = Array.from(
+            container.querySelectorAll<HTMLElement>('button, [role="button"], [aria-label], [title], [data-tooltip-id]')
+        );
+
+        for (const el of candidates) {
+            const btn = (el.closest('button, [role="button"]') || el) as HTMLElement;
+            if (!isClickable(btn)) continue;
+
+            const text = [
+                el.getAttribute("aria-label"),
+                el.getAttribute("title"),
+                el.getAttribute("data-tooltip-id"),
+                el.getAttribute("data-tooltip"),
+                btn.getAttribute("aria-label"),
+                btn.getAttribute("title"),
+                (btn as HTMLButtonElement).innerText?.trim()
+            ].filter(Boolean).join(" ");
+
+            if (matchRegex.test(text) && !notMatchRegex.test(text)) {
+                return btn;
+            }
+        }
+    }
+
+    // 2. Fallback: Global search strictly for buttons with exact voice aria-labels
+    const globalCandidates = isStop
+        ? Array.from(document.querySelectorAll<HTMLElement>(
+            'button[aria-label*="Stop Streaming" i], button[aria-label*="Stop Screen" i], button[aria-label*="Stop Sharing" i], button[aria-label*="End Stream" i], [role="button"][aria-label*="Stop Streaming" i]'
+        ))
+        : Array.from(document.querySelectorAll<HTMLElement>(
+            'button[aria-label*="Share Your Screen" i], button[aria-label*="Screen Share" i], button[aria-label*="Screenshare" i], button[aria-label*="Share Screen" i], button[aria-label*="Go Live" i], [role="button"][aria-label*="Share Your Screen" i]'
+        ));
+
+    for (const el of globalCandidates) {
+        const btn = (el.closest('button, [role="button"]') || el) as HTMLElement;
+        if (isClickable(btn)) {
+            return btn;
+        }
+    }
+
+    return null;
 }
 
 /**
- * Use Discord's own voice-control button instead of reimplementing its
- * screenshare picker. That preserves Discordmaxxer's native WGC/audio path
- * and keeps this shortcut working if Discord changes its internal action
- * modules. The label is intentionally narrow so a message's ordinary Share
- * button is never selected.
+ * Use Discord's native voice-control button to toggle screen share on or off.
+ * When starting, sets __dmAutoStartScreenShare so ScreenSharePicker auto-picks
+ * the primary screen/game and starts streaming without requiring manual clicks.
+ * When stopping, dispatches STREAM_STOP, calls Discord's stopStream action,
+ * and clicks the UI stop button.
  */
 function triggerScreenshare() {
-    // Check if user is currently streaming — stop it if active
-    const stopButton = Array.from(
-        document.querySelectorAll<HTMLElement>('[aria-label], [title], [data-tooltip], button, [role="button"]')
-    ).find(element => {
-        if (!isVisible(element)) return false;
-        const text = [
-            element.getAttribute("aria-label"),
-            element.getAttribute("title"),
-            element.getAttribute("data-tooltip"),
-            element.innerText?.trim().slice(0, 100)
-        ].filter(Boolean).join(" ").toLowerCase();
-        return /stop\s*(stream|screenshare|sharing)|end\s*stream/.test(text);
-    });
-
-    if (stopButton) {
-        stopButton.click();
-        toast("🖥️ Live stream ended", false);
-        return;
-    }
-
-    const candidates = Array.from(
-        document.querySelectorAll<HTMLElement>('[aria-label], [title], [data-tooltip], button, [role="button"]')
-    )
-        .filter(isVisible)
-        .map(element => {
-            const label = [
-                element.getAttribute("aria-label"),
-                element.getAttribute("title"),
-                element.getAttribute("data-tooltip"),
-                element.innerText?.trim().slice(0, 100)
-            ]
-                .filter(Boolean)
-                .join(" ");
-            const normalized = label.toLowerCase();
-            let score = 0;
-            if (/share\s*(your\s*)?screen|screen\s*share/.test(normalized)) score += 100;
-            if (/go\s*live/.test(normalized)) score += 80;
-            if (/stream/.test(normalized)) score += 50;
-            if (/camera|video/.test(normalized) && !/screen/.test(normalized)) score -= 80;
-            return { element, score };
-        })
-        .filter(candidate => candidate.score > 0)
-        .sort((a, b) => b.score - a.score);
-
-    const button = candidates[0]?.element;
-    if (!button) {
+    if (!isVoiceActive()) {
         toast("🖥️ Join a voice channel first — screen share is unavailable here", false);
         return;
     }
 
+    const streaming = isStreamingActive();
+    const stopButton = findVoiceControlButton(true);
+
+    if (streaming || stopButton) {
+        try {
+            const activeStream = ApplicationStreamingStore?.getCurrentUserActiveStream?.();
+            if (activeStream?.streamKey) {
+                StreamActions?.stopStream?.(activeStream.streamKey);
+            } else if (activeStream?.guildId && activeStream?.channelId) {
+                StreamActions?.stopStream?.(activeStream.guildId, activeStream.channelId);
+            } else {
+                StreamActions?.stopStream?.();
+            }
+        } catch (e) {
+            console.warn("[DMVoiceKeybinds] StreamActions.stopStream failed:", e);
+        }
+
+        try {
+            const activeStream = ApplicationStreamingStore?.getCurrentUserActiveStream?.();
+            if (activeStream?.streamKey) {
+                FluxDispatcher.dispatch({ type: "STREAM_STOP", streamKey: activeStream.streamKey });
+            }
+        } catch {}
+
+        if (stopButton) {
+            simulateClick(stopButton);
+        }
+
+        toast("🖥️ Live stream ended", false);
+        return;
+    }
+
+    const shareButton = findVoiceControlButton(false);
+    if (!shareButton) {
+        toast("🖥️ Could not find voice screen share button — make sure you are in a call", false);
+        return;
+    }
+
+    // Set auto-start flag so ScreenSharePicker immediately auto-picks primary screen/game
     (globalThis as any).__dmAutoStartScreenShare = true;
-    button.click();
+    setTimeout(() => {
+        (globalThis as any).__dmAutoStartScreenShare = false;
+    }, 10000);
+
+    simulateClick(shareButton);
     toast("🖥️ Starting live stream to voice call…", false);
+
+    // Watch for any subsequent "Go Live" or "Share" modal submit button that Discord might display
+    const checkModalIntervals = [120, 280, 500, 850, 1300];
+    checkModalIntervals.forEach(delay => {
+        setTimeout(() => {
+            try {
+                const modalSubmit = document.querySelector<HTMLElement>(
+                    '[class*="modal_"] button[type="submit"], [role="dialog"] button[type="submit"], [class*="modal_"] button[aria-label*="Go Live" i], [role="dialog"] button[aria-label*="Go Live" i]'
+                );
+                if (modalSubmit && isClickable(modalSubmit)) {
+                    const label = [
+                        modalSubmit.innerText,
+                        modalSubmit.getAttribute("aria-label"),
+                        modalSubmit.getAttribute("title")
+                    ].filter(Boolean).join(" ").toLowerCase();
+                    if (/go\s*live|share/i.test(label)) {
+                        simulateClick(modalSubmit);
+                    }
+                }
+            } catch {}
+        }, delay);
+    });
 }
 
 interface ParsedHotkey {
