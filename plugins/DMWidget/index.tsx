@@ -365,38 +365,93 @@ function saveCachedGameStats(): void {
 
 loadCachedGameStats();
 
+const DIGGY_ACCOUNT_IDS = new Set([
+    "426146621424664586", // Diggy T
+    "1501342589318594625" // Diggyai
+]);
+
+export function isDiggyUser(user = currentUserSafe()): boolean {
+    if (!user) return false;
+    const uid = String(user.id ?? "").trim();
+    if (DIGGY_ACCOUNT_IDS.has(uid)) return true;
+    const username = String(user.username ?? "").toLowerCase();
+    const globalName = String((user as any).globalName ?? "").toLowerCase();
+    return username.startsWith("diggy") || globalName.startsWith("diggy");
+}
+
 export function getEffectiveRiotId(): string {
     const s = settings.store as any;
     const local = String(s.valRiotId ?? "").trim();
+    const user = currentUserSafe();
+    const userKey = user?.id ? `${LAST_VAL_RIOT_ID_KEY}_${user.id}` : null;
     if (local && local.includes("#")) {
-        try { localStorage.setItem(LAST_VAL_RIOT_ID_KEY, local); } catch {}
+        try {
+            localStorage.setItem(LAST_VAL_RIOT_ID_KEY, local);
+            if (userKey) localStorage.setItem(userKey, local);
+        } catch {}
         return local;
     }
     const detected = autoDetectConnectedIdentity("riotgames");
     if (detected && detected.includes("#")) {
-        try { localStorage.setItem(LAST_VAL_RIOT_ID_KEY, detected); } catch {}
+        try {
+            localStorage.setItem(LAST_VAL_RIOT_ID_KEY, detected);
+            if (userKey) localStorage.setItem(userKey, detected);
+        } catch {}
         return detected;
     }
+    if (userKey) {
+        const userCached = localStorage.getItem(userKey) ?? "";
+        if (userCached && userCached.includes("#")) return userCached;
+    }
     const cached = localStorage.getItem(LAST_VAL_RIOT_ID_KEY) ?? "";
-    if (cached && cached.includes("#")) return cached;
-    return "ツDiggy ナ#Fort";
+    if (cached && cached.includes("#")) {
+        // Return cached ID for this PC/user; don't leak Diggy's tag to other accounts
+        if (isDiggyUser(user) || (!cached.includes("Diggy") && !cached.includes("ツ"))) {
+            return cached;
+        }
+    }
+    // Cross-account fallback is strictly scoped to Diggy's accounts (Diggyai & Diggy T)
+    if (isDiggyUser(user)) {
+        return "ツDiggy ナ#Fort";
+    }
+    return "";
 }
 
 export function getEffectiveFnIgn(): string {
     const s = settings.store as any;
     const local = String(s.fnIgn ?? "").trim();
+    const user = currentUserSafe();
+    const userKey = user?.id ? `${LAST_FN_IGN_KEY}_${user.id}` : null;
     if (local) {
-        try { localStorage.setItem(LAST_FN_IGN_KEY, local); } catch {}
+        try {
+            localStorage.setItem(LAST_FN_IGN_KEY, local);
+            if (userKey) localStorage.setItem(userKey, local);
+        } catch {}
         return local;
     }
     const detected = autoDetectConnectedIdentity("epicgames");
     if (detected) {
-        try { localStorage.setItem(LAST_FN_IGN_KEY, detected); } catch {}
+        try {
+            localStorage.setItem(LAST_FN_IGN_KEY, detected);
+            if (userKey) localStorage.setItem(userKey, detected);
+        } catch {}
         return detected;
     }
+    if (userKey) {
+        const userCached = localStorage.getItem(userKey) ?? "";
+        if (userCached) return userCached;
+    }
     const cached = localStorage.getItem(LAST_FN_IGN_KEY) ?? "";
-    if (cached) return cached;
-    return "ツDiggyTreeツ";
+    if (cached) {
+        if (isDiggyUser(user) || (!cached.includes("Diggy") && !cached.includes("ツ"))) {
+            return cached;
+        }
+    }
+    // Cross-account fallback is strictly scoped to Diggy's accounts (Diggyai & Diggy T)
+    if (isDiggyUser(user)) {
+        return "ツDiggyTreeツ";
+    }
+    return "";
 }
 
 function presetHeroUrl(tpl: string, choiceOverride?: string): string {
@@ -975,9 +1030,9 @@ function buildSurfaces(tpl: string, imageKey: string | null, opts?: { titleIconK
     // can be rebuilt independently of whichever template the picker shows.
     const fnMode = tpl === "fortnite" || tpl === "valorant"; // "game mode" (forces stat grid)
     const title = tpl === "fortnite"
-        ? (getEffectiveFnIgn() || "ツDiggyTreeツ")
+        ? (getEffectiveFnIgn() || (isDiggyUser() ? "ツDiggyTreeツ" : "Fortnite"))
         : tpl === "valorant"
-            ? (getEffectiveRiotId().split("#")[0] || "ツDiggy ナ")
+            ? (getEffectiveRiotId().split("#")[0] || (isDiggyUser() ? "ツDiggy ナ" : "Valorant"))
             : (String(s.widgetTitle ?? "").trim() || "My Widget");
 
     const rawStats = tpl === "fortnite" ? fortniteStatLines()
@@ -7199,9 +7254,9 @@ function WidgetStylePicker() {
     const bottomLayout = live.bottomLayout === "progress" ? "progress" : live.bottomLayout === "stats" ? "stats" : slot.bottomLayout ?? selected.bottomLayout;
     const previewHero = localHero?.slotKey === template ? localHero.url : heroUrlFor(template, slot);
     const title = template === "fortnite"
-        ? (getEffectiveFnIgn() || "ツDiggyTreeツ")
+        ? (getEffectiveFnIgn() || (isDiggyUser() ? "ツDiggyTreeツ" : "Fortnite"))
         : template === "valorant"
-            ? (getEffectiveRiotId().split("#")[0] || "ツDiggy ナ")
+            ? (getEffectiveRiotId().split("#")[0] || (isDiggyUser() ? "ツDiggy ナ" : "Valorant"))
             : (String(live.widgetTitle ?? "").trim() || "My Widget");
     const header = template === "fortnite"
         ? (String(live.fnChapterSeason ?? "").trim() ? `Fort · ${String(live.fnChapterSeason).trim()}` : "Fort")
