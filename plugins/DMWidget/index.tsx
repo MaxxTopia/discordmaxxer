@@ -2554,7 +2554,7 @@ let lastPlayingCardDirectProbeAt = 0;
 // Request one uncapped direct probe for that transition so the card does not
 // remain native for the normal one-second probe interval.
 let widgetSkinPlayingCardProbeRequested = false;
-const PLAYING_CARD_DIRECT_PROBE_INTERVAL_MS = 1000;
+const PLAYING_CARD_DIRECT_PROBE_INTERVAL_MS = 150;
 let widgetSkinPlayingCardTimelineStartedAt = -1;
 let removeTournamentModeListener: (() => void) | null = null;
 let removeWidgetSkinProfileTriggerListeners: (() => void) | null = null;
@@ -4693,12 +4693,27 @@ function widgetSurfaceForCard(card: HTMLElement): HTMLElement | null {
     for (let current: HTMLElement | null = card.parentElement, depth = 0; current && depth < 24; depth++, current = current.parentElement) {
         if (widgetSurfaceBoundaryLike(current)) surfaces.push(current);
     }
-    // Prefer the nearest surface that actually carries the profile owner. A
-    // Board card is often nested inside an outer dialog whose owner marker is
-    // added one React commit later; choosing a bare inner wrapper there made
-    // the renderer fall back to the viewer's local map or native styling.
-    return surfaces.find(surface => !!widgetProfileOwnerId(surface))
-        ?? surfaces.find(surface => surface.getAttribute("role") === "dialog")
+    // 1. Account popouts always belong to the signed-in user and contain the whole profile
+    const accountPopout = surfaces.find(surface =>
+        /(?:accountPopout|accountProfile)/i.test(surface.className || "")
+        || Boolean(surface.querySelector?.('[class*="accountPopout" i], [class*="accountProfile" i]'))
+    );
+    if (accountPopout) return accountPopout;
+
+    // 2. Prefer a surface that already carries the confirmed profile owner
+    const withOwner = surfaces.find(surface => !!widgetProfileOwnerId(surface));
+    if (withOwner) return withOwner;
+
+    // 3. Prefer an explicit dialog or profile container
+    const dialogOrPopout = surfaces.find(surface =>
+        surface.getAttribute("role") === "dialog"
+        || /(?:userPopout|profilePopout|userProfile|accountPopout)/i.test(surface.className || "")
+    );
+    if (dialogOrPopout) return dialogOrPopout;
+
+    // 4. Prefer the outermost profile boundary (surfaces[surfaces.length - 1]),
+    // which contains the header, banner, and avatar, not an inner sub-wrapper
+    return surfaces[surfaces.length - 1]
         ?? surfaces[0]
         ?? card.parentElement;
 }
@@ -4723,6 +4738,16 @@ function widgetSurfaceLooksProfileOwned(surface: HTMLElement | null): boolean {
 
 function widgetSurfaceBelongsToCurrentUser(surface: HTMLElement | null): boolean {
     if (!surface) return false;
+    // Account popouts always belong to the signed-in user
+    if (/(?:accountPopout|accountProfile)/i.test(surface.className || "")
+        || Boolean(surface.closest?.('[class*="accountPopout" i], [class*="accountProfile" i]'))
+        || Boolean(surface.querySelector?.('[class*="accountPopout" i], [class*="accountProfile" i]'))) {
+        return true;
+    }
+    const textSample = (surface.textContent || "").slice(0, 3000);
+    if (/Edit Profile|Online|Set Status/i.test(textSample) && /Badges|Online/i.test(textSample)) {
+        return true;
+    }
     const current = currentUserSafe();
     const currentId = validWidgetOwnerId(current?.id);
     const ownerId = widgetProfileOwnerId(surface);
@@ -5078,8 +5103,8 @@ function widgetCardLike(element: HTMLElement): boolean {
     // and left the full Board plain while the compact popout still worked.
     // Keep the token boundary so profileWidget/profileApplication wrappers do
     // not become skin roots merely because they contain the word.
-    return /(?:^|[\s_-])(?:card|widget|application)(?:(?:__|_)[A-Za-z0-9]+|[A-Z][A-Za-z0-9]*|$)/i.test(className)
-        || /(?:Card|Widget|Application)(?:(?:__|_)[A-Za-z0-9]+|[A-Z][A-Za-z0-9]*|$)/.test(className);
+    return /(?:^|[\s_-])(?:card|widget|application|activity)(?:(?:__|_)[A-Za-z0-9]+|[A-Z][A-Za-z0-9]*|$)/i.test(className)
+        || /(?:Card|Widget|Application|Activity)(?:(?:__|_)[A-Za-z0-9]+|[A-Z][A-Za-z0-9]*|$)/.test(className);
 }
 
 function widgetCardContainerLike(element: HTMLElement): boolean {
@@ -5757,7 +5782,7 @@ function scanVisibleProfileWidgetCards(): number {
             for (const node of Array.from(surface.querySelectorAll<HTMLElement>(explicitSelector)).slice(0, 32)) {
                 addCandidate(explicitCandidates, node, WIDGET_SKIN_PROFILE_EXPLICIT_CANDIDATE_MAX);
             }
-            for (const candidate of Array.from(surface.querySelectorAll<HTMLElement>(WIDGET_CARD_SELECTOR)).slice(0, 64)) {
+            for (const candidate of Array.from(surface.querySelectorAll<HTMLElement>(`${WIDGET_CARD_SELECTOR},${PLAYING_CARD_SELECTOR}`)).slice(0, 96)) {
                 if (isDiscordmaxxerPlayingCard(candidate)) {
                     addCandidate(playingCandidates, candidate, WIDGET_SKIN_PROFILE_CARD_CANDIDATE_MAX);
                     continue;
@@ -5946,9 +5971,9 @@ function isDiscordmaxxerPlayingCard(element: HTMLElement): boolean {
     const className = typeof element.className === "string" ? element.className : "";
     const role = element.getAttribute("role") ?? "";
     const semanticCard = element.tagName.toUpperCase() === "ARTICLE" || role === "article" || role === "listitem";
-    if (!semanticCard && !/(?:^|[\s_-])card(?:(?:__|_)[A-Za-z0-9]+|[A-Z][A-Za-z0-9]*|$)/i.test(className)) return false;
+    if (!semanticCard && !/(?:^|[\s_-])(?:card|activity|interactive)(?:(?:__|_)[A-Za-z0-9]+|[A-Z][A-Za-z0-9]*|$)/i.test(className)) return false;
     const rect = element.getBoundingClientRect();
-    if (rect.width < 180 || rect.height < 70 || rect.width > 520 || rect.height > 260) return false;
+    if (rect.width < 120 || rect.height < 36 || rect.width > 600 || rect.height > 360) return false;
     const text = String(element.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 900);
     // Ignore past activity (e.g. "1d ago", "yesterday", streaks)
     if (/\b\d+\s*[dmwyh]\s+ago\b/i.test(text)) return false;
@@ -6136,6 +6161,7 @@ function playingCardPreset(active: Map<string, WidgetStylePreset>, seen: Set<HTM
     // becoming the fallback.
     if (scope) {
         try {
+            const localHints = knownWidgetHints();
             for (const candidate of Array.from(scope.querySelectorAll<HTMLElement>(WIDGET_CARD_SELECTOR)).slice(0, 96)) {
                 if (isDiscordmaxxerPlayingCard(candidate)) continue;
                 const appId = visibleWidgetHydrationApplicationId(candidate, localHints);
@@ -6320,9 +6346,11 @@ function scanWidgetSkinCards(budgetMs = 120): number {
             const directProbeRequested = widgetSkinPlayingCardProbeRequested;
             if (shouldProbeDirectPlayingCard && (directProbeRequested || Date.now() - lastPlayingCardDirectProbeAt >= PLAYING_CARD_DIRECT_PROBE_INTERVAL_MS)) {
                 lastPlayingCardDirectProbeAt = Date.now();
-                widgetSkinPlayingCardProbeRequested = false;
                 directPlayingCandidates = queryPlayingCardProfileSurfaces(180)
                     .filter(candidate => isDiscordmaxxerPlayingCard(candidate));
+                if (directPlayingCandidates.length) {
+                    widgetSkinPlayingCardProbeRequested = false;
+                }
             }
             const explicitSelector = WIDGET_APPLICATION_ID_ATTRIBUTES.map(attribute => `[${attribute}]`).join(",");
             addCandidates(query(explicitSelector, 240));
@@ -7025,9 +7053,8 @@ function startWidgetSkinProfileMountObserver(): void {
         widgetSkinProfileMountObserver = new MutationObserver(records => {
             try {
                 if (!profileMountMutationRelevant(records)) return;
-                // The card can arrive in a later React commit than the avatar and
-                // banner. Scan only the visible profile surface on that commit;
-                // the broad renderer remains on its normal bounded schedule.
+                widgetSkinPlayingCardProbeRequested = true;
+                try { scanVisibleProfileWidgetCards(); } catch {}
                 scheduleWidgetSkinProfileFastScan();
             } catch (error) {
                 console.warn("[DMWidget] profile mount observer ignored during navigation:", error);
@@ -7055,6 +7082,8 @@ function queueWidgetSkinProfileScan(): void {
     if (widgetSkinEditorOpen() || widgetSkinRendererSuspended) return;
     widgetSkinPlayingCardProbeRequested = true;
     startWidgetSkinProfileMountObserver();
+    try { scanWidgetSurfaceSkin(); } catch {}
+    try { scanVisibleProfileWidgetCards(); } catch {}
     scheduleWidgetSkinProfileFastScan();
     const now = Date.now();
     // A single profile click can emit focus + click events. Collapse them so
@@ -7074,7 +7103,7 @@ function queueWidgetSkinProfileScan(): void {
             // The targeted pass above owns first paint. Let the broad React
             // resolver reconcile in the background instead of launching a
             // second synchronous scan during the profile transition.
-            scheduleWidgetSkinScan();
+            scheduleWidgetSkinScan(true);
         }, delay);
         widgetSkinProfileScanTimers.add(timer);
     }
