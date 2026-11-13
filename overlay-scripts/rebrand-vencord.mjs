@@ -1142,6 +1142,7 @@ const PATCHES = [
     },
     {
         file: "src/components/settings/tabs/plugins/PluginModal.tsx",
+        alreadyAppliedWhen: content => content.includes("<ModalRoot transitionState={transitionState}"),
         find:
             '        <Modal\n' +
             '            transitionState={transitionState}\n' +
@@ -1286,6 +1287,46 @@ const PATCHES = [
             "                return null;\n" +
             "            }\n" +
             "            return ("
+    },
+    {
+        file: "src/components/settings/tabs/plugins/PluginModal.tsx",
+        marker: "Discordmaxxer: show diagnostic card when setting render fails.",
+        find: "                <ErrorBoundary noop key={key}>",
+        replace: '                <ErrorBoundary message={`An error occurred while rendering setting "${key}"`} key={key}>'
+    },
+    {
+        file: "src/components/settings/tabs/plugins/PluginModal.tsx",
+        marker: "Discordmaxxer: add scroll clearance to modal content.",
+        find: '            <div className={"vc-settings-modal-content"}>',
+        replace: '            <div className={"vc-settings-modal-content"} style={{ paddingBottom: 48 }}>'
+    },
+    {
+        file: "src/components/settings/tabs/plugins/PluginModal.css",
+        marker: "Discordmaxxer: modal content bottom clearance.",
+        alreadyAppliedWhen: content => content.includes(".vc-settings-modal-content"),
+        find:
+            ".vc-plugin-modal-tag {\n" +
+            "    align-items: center;\n" +
+            "    border: 1px solid var(--border-normal);\n" +
+            "    border-radius: 9999px;\n" +
+            "    display: flex;\n" +
+            "    justify-content: center;\n" +
+            "    padding: 6px 12px;\n" +
+            "    color: var(--text-default);\n" +
+            "}",
+        replace:
+            ".vc-plugin-modal-tag {\n" +
+            "    align-items: center;\n" +
+            "    border: 1px solid var(--border-normal);\n" +
+            "    border-radius: 9999px;\n" +
+            "    display: flex;\n" +
+            "    justify-content: center;\n" +
+            "    padding: 6px 12px;\n" +
+            "    color: var(--text-default);\n" +
+            "}\n\n" +
+            ".vc-settings-modal-content {\n" +
+            "    padding-bottom: 48px;\n" +
+            "}"
     },
 
     // CSP host-permission dialog title

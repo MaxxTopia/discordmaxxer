@@ -45,6 +45,41 @@ import { WIDGET_STYLE_PRESETS, type WidgetStylePreset, widgetStylePreset } from 
 import { DEFAULT_APP_ICONS, FN_RANK_ICONS } from "./logos";
 import { showDiscordmaxxerStatusToast } from "../_dm-shared/statusToast";
 
+let settings: any;
+
+function safeStore(): Record<string, any> {
+    try {
+        const globalPlugins = (globalThis as any).Vencord?.PlainSettings?.plugins;
+        if (globalPlugins?.DMWidget && typeof globalPlugins.DMWidget === "object") {
+            return globalPlugins.DMWidget;
+        }
+    } catch {}
+    try {
+        if (typeof settings !== "undefined" && settings) {
+            const store = settings.store;
+            if (store && typeof store === "object") return store;
+            const plain = (settings as any).plain;
+            if (plain && typeof plain === "object") return plain;
+        }
+    } catch {}
+    return {};
+}
+
+function setSetting(key: string, value: any): void {
+    try {
+        if (typeof settings !== "undefined" && settings?.store) {
+            (settings.store as any)[key] = value;
+            return;
+        }
+    } catch {}
+    try {
+        const globalPlugins = (globalThis as any).Vencord?.PlainSettings?.plugins;
+        if (globalPlugins?.DMWidget) {
+            globalPlugins.DMWidget[key] = value;
+        }
+    } catch {}
+}
+
 const Native = VencordNative.pluginHelpers.DMWidget as PluginNative<typeof import("./native")>;
 
 // Default hero render per game — used when you haven't pasted your own image URL,
@@ -239,7 +274,7 @@ async function ensureSlots(): Promise<void> {
     if (Object.keys(slots.get()).length === 0) {
         const legacy = legacyIdentity.get();
         if (SNOWFLAKE.test(legacy.appId)) {
-            const key = String((settings.store as any).gameTemplate ?? "none") || "none";
+            const key = String(safeStore().gameTemplate ?? "none") || "none";
             slots.set({ [key]: legacy });
             if (activeSlotsAccountId) accountSlots.set({ ...accountSlots.get(), [activeSlotsAccountId]: { [key]: legacy } });
         }
@@ -251,7 +286,7 @@ const setSlot = (key: string, v: WidgetIdentity): void => {
     slots.set(next);
     if (activeSlotsAccountId) accountSlots.set({ ...accountSlots.get(), [activeSlotsAccountId]: next });
 };
-const slotKeyOf = (): string => String((settings.store as any).gameTemplate ?? "none") || "none";
+const slotKeyOf = (): string => String(safeStore().gameTemplate ?? "none") || "none";
 // Game slots that currently have a deployed app (for auto-refresh).
 const deployedGameSlots = (): string[] => Object.entries(slots.get()).filter(([k, v]) => (k === "fortnite" || k === "valorant") && SNOWFLAKE.test(v.appId)).map(([k]) => k);
 
@@ -380,7 +415,7 @@ export function isDiggyUser(user = currentUserSafe()): boolean {
 }
 
 export function getEffectiveRiotId(): string {
-    const s = settings.store as any;
+    const s = safeStore();
     const local = String(s.valRiotId ?? "").trim();
     const user = currentUserSafe();
     const userKey = user?.id ? `${LAST_VAL_RIOT_ID_KEY}_${user.id}` : null;
@@ -418,7 +453,7 @@ export function getEffectiveRiotId(): string {
 }
 
 export function getEffectiveFnIgn(): string {
-    const s = settings.store as any;
+    const s = safeStore();
     const local = String(s.fnIgn ?? "").trim();
     const user = currentUserSafe();
     const userKey = user?.id ? `${LAST_FN_IGN_KEY}_${user.id}` : null;
@@ -455,17 +490,18 @@ export function getEffectiveFnIgn(): string {
 }
 
 function presetHeroUrl(tpl: string, choiceOverride?: string): string {
-    const s = settings.store as any;
+    const s = safeStore();
     if (tpl === "valorant") return VALORANT_HERO_PRESETS[choiceOverride ?? String(s.valHeroPreset ?? "auto")] ?? "";
     if (tpl === "fortnite") return FORTNITE_HERO_PRESETS[choiceOverride ?? String(s.fnHeroPreset ?? "auto")] ?? "";
     return "";
 }
 
 function heroUrlFor(tpl: string, id: WidgetIdentity, choiceOverride?: string): string {
-    const custom = String((settings.store as any).heroImageUrl ?? "").trim();
+    const s = safeStore();
+    const custom = String(s.heroImageUrl ?? "").trim();
     const choice = choiceOverride ?? (tpl === "valorant"
-        ? String((settings.store as any).valHeroPreset ?? "auto")
-        : tpl === "fortnite" ? String((settings.store as any).fnHeroPreset ?? "auto") : "custom");
+        ? String(s.valHeroPreset ?? "auto")
+        : tpl === "fortnite" ? String(s.fnHeroPreset ?? "auto") : "custom");
     // Clean cross-slot leakage
     if (tpl === "fortnite") {
         if (id.heroImageUrl && /valorant-api\.com|valorant/i.test(id.heroImageUrl)) {
@@ -507,7 +543,7 @@ const fmtNum = (n: number | undefined): string => {
 // (Unreal rank + earnings — no free API) then four live ones from fnStats.
 function fortniteStatLines(): string[] {
     loadCachedGameStats();
-    const s = settings.store as any;
+    const s = safeStore();
     const o = fnStats ?? {};
     const rank = String(s.fnUnrealRank ?? "").trim() || "Unreal";
     const earn = String(s.fnEarnings ?? "").trim() || "$4,440";
@@ -536,7 +572,7 @@ const sanitizeAppName = (v: string): string => v.replace(/:/g, " ").replace(/\s+
 
 // The small header line above the title: "Fn · Ch6 S3" / "Val" / the app name.
 function slotHeader(tpl: string): string {
-    const s = settings.store as any;
+    const s = safeStore();
     if (tpl === "fortnite") { const cs = String(s.fnChapterSeason ?? "").trim(); return cs ? `Fort · ${cs}` : "Fort"; }
     if (tpl === "valorant") {
         return "Val";
@@ -946,7 +982,7 @@ function fnRankIconDataUri(rankText: string): string | null {
 async function syncFortniteRankIcon(slotKey: string): Promise<void> {
     const id = getSlot(slotKey);
     if (!SNOWFLAKE.test(id.appId)) return;
-    const rankText = String((settings.store as any).fnUnrealRank ?? "").trim();
+    const rankText = String(safeStore().fnUnrealRank ?? "").trim();
     if (!rankText || rankText === id.rankIconName) return;
     const uri = fnRankIconDataUri(rankText);
     if (!uri) return;
@@ -1010,7 +1046,7 @@ async function setAppIcon(appId: string, src: string): Promise<void> {
 }
 
 function buildSurfaces(tpl: string, imageKey: string | null, opts?: { titleIconKey?: string }) {
-    const s = settings.store as any;
+    const s = safeStore();
     const savedSlot = getSlot(tpl);
     // A refresh can run while the editor is pointed at another slot. Read the
     // appearance/layout from the slot being published, not from whichever
@@ -1432,7 +1468,7 @@ async function republishSelectedWidgetStyle(slotKey: string): Promise<void> {
 // publish step failed" instead of always showing a green success toast.
 async function refreshGameSlot(tpl: string, announce = false): Promise<boolean> {
     if (tpl !== "fortnite" && tpl !== "valorant") return false;
-    const s = settings.store as any;
+    const s = safeStore();
     await ensureSlots();
     if (!SNOWFLAKE.test(getSlot(tpl).appId)) {
         if (announce) toast("Create this widget first, then refresh stats.", Toasts.Type.FAILURE);
@@ -1535,7 +1571,7 @@ function scheduleStatsRefresh(): void {
 async function deployWidget(): Promise<void> {
     const me = currentUserSafe();
     if (!me?.id) { toast("Not logged in yet — try again in a moment.", Toasts.Type.FAILURE); return; }
-    const appName = String((settings.store as any).appName ?? "").trim();
+    const appName = String(safeStore().appName ?? "").trim();
     const nameErr = impersonationError(appName);
     if (nameErr) { toast(nameErr, Toasts.Type.FAILURE, 8000); return; }
 
@@ -1588,7 +1624,7 @@ async function deployWidget(): Promise<void> {
         try { await apiPatch(`/applications/${id.appId}`, { name: sanitizeAppName(slotHeader(slotKey)) }); } catch (e) { setLastResult("header rename failed: " + classifyDiscordError(e), "failure"); console.warn("[DMWidget] app name:", e); }
         // Per-slot media: remember the URLs on THIS slot so switching slots keeps
         // each widget's own hero/icon (FN and Valorant no longer share one image).
-        const iconUrl = String((settings.store as any).appIconUrl ?? "").trim() || id.appIconUrl || "";
+        const iconUrl = String(safeStore().appIconUrl ?? "").trim() || id.appIconUrl || "";
         // An explicit curated preset wins; otherwise keep the typed field, the
         // slot's remembered/imported hero, or the game's default. This preserves
         // existing custom cards while making a new game card one-click friendly.
@@ -1599,13 +1635,13 @@ async function deployWidget(): Promise<void> {
         // the last-edited widget's skin onto a different slot when a user
         // switched templates and hit Create/Update quickly.
         const chosenPreset = WIDGET_STYLE_PRESETS.find(preset => preset.id === String(id.widgetStyle ?? ""))
-            ?? WIDGET_STYLE_PRESETS.find(preset => preset.id === String((settings.store as any).widgetStyle ?? ""));
+            ?? WIDGET_STYLE_PRESETS.find(preset => preset.id === String(safeStore().widgetStyle ?? ""));
         id.heroImageUrl = heroUrl;
         id.appIconUrl = iconUrl;
         // Persist the complete gallery choice on the slot at publish time too.
         // User's explicit topLayout / bottomLayout choice takes priority over preset defaults.
-        const explicitTopLayout = (settings.store as any).topLayout;
-        const explicitBottomLayout = (settings.store as any).bottomLayout;
+        const explicitTopLayout = safeStore().topLayout;
+        const explicitBottomLayout = safeStore().bottomLayout;
         if (chosenPreset) {
             id.widgetStyle = chosenPreset.id;
             id.topLayout = explicitTopLayout === "hero" ? "hero" : explicitTopLayout === "contained" ? "contained" : (id.topLayout || chosenPreset.topLayout || "hero");
@@ -1623,7 +1659,7 @@ async function deployWidget(): Promise<void> {
         // reuse it so "Update" never blanks an existing widget's hero.
         if (!imageKey && SNOWFLAKE.test(id.appId) && id.heroAssetKey) imageKey = id.heroAssetKey;
         if (imageKey) { id.heroAssetKey = imageKey; setSlot(slotKey, id); }
-        if ((settings.store as any).bottomLayout === "progress" && !imageKey && slotKey === "none")
+        if (safeStore().bottomLayout === "progress" && !imageKey && slotKey === "none")
             toast("Progress-bar mode needs a hero image (it doubles as the goal icon) — showing the stat grid instead. Add a Hero image URL to use the bar.", Toasts.Type.MESSAGE, 8000);
         // Game cards should fetch before their first publish. The old order made
         // a new card briefly publish null/old stats and then republish, which was
@@ -1712,7 +1748,7 @@ const b64encode = (s: string): string => btoa(unescape(encodeURIComponent(s)));
 const b64decode = (s: string): string => decodeURIComponent(escape(atob(s)));
 
 async function exportConfig(): Promise<string> {
-    const s = settings.store as any;
+    const s = safeStore();
     const o: Record<string, any> = {};
     for (const k of SHAREABLE) o[k] = s[k];
     // Per-slot content and appearance so a paste reproduces each card's
@@ -1746,7 +1782,7 @@ function importConfig(code: string): string | null {
     let obj: any;
     try { obj = JSON.parse(b64decode(raw)); } catch { return "That doesn't look like a valid DMWidget code."; }
     if (!obj || typeof obj !== "object") return "That code is empty or malformed.";
-    const s = settings.store as any;
+    const s = (typeof settings !== "undefined" && settings?.store) ? (settings.store as any) : safeStore();
     let n = 0;
     for (const k of SHAREABLE) {
         if (!(k in obj)) continue;
@@ -1857,8 +1893,8 @@ function loadPreviewData(src: string): Promise<string | null> {
     return request;
 }
 
-function useResolvedPreview(url: string) {
-    const src = url.trim();
+function useResolvedPreview(url?: string | null) {
+    const src = typeof url === "string" ? url.trim() : "";
     const [state, setState] = React.useState(() => ({
         previewSrc: getCachedPreviewData(src) ?? "",
         failed: false
@@ -1881,8 +1917,8 @@ function useResolvedPreview(url: string) {
     return state;
 }
 
-function ImgPreview({ url, label, round }: { url: string; label: string; round?: boolean; }) {
-    const src = url.trim();
+function ImgPreview({ url, label, round }: { url?: string | null; label: string; round?: boolean; }) {
+    const src = typeof url === "string" ? url.trim() : "";
     const { previewSrc, failed } = useResolvedPreview(src);
     const [imageFailed, setImageFailed] = React.useState(false);
     React.useEffect(() => setImageFailed(false), [previewSrc]);
@@ -1899,8 +1935,9 @@ function ImgPreview({ url, label, round }: { url: string; label: string; round?:
     );
 }
 
-function PreviewImage({ url, alt, style, fallbackLabel = "Preview unavailable" }: { url: string; alt?: string; style: React.CSSProperties; fallbackLabel?: string; }) {
-    const { previewSrc, failed } = useResolvedPreview(url);
+function PreviewImage({ url, alt, style, fallbackLabel = "Preview unavailable" }: { url?: string | null; alt?: string; style: React.CSSProperties; fallbackLabel?: string; }) {
+    const cleanUrl = typeof url === "string" ? url.trim() : "";
+    const { previewSrc, failed } = useResolvedPreview(cleanUrl);
     const [imageFailed, setImageFailed] = React.useState(false);
     React.useEffect(() => setImageFailed(false), [previewSrc]);
     if (previewSrc && !failed && !imageFailed) {
@@ -2737,12 +2774,12 @@ function attachedWidgetAppIdsForSlot(slotKey: string): string[] {
 }
 
 function selectedWidgetPreset(): WidgetStylePreset {
-    return WIDGET_STYLE_PRESETS.find(item => item.id === String((settings.store as any).widgetStyle ?? ""))
+    return WIDGET_STYLE_PRESETS.find(item => item.id === String(safeStore().widgetStyle ?? ""))
         ?? WIDGET_STYLE_PRESETS[0];
 }
 
 function surfaceSkinMode(): SurfaceSkinMode {
-    const value = String((settings.store as any).surfaceSkinMode ?? "follow");
+    const value = String(safeStore().surfaceSkinMode ?? "follow");
     return value === "independent" || value === "off" ? value : "follow";
 }
 
@@ -2750,7 +2787,7 @@ function selectedSurfacePreset(active: Map<string, WidgetStylePreset>): WidgetSt
     const mode = surfaceSkinMode();
     if (mode === "off") return null;
     if (mode === "independent") {
-        return WIDGET_STYLE_PRESETS.find(item => item.id === String((settings.store as any).surfaceSkinStyle ?? "emberProtocol"))
+        return WIDGET_STYLE_PRESETS.find(item => item.id === String(safeStore().surfaceSkinStyle ?? "emberProtocol"))
             ?? WIDGET_STYLE_PRESETS.find(item => item.id === "emberProtocol")
             ?? WIDGET_STYLE_PRESETS[0];
     }
@@ -3237,7 +3274,7 @@ async function publishVanillaSkin(slotKey: string, preset: WidgetStylePreset): P
 
 function applyPublishedWidgetSnapshot(slotKey: string, snapshot: PublishedWidgetSnapshot): void {
     if (publishedWidgetHydrated.has(slotKey)) return;
-    const store = settings.store as any;
+    const store = (typeof settings !== "undefined" && settings?.store) ? (settings.store as any) : safeStore();
     const fill = (key: string, value: string, defaults: string[] = []) => {
         const current = String(store[key] ?? "").trim();
         if (value && (!current || defaults.includes(current))) store[key] = value;
@@ -3585,7 +3622,7 @@ function updateAttachedWidgetStylesForSlot(slotKey: string, preset: WidgetStyleP
 }
 
 function externalWidgetStyleSlot(): string {
-    const store = settings.store as any;
+    const store = safeStore();
     const requested = String(store.gameTemplate ?? "none") || "none";
     const requestedSlot = getSlot(requested);
     const requestedIsDeployed = SNOWFLAKE.test(requestedSlot.appId);
@@ -3618,7 +3655,7 @@ function externalWidgetStyleSlot(): string {
 async function setWidgetStyleFromExternal(styleId: string): Promise<{ styleId: string; applied: number }> {
     await ensureSlots();
     const preset = widgetStylePreset(styleId);
-    const store = settings.store as any;
+    const store = (typeof settings !== "undefined" && settings?.store) ? (settings.store as any) : safeStore();
     const template = externalWidgetStyleSlot();
     const current = getSlot(template);
     const updatedAt = Math.max(Date.now(), Number(current.widgetStyleUpdatedAt ?? 0) + 1);
@@ -7206,21 +7243,43 @@ function WidgetStylePicker() {
     const [previewSize, setPreviewSize] = React.useState<"compact" | "expanded">("compact");
     const [localHero, setLocalHero] = React.useState<{ slotKey: string; url: string; name: string; } | null>(null);
     const [imageError, setImageError] = React.useState("");
+    const [actionBusy, setActionBusy] = React.useState(false);
     const imageInput = React.useRef<HTMLInputElement>(null);
     const localHeroUrl = React.useRef("");
-    const live = settings.use([
-        "gameTemplate", "widgetStyle", "surfaceSkinMode", "surfaceSkinStyle", "topLayout", "bottomLayout", "appName", "widgetTitle", "heroImageUrl",
-        "fnHeroPreset", "fnIgn", "fnUnrealRank", "fnEarnings", "fnTopPlacement", "fnChapterSeason",
-        "valHeroPreset", "valRiotId", "stat1", "stat2", "stat3", "stat4", "stat5", "stat6",
-        "progressLabel", "progressPercent"
-    ]);
-    const template = String(live.gameTemplate ?? "none") || "none";
+    let rawLive: any = {};
+    try {
+        rawLive = settings?.use ? settings.use([
+            "gameTemplate", "widgetStyle", "surfaceSkinMode", "surfaceSkinStyle", "topLayout", "bottomLayout", "appName", "widgetTitle", "heroImageUrl",
+            "fnHeroPreset", "fnIgn", "fnUnrealRank", "fnEarnings", "fnTopPlacement", "fnChapterSeason",
+            "valHeroPreset", "valRiotId", "stat1", "stat2", "stat3", "stat4", "stat5", "stat6",
+            "progressLabel", "progressPercent"
+        ]) : {};
+    } catch (e) {
+        console.warn("[DMWidget] settings.use fallback:", e);
+    }
+    const live = (rawLive && typeof rawLive === "object") ? rawLive : safeStore();
+    const template = String(live.gameTemplate ?? safeStore().gameTemplate ?? "none") || "none";
     const initialSlotKey = React.useRef(template).current;
-    const initialStyle = React.useRef(String((settings.store as any).widgetStyle ?? "neonCircuit")).current;
-    const initialTopLayout = React.useRef(String((settings.store as any).topLayout ?? "hero")).current;
-    const initialBottomLayout = React.useRef(String((settings.store as any).bottomLayout ?? "stats")).current;
+    const initialStyle = React.useRef(String(safeStore().widgetStyle ?? "neonCircuit")).current;
+    const initialTopLayout = React.useRef(String(safeStore().topLayout ?? "hero")).current;
+    const initialBottomLayout = React.useRef(String(safeStore().bottomLayout ?? "stats")).current;
     const [tournamentPaused, setTournamentPaused] = React.useState(isWidgetPreviewMotionPaused());
     const [vanillaBusy, setVanillaBusy] = React.useState(false);
+
+    const runAction = async (fn: () => Promise<void>) => {
+        setActionBusy(true);
+        try {
+            await fn();
+        } catch (error) {
+            console.warn("[DMWidget] showroom action error:", error);
+            const msg = error instanceof Error ? error.message : "DMWidget action could not be completed.";
+            toast(msg, Toasts.Type.FAILURE, 8000);
+        } finally {
+            setActionBusy(false);
+            force(x => x + 1);
+        }
+    };
+
     React.useEffect(() => {
         const onTmChanged = () => {
             const next = isWidgetPreviewMotionPaused();
@@ -7245,7 +7304,7 @@ function WidgetStylePicker() {
             const bottomLayout = slot.bottomLayout ?? (initial && (initialBottomLayout === "stats" || initialBottomLayout === "progress") ? initialBottomLayout : preset.bottomLayout);
             const next = { ...slot, widgetStyle: preset.id, topLayout, bottomLayout };
             if (slot.widgetStyle !== next.widgetStyle || slot.topLayout !== next.topLayout || slot.bottomLayout !== next.bottomLayout) setSlot(template, next);
-            const store = settings.store as any;
+            const store = (typeof settings !== "undefined" && settings?.store) ? (settings.store as any) : safeStore();
             store.widgetStyle = preset.id;
             store.topLayout = topLayout;
             store.bottomLayout = bottomLayout;
@@ -7298,7 +7357,7 @@ function WidgetStylePicker() {
     const selectStyleTarget = (slotKey: string) => {
         const targetSlot = getSlot(slotKey);
         const targetPreset = WIDGET_STYLE_PRESETS.find(item => item.id === targetSlot.widgetStyle) ?? WIDGET_STYLE_PRESETS[0];
-        const store = settings.store as any;
+        const store = (typeof settings !== "undefined" && settings?.store) ? (settings.store as any) : safeStore();
         // Game template remains the canonical editor target. Mirroring the
         // target's saved style here also makes the preview and Create/Update
         // respond in the same click, without waiting for the restore effect.
@@ -7310,7 +7369,7 @@ function WidgetStylePicker() {
     };
 
     const choose = (preset: WidgetStylePreset) => {
-        const store = settings.store as any;
+        const store = (typeof settings !== "undefined" && settings?.store) ? (settings.store as any) : safeStore();
         const current = getSlot(template);
         const updatedAt = Math.max(Date.now(), Number(current.widgetStyleUpdatedAt ?? 0) + 1);
         // A skin choice must not rewrite the content geometry of an existing
@@ -7345,14 +7404,14 @@ function WidgetStylePicker() {
     };
 
     const chooseSurfaceMode = (mode: SurfaceSkinMode) => {
-        const store = settings.store as any;
+        const store = (typeof settings !== "undefined" && settings?.store) ? (settings.store as any) : safeStore();
         store.surfaceSkinMode = mode;
         requestSurfaceSkinRescan();
         force(value => value + 1);
     };
 
     const chooseSurfaceStyle = (preset: WidgetStylePreset) => {
-        const store = settings.store as any;
+        const store = (typeof settings !== "undefined" && settings?.store) ? (settings.store as any) : safeStore();
         store.surfaceSkinStyle = preset.id;
         store.surfaceSkinMode = "independent";
         requestSurfaceSkinRescan();
@@ -7607,7 +7666,63 @@ function WidgetStylePicker() {
                 </> : <span style={{ fontSize: 10.5, color: "#aeb5c5" }}>PNG, JPG, WebP, or GIF · up to 8 MB · stays local until you publish.</span>}
                 {imageError && <span role="alert" style={{ width: "100%", fontSize: 10.5, color: "#ff969b" }}>{imageError}</span>}
             </div>
-            <div style={{ marginTop: 5, fontSize: 10.5, lineHeight: 1.4, color: "#aeb5c5" }}>
+
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 12, paddingTop: 12, borderTop: `1px solid ${selected.accent}42` }}>
+                {existingWidget ? (
+                    <>
+                        <Button
+                            disabled={actionBusy}
+                            color={Button.Colors.BRAND}
+                            onClick={() => runAction(async () => {
+                                await republishSelectedWidgetStyle(template);
+                                toast(`Applied ${selected.name} skin to ${SLOT_LABEL[template] ?? template} widget!`, Toasts.Type.SUCCESS, 4000);
+                            })}
+                        >
+                            {actionBusy ? "Applying skin…" : "Apply skin to existing widget"}
+                        </Button>
+                        <Button
+                            disabled={actionBusy}
+                            onClick={() => runAction(async () => {
+                                await deployWidget();
+                            })}
+                        >
+                            Update widget content
+                        </Button>
+                        {(template === "fortnite" || template === "valorant") && (
+                            <Button
+                                disabled={actionBusy}
+                                color={Button.Colors.BRAND}
+                                onClick={() => runAction(async () => {
+                                    await refreshGameSlot(template, true);
+                                })}
+                            >
+                                Refresh widget stats
+                            </Button>
+                        )}
+                    </>
+                ) : (
+                    <Button
+                        disabled={actionBusy}
+                        color={Button.Colors.BRAND}
+                        onClick={() => runAction(async () => {
+                            await deployWidget();
+                        })}
+                    >
+                        {actionBusy ? "Creating widget…" : "Create my widget"}
+                    </Button>
+                )}
+                {existingWidget && (
+                    <Button
+                        disabled={actionBusy || vanillaBusy}
+                        color={Button.Colors.PRIMARY}
+                        onClick={() => runAction(publishVanillaFallback)}
+                    >
+                        {vanillaBusy ? "Publishing static skin…" : slot.vanillaSkinAssetKey ? "Republish static skin for vanilla Discord" : "Publish static skin for vanilla Discord"}
+                    </Button>
+                )}
+            </div>
+
+            <div style={{ marginTop: 8, fontSize: 10.5, lineHeight: 1.4, color: "#aeb5c5" }}>
                 The selected image is uploaded to your Discord widget app only when you press Create/Update. Local files do not travel in Copy this widget codes. GIF upload is accepted, but animation in Discord and visibility to vanilla viewers still need a real recipient test. {tournamentPaused ? "Tournament Mode is pausing this skin's motion." : selected.motion === "none" ? "This preset has a still design." : "Tournament Mode pauses this skin's motion."}
             </div>
         </div>
@@ -7653,7 +7768,7 @@ function WidgetEditor() {
         void (async () => {
             await ensureSlots();
             await refreshAttachedWidgetStyles(true);
-            const store = settings.store as any;
+            const store = (typeof settings !== "undefined" && settings?.store) ? (settings.store as any) : safeStore();
             const current = getSlot(slotKey);
             // A fresh install often opens on Custom even though the account has
             // a Valorant/Fortnite card. Make the recovered card the editor
@@ -7715,7 +7830,7 @@ function WidgetEditor() {
         { value: "custom", label: "Custom URL", note: "Use your own link", url: String(live.heroImageUrl ?? "").trim() }
     ];
     const selectFortniteHero = (value: string) => {
-        (settings.store as any).fnHeroPreset = value;
+        setSetting("fnHeroPreset", value);
         force(value => value + 1);
     };
     const credentialInputStyle: React.CSSProperties = {
@@ -7846,7 +7961,7 @@ function WidgetEditor() {
                     {slotKey === "valorant" ? <>
                         <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12, color: "var(--text-muted)" }}>
                             Riot ID (Name#Tag)
-                            <input aria-label="Riot ID Name Tag" value={String(live.valRiotId ?? "")} placeholder={autoDetectConnectedIdentity("riotgames") || "Diggy#NA1"} style={credentialInputStyle} onChange={event => { (settings.store as any).valRiotId = event.currentTarget.value; force(value => value + 1); }} />
+                            <input aria-label="Riot ID Name Tag" value={String(live.valRiotId ?? "")} placeholder={autoDetectConnectedIdentity("riotgames") || "Diggy#NA1"} style={credentialInputStyle} onChange={event => { setSetting("valRiotId", event.currentTarget.value); force(value => value + 1); }} />
                             <span style={{ fontSize: 11, color: "var(--text-muted)", opacity: 0.85 }}>Auto-detects from your connected Discord Riot account if left blank.</span>
                         </label>
                         <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12, color: "var(--text-muted)" }}>
@@ -7856,13 +7971,13 @@ function WidgetEditor() {
                                     Get key at api.henrikdev.xyz ↗
                                 </a>
                             </span>
-                            <input aria-label="HenrikDev API key" type="password" autoComplete="off" value={String(live.valApiKey ?? "")} placeholder="Discordmaxxer shared key active (or paste custom key)" style={credentialInputStyle} onChange={event => { (settings.store as any).valApiKey = event.currentTarget.value; force(value => value + 1); }} />
+                            <input aria-label="HenrikDev API key" type="password" autoComplete="off" value={String(live.valApiKey ?? "")} placeholder="Discordmaxxer shared key active (or paste custom key)" style={credentialInputStyle} onChange={event => { setSetting("valApiKey", event.currentTarget.value); force(value => value + 1); }} />
                             <span style={{ fontSize: 11, color: "var(--text-muted)", opacity: 0.85 }}>✓ Shared HenrikDev key is active by default — no personal key required.</span>
                         </label>
                     </> : <>
                         <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12, color: "var(--text-muted)" }}>
                             Epic display name
-                            <input aria-label="Epic display name" value={String(live.fnIgn ?? "")} placeholder="Your exact Epic username" style={credentialInputStyle} onChange={event => { (settings.store as any).fnIgn = event.currentTarget.value; force(value => value + 1); }} />
+                            <input aria-label="Epic display name" value={String(live.fnIgn ?? "")} placeholder="Your exact Epic username" style={credentialInputStyle} onChange={event => { setSetting("fnIgn", event.currentTarget.value); force(value => value + 1); }} />
                         </label>
                         <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12, color: "var(--text-muted)" }}>
                             <span style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -7871,7 +7986,7 @@ function WidgetEditor() {
                                     Get free key at dash.fortnite-api.com ↗
                                 </a>
                             </span>
-                            <input aria-label="Fortnite API key" type="password" autoComplete="off" value={String(live.fnApiKey ?? "")} placeholder="Paste your fortnite-api.com key" style={credentialInputStyle} onChange={event => { (settings.store as any).fnApiKey = event.currentTarget.value; force(value => value + 1); }} />
+                            <input aria-label="Fortnite API key" type="password" autoComplete="off" value={String(live.fnApiKey ?? "")} placeholder="Paste your fortnite-api.com key" style={credentialInputStyle} onChange={event => { setSetting("fnApiKey", event.currentTarget.value); force(value => value + 1); }} />
                             <span style={{ fontSize: 11, color: "var(--text-muted)", opacity: 0.85 }}>Free: Generate a free API key at dash.fortnite-api.com and paste it here.</span>
                         </label>
                     </>}
@@ -7887,13 +8002,13 @@ function WidgetEditor() {
                                 Pick a skin below, then click &ldquo;Apply skin to existing widget&rdquo; to sync it to your profile.
                             </div>
                         </div>
-                        <span style={{ fontSize: 11.5, fontWeight: 700, color: (WIDGET_STYLE_PRESETS.find(p => p.id === (id.widgetStyle || (settings.store as any).widgetStyle)) ?? WIDGET_STYLE_PRESETS[0]).accent }}>
-                            Active: {(WIDGET_STYLE_PRESETS.find(p => p.id === (id.widgetStyle || (settings.store as any).widgetStyle)) ?? WIDGET_STYLE_PRESETS[0]).name}
+                        <span style={{ fontSize: 11.5, fontWeight: 700, color: (WIDGET_STYLE_PRESETS.find(p => p.id === (id.widgetStyle || safeStore().widgetStyle)) ?? WIDGET_STYLE_PRESETS[0]).accent }}>
+                            Active: {(WIDGET_STYLE_PRESETS.find(p => p.id === (id.widgetStyle || safeStore().widgetStyle)) ?? WIDGET_STYLE_PRESETS[0]).name}
                         </span>
                     </div>
                     <div role="group" aria-label="Select widget skin" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: 6, marginTop: 4 }}>
                         {WIDGET_STYLE_PRESETS.map(preset => {
-                            const isSelected = preset.id === (id.widgetStyle || (settings.store as any).widgetStyle || "neonCircuit");
+                            const isSelected = preset.id === (id.widgetStyle || safeStore().widgetStyle || "neonCircuit");
                             return (
                                 <button
                                     key={preset.id}
@@ -7902,7 +8017,7 @@ function WidgetEditor() {
                                         const current = getSlot(slotKey);
                                         const next = { ...current, widgetStyle: preset.id, widgetStyleSource: "local" as const, widgetStyleUpdatedAt: Date.now() };
                                         setSlot(slotKey, next);
-                                        (settings.store as any).widgetStyle = preset.id;
+                                        setSetting("widgetStyle", preset.id);
                                         updateAttachedWidgetStylesForSlot(slotKey, preset);
                                         scanWidgetSkinCards();
                                         scheduleWidgetSkinScan();
@@ -7963,7 +8078,7 @@ function WidgetEditor() {
                     })}>Copy this widget</Button>
                     <Button disabled={busy} color={Button.Colors.PRIMARY} onClick={() => run(async () => {
                         await ensureSlots();
-                        const err = importConfig((settings.store as any).importCode ?? "");
+                        const err = importConfig(safeStore().importCode ?? "");
                         if (err) { toast(err, Toasts.Type.FAILURE, 7000); return; }
                         toast("Widget content imported. Review the fields above, re-enter your game API key if it’s a game card, then hit Create/Update.", Toasts.Type.SUCCESS, 9000);
                     })}>Import from code</Button>
@@ -7973,7 +8088,7 @@ function WidgetEditor() {
     );
 }
 
-const settings = definePluginSettings({
+settings = definePluginSettings({
     gameTemplate: {
         type: OptionType.SELECT,
         description: "STEP 1 - What is this widget? Pick a game to auto-fill live stats, or 'Custom' to type your own card. IMPORTANT: each choice is its OWN separate widget - switching here does NOT replace the last one, it's how you add a second (e.g. Fortnite AND Valorant both on your board). Only the boxes for the mode you pick are shown below.",
@@ -7983,7 +8098,6 @@ const settings = definePluginSettings({
             { label: "Valorant (auto live stats)", value: "valorant" }
         ]
     },
-    stylePicker: { type: OptionType.COMPONENT, description: "", component: WidgetStylePicker },
     // The visual gallery owns this value; keep it in plugin settings so the
     // selected preview survives restarts and travels in Copy/Import codes.
     widgetStyle: {
@@ -8120,6 +8234,7 @@ export default definePlugin({
     description:
         "One-click custom Discord PROFILE BOARD widget (widgets v2 / Social SDK) — free, local, no paid widget-maker. Fill in your content, hit Create, and it builds an app you own, uploads your image, publishes the widget (board card + popout cutout) and claims it to your profile. Experimental / pre-GA; needs 2FA for the public claim; who sees it depends on Discord's rollout.",
     authors: [{ name: "Diggy", id: 0n }],
+    settingsAboutComponent: WidgetStylePicker,
     settings,
 
     // Live game-stat refresh: once on start (after the client settles) + every
