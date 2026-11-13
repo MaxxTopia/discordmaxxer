@@ -383,9 +383,9 @@ const STORAGE_KEY_SCREENSHARE = "dm_voice_screenshare_hotkey";
 // or toggling OS-level mode did nothing until the plugin was toggled off/on.
 function reapplyKeybinds() {
     try {
-        if (settings.store.muteHotkey) localStorage.setItem(STORAGE_KEY_MUTE, settings.store.muteHotkey);
-        if (settings.store.deafenHotkey) localStorage.setItem(STORAGE_KEY_DEAFEN, settings.store.deafenHotkey);
-        if (settings.store.screenshareHotkey) localStorage.setItem(STORAGE_KEY_SCREENSHARE, settings.store.screenshareHotkey);
+        if (settings.store.muteHotkey) (globalThis as any).localStorage?.setItem?.(STORAGE_KEY_MUTE, settings.store.muteHotkey);
+        if (settings.store.deafenHotkey) (globalThis as any).localStorage?.setItem?.(STORAGE_KEY_DEAFEN, settings.store.deafenHotkey);
+        if (settings.store.screenshareHotkey) (globalThis as any).localStorage?.setItem?.(STORAGE_KEY_SCREENSHARE, settings.store.screenshareHotkey);
     } catch {}
     teardownKeybinds()
         .then(setupKeybinds)
@@ -440,9 +440,9 @@ async function setupKeybinds() {
     let savedDeafen: string | null = null;
     let savedScreenshare: string | null = null;
     try {
-        savedMute = localStorage.getItem(STORAGE_KEY_MUTE);
-        savedDeafen = localStorage.getItem(STORAGE_KEY_DEAFEN);
-        savedScreenshare = localStorage.getItem(STORAGE_KEY_SCREENSHARE);
+        savedMute = (globalThis as any).localStorage?.getItem?.(STORAGE_KEY_MUTE);
+        savedDeafen = (globalThis as any).localStorage?.getItem?.(STORAGE_KEY_DEAFEN);
+        savedScreenshare = (globalThis as any).localStorage?.getItem?.(STORAGE_KEY_SCREENSHARE);
     } catch {}
 
     const muteVal = (savedMute && validateHotkey(savedMute) === true) ? savedMute : settings.store.muteHotkey;

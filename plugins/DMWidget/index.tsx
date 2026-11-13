@@ -368,7 +368,7 @@ function setLastResult(message: string, kind: LastResultKind): void {
 }
 
 // ---- game templates (auto-stat cards) --------------------------------------
-// Latest fetched Fortnite/Valorant stats with persistent disk/localStorage backing
+// Latest fetched Fortnite/Valorant stats with persistent memory/DataStore backing
 let fnStats: Record<string, number> | null = null;
 let valStats: Record<string, any> | null = null;
 let fnRefreshTimer: ReturnType<typeof setInterval> | null = null;
@@ -378,14 +378,60 @@ const FN_STATS_CACHE_KEY = "dm_fn_stats_cache";
 const LAST_VAL_RIOT_ID_KEY = "dm_last_val_riot_id";
 const LAST_FN_IGN_KEY = "dm_last_fn_ign";
 
-function loadCachedGameStats(): void {
+// In-memory cache to guarantee synchronous reads without throwing ReferenceError
+// even when modern Discord deletes window.localStorage.
+const memStorageCache = new Map<string, string>();
+
+function safeGetItem(key: string): string | null {
+    if (memStorageCache.has(key)) return memStorageCache.get(key) ?? null;
     try {
+        const val = (globalThis as any).localStorage?.getItem?.(key);
+        if (typeof val === "string") {
+            memStorageCache.set(key, val);
+            return val;
+        }
+    } catch {}
+    return null;
+}
+
+function safeSetItem(key: string, value: string): void {
+    memStorageCache.set(key, value);
+    try {
+        (globalThis as any).localStorage?.setItem?.(key, value);
+    } catch {}
+    try {
+        DataStore.set(key, value).catch(() => {});
+    } catch {}
+}
+
+async function initStorageCache() {
+    try {
+        for (const key of [VAL_STATS_CACHE_KEY, FN_STATS_CACHE_KEY, LAST_VAL_RIOT_ID_KEY, LAST_FN_IGN_KEY]) {
+            const stored = await DataStore.get<string>(key);
+            if (stored && typeof stored === "string" && !memStorageCache.has(key)) {
+                memStorageCache.set(key, stored);
+            }
+        }
         if (!valStats) {
-            const raw = localStorage.getItem(VAL_STATS_CACHE_KEY);
+            const raw = safeGetItem(VAL_STATS_CACHE_KEY);
             if (raw) valStats = JSON.parse(raw);
         }
         if (!fnStats) {
-            const raw = localStorage.getItem(FN_STATS_CACHE_KEY);
+            const raw = safeGetItem(FN_STATS_CACHE_KEY);
+            if (raw) fnStats = JSON.parse(raw);
+        }
+    } catch {}
+}
+void initStorageCache();
+
+function loadCachedGameStats(): void {
+    try {
+        if (!valStats) {
+            const raw = safeGetItem(VAL_STATS_CACHE_KEY);
+            if (raw) valStats = JSON.parse(raw);
+        }
+        if (!fnStats) {
+            const raw = safeGetItem(FN_STATS_CACHE_KEY);
             if (raw) fnStats = JSON.parse(raw);
         }
     } catch { /* ignore storage errors */ }
@@ -393,8 +439,8 @@ function loadCachedGameStats(): void {
 
 function saveCachedGameStats(): void {
     try {
-        if (valStats) localStorage.setItem(VAL_STATS_CACHE_KEY, JSON.stringify(valStats));
-        if (fnStats) localStorage.setItem(FN_STATS_CACHE_KEY, JSON.stringify(fnStats));
+        if (valStats) safeSetItem(VAL_STATS_CACHE_KEY, JSON.stringify(valStats));
+        if (fnStats) safeSetItem(FN_STATS_CACHE_KEY, JSON.stringify(fnStats));
     } catch { /* ignore storage errors */ }
 }
 
@@ -421,24 +467,24 @@ export function getEffectiveRiotId(): string {
     const userKey = user?.id ? `${LAST_VAL_RIOT_ID_KEY}_${user.id}` : null;
     if (local && local.includes("#")) {
         try {
-            localStorage.setItem(LAST_VAL_RIOT_ID_KEY, local);
-            if (userKey) localStorage.setItem(userKey, local);
+            safeSetItem(LAST_VAL_RIOT_ID_KEY, local);
+            if (userKey) safeSetItem(userKey, local);
         } catch {}
         return local;
     }
     const detected = autoDetectConnectedIdentity("riotgames");
     if (detected && detected.includes("#")) {
         try {
-            localStorage.setItem(LAST_VAL_RIOT_ID_KEY, detected);
-            if (userKey) localStorage.setItem(userKey, detected);
+            safeSetItem(LAST_VAL_RIOT_ID_KEY, detected);
+            if (userKey) safeSetItem(userKey, detected);
         } catch {}
         return detected;
     }
     if (userKey) {
-        const userCached = localStorage.getItem(userKey) ?? "";
+        const userCached = safeGetItem(userKey) ?? "";
         if (userCached && userCached.includes("#")) return userCached;
     }
-    const cached = localStorage.getItem(LAST_VAL_RIOT_ID_KEY) ?? "";
+    const cached = safeGetItem(LAST_VAL_RIOT_ID_KEY) ?? "";
     if (cached && cached.includes("#")) {
         // Return cached ID for this PC/user; don't leak Diggy's tag to other accounts
         if (isDiggyUser(user) || (!cached.includes("Diggy") && !cached.includes("ツ"))) {
@@ -459,24 +505,24 @@ export function getEffectiveFnIgn(): string {
     const userKey = user?.id ? `${LAST_FN_IGN_KEY}_${user.id}` : null;
     if (local) {
         try {
-            localStorage.setItem(LAST_FN_IGN_KEY, local);
-            if (userKey) localStorage.setItem(userKey, local);
+            safeSetItem(LAST_FN_IGN_KEY, local);
+            if (userKey) safeSetItem(userKey, local);
         } catch {}
         return local;
     }
     const detected = autoDetectConnectedIdentity("epicgames");
     if (detected) {
         try {
-            localStorage.setItem(LAST_FN_IGN_KEY, detected);
-            if (userKey) localStorage.setItem(userKey, detected);
+            safeSetItem(LAST_FN_IGN_KEY, detected);
+            if (userKey) safeSetItem(userKey, detected);
         } catch {}
         return detected;
     }
     if (userKey) {
-        const userCached = localStorage.getItem(userKey) ?? "";
+        const userCached = safeGetItem(userKey) ?? "";
         if (userCached) return userCached;
     }
-    const cached = localStorage.getItem(LAST_FN_IGN_KEY) ?? "";
+    const cached = safeGetItem(LAST_FN_IGN_KEY) ?? "";
     if (cached) {
         if (isDiggyUser(user) || (!cached.includes("Diggy") && !cached.includes("ツ"))) {
             return cached;
