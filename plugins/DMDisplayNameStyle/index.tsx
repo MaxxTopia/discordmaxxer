@@ -765,6 +765,19 @@ function cssForProfile(profile: StyleProfile): string {
             ${outline}
             transition: color 140ms ease, text-shadow 140ms ease, filter 140ms ease;
         }
+        /* Ensure top channel/DM header title name pill stays bright, crisp white */
+        [class*="titleWrapper" i] [class*="name" i],
+        section[class*="title_" i] [class*="name" i],
+        [class*="subtitleContainer" i] [class*="name" i],
+        [class*="titleWrapper" i] [class*="title" i],
+        section[class*="title_" i] [class*="title" i],
+        [class*="titleWrapper" i] h1,
+        section[class*="title_" i] h1 {
+            color: #ffffff !important;
+            -webkit-text-fill-color: #ffffff !important;
+            text-shadow: none !important;
+            filter: none !important;
+        }
         ${ornamentSelector("swash")} {
             content: "";
             display: inline-block;
@@ -1145,6 +1158,8 @@ function hasNameClass(element: HTMLElement): boolean {
 function isVisibleLeafName(element: HTMLElement): boolean {
     if (!element.isConnected || (!hasNameClass(element) && !isExactProfileNameCandidate(element))) return false;
     if (element.closest<HTMLElement>(`#${ROOT_ID}, [${IGNORE_ATTR}], input, textarea, [contenteditable="true"], .vc-settings-tab, [class*='standardSidebarView']`)) return false;
+    // Exclude top channel / DM header titles so the top-bar title pill does not get dark or faded
+    if (element.closest<HTMLElement>('[class*="titleWrapper" i], section[class*="title_" i], [class*="subtitleContainer" i], [class*="channelHeader" i], [class*="chatHeader" i]')) return false;
     if (element.getAttribute("aria-hidden") === "true") return false;
     if (element.children.length > 0 && element.querySelector<HTMLElement>(candidateSelector())) return false;
 

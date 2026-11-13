@@ -18,26 +18,10 @@ contextBridge.exposeInMainWorld("VesktopNative", VesktopNative);
 // still override the defaults they intentionally set.
 const DISPLAY_DEFAULTS_STYLE_ID = "dm-renderer-display-defaults";
 const DISPLAY_DEFAULTS_CSS = `
-html { display: block; }
-body { display: block; }
-head, base, link, meta, noscript, script, style, template, title { display: none; }
-article, aside, blockquote, body, div, dl, dt, dd, fieldset, figcaption, figure,
-footer, form, h1, h2, h3, h4, h5, h6, header, hr, main, nav, ol, p, pre, section,
-table, ul { display: block; }
-li { display: list-item; }
-caption { display: table-caption; }
-colgroup { display: table-column-group; }
-col { display: table-column; }
-tbody { display: table-row-group; }
-thead { display: table-header-group; }
-tfoot { display: table-footer-group; }
-tr { display: table-row; }
-td, th { display: table-cell; }
-button, input, select, textarea { display: inline-block; }
-img, svg, canvas, video, audio, iframe, object, embed { display: inline-block; }
-a, abbr, acronym, b, bdi, bdo, br, cite, code, del, dfn, em, i, kbd,
-mark, q, s, samp, small, span, strong, sub, sup, time, u, var { display: inline; }
-#app-mount { position: absolute; inset: 0; display: flex; }
+head, base, link, meta, noscript, script, style, template, title { display: none !important; }
+html, body { width: 100%; height: 100%; margin: 0; padding: 0; }
+#app-mount { position: absolute; inset: 0; width: 100%; height: 100%; }
+#app-mount > div { width: 100%; height: 100%; }
 `;
 
 function installDisplayDefaults(): void {
@@ -48,6 +32,17 @@ function installDisplayDefaults(): void {
     style.id = DISPLAY_DEFAULTS_STYLE_ID;
     style.textContent = DISPLAY_DEFAULTS_CSS;
     root.appendChild(style);
+
+    // Once Discord mounts its application tree into #app-mount, clean up the
+    // bootstrap style so Discord's native CSS owns all dimensions and images.
+    const cleanupObserver = new MutationObserver(() => {
+        const mount = document.getElementById("app-mount");
+        if (mount && mount.childElementCount > 0) {
+            cleanupObserver.disconnect();
+            style.remove();
+        }
+    });
+    cleanupObserver.observe(root, { childList: true, subtree: true });
 }
 
 installDisplayDefaults();

@@ -194,8 +194,8 @@ function normalizeKeyToken(key: string): string {
 function isValidKeyToken(key: string): boolean {
     if (NAMED_KEYS.has(key) || /^(?:f(?:[1-9]|1[0-2]))$/.test(key)) return true;
     // A single printable key, including punctuation such as ], [, /, or -.
-    // Do not accept + because it is the hotkey separator.
-    return Array.from(key).length === 1 && !/[\\s+]/.test(key);
+    // Do not accept + because it is the hotkey separator, and reject whitespace.
+    return Array.from(key).length === 1 && key !== "+" && !/\s/.test(key);
 }
 
 function parseHotkey(hk: string): ParsedHotkey {
@@ -237,9 +237,18 @@ function matches(e: KeyboardEvent, hk: ParsedHotkey): boolean {
     );
 }
 
+const STORAGE_KEY_MUTE = "dm_voice_mute_hotkey";
+const STORAGE_KEY_DEAFEN = "dm_voice_deafen_hotkey";
+const STORAGE_KEY_SCREENSHARE = "dm_voice_screenshare_hotkey";
+
 // Re-register hotkeys after a settings edit. Without this, changing a hotkey
 // or toggling OS-level mode did nothing until the plugin was toggled off/on.
 function reapplyKeybinds() {
+    try {
+        if (settings.store.muteHotkey) localStorage.setItem(STORAGE_KEY_MUTE, settings.store.muteHotkey);
+        if (settings.store.deafenHotkey) localStorage.setItem(STORAGE_KEY_DEAFEN, settings.store.deafenHotkey);
+        if (settings.store.screenshareHotkey) localStorage.setItem(STORAGE_KEY_SCREENSHARE, settings.store.screenshareHotkey);
+    } catch {}
     teardownKeybinds()
         .then(setupKeybinds)
         .catch(e => console.warn("[DMVoiceKeybinds] reapply failed:", e));
@@ -289,9 +298,22 @@ async function tryRegisterGlobal(id: string, hotkey: string, cb: () => void): Pr
 }
 
 async function setupKeybinds() {
-    const muteHotkey = safeHotkey(settings.store.muteHotkey, "ctrl+alt+m");
-    const deafenHotkey = safeHotkey(settings.store.deafenHotkey, "ctrl+alt+d");
-    const screenshareHotkey = safeHotkey(settings.store.screenshareHotkey, "ctrl+alt+s");
+    let savedMute: string | null = null;
+    let savedDeafen: string | null = null;
+    let savedScreenshare: string | null = null;
+    try {
+        savedMute = localStorage.getItem(STORAGE_KEY_MUTE);
+        savedDeafen = localStorage.getItem(STORAGE_KEY_DEAFEN);
+        savedScreenshare = localStorage.getItem(STORAGE_KEY_SCREENSHARE);
+    } catch {}
+
+    const muteVal = (savedMute && validateHotkey(savedMute) === true) ? savedMute : settings.store.muteHotkey;
+    const deafenVal = (savedDeafen && validateHotkey(savedDeafen) === true) ? savedDeafen : settings.store.deafenHotkey;
+    const screenshareVal = (savedScreenshare && validateHotkey(savedScreenshare) === true) ? savedScreenshare : settings.store.screenshareHotkey;
+
+    const muteHotkey = safeHotkey(muteVal, "ctrl+alt+m");
+    const deafenHotkey = safeHotkey(deafenVal, "ctrl+alt+d");
+    const screenshareHotkey = safeHotkey(screenshareVal, "ctrl+alt+s");
     muteGlobalRegistered = await tryRegisterGlobal(MUTE_ID, muteHotkey, toggleMute);
     deafenGlobalRegistered = await tryRegisterGlobal(DEAFEN_ID, deafenHotkey, toggleDeafen);
     screenshareGlobalRegistered = await tryRegisterGlobal(SCREENSHARE_ID, screenshareHotkey, triggerScreenshare);

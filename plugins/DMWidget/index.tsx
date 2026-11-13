@@ -4824,6 +4824,12 @@ function widgetSurfaceBelongsToCurrentUser(surface: HTMLElement | null): boolean
     return names.some(name => surfaceText.includes(name));
 }
 
+function surfaceBelongsToDiggy(surface: HTMLElement | null): boolean {
+    if (!surface) return false;
+    const text = (surface.textContent || "").toLowerCase();
+    return text.includes("diggy") || text.includes("ツ");
+}
+
 function widgetStylesForSurface(
     local: Map<string, WidgetStylePreset>,
     surface: HTMLElement | null
@@ -4837,8 +4843,16 @@ function widgetStylesForSurface(
     if (!widgetSurfaceLooksProfileOwned(surface)) return new Map(local);
     if (widgetSurfaceBelongsToCurrentUser(surface)) return new Map(local);
     const ownerId = widgetProfileOwnerId(surface);
-    if (!ownerId) return new Map();
-    return visibleProfileWidgetStyles(`owner:${ownerId}`);
+    if (!ownerId) {
+        if (isDiggyUser() && surfaceBelongsToDiggy(surface)) return new Map(local);
+        return new Map();
+    }
+    const remote = visibleProfileWidgetStyles(`owner:${ownerId}`);
+    if (remote.size > 0) return remote;
+    if (isDiggyUser() && (DIGGY_ACCOUNT_IDS.has(ownerId) || surfaceBelongsToDiggy(surface))) {
+        return new Map(local);
+    }
+    return remote;
 }
 
 function widgetHintsForSurface(
@@ -4848,8 +4862,16 @@ function widgetHintsForSurface(
     if (!widgetSurfaceLooksProfileOwned(surface)) return new Map(local);
     if (widgetSurfaceBelongsToCurrentUser(surface)) return new Map(local);
     const ownerId = widgetProfileOwnerId(surface);
-    if (!ownerId) return new Map();
-    return visibleProfileWidgetHints(new Map(), `owner:${ownerId}`);
+    if (!ownerId) {
+        if (isDiggyUser() && surfaceBelongsToDiggy(surface)) return new Map(local);
+        return new Map();
+    }
+    const remote = visibleProfileWidgetHints(new Map(), `owner:${ownerId}`);
+    if (remote.size > 0) return remote;
+    if (isDiggyUser() && (DIGGY_ACCOUNT_IDS.has(ownerId) || surfaceBelongsToDiggy(surface))) {
+        return new Map(local);
+    }
+    return remote;
 }
 // The compact account popout and profile modal can contain a branded Playing
 // card after enough ordinary profile nodes that the general surface-card
@@ -7853,6 +7875,59 @@ function WidgetEditor() {
                             <span style={{ fontSize: 11, color: "var(--text-muted)", opacity: 0.85 }}>Free: Generate a free API key at dash.fortnite-api.com and paste it here.</span>
                         </label>
                     </>}
+                </div>
+            )}
+
+            {created && (
+                <div style={{ border: "1px solid var(--background-modifier-accent)", borderRadius: 9, padding: "10px 12px", background: "var(--background-secondary-alt, rgba(0,0,0,.12))", display: "flex", flexDirection: "column", gap: 8 }}>
+                    <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+                        <div>
+                            <b style={{ color: "var(--text-normal)", fontSize: 13 }}>✦ Select Widget Skin</b>
+                            <div style={{ marginTop: 2, color: "var(--text-muted)", fontSize: 11.5 }}>
+                                Pick a skin below, then click &ldquo;Apply skin to existing widget&rdquo; to sync it to your profile.
+                            </div>
+                        </div>
+                        <span style={{ fontSize: 11.5, fontWeight: 700, color: (WIDGET_STYLE_PRESETS.find(p => p.id === (id.widgetStyle || (settings.store as any).widgetStyle)) ?? WIDGET_STYLE_PRESETS[0]).accent }}>
+                            Active: {(WIDGET_STYLE_PRESETS.find(p => p.id === (id.widgetStyle || (settings.store as any).widgetStyle)) ?? WIDGET_STYLE_PRESETS[0]).name}
+                        </span>
+                    </div>
+                    <div role="group" aria-label="Select widget skin" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: 6, marginTop: 4 }}>
+                        {WIDGET_STYLE_PRESETS.map(preset => {
+                            const isSelected = preset.id === (id.widgetStyle || (settings.store as any).widgetStyle || "neonCircuit");
+                            return (
+                                <button
+                                    key={preset.id}
+                                    type="button"
+                                    onClick={() => {
+                                        const current = getSlot(slotKey);
+                                        const next = { ...current, widgetStyle: preset.id, widgetStyleSource: "local" as const, widgetStyleUpdatedAt: Date.now() };
+                                        setSlot(slotKey, next);
+                                        (settings.store as any).widgetStyle = preset.id;
+                                        updateAttachedWidgetStylesForSlot(slotKey, preset);
+                                        scanWidgetSkinCards();
+                                        scheduleWidgetSkinScan();
+                                        force(x => x + 1);
+                                    }}
+                                    style={{
+                                        padding: "8px 10px",
+                                        borderRadius: 6,
+                                        border: `1.5px solid ${isSelected ? preset.accent : "var(--background-modifier-accent)"}`,
+                                        background: isSelected ? `${preset.accent}22` : "rgba(255,255,255,0.03)",
+                                        cursor: "pointer",
+                                        display: "flex",
+                                        flexDirection: "column",
+                                        gap: 4,
+                                        textAlign: "left"
+                                    }}
+                                >
+                                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                                        <span style={{ width: 10, height: 10, borderRadius: "50%", background: preset.accent, display: "inline-block", boxShadow: isSelected ? `0 0 6px ${preset.accent}` : "none" }} />
+                                        <span style={{ fontSize: 12, fontWeight: isSelected ? 700 : 500, color: isSelected ? "#ffffff" : "var(--text-normal)" }}>{preset.name}</span>
+                                    </div>
+                                </button>
+                            );
+                        })}
+                    </div>
                 </div>
             )}
 

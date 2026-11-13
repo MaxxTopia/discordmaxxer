@@ -40,7 +40,7 @@ import { managedStyleRootNode } from "@api/Styles";
 import * as DataStore from "@api/DataStore";
 import { createAndAppendStyle } from "@utils/css";
 import definePlugin, { OptionType } from "@utils/types";
-import { Button, React, RestAPI, Toasts as DiscordToasts, UserStore } from "@webpack/common";
+import { Button, ChannelStore, React, RestAPI, SelectedChannelStore, Toasts as DiscordToasts, UserStore } from "@webpack/common";
 
 import { makePersistentValue } from "../_dm-shared/persist";
 import { getRosterProfileFlair, isRosterReady, onRosterChange, ProfileFlair, refreshRoster, rosterHasAnyAvatarFlair } from "../_dm-shared/roster";
@@ -3060,9 +3060,13 @@ function buildCss(): string {
         [data-dm-flair-theme-applied] [class*="userText" i],
         [data-dm-flair-theme-applied] [class*="nameTag" i],
         [data-dm-flair-theme-applied] [class*="nickname" i],
+        [data-dm-flair-theme-applied] [class*="userTag" i],
+        [data-dm-flair-theme-applied] [class*="displayName" i],
+        [data-dm-flair-theme-applied] [class*="username" i],
         [data-dm-flair-theme-applied] h1 {
             color: #ffffff !important;
-            text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6) !important;
+            -webkit-text-fill-color: #ffffff !important;
+            text-shadow: 0 1px 3px rgba(0, 0, 0, 0.85) !important;
         }
 
         /* Allow profile flair gradient to show through inner layers seamlessly */
@@ -3075,7 +3079,11 @@ function buildCss(): string {
         [data-dm-flair-theme-applied] [class*="profileBody" i],
         [data-dm-flair-theme-applied] [class*="userInfo" i],
         [data-dm-flair-theme-applied] header,
-        [data-dm-flair-theme-applied] [class*="header__" i] {
+        [data-dm-flair-theme-applied] [class*="header__" i],
+        [data-dm-flair-theme-applied] footer,
+        [data-dm-flair-theme-applied] [class*="footer_" i],
+        [data-dm-flair-theme-applied] [class*="footer__" i],
+        [data-dm-flair-theme-applied] [class*="viewFullProfile" i] {
             background: transparent !important;
             background-color: transparent !important;
         }
@@ -3260,25 +3268,16 @@ function findProfileContainerFromBanner(banner: HTMLElement): HTMLElement | null
     if (isInMessageArea(banner)) return null;
 
     // The popout root is a BOUND, not the paint target.
-    //
-    // v0.7.54 painted this root directly. That put our gradient behind every
-    // inner layer of the popout: fine on stock Discord (those layers are
-    // transparent), but any theme that gives one of them a background buried the
-    // flair completely. Regression reported 2026-07-09.
-    //
-    // Discord paints its own gradient on an INNER container, so that is what we
-    // must colour too. Climb to it exactly as before, and use the root only to
-    // guarantee we never escape the popout (escaping is how we ended up painting
-    // the whole DM chat container in the first place).
+    // Must strictly be inside a real profile/dialog root; never escape into the app mount.
     const popoutRoot = banner.closest<HTMLElement>(
         PROFILE_FAST_SCAN_ROOT_SELECTOR + ', [role="dialog"]'
     );
+    if (!popoutRoot) return null;
 
     let el: HTMLElement | null = banner.parentElement;
     let fallbackCandidate: HTMLElement | null = null;
-    while (el && el !== document.body) {
+    while (el && el !== document.body && popoutRoot.contains(el)) {
         if (containsMessageArea(el)) return null;
-        if (popoutRoot && !popoutRoot.contains(el)) break;
 
         const isHeader = isProfileHeaderOrBannerElement(el);
         const r = el.getBoundingClientRect();
@@ -3295,8 +3294,8 @@ function findProfileContainerFromBanner(banner: HTMLElement): HTMLElement | null
         el = el.parentElement;
     }
 
-    if (fallbackCandidate) return fallbackCandidate;
-    if (popoutRoot && !containsMessageArea(popoutRoot)) {
+    if (fallbackCandidate && popoutRoot.contains(fallbackCandidate)) return fallbackCandidate;
+    if (!containsMessageArea(popoutRoot)) {
         return popoutRoot;
     }
     return null;
@@ -3388,6 +3387,33 @@ function findUserIdFromFiber(node: Element | null): string | null {
 function findUserIdFromContainerUncached(container: Element): string | null {
     const directFiber = findUserIdFromFiber(container);
     if (directFiber) return directFiber;
+
+    // Fast-path for Diggy profiles (Diggyai & Diggy T)
+    const textLower = (container.textContent || "").toLowerCase();
+    if (textLower.includes("diggyt") || textLower.includes("diggy t")) {
+        return "426146621424664586";
+    }
+    if (textLower.includes("diggyai")) {
+        return "1501342589318594625";
+    }
+
+    // DM channel fallback: if container is rendered inside or alongside an open DM,
+    // look up the channel recipient so flair resolves instantly with zero lag.
+    try {
+        const channelId = SelectedChannelStore?.getChannelId?.();
+        if (channelId) {
+            const channel = ChannelStore?.getChannel?.(channelId);
+            if (channel?.recipients?.length === 1) {
+                const recipientId = channel.recipients[0];
+                const recipient = UserStore.getUser?.(recipientId);
+                const recipientUsername = (recipient?.username || "").toLowerCase();
+                const recipientGlobal = ((recipient as any)?.globalName || "").toLowerCase();
+                if (!recipient || (recipientUsername && textLower.includes(recipientUsername)) || (recipientGlobal && textLower.includes(recipientGlobal)) || container.closest('[class*="userProfileSidebar" i], [class*="profilePanel" i]')) {
+                    return recipientId;
+                }
+            }
+        }
+    } catch {}
 
     let ancestor: Element | null = container;
     for (let depth = 0; ancestor && depth < 6; depth++, ancestor = ancestor.parentElement) {
@@ -3761,7 +3787,31 @@ function normalizeColor(input: string | undefined): string | null {
     return null;
 }
 
+function cleanUpLeakedRootThemes(): void {
+    const mount = document.getElementById("app-mount");
+    if (mount) {
+        if (mount.hasAttribute("data-dm-flair-theme-applied") || mount.style.backgroundImage.includes("linear-gradient")) {
+            clearTheme(mount);
+        }
+    }
+    if (document.body.hasAttribute("data-dm-flair-theme-applied") || document.body.style.backgroundImage.includes("linear-gradient")) {
+        clearTheme(document.body);
+    }
+    const layers = document.querySelector('[class*="layers_"]');
+    if (layers instanceof HTMLElement && (layers.hasAttribute("data-dm-flair-theme-applied") || layers.style.backgroundImage.includes("linear-gradient"))) {
+        clearTheme(layers);
+    }
+    const app = document.querySelector('.app_, [class*="appMount_"]');
+    if (app instanceof HTMLElement && (app.hasAttribute("data-dm-flair-theme-applied") || app.style.backgroundImage.includes("linear-gradient"))) {
+        clearTheme(app);
+    }
+}
+
 function applyTheme(container: HTMLElement, primary?: string, secondary?: string, ownerId?: string) {
+    if (!container || container === document.body || container.id === "app-mount") return;
+    if (container.contains(document.getElementById("app-mount"))) return;
+    if (container.querySelector('#app-mount, .guilds_, [class*="guilds_"], nav, [class*="chatContent_"]')) return;
+
     const p = normalizeColor(primary);
     const s = normalizeColor(secondary);
     if (!p && !s) return;
@@ -3945,6 +3995,7 @@ function clearAppliedAvatars() {
 }
 
 function scanForPopouts(_root: ParentNode = document) {
+    cleanUpLeakedRootThemes();
     if (document.hidden) return;
     const me = UserStore.getCurrentUser?.();
     const tmActive = isTournamentModeActive();
@@ -4247,12 +4298,14 @@ export default definePlugin({
     settings,
 
     start() {
+        cleanUpLeakedRootThemes();
         style = createAndAppendStyle("dm-profile-flair", managedStyleRootNode);
         style.textContent = buildCss();
         startObserver();
     },
 
     stop() {
+        cleanUpLeakedRootThemes();
         stopObserver();
         releaseLocalProfileMediaUrls();
         style?.remove();
