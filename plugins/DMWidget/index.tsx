@@ -1098,7 +1098,11 @@ function buildSurfaces(tpl: string, imageKey: string | null, opts?: { titleIconK
     // appearance/layout from the slot being published, not from whichever
     // settings tab happens to be visible. This is what makes a skin choice
     // durable across Fortnite / Valorant / Custom and across restarts.
-    const selectedTopLayout = savedSlot.topLayout ?? s.topLayout;
+    // If the user picked "hero" (Banner) on the slot or in settings, honor it
+    // so the hero image publishes unboxed without a container box.
+    const selectedTopLayout = (savedSlot.topLayout === "hero" || s.topLayout === "hero")
+        ? "hero"
+        : ((savedSlot.topLayout === "contained" || s.topLayout === "contained") ? "contained" : "hero");
     const selectedBottomLayout = savedSlot.bottomLayout ?? s.bottomLayout;
     const img = imageKey
         ? { presentation_type: "image", value_type: "application_asset", value: imageKey }
@@ -1454,9 +1458,14 @@ async function republishSelectedWidgetStyleUnsafe(slotKey: string): Promise<void
         if (!isCurrentWidgetStylePublishRequest(slotKey, accountId, request)) return;
         if (published) {
             const latest = getSlot(slotKey);
-            const repaired = { ...latest, topLayout: published.topLayout, bottomLayout: published.bottomLayout };
+            const desiredTop = latest.topLayout || (safeStore().topLayout === "hero" || safeStore().topLayout === "contained" ? safeStore().topLayout : undefined) || published.topLayout;
+            const desiredBottom = latest.bottomLayout || (safeStore().bottomLayout === "progress" || safeStore().bottomLayout === "stats" ? safeStore().bottomLayout : undefined) || published.bottomLayout;
+            const repaired = { ...latest, topLayout: desiredTop, bottomLayout: desiredBottom };
             if (JSON.stringify(repaired) !== JSON.stringify(latest)) setSlot(slotKey, repaired);
-            preset = presetWithLayouts(basePreset, published.topLayout, published.bottomLayout);
+            preset = presetWithLayouts(basePreset, desiredTop, desiredBottom);
+            if (published.topLayout !== desiredTop) {
+                void republishConfig(slotKey).catch(e => console.warn("[DMWidget] layout sync on apply skin:", e));
+            }
         } else {
             const latest = getSlot(slotKey);
             preset = presetWithLayouts(basePreset, latest.topLayout, latest.bottomLayout);
@@ -1688,14 +1697,17 @@ async function deployWidget(): Promise<void> {
         // User's explicit topLayout / bottomLayout choice takes priority over preset defaults.
         const explicitTopLayout = safeStore().topLayout;
         const explicitBottomLayout = safeStore().bottomLayout;
+        const targetTop = (explicitTopLayout === "hero" || id.topLayout === "hero")
+            ? "hero"
+            : (explicitTopLayout === "contained" || id.topLayout === "contained" ? "contained" : (chosenPreset?.topLayout || "hero"));
+        const targetBottom = (explicitBottomLayout === "progress" || id.bottomLayout === "progress")
+            ? "progress"
+            : (explicitBottomLayout === "stats" || id.bottomLayout === "stats" ? "stats" : (chosenPreset?.bottomLayout || "stats"));
         if (chosenPreset) {
             id.widgetStyle = chosenPreset.id;
-            id.topLayout = explicitTopLayout === "hero" ? "hero" : explicitTopLayout === "contained" ? "contained" : (id.topLayout || chosenPreset.topLayout || "hero");
-            id.bottomLayout = explicitBottomLayout === "progress" ? "progress" : explicitBottomLayout === "stats" ? "stats" : (id.bottomLayout || chosenPreset.bottomLayout || "stats");
-        } else {
-            id.topLayout = explicitTopLayout === "contained" ? "contained" : "hero";
-            id.bottomLayout = explicitBottomLayout === "progress" ? "progress" : "stats";
         }
+        id.topLayout = targetTop;
+        id.bottomLayout = targetBottom;
         setSlot(slotKey, id);
         // Top-left logo: your custom icon if set, otherwise the game's baked logo
         // (Fortnite F / Valorant V) so a game card auto-brands with no image hosting.
@@ -2534,6 +2546,36 @@ const WIDGET_CLIENT_SKIN_CSS = `
     box-shadow: none !important;
     filter: none !important;
     opacity: 0 !important;
+}
+
+/* Unboxed banner/hero presentation: strip grey container box, background, and border */
+[data-dm-widget-card-root="true"][data-dm-widget-top-layout="hero"] :is(
+    [class*="containedImage"], [class*="ContainedImage"],
+    [class*="imageContainer"], [class*="ImageContainer"],
+    [class*="imageWrapper"], [class*="ImageWrapper"],
+    [class*="imageBox"], [class*="ImageBox"],
+    [class*="mediaContainer"], [class*="MediaContainer"],
+    [class*="thumbnailContainer"], [class*="ThumbnailContainer"]
+) {
+    background: transparent !important;
+    background-color: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+}
+[data-dm-widget-card-root="true"][data-dm-widget-top-layout="hero"] :is(
+    [class*="containedImage"], [class*="ContainedImage"],
+    [class*="imageContainer"], [class*="ImageContainer"],
+    [class*="imageWrapper"], [class*="ImageWrapper"],
+    [class*="imageBox"], [class*="ImageBox"],
+    [class*="mediaContainer"], [class*="MediaContainer"],
+    [class*="thumbnailContainer"], [class*="ThumbnailContainer"]
+) img {
+    background: transparent !important;
+    background-color: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    border-radius: 0 !important;
+    filter: drop-shadow(0 4px 14px color-mix(in srgb, var(--dmw-skin-accent, #55f6e8) 60%, transparent)) !important;
 }
 
 /*
@@ -7419,11 +7461,12 @@ function WidgetStylePicker() {
         const current = getSlot(template);
         const updatedAt = Math.max(Date.now(), Number(current.widgetStyleUpdatedAt ?? 0) + 1);
         // A skin choice must not rewrite the content geometry of an existing
-        // widget. Preserve the saved/published layout for this slot; a new
-        // widget may still start with the preset's default layout.
+        // widget. User's explicit topLayout / bottomLayout choice takes priority over preset defaults.
         const cachedPublished = publishedWidgetSnapshots.get(template);
-        const nextTopLayout = current.topLayout ?? cachedPublished?.topLayout ?? preset.topLayout;
-        const nextBottomLayout = current.bottomLayout ?? cachedPublished?.bottomLayout ?? preset.bottomLayout;
+        const userExplicitTop = current.topLayout || (store.topLayout === "hero" || store.topLayout === "contained" ? store.topLayout : undefined);
+        const nextTopLayout = userExplicitTop ?? cachedPublished?.topLayout ?? preset.topLayout;
+        const userExplicitBottom = current.bottomLayout || (store.bottomLayout === "progress" || store.bottomLayout === "stats" ? store.bottomLayout : undefined);
+        const nextBottomLayout = userExplicitBottom ?? cachedPublished?.bottomLayout ?? preset.bottomLayout;
         const selectedPreset = presetWithLayouts(preset, nextTopLayout, nextBottomLayout);
         setSlot(template, { ...current, widgetStyle: preset.id, widgetStyleSource: "local", widgetStyleUpdatedAt: updatedAt, topLayout: nextTopLayout, bottomLayout: nextBottomLayout });
         store.widgetStyle = preset.id;
@@ -7436,6 +7479,26 @@ function WidgetStylePicker() {
         scanWidgetSkinCards();
         scheduleWidgetSkinScan();
         void republishSelectedWidgetStyle(template).finally(() => force(value => value + 1));
+    };
+
+    const chooseTopLayout = (layout: "hero" | "contained") => {
+        const store = (typeof settings !== "undefined" && settings?.store) ? (settings.store as any) : safeStore();
+        const current = getSlot(template);
+        const updatedAt = Math.max(Date.now(), Number(current.widgetStyleUpdatedAt ?? 0) + 1);
+        const updated = { ...current, topLayout: layout, widgetStyleUpdatedAt: updatedAt };
+        setSlot(template, updated);
+        store.topLayout = layout;
+        const basePreset = WIDGET_STYLE_PRESETS.find(item => item.id === current.widgetStyle) ?? selected;
+        const selectedPreset = presetWithLayouts(basePreset, layout, current.bottomLayout);
+        updateAttachedWidgetStylesForSlot(template, selectedPreset);
+        widgetApplicationCacheEpoch++;
+        widgetSkinLastScanAt = 0;
+        scanWidgetSkinCards();
+        scheduleWidgetSkinScan();
+        force(value => value + 1);
+        if (SNOWFLAKE.test(current.appId)) {
+            void republishConfig(template).catch(e => console.warn("[DMWidget] layout sync error:", e));
+        }
     };
 
     const requestSurfaceSkinRescan = () => {
@@ -7647,12 +7710,54 @@ function WidgetStylePicker() {
                 })}
             </div>
 
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 6, flexWrap: "wrap" }}>
-                <span style={{ fontSize: 11, fontWeight: 750, letterSpacing: ".08em", textTransform: "uppercase", color: "#c5c9d4" }}>Live preview</span>
-                <span style={{ display: "flex", gap: 5, alignItems: "center" }}>
-                    <span style={{ fontSize: 10, color: "#a8adba", marginRight: 3 }}>Preview size</span>
-                    {(["compact", "expanded"] as const).map(size => <button key={size} type="button" aria-pressed={previewSize === size} onClick={() => setPreviewSize(size)} style={{ padding: "4px 8px", borderRadius: 6, border: `1px solid ${previewSize === size ? selected.accent : "rgba(255,255,255,.18)"}`, background: previewSize === size ? `${selected.accent}20` : "transparent", color: previewSize === size ? selected.accent : "#c5c9d4", cursor: "pointer", fontSize: 10 }}>{size === "compact" ? "Compact" : "Expanded"}</button>)}
-                </span>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ fontSize: 11, fontWeight: 750, letterSpacing: ".08em", textTransform: "uppercase", color: "#c5c9d4" }}>Live preview</span>
+                    <span style={{ fontSize: 10, color: selected.accent, fontWeight: 600 }}>({topLayout === "hero" ? "Banner: Unboxed cutout" : "Boxed image"})</span>
+                </div>
+                <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                    <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                        <span style={{ fontSize: 10, color: "#a8adba", marginRight: 2 }}>Image layout</span>
+                        <button
+                            type="button"
+                            aria-pressed={topLayout === "hero"}
+                            onClick={() => chooseTopLayout("hero")}
+                            style={{
+                                padding: "4px 8px",
+                                borderRadius: 6,
+                                border: `1px solid ${topLayout === "hero" ? selected.accent : "rgba(255,255,255,.18)"}`,
+                                background: topLayout === "hero" ? `${selected.accent}25` : "transparent",
+                                color: topLayout === "hero" ? "#ffffff" : "#c5c9d4",
+                                fontWeight: topLayout === "hero" ? 700 : 500,
+                                cursor: "pointer",
+                                fontSize: 10
+                            }}
+                        >
+                            Banner (Unboxed hero)
+                        </button>
+                        <button
+                            type="button"
+                            aria-pressed={topLayout === "contained"}
+                            onClick={() => chooseTopLayout("contained")}
+                            style={{
+                                padding: "4px 8px",
+                                borderRadius: 6,
+                                border: `1px solid ${topLayout === "contained" ? selected.accent : "rgba(255,255,255,.18)"}`,
+                                background: topLayout === "contained" ? `${selected.accent}25` : "transparent",
+                                color: topLayout === "contained" ? "#ffffff" : "#c5c9d4",
+                                fontWeight: topLayout === "contained" ? 700 : 500,
+                                cursor: "pointer",
+                                fontSize: 10
+                            }}
+                        >
+                            Boxed
+                        </button>
+                    </div>
+                    <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                        <span style={{ fontSize: 10, color: "#a8adba", marginRight: 2 }}>Preview size</span>
+                        {(["compact", "expanded"] as const).map(size => <button key={size} type="button" aria-pressed={previewSize === size} onClick={() => setPreviewSize(size)} style={{ padding: "4px 8px", borderRadius: 6, border: `1px solid ${previewSize === size ? selected.accent : "rgba(255,255,255,.18)"}`, background: previewSize === size ? `${selected.accent}20` : "transparent", color: previewSize === size ? selected.accent : "#c5c9d4", cursor: "pointer", fontSize: 10 }}>{size === "compact" ? "Compact" : "Expanded"}</button>)}
+                    </div>
+                </div>
             </div>
             <div
                 className="dm-widget-style-preview"
@@ -8061,10 +8166,12 @@ function WidgetEditor() {
                                     type="button"
                                     onClick={() => {
                                         const current = getSlot(slotKey);
-                                        const next = { ...current, widgetStyle: preset.id, widgetStyleSource: "local" as const, widgetStyleUpdatedAt: Date.now() };
+                                        const nextTop = current.topLayout || (safeStore().topLayout === "hero" ? "hero" : preset.topLayout);
+                                        const nextBottom = current.bottomLayout || preset.bottomLayout;
+                                        const next = { ...current, widgetStyle: preset.id, widgetStyleSource: "local" as const, widgetStyleUpdatedAt: Date.now(), topLayout: nextTop, bottomLayout: nextBottom };
                                         setSlot(slotKey, next);
                                         setSetting("widgetStyle", preset.id);
-                                        updateAttachedWidgetStylesForSlot(slotKey, preset);
+                                        updateAttachedWidgetStylesForSlot(slotKey, presetWithLayouts(preset, nextTop, nextBottom));
                                         scanWidgetSkinCards();
                                         scheduleWidgetSkinScan();
                                         force(x => x + 1);
@@ -8245,7 +8352,23 @@ settings = definePluginSettings({
         options: [
             { label: "Banner (image bleeds off the right edge)", value: "hero", default: true },
             { label: "Boxed (image in a box beside the title)", value: "contained" }
-        ]
+        ],
+        onChange(v: string) {
+            const layout = v === "contained" ? "contained" : "hero";
+            const slotKey = slotKeyOf();
+            const current = getSlot(slotKey);
+            const updatedAt = Math.max(Date.now(), Number(current.widgetStyleUpdatedAt ?? 0) + 1);
+            setSlot(slotKey, { ...current, topLayout: layout, widgetStyleUpdatedAt: updatedAt });
+            const basePreset = WIDGET_STYLE_PRESETS.find(item => item.id === current.widgetStyle) ?? selectedWidgetPreset();
+            updateAttachedWidgetStylesForSlot(slotKey, presetWithLayouts(basePreset, layout, current.bottomLayout));
+            widgetApplicationCacheEpoch++;
+            widgetSkinLastScanAt = 0;
+            scanWidgetSkinCards();
+            scheduleWidgetSkinScan();
+            if (SNOWFLAKE.test(current.appId)) {
+                void republishConfig(slotKey).catch(e => console.warn("[DMWidget] settings topLayout sync error:", e));
+            }
+        }
     },
     bottomLayout: {
         type: OptionType.SELECT,
