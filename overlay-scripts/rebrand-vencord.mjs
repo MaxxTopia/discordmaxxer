@@ -389,8 +389,8 @@ const PATCHES = [
     },
     {
         file: "src/plugins/spotifyControls/index.tsx",
-        marker: "Discordmaxxer: Spotify slot isolation wrapper and silent fallback.",
-        alreadyAppliedWhen: content => content.includes("Discordmaxxer: Spotify slot isolation wrapper and silent fallback."),
+        marker: "Discordmaxxer: Spotify slot isolation wrapper",
+        alreadyAppliedWhen: content => content.includes("Discordmaxxer: Spotify slot isolation wrapper"),
         find:
             "                <ErrorBoundary\n" +
             "                    fallback={() => (\n" +
@@ -404,8 +404,8 @@ const PATCHES = [
             "                </ErrorBoundary>\n\n                <VencordOriginal {...props} />",
         replace:
             "                <div data-dm-spotify-slot=\"true\" className=\"vc-spotify-slot\" style={{ display: \"contents\" }}>\n" +
-            "                    {/* Discordmaxxer: Spotify slot isolation wrapper and silent fallback. */}\n" +
-            "                    <ErrorBoundary fallback={() => null}>\n" +
+            "                    {/* Discordmaxxer: Spotify slot isolation wrapper and guarded fallback. */}\n" +
+            "                    <ErrorBoundary fallback={err => { console.warn(\"[Discordmaxxer] SpotifyControls render error:\", err); return null; }}>\n" +
             "                        <Player />\n" +
             "                    </ErrorBoundary>\n" +
             "                </div>\n\n                <VencordOriginal {...props} />"
@@ -1677,7 +1677,7 @@ const PATCHES = [
         marker: "Discordmaxxer: guard link menu patches.",
         alreadyAppliedWhen: content => content.includes("predicate: shouldAddBackMenus,\n            find: \"open-native-link\",") ,
         find: "            find: \"open-native-link\",",
-        replace: "            predicate: shouldAddBackMenus,\n            find: \"open-native-link\"," 
+        replace: "            predicate: shouldAddBackMenus,\n            find: \"open-native-link\","
     },
     {
         file: "src/plugins/webContextMenus.web/index.ts",
@@ -1685,7 +1685,7 @@ const PATCHES = [
         marker: "Discordmaxxer: guard image support patch.",
         alreadyAppliedWhen: content => content.includes("predicate: shouldAddImageMenus,\n            find: \"Copy image not supported\",") ,
         find: "            find: \"Copy image not supported\",",
-        replace: "            predicate: shouldAddImageMenus,\n            find: \"Copy image not supported\"," 
+        replace: "            predicate: shouldAddImageMenus,\n            find: \"Copy image not supported\","
     },
     {
         file: "src/plugins/webContextMenus.web/index.ts",
@@ -1701,7 +1701,7 @@ const PATCHES = [
         marker: "Discordmaxxer: guard built-in image context menu patch.",
         alreadyAppliedWhen: content => content.includes("            predicate: shouldAddImageMenus,\n            find: 'navId:\"image-context\"',"),
         find: "            find: 'navId:\"image-context\"',",
-        replace: "            predicate: shouldAddImageMenus,\n            find: 'navId:\"image-context\"'," 
+        replace: "            predicate: shouldAddImageMenus,\n            find: 'navId:\"image-context\"',"
     },
     {
         file: "src/plugins/webContextMenus.web/index.ts",
@@ -1729,7 +1729,7 @@ const PATCHES = [
         marker: "Discordmaxxer: guard media menu patch.",
         alreadyAppliedWhen: content => content.includes("predicate: shouldAddBackMenus,\n            find: '\"MediaEngineWebRTC\");',") ,
         find: "            find: '\"MediaEngineWebRTC\");',",
-        replace: "            predicate: shouldAddBackMenus,\n            find: '\"MediaEngineWebRTC\");'," 
+        replace: "            predicate: shouldAddBackMenus,\n            find: '\"MediaEngineWebRTC\");',"
     },
     {
         file: "src/plugins/webContextMenus.web/index.ts",
@@ -1737,7 +1737,7 @@ const PATCHES = [
         marker: "Discordmaxxer: guard search menu patch.",
         alreadyAppliedWhen: content => content.includes("predicate: shouldAddBackMenus,\n            find: \"#{intl::SEARCH_WITH_GOOGLE}\",") ,
         find: "            find: \"#{intl::SEARCH_WITH_GOOGLE}\",",
-        replace: "            predicate: shouldAddBackMenus,\n            find: \"#{intl::SEARCH_WITH_GOOGLE}\"," 
+        replace: "            predicate: shouldAddBackMenus,\n            find: \"#{intl::SEARCH_WITH_GOOGLE}\","
     },
     {
         file: "src/plugins/webContextMenus.web/index.ts",
@@ -1745,7 +1745,7 @@ const PATCHES = [
         marker: "Discordmaxxer: guard copy menu patch.",
         alreadyAppliedWhen: content => content.includes("predicate: shouldAddBackMenus,\n            find: \"#{intl::COPY}),hint:\",") ,
         find: "            find: \"#{intl::COPY}),hint:\",",
-        replace: "            predicate: shouldAddBackMenus,\n            find: \"#{intl::COPY}),hint:\"," 
+        replace: "            predicate: shouldAddBackMenus,\n            find: \"#{intl::COPY}),hint:\","
     },
     {
         file: "src/plugins/webContextMenus.web/index.ts",
@@ -1753,7 +1753,7 @@ const PATCHES = [
         marker: "Discordmaxxer: guard automod menu patch.",
         alreadyAppliedWhen: content => content.includes("predicate: shouldAddBackMenus,\n            find: '(\"interactionUsernameProfile',") ,
         find: "            find: '(\"interactionUsernameProfile',",
-        replace: "            predicate: shouldAddBackMenus,\n            find: '(\"interactionUsernameProfile'," 
+        replace: "            predicate: shouldAddBackMenus,\n            find: '(\"interactionUsernameProfile',"
     },
     {
         file: "src/plugins/webContextMenus.web/index.ts",
@@ -3864,6 +3864,118 @@ const PATCHES = [
             "            nodeType === \"folder\" && isExpandedFolderId(expandedFolderIds, node.id) ||\n" +
             "            nodeType === \"guild\" && isExpandedFolderId(expandedFolderIds, node.parentId)\n" +
             "        ) {",
+    },
+
+    // ── SpotifyControls resilience ────────────────────────────────────
+    {
+        file: "src/plugins/spotifyControls/PlayerComponent.tsx",
+        marker: "device?.is_active === false",
+        find: '    if (!track || !device?.is_active || shouldHide)\n        return null;',
+        replace: '    if (!track || device?.is_active === false || shouldHide)\n        return null;'
+    },
+    {
+        file: "src/plugins/spotifyControls/PlayerComponent.tsx",
+        marker: 'data-dm-spotify-surface="true"',
+        find:
+            '    const exportTrackImageStyle = {\n' +
+            '        "--vc-spotify-track-image": `url(${track?.album?.image?.url || ""})`,\n' +
+            '    } as React.CSSProperties;\n' +
+            '\n' +
+            '    return (\n' +
+            '        <div id={cl("player")} style={exportTrackImageStyle}>',
+        replace:
+            '    const exportTrackImageStyle = {\n' +
+            '        "--vc-spotify-track-image": `url(${track?.album?.image?.url || ""})`,\n' +
+            '    } as React.CSSProperties;\n' +
+            '\n' +
+            '    return (\n' +
+            '        <div id={cl("player")} data-dm-spotify-surface="true" style={exportTrackImageStyle}>'
+    },
+    {
+        file: "src/plugins/spotifyControls/SpotifyStore.ts",
+        marker: "Discordmaxxer: Spotify track normalization",
+        find:
+            '    const store = new SpotifyStore(FluxDispatcher, {\n' +
+            '        SPOTIFY_PLAYER_STATE(e: PlayerState) {\n' +
+            '            store.track = e.track;\n' +
+            '            store.device = e.device ?? null;\n' +
+            '            store.isPlaying = e.isPlaying ?? false;\n' +
+            '            store.volume = e.volumePercent ?? 0;\n' +
+            '            store.repeat = e.actual_repeat || "off";\n' +
+            '            store.shuffle = e.shuffle ?? false;\n' +
+            '            store.position = e.position ?? 0;\n' +
+            '            store.isSettingPosition = false;\n' +
+            '            store.emitChange();\n' +
+            '        },\n' +
+            '        SPOTIFY_SET_DEVICES({ devices }: { devices: Device[]; }) {\n' +
+            '            store.device = devices.find(d => d.is_active) ?? devices[0] ?? null;\n' +
+            '            store.emitChange();\n' +
+            '        }\n' +
+            '    });',
+        replace:
+            '    // Discordmaxxer: Spotify track normalization v2.\n' +
+            '    const normalizeTrack = (candidate: unknown): Track | null => {\n' +
+            '        if (!candidate || typeof candidate !== "object") return null;\n' +
+            '        const track = candidate as any;\n' +
+            '        const id = typeof track.id === "string" ? track.id : typeof track.uri === "string" ? track.uri : "";\n' +
+            '        if (!id) return null;\n' +
+            '        const albumSource = track.album && typeof track.album === "object" ? track.album : {};\n' +
+            '        const imageSource = albumSource.image && typeof albumSource.image === "object" ? albumSource.image : {};\n' +
+            '        const artistsSource = Array.isArray(track.artists) ? track.artists : [];\n' +
+            '        const artists = artistsSource.filter((artist: any) => artist && typeof artist.name === "string").map((artist: any) => ({\n' +
+            '            ...artist,\n' +
+            '            id: typeof artist.id === "string" ? artist.id : "",\n' +
+            '            href: typeof artist.href === "string" ? artist.href : "",\n' +
+            '            type: typeof artist.type === "string" ? artist.type : "artist"\n' +
+            '        }));\n' +
+            '        if (artists.length === 0) artists.push({ id: "", href: "", name: "Unknown artist", type: "artist" });\n' +
+            '        return {\n' +
+            '            ...track,\n' +
+            '            id,\n' +
+            '            name: typeof track.name === "string" && track.name.trim() ? track.name : "Unknown track",\n' +
+            '            duration: Number.isFinite(track.duration) ? Math.max(0, track.duration) : 0,\n' +
+            '            album: {\n' +
+            '                ...albumSource,\n' +
+            '                id: typeof albumSource.id === "string" ? albumSource.id : "",\n' +
+            '                name: typeof albumSource.name === "string" ? albumSource.name : "Unknown album",\n' +
+            '                image: {\n' +
+            '                    ...imageSource,\n' +
+            '                    height: Number.isFinite(imageSource.height) ? imageSource.height : 0,\n' +
+            '                    width: Number.isFinite(imageSource.width) ? imageSource.width : 0,\n' +
+            '                    url: typeof imageSource.url === "string" ? imageSource.url : ""\n' +
+            '                }\n' +
+            '            },\n' +
+            '            artists\n' +
+            '        } as Track;\n' +
+            '    };\n' +
+            '\n' +
+            '    const normalizeRepeat = (value: unknown): Repeat =>\n' +
+            '        value === "track" || value === "context" ? value : "off";\n' +
+            '\n' +
+            '    const store = new SpotifyStore(FluxDispatcher, {\n' +
+            '        SPOTIFY_PLAYER_STATE(e: PlayerState) {\n' +
+            '            store.track = normalizeTrack(e.track);\n' +
+            '            const rawDevice = e.device && typeof e.device === "object" ? e.device as any : null;\n' +
+            '            store.device = typeof rawDevice?.id === "string"\n' +
+            '                ? { ...rawDevice, is_active: rawDevice.is_active !== false }\n' +
+            '                : (store.track ? (store.device ?? { id: "default", is_active: true }) : null);\n' +
+            '            store.isPlaying = e.isPlaying === true;\n' +
+            '            store.volume = Number.isFinite(e.volumePercent) ? Math.max(0, Math.min(100, e.volumePercent)) : 0;\n' +
+            '            store.repeat = normalizeRepeat(e.actual_repeat);\n' +
+            '            store.shuffle = e.shuffle === true;\n' +
+            '            store.position = Number.isFinite(e.position) ? Math.max(0, e.position) : 0;\n' +
+            '            store.isSettingPosition = false;\n' +
+            '            store.emitChange();\n' +
+            '        },\n' +
+            '        SPOTIFY_SET_DEVICES({ devices }: { devices: Device[]; }) {\n' +
+            '            const availableDevices = Array.isArray(devices) ? devices : [];\n' +
+            '            const activeDevice = availableDevices.find(d => d?.is_active) ?? availableDevices[0] ?? null;\n' +
+            '            store.device = activeDevice && typeof activeDevice.id === "string"\n' +
+            '                ? { ...activeDevice, is_active: activeDevice.is_active !== false }\n' +
+            '                : null;\n' +
+            '            store.emitChange();\n' +
+            '        }\n' +
+            '    });'
     },
 ];
 

@@ -105,12 +105,16 @@ function httpsJson(host: string, path: string, headers: Record<string, string>):
     });
 }
 
+const DEFAULT_HENRIK_KEY = "HDEV-7906df4e-ba8f-492a-96f4-ae5a2088c0a8";
+const DEFAULT_FORTNITE_KEY = "42abbe8c1fadf7d84a3de60e7178808112419414662cc2e738c15bb6c753102c";
+
 // ---- Valorant stats (HenrikDev — MMR is v3, matches are v4) -----------------
 export async function fetchValorantStats(
     _: IpcMainInvokeEvent, name: string, tag: string, region: string, platform: string, apiKey: string
 ): Promise<{ ok: true; name: string; overall: Record<string, any>; } | { error: string; }> {
-    if (!name || !tag || !apiKey) return { error: "missing Riot ID (Name#Tag) or API key" };
-    const auth = { Authorization: apiKey };
+    const effectiveKey = String(apiKey || "").trim() || DEFAULT_HENRIK_KEY;
+    if (!name || !tag) return { error: "missing Riot ID (Name#Tag)" };
+    const auth = { Authorization: effectiveKey };
     const enc = encodeURIComponent;
     const plat = platform || "pc";
     const reg = region || "na";
@@ -157,11 +161,12 @@ export async function fetchValorantStats(
 export async function fetchFortniteStats(
     _: IpcMainInvokeEvent, name: string, apiKey: string, accountType: string
 ): Promise<{ ok: true; name: string; overall: Record<string, number>; } | { error: string; }> {
-    if (!name || !apiKey) return { error: "missing IGN or API key" };
+    const effectiveKey = String(apiKey || "").trim() || DEFAULT_FORTNITE_KEY;
+    if (!name) return { error: "missing Epic display name (IGN)" };
     return new Promise(resolve => {
         const path = `/v2/stats/br/v2?name=${encodeURIComponent(name)}&accountType=${encodeURIComponent(accountType || "epic")}&timeWindow=lifetime`;
         const req = request(
-            { method: "GET", host: "fortnite-api.com", path, headers: { Authorization: apiKey, "User-Agent": USER_AGENT } },
+            { method: "GET", host: "fortnite-api.com", path, headers: { Authorization: effectiveKey, "User-Agent": USER_AGENT } },
             res => {
                 let buf = "";
                 res.on("data", d => (buf += d));

@@ -188,6 +188,24 @@ if (isWindows) {
 }
 
 export function openScreenSharePicker(screens: Source[], skipPicker: boolean) {
+    if ((globalThis as any).__dmAutoStartScreenShare) {
+        (globalThis as any).__dmAutoStartScreenShare = false;
+        const targetSource = screens.find(s => !s.id.startsWith("screen:")) ?? screens[0];
+        if (targetSource) {
+            const pick: StreamPick = {
+                id: targetSource.id,
+                audio: true,
+                contentHint: "motion",
+                includeSources: "Entire System"
+            };
+            return (async () => {
+                if (isWindows) {
+                    try { await VesktopNative.virtmic.startSystem([]); } catch {}
+                }
+                return pick;
+            })();
+        }
+    }
     let didSubmit = false;
     return new Promise<StreamPick>((resolve, reject) => {
         const key = openModal(

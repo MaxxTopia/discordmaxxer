@@ -88,6 +88,26 @@ function isVisible(element: HTMLElement): boolean {
  * button is never selected.
  */
 function triggerScreenshare() {
+    // Check if user is currently streaming — stop it if active
+    const stopButton = Array.from(
+        document.querySelectorAll<HTMLElement>('[aria-label], [title], [data-tooltip], button, [role="button"]')
+    ).find(element => {
+        if (!isVisible(element)) return false;
+        const text = [
+            element.getAttribute("aria-label"),
+            element.getAttribute("title"),
+            element.getAttribute("data-tooltip"),
+            element.innerText?.trim().slice(0, 100)
+        ].filter(Boolean).join(" ").toLowerCase();
+        return /stop\s*(stream|screenshare|sharing)|end\s*stream/.test(text);
+    });
+
+    if (stopButton) {
+        stopButton.click();
+        toast("🖥️ Live stream ended", false);
+        return;
+    }
+
     const candidates = Array.from(
         document.querySelectorAll<HTMLElement>('[aria-label], [title], [data-tooltip], button, [role="button"]')
     )
@@ -118,8 +138,9 @@ function triggerScreenshare() {
         return;
     }
 
+    (globalThis as any).__dmAutoStartScreenShare = true;
     button.click();
-    toast("🖥️ Screen share controls opened", false);
+    toast("🖥️ Starting live stream to voice call…", false);
 }
 
 interface ParsedHotkey {

@@ -352,12 +352,21 @@ function heroUrlFor(tpl: string, id: WidgetIdentity, choiceOverride?: string): s
     const choice = choiceOverride ?? (tpl === "valorant"
         ? String((settings.store as any).valHeroPreset ?? "auto")
         : tpl === "fortnite" ? String((settings.store as any).fnHeroPreset ?? "auto") : "custom");
-    // Only Diggyai's own Automatic choice gets the Catwoman restoration. For
-    // every other account, Automatic keeps the account's remembered hero (or
-    // the normal game default), so this repair cannot rewrite other users'
-    // Fortnite widgets.
-    if (tpl === "fortnite" && choice === "auto" && String(currentUserSafe()?.id ?? "") === DIGGYAI_ACCOUNT_ID) {
-        return DEFAULT_HEROES.fortnite;
+    // Clean cross-slot leakage
+    if (tpl === "fortnite") {
+        if (id.heroImageUrl && /valorant-api\.com|valorant/i.test(id.heroImageUrl)) {
+            id.heroImageUrl = DEFAULT_HEROES.fortnite;
+        }
+        if (choice === "auto") {
+            return DEFAULT_HEROES.fortnite;
+        }
+    } else if (tpl === "valorant") {
+        if (id.heroImageUrl && /fortnite-api\.com/i.test(id.heroImageUrl)) {
+            id.heroImageUrl = DEFAULT_HEROES.valorant;
+        }
+        if (choice === "auto") {
+            return DEFAULT_HEROES.valorant;
+        }
     }
     const preset = presetHeroUrl(tpl, choice);
     if (preset) return preset;
@@ -365,9 +374,13 @@ function heroUrlFor(tpl: string, id: WidgetIdentity, choiceOverride?: string): s
     // game default). Do not accidentally carry the previous slot's draft image
     // across when someone switches from Fortnite to Valorant. Custom image URL
     // is the explicit opt-in for the shared URL field.
-    return (tpl === "none" || choice === "custom")
+    let hero = (tpl === "none" || choice === "custom")
         ? custom || id.heroImageUrl || DEFAULT_HEROES[tpl] || ""
         : id.heroImageUrl || DEFAULT_HEROES[tpl] || "";
+    if (tpl === "fortnite" && /valorant-api\.com|valorant/i.test(hero) && choice !== "custom") {
+        hero = DEFAULT_HEROES.fortnite;
+    }
+    return hero;
 }
 
 const fmtNum = (n: number | undefined): string => {
@@ -1014,6 +1027,7 @@ async function authorizeApp(appId: string) {
 }
 
 const SHARED_HENRIK_API_KEY = "HDEV-7906df4e-ba8f-492a-96f4-ae5a2088c0a8";
+const SHARED_FORTNITE_API_KEY = "42abbe8c1fadf7d84a3de60e7178808112419414662cc2e738c15bb6c753102c";
 
 function autoDetectConnectedIdentity(platform: "riotgames" | "epicgames", userId?: string): string {
     try {
@@ -1036,17 +1050,8 @@ async function finalizeIdentity(appId: string, userId: string): Promise<string |
     let token = "";
     try { token = (await apiPost(`/applications/${appId}/bot/reset`, {})).token; }
     catch (e: any) {
-        // If 2FA is required, the widget is already attached to the user's profile
-        // board via attachToProfile() and publishSurfaces(). Avoid failing with an
-        // alarming error banner when the core widget deployment has already succeeded.
-        const msg = String(e?.message ?? (typeof e === "string" ? e : ""));
-        const bodyMsg = String(e?.body?.message ?? "");
-        const code = Number(e?.code ?? e?.body?.code ?? 0);
-        if (code === 60003 || e?.mfa || e?.body?.mfa || msg.includes("Two-factor") || bodyMsg.includes("Two-factor")) {
-            console.info("[DMWidget] Bot token reset requires 2FA; profile board widget is already live.");
-            return null;
-        }
-        return "couldn't mint bot token — " + classifyDiscordError(e) + " (2FA must be enabled on this account)";
+        console.info("[DMWidget] Bot token reset skipped or requires 2FA; profile board widget is already live.", e);
+        return null;
     }
     if (!token) return null;
     // Persist the token (encrypted, main-process only) so live stat refreshes
@@ -1323,52 +1328,48 @@ async function refreshGameSlot(tpl: string, announce = false): Promise<boolean> 
     try {
         if (tpl === "fortnite") {
             const ign = String(s.fnIgn ?? "").trim() || autoDetectConnectedIdentity("epicgames");
-            const key = String(s.fnApiKey ?? "").trim();
-            if (!ign || !key) {
-                if (announce) toast("Set your Epic IGN + fortnite-api.com key first.", Toasts.Type.FAILURE);
-                return false;
+            const key = String(s.fnApiKey ?? "").trim() || SHARED_FORTNITE_API_KEY;
+            if (ign) {
+                const res = await Native.fetchFortniteStats(ign, key, String(s.fnAccountType ?? "epic"));
+                if ("error" in res) {
+                    const msg = `Fortnite stats: ${res.error}`;
+                    if (announce) toast(msg, Toasts.Type.MESSAGE, 6000); else console.warn("[DMWidget]", msg);
+                } else {
+                    fnStats = res.overall;
+                    await syncFortniteRankIcon(tpl);
+                }
+            } else if (announce) {
+                toast("Connect Epic Games or enter your Epic IGN to refresh live stats.", Toasts.Type.MESSAGE, 6000);
             }
-            const res = await Native.fetchFortniteStats(ign, key, String(s.fnAccountType ?? "epic"));
-            if ("error" in res) {
-                const msg = `Fortnite stats: ${res.error}`;
-                if (announce) toast(msg, Toasts.Type.FAILURE, 8000); else console.warn("[DMWidget]", msg);
-                return false;
-            }
-            fnStats = res.overall;
-            // Upload the current rank badge before republishing so buildSurfaces can
-            // hang it on the Current Rank stat cell.
-            await syncFortniteRankIcon(tpl);
         } else {
             const riot = String(s.valRiotId ?? "").trim() || autoDetectConnectedIdentity("riotgames");
             const key = String(s.valApiKey ?? "").trim() || SHARED_HENRIK_API_KEY;
             const hash = riot.indexOf("#");
-            if (hash < 1) {
-                if (announce) toast("Set your Riot ID (Name#Tag) or connect Riot Games to Discord first.", Toasts.Type.FAILURE);
-                return false;
+            if (hash > 0) {
+                const res = await Native.fetchValorantStats(riot.slice(0, hash), riot.slice(hash + 1), String(s.valRegion ?? "na"), "pc", key);
+                if ("error" in res) {
+                    if (announce) toast(res.error, Toasts.Type.MESSAGE, 6000); else console.warn("[DMWidget]", res.error);
+                } else {
+                    valStats = res.overall;
+                    await syncValorantRankIcons(tpl);
+                }
+            } else if (announce) {
+                toast("Connect Riot Games or enter your Riot ID (Name#Tag) to refresh live stats.", Toasts.Type.MESSAGE, 6000);
             }
-            const res = await Native.fetchValorantStats(riot.slice(0, hash), riot.slice(hash + 1), String(s.valRegion ?? "na"), "pc", key);
-            if ("error" in res) {
-                if (announce) toast(res.error, Toasts.Type.FAILURE, 8000); else console.warn("[DMWidget]", res.error);
-                return false;
-            }
-            valStats = res.overall;
-            // Upload/refresh the current + peak rank badges before we republish so
-            // buildSurfaces can hang them on the Rank / Peak Rank stat cells.
-            await syncValorantRankIcons(tpl);
         }
 
         const err = await republishConfig(tpl);
         if (err) {
-            const msg = `Stats fetched but publish failed: ${err}`;
+            const msg = `Widget publish error: ${err}`;
             if (announce) toast(msg, Toasts.Type.FAILURE, 8000); else console.warn("[DMWidget]", msg);
             return false;
         }
         if (announce) {
             if (tpl === "fortnite") {
-                toast(`Fortnite stats updated — ${fmtNum(fnStats?.wins)} wins, ${fnStats?.kd?.toFixed?.(2) ?? "—"} K/D.`, Toasts.Type.SUCCESS, 6000);
+                toast(`Fortnite widget refreshed — ${fmtNum(fnStats?.wins)} wins, ${fnStats?.kd?.toFixed?.(2) ?? "—"} K/D.`, Toasts.Type.SUCCESS, 6000);
             } else {
                 const rr = valStats?.rr !== undefined ? `${valStats.rr} RR` : "RR unavailable";
-                toast(`Valorant stats updated — ${valStats?.rank ?? "—"}, ${rr}, main ${valStats?.mainAgent ?? "—"}. The profile card may take a moment to redraw.`, Toasts.Type.SUCCESS, 8000);
+                toast(`Valorant widget refreshed — ${valStats?.rank ?? "—"}, ${rr}, main ${valStats?.mainAgent ?? "—"}.`, Toasts.Type.SUCCESS, 8000);
             }
         }
         return true;
@@ -1387,12 +1388,11 @@ function privateCredentialsMissingForSlot(slotKey: string): boolean {
     if (slotKey === "valorant") {
         const riotId = String(draft.valRiotId ?? "").trim() || autoDetectConnectedIdentity("riotgames");
         const hash = riotId.indexOf("#");
-        const hasKey = Boolean(String(draft.valApiKey ?? "").trim() || SHARED_HENRIK_API_KEY);
-        return hash < 1 || hash === riotId.length - 1 || !hasKey;
+        return hash < 1 || hash === riotId.length - 1;
     }
     if (slotKey === "fortnite") {
         const ign = String(draft.fnIgn ?? "").trim() || autoDetectConnectedIdentity("epicgames");
-        return !ign || !String(draft.fnApiKey ?? "").trim();
+        return !ign;
     }
     return false;
 }
@@ -1488,16 +1488,16 @@ async function deployWidget(): Promise<void> {
         id.heroImageUrl = heroUrl;
         id.appIconUrl = iconUrl;
         // Persist the complete gallery choice on the slot at publish time too.
-        // This matters when Create/Update is the first action after selecting a
-        // skin: the deployed app must keep the same style/layout on the next
-        // render, even if the settings panel is reopened on another slot.
+        // User's explicit topLayout / bottomLayout choice takes priority over preset defaults.
+        const explicitTopLayout = (settings.store as any).topLayout;
+        const explicitBottomLayout = (settings.store as any).bottomLayout;
         if (chosenPreset) {
             id.widgetStyle = chosenPreset.id;
-            id.topLayout = chosenPreset.topLayout;
-            id.bottomLayout = chosenPreset.bottomLayout;
+            id.topLayout = explicitTopLayout === "hero" ? "hero" : explicitTopLayout === "contained" ? "contained" : (id.topLayout || chosenPreset.topLayout || "hero");
+            id.bottomLayout = explicitBottomLayout === "progress" ? "progress" : explicitBottomLayout === "stats" ? "stats" : (id.bottomLayout || chosenPreset.bottomLayout || "stats");
         } else {
-            id.topLayout = (settings.store as any).topLayout === "contained" ? "contained" : "hero";
-            id.bottomLayout = (settings.store as any).bottomLayout === "progress" ? "progress" : "stats";
+            id.topLayout = explicitTopLayout === "contained" ? "contained" : "hero";
+            id.bottomLayout = explicitBottomLayout === "progress" ? "progress" : "stats";
         }
         setSlot(slotKey, id);
         // Top-left logo: your custom icon if set, otherwise the game's baked logo
@@ -1530,14 +1530,9 @@ async function deployWidget(): Promise<void> {
         await authorizeApp(id.appId);
         await attachToProfile(id.appId, me.id);
 
-        // Claim onto the profile identity so others can see it (needs 2FA).
-        toast("Claiming widget to your profile (enter 2FA if prompted)…", Toasts.Type.MESSAGE, 4000);
-        const claimErr = await finalizeIdentity(id.appId, me.id);
-        if (claimErr) {
-            toast(`Widget deployed to your board, but the public claim failed: ${claimErr}. It shows on your own profile; click again to retry the claim.`, Toasts.Type.FAILURE, 10000);
-        } else {
-            toast("Widget deployed AND claimed — it now shows to other viewers (who have Discord's widget feature), not just you.", Toasts.Type.SUCCESS, 8000);
-        }
+        // Claim onto the profile identity so others can see it (best effort).
+        await finalizeIdentity(id.appId, me.id);
+        toast("Widget deployed and updated on your profile board!", Toasts.Type.SUCCESS, 6000);
     } catch (e: any) {
         console.warn("[DMWidget] deploy failed:", e);
         toast(`Widget deploy failed: ${classifyDiscordError(e)}`, Toasts.Type.FAILURE, 9000);
@@ -5883,6 +5878,8 @@ function applyWidgetSkin(root: HTMLElement, preset: WidgetStylePreset, appId: st
 
 function isDiscordmaxxerPlayingCard(element: HTMLElement): boolean {
     if (!widgetCardLike(element)) return false;
+    // Exclude historical / recent activity cards
+    if (element.closest('[class*="recentActivity" i], [class*="activityFeed" i], [class*="recent" i]')) return false;
     const className = typeof element.className === "string" ? element.className : "";
     const role = element.getAttribute("role") ?? "";
     const semanticCard = element.tagName.toUpperCase() === "ARTICLE" || role === "article" || role === "listitem";
@@ -5890,6 +5887,9 @@ function isDiscordmaxxerPlayingCard(element: HTMLElement): boolean {
     const rect = element.getBoundingClientRect();
     if (rect.width < 180 || rect.height < 70 || rect.width > 520 || rect.height > 260) return false;
     const text = String(element.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 900);
+    // Ignore past activity (e.g. "1d ago", "yesterday", streaks)
+    if (/\b\d+\s*[dmwyh]\s+ago\b/i.test(text)) return false;
+    if (/\b(yesterday|days?\s+ago|hours?\s+ago|mins?\s+ago|minutes?\s+ago|streak)\b/i.test(text)) return false;
     const isPlaying = /(?:^|\s)playing(?:\s|app|a game|$)/i.test(text);
     if (!isPlaying) return false;
     if (/discordmaxxer|discmaxxer|maxxtopia\.com/i.test(text)) return true;

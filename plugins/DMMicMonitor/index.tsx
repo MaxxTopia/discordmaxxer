@@ -78,11 +78,12 @@ function monitorGainValue(): number {
 }
 
 function outgoingGainValue(): number {
-    return numberSetting("outgoingBoost", 1.25, 1, 2.5);
+    return numberSetting("outgoingBoost", 1.25, 1, 3.5);
 }
 
 function outgoingBoostEnabled(): boolean {
-    return (settings.store as any).outgoingBoostEnabled === true;
+    const s = settings.store as any;
+    return s.outgoingBoostEnabled === true || Number(s.outgoingBoost ?? 1) > 1.05;
 }
 
 function audioContextConstructor(): AudioContextConstructor | null {
@@ -149,12 +150,15 @@ function updateOutgoingGraphGain() {
         if (graph.closed) continue;
         graph.gain.gain.setTargetAtTime(target, graph.context.currentTime, 0.03);
     }
+    if (monitorOutgoingGain && monitorContext) {
+        monitorOutgoingGain.gain.setTargetAtTime(target, monitorContext.currentTime, 0.03);
+    }
 }
 
 async function createOutgoingGraph(input: MediaStream): Promise<MediaStream> {
     const Constructor = audioContextConstructor();
     const audioTracks = input.getAudioTracks();
-    if (!Constructor || audioTracks.length === 0 || !outgoingBoostEnabled()) return input;
+    if (!Constructor || audioTracks.length === 0) return input;
 
     try {
         const context = new Constructor({ latencyHint: "interactive" });
@@ -165,7 +169,8 @@ async function createOutgoingGraph(input: MediaStream): Promise<MediaStream> {
         const destination = context.createMediaStreamDestination();
         analyser.fftSize = 1024;
         analyser.smoothingTimeConstant = 0.72;
-        gain.gain.setValueAtTime(outgoingGainValue(), context.currentTime);
+        const initialGain = outgoingBoostEnabled() ? outgoingGainValue() : 1;
+        gain.gain.setValueAtTime(initialGain, context.currentTime);
         configureVoiceCompressor(compressor);
 
         source.connect(gain);
@@ -208,7 +213,7 @@ function installOutgoingCapture() {
     const nativeGetUserMedia = originalGetUserMedia;
     navigator.mediaDevices.getUserMedia = async constraints => {
         const stream = await nativeGetUserMedia(constraints);
-        if (bypassOutgoingProcessing || (globalThis as any).__dmScreenShareAudioCapture === true || !constraints?.audio || !outgoingBoostEnabled()) return stream;
+        if (bypassOutgoingProcessing || (globalThis as any).__dmScreenShareAudioCapture === true || !constraints?.audio) return stream;
         return createOutgoingGraph(stream);
     };
 }
@@ -469,7 +474,7 @@ const settings = definePluginSettings({
     outgoingBoost: {
         type: OptionType.SLIDER,
         description: "Outgoing microphone multiplier. Start at 1.25x and ask a recipient to check for clarity before using more.",
-        markers: [1, 1.1, 1.25, 1.5, 1.75, 2, 2.5],
+        markers: [1, 1.25, 1.5, 1.75, 2, 2.5, 3, 3.5],
         default: 1.25,
         stickToMarkers: false,
         onChange: onOutgoingBoostChange

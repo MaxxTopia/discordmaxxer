@@ -3074,10 +3074,11 @@ function buildCss(): string {
             filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.95)) drop-shadow(0 0 6px rgba(0, 0, 0, 0.85)) brightness(1.2) contrast(1.15) !important;
         }
 
-        /* Allow profile flair gradient to show through inner layers */
+        /* Allow profile flair gradient to show through inner layers seamlessly */
         [data-dm-flair-theme-applied] [class*="userProfileInner" i],
         [data-dm-flair-theme-applied] [class*="inner__" i],
         [data-dm-flair-theme-applied] [class*="userProfileThemeInner" i],
+        [data-dm-flair-theme-applied] [class*="overlayBackground" i],
         [data-dm-flair-theme-applied] [class*="body_" i],
         [data-dm-flair-theme-applied] [class*="body__" i],
         [data-dm-flair-theme-applied] [class*="profileBody" i],
@@ -3086,12 +3087,6 @@ function buildCss(): string {
         [data-dm-flair-theme-applied] [class*="header__" i] {
             background: transparent !important;
             background-color: transparent !important;
-        }
-        [data-dm-flair-theme-applied] [class*="overlayBackground" i],
-        [data-dm-flair-theme-applied] [class*="body_" i],
-        [data-dm-flair-theme-applied] [class*="body__" i],
-        [data-dm-flair-theme-applied] [class*="profileBody" i] {
-            background-color: rgba(0, 0, 0, 0.42) !important;
         }
     `;
 }
@@ -3299,11 +3294,11 @@ function findProfileContainerFromBanner(banner: HTMLElement): HTMLElement | null
 
         // The real profile card or modal left panel contains both banner and profile identity/body.
         // isProfileIdentityCandidate strictly excludes headers and requires identity/body markers.
-        if (!isHeader && r.width >= 200 && r.height >= 180 && isProfileIdentityCandidate(el)) {
+        if (!isHeader && r.width >= 260 && r.height >= 280 && isProfileIdentityCandidate(el)) {
             return el;
         }
 
-        if (!isHeader && r.width >= 200 && r.height >= 180 && !fallbackCandidate) {
+        if (!isHeader && r.width >= 260 && r.height >= 280 && !fallbackCandidate) {
             fallbackCandidate = el;
         }
         el = el.parentElement;
