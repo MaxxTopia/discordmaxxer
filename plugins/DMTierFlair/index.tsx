@@ -126,34 +126,109 @@ function unregisterFounderBadges() {
 
 function makeMaxxerPlusPlusBadgeSvg(animated: boolean, finish: string): string {
     // The badge is an ordinary data-URL image so it works in the same native
-    // profile-badge slot as Founder badges. The base gradient is the static
-    // fallback; the clipped sheen is an optional SMIL animation layered on
-    // top, so reduced-motion/older Chromium still gets a readable badge.
-    const palettes: Record<string, { light: string; mid: string; deep: string; shine: string; stroke: string; text: string }> = {
-        gold: { light: "#FFF4C2", mid: "#F3D27A", deep: "#8F1D3B", shine: "#FFF9E6", stroke: "#FFE7A8", text: "#29120A" },
-        sunset: { light: "#FFD0A8", mid: "#FF6B35", deep: "#C92A5A", shine: "#FFE6C7", stroke: "#FFB38A", text: "#2B0B0B" },
-        aurora: { light: "#D7FFFF", mid: "#55FFFF", deep: "#7E5BFF", shine: "#F3FFFF", stroke: "#B3FFFF", text: "#07152A" }
+    // profile-badge slot as Founder badges. Features a minted metallic coin with
+    // a dual-tone outer bevel, embossed geometric ++ emblem, and a smooth diagonal light sweep.
+    const palettes: Record<string, {
+        light: string;
+        mid: string;
+        deep: string;
+        shine: string;
+        strokeLight: string;
+        strokeDark: string;
+        text: string;
+        shadow: string;
+    }> = {
+        gold: {
+            light: "#FFF9DE",
+            mid: "#FAD978",
+            deep: "#8A1E34",
+            shine: "#FFFFFF",
+            strokeLight: "#FFF0BA",
+            strokeDark: "#A66E1E",
+            text: "#2B0A12",
+            shadow: "#520E1E"
+        },
+        sunset: {
+            light: "#FFF0E0",
+            mid: "#FF9248",
+            deep: "#6B0F2A",
+            shine: "#FFFFFF",
+            strokeLight: "#FFD9BE",
+            strokeDark: "#9E1C38",
+            text: "#280610",
+            shadow: "#450616"
+        },
+        aurora: {
+            light: "#EFFFFF",
+            mid: "#62F8F8",
+            deep: "#1E0C4C",
+            shine: "#FFFFFF",
+            strokeLight: "#D0FFFF",
+            strokeDark: "#4A2EC2",
+            text: "#050D24",
+            shadow: "#120730"
+        }
     };
-    const palette = palettes[finish] ?? palettes.gold;
-    const sheen = animated
-        ? `<rect x="-36" y="-4" width="7" height="40" rx="3.5" fill="${palette.shine}" opacity="0.88" transform="rotate(45 12 12)">
-    <animateTransform attributeName="transform" type="translate" from="-32 32" to="32 -32" dur="2.2s" repeatCount="indefinite" additive="sum"/>
-  </rect>`
+    const p = palettes[finish] ?? palettes.gold;
+
+    const style = animated
+        ? `<style>
+    @keyframes dmppSweep {
+      0% { transform: translate(-26px, -26px); opacity: 0; }
+      10% { opacity: 0.95; }
+      45% { transform: translate(26px, 26px); opacity: 0.95; }
+      55% { transform: translate(26px, 26px); opacity: 0; }
+      100% { transform: translate(26px, 26px); opacity: 0; }
+    }
+    .dmpp-sheen {
+      animation: dmppSweep 2.8s cubic-bezier(0.22, 1, 0.36, 1) infinite;
+    }
+  </style>`
         : "";
+
+    const sheen = animated
+        ? `<g class="dmpp-sheen">
+      <rect x="-8" y="-22" width="7" height="44" rx="3.5" fill="url(#dmpp-shine-${finish})" transform="rotate(35 12 12)">
+        <animateTransform attributeName="transform" type="translate" from="-26 -26" to="26 26" dur="2.8s" repeatCount="indefinite" additive="sum"/>
+      </rect>
+    </g>`
+        : "";
+
     const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
   <defs>
-    <linearGradient id="dmpp-base" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="${palette.light}"/>
-      <stop offset="46%" stop-color="${palette.mid}"/>
-      <stop offset="100%" stop-color="${palette.deep}"/>
+    ${style}
+    <linearGradient id="dmpp-base-${finish}" x1="0.15" y1="0.05" x2="0.85" y2="0.95">
+      <stop offset="0%" stop-color="${p.light}"/>
+      <stop offset="42%" stop-color="${p.mid}"/>
+      <stop offset="100%" stop-color="${p.deep}"/>
     </linearGradient>
-    <clipPath id="dmpp-clip"><circle cx="12" cy="12" r="10.7"/></clipPath>
+    <linearGradient id="dmpp-ring-${finish}" x1="0.2" y1="0" x2="0.8" y2="1">
+      <stop offset="0%" stop-color="${p.strokeLight}"/>
+      <stop offset="100%" stop-color="${p.strokeDark}"/>
+    </linearGradient>
+    <linearGradient id="dmpp-shine-${finish}" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="${p.shine}" stop-opacity="0"/>
+      <stop offset="50%" stop-color="${p.shine}" stop-opacity="0.9"/>
+      <stop offset="100%" stop-color="${p.shine}" stop-opacity="0"/>
+    </linearGradient>
+    <clipPath id="dmpp-clip-${finish}"><circle cx="12" cy="12" r="10.4"/></clipPath>
   </defs>
-  <circle cx="12" cy="12" r="11" fill="url(#dmpp-base)" stroke="${palette.stroke}" stroke-width="0.8"/>
-  <g clip-path="url(#dmpp-clip)">${sheen}</g>
-  <text x="12" y="15.7" text-anchor="middle"
-    font-family="Tungsten Bold, Bebas Neue, Oswald, Arial Black, sans-serif"
-    font-size="9.5" font-weight="900" fill="${palette.text}" letter-spacing="-0.7">++</text>
+  <circle cx="12" cy="12" r="11" fill="url(#dmpp-base-${finish})" stroke="url(#dmpp-ring-${finish})" stroke-width="1.1"/>
+  <path d="M 3.8,11 A 9.2,9.2 0 0,1 20.2,11" fill="none" stroke="rgba(255,255,255,0.45)" stroke-width="0.75"/>
+  <g clip-path="url(#dmpp-clip-${finish})">${sheen}</g>
+  <!-- Minted ++ emblem with 3D bevel shadow and crisp rounded geometry -->
+  <g fill="${p.shadow}" opacity="0.65" transform="translate(0, 0.75)">
+    <rect x="5.5" y="10.8" width="6.2" height="2.4" rx="0.7"/>
+    <rect x="7.4" y="8.9" width="2.4" height="6.2" rx="0.7"/>
+    <rect x="12.3" y="10.8" width="6.2" height="2.4" rx="0.7"/>
+    <rect x="14.2" y="8.9" width="2.4" height="6.2" rx="0.7"/>
+  </g>
+  <g fill="${p.text}">
+    <rect x="5.5" y="10.8" width="6.2" height="2.4" rx="0.7"/>
+    <rect x="7.4" y="8.9" width="2.4" height="6.2" rx="0.7"/>
+    <rect x="12.3" y="10.8" width="6.2" height="2.4" rx="0.7"/>
+    <rect x="14.2" y="8.9" width="2.4" height="6.2" rx="0.7"/>
+  </g>
 </svg>`;
     return "data:image/svg+xml;utf8," + encodeURIComponent(svg);
 }
@@ -162,7 +237,7 @@ function registerMaxxerPlusPlusBadge() {
     if (maxxerPlusPlusBadge) return;
     const badge: ProfileBadge = {
         id: MAXXER_PLUS_PLUS_BADGE_ID,
-        description: "MAXXER++ tier badge — selectable finish with an optional light sweep",
+        description: "MAXXER++ Supporter",
         iconSrc: makeMaxxerPlusPlusBadgeSvg(settings.store.animatedBadgePlusPlus, settings.store.badgeFinish),
         position: BadgePosition.START,
         link: "https://maxxtopia.com/discordmaxxer/vip/",
@@ -211,6 +286,28 @@ function BadgeFinishPreview() {
                     return (
                         <div
                             key={finish.value}
+                            role="button"
+                            tabIndex={0}
+                            aria-pressed={selected}
+                            onClick={() => {
+                                settings.store.badgeFinish = finish.value;
+                                syncTierFlairStyle();
+                                if (tierFlairStarted && !tournamentModeActive()) {
+                                    unregisterMaxxerPlusPlusBadge();
+                                    registerMaxxerPlusPlusBadge();
+                                }
+                            }}
+                            onKeyDown={e => {
+                                if (e.key === "Enter" || e.key === " ") {
+                                    e.preventDefault();
+                                    settings.store.badgeFinish = finish.value;
+                                    syncTierFlairStyle();
+                                    if (tierFlairStarted && !tournamentModeActive()) {
+                                        unregisterMaxxerPlusPlusBadge();
+                                        registerMaxxerPlusPlusBadge();
+                                    }
+                                }
+                            }}
                             style={{
                                 flex: "1 1 120px",
                                 minWidth: "112px",
@@ -219,7 +316,9 @@ function BadgeFinishPreview() {
                                 border: `1px solid ${selected ? "#55FFFF" : "rgba(255,255,255,0.14)"}`,
                                 background: selected ? "rgba(85,255,255,0.09)" : "rgba(0,0,0,0.16)",
                                 boxShadow: selected ? "0 0 12px rgba(85,255,255,0.18)" : "none",
-                                textAlign: "center"
+                                textAlign: "center",
+                                cursor: "pointer",
+                                transition: "border-color 140ms ease, box-shadow 140ms ease, background 140ms ease"
                             }}
                         >
                             <img
@@ -271,6 +370,13 @@ function buildCss() {
     const showVoiceColor = settings.store.voiceColor;
     const showAboutCredit = settings.store.aboutCredit;
     const animateMaxxerPP = settings.store.animatedBadgePlusPlus;
+    const currentFinish = String(settings.store.badgeFinish || "gold");
+    const badgeGlows: Record<string, { ambient: string; hover: string }> = {
+        gold: { ambient: "rgba(255, 215, 100, 0.55)", hover: "rgba(255, 215, 100, 0.95)" },
+        sunset: { ambient: "rgba(255, 120, 60, 0.55)", hover: "rgba(255, 120, 60, 0.95)" },
+        aurora: { ambient: "rgba(85, 255, 255, 0.55)", hover: "rgba(85, 255, 255, 0.95)" }
+    };
+    const badgeGlow = badgeGlows[currentFinish] ?? badgeGlows.gold;
 
     const ringRule = (tier: Tier, c: typeof COLORS[Tier.MAXXER]) =>
         showRing
@@ -355,6 +461,18 @@ function buildCss() {
         [data-dm-founder] img[src*="discordmaxxer-founder"],
         img[src*="discordmaxxer-founder"] {
             filter: drop-shadow(0 0 6px rgba(255, 170, 0, 0.55));
+        }
+
+        /* MAXXER++ tier badge enhancement — ambient glow halo and smooth hover scale */
+        img[src*="dmpp"],
+        img[src*="discordmaxxer-tier-maxxer-plus-plus"] {
+            filter: drop-shadow(0 0 5px ${badgeGlow.ambient});
+            transition: filter 160ms ease, transform 160ms ease;
+        }
+        img[src*="dmpp"]:hover,
+        img[src*="discordmaxxer-tier-maxxer-plus-plus"]:hover {
+            filter: drop-shadow(0 0 9px ${badgeGlow.hover});
+            transform: scale(1.1);
         }
 
         /* Voice channel name color — MAXXER++ only. Tags the voice-channel
@@ -614,6 +732,7 @@ const settings = definePluginSettings({
             { label: "Aurora Ice", value: "aurora" }
         ],
         onChange: () => {
+            syncTierFlairStyle();
             if (tierFlairStarted && !tournamentModeActive()) {
                 unregisterMaxxerPlusPlusBadge();
                 registerMaxxerPlusPlusBadge();
