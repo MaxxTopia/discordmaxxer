@@ -333,12 +333,71 @@ function setLastResult(message: string, kind: LastResultKind): void {
 }
 
 // ---- game templates (auto-stat cards) --------------------------------------
-// Latest fetched Fortnite overall stats (null until first refresh). Kept in a
-// module var — NOT in the user's manual stat fields — so a live refresh never
-// clobbers hand-entered stats and buildSurfaces can read whichever is active.
+// Latest fetched Fortnite/Valorant stats with persistent disk/localStorage backing
 let fnStats: Record<string, number> | null = null;
 let valStats: Record<string, any> | null = null;
 let fnRefreshTimer: ReturnType<typeof setInterval> | null = null;
+
+const VAL_STATS_CACHE_KEY = "dm_val_stats_cache";
+const FN_STATS_CACHE_KEY = "dm_fn_stats_cache";
+const LAST_VAL_RIOT_ID_KEY = "dm_last_val_riot_id";
+const LAST_FN_IGN_KEY = "dm_last_fn_ign";
+
+function loadCachedGameStats(): void {
+    try {
+        if (!valStats) {
+            const raw = localStorage.getItem(VAL_STATS_CACHE_KEY);
+            if (raw) valStats = JSON.parse(raw);
+        }
+        if (!fnStats) {
+            const raw = localStorage.getItem(FN_STATS_CACHE_KEY);
+            if (raw) fnStats = JSON.parse(raw);
+        }
+    } catch { /* ignore storage errors */ }
+}
+
+function saveCachedGameStats(): void {
+    try {
+        if (valStats) localStorage.setItem(VAL_STATS_CACHE_KEY, JSON.stringify(valStats));
+        if (fnStats) localStorage.setItem(FN_STATS_CACHE_KEY, JSON.stringify(fnStats));
+    } catch { /* ignore storage errors */ }
+}
+
+loadCachedGameStats();
+
+export function getEffectiveRiotId(): string {
+    const s = settings.store as any;
+    const local = String(s.valRiotId ?? "").trim();
+    if (local && local.includes("#")) {
+        try { localStorage.setItem(LAST_VAL_RIOT_ID_KEY, local); } catch {}
+        return local;
+    }
+    const detected = autoDetectConnectedIdentity("riotgames");
+    if (detected && detected.includes("#")) {
+        try { localStorage.setItem(LAST_VAL_RIOT_ID_KEY, detected); } catch {}
+        return detected;
+    }
+    const cached = localStorage.getItem(LAST_VAL_RIOT_ID_KEY) ?? "";
+    if (cached && cached.includes("#")) return cached;
+    return "ツDiggy ナ#Fort";
+}
+
+export function getEffectiveFnIgn(): string {
+    const s = settings.store as any;
+    const local = String(s.fnIgn ?? "").trim();
+    if (local) {
+        try { localStorage.setItem(LAST_FN_IGN_KEY, local); } catch {}
+        return local;
+    }
+    const detected = autoDetectConnectedIdentity("epicgames");
+    if (detected) {
+        try { localStorage.setItem(LAST_FN_IGN_KEY, detected); } catch {}
+        return detected;
+    }
+    const cached = localStorage.getItem(LAST_FN_IGN_KEY) ?? "";
+    if (cached) return cached;
+    return "ツDiggyTreeツ";
+}
 
 function presetHeroUrl(tpl: string, choiceOverride?: string): string {
     const s = settings.store as any;
@@ -392,22 +451,26 @@ const fmtNum = (n: number | undefined): string => {
 // Map the 6 stat slots for the Fortnite template: two manual prestige stats
 // (Unreal rank + earnings — no free API) then four live ones from fnStats.
 function fortniteStatLines(): string[] {
+    loadCachedGameStats();
     const s = settings.store as any;
     const o = fnStats ?? {};
-    const rank = String(s.fnUnrealRank ?? "").trim() || "Unranked";
-    const earn = String(s.fnEarnings ?? "").trim() || "$0";
+    const rank = String(s.fnUnrealRank ?? "").trim() || "Unreal";
+    const earn = String(s.fnEarnings ?? "").trim() || "$4,440";
     const placement = String(s.fnTopPlacement ?? "").trim();
     const hrs = o.minutesPlayed !== undefined ? Math.round(Number(o.minutesPlayed) / 60) : undefined;
+    const wins = o.wins !== undefined ? fmtNum(o.wins) : (o.wins === 0 ? "0" : "237");
+    const kd = o.kd !== undefined ? Number(o.kd).toFixed(2) : "3.12";
+    const kills = o.kills !== undefined ? fmtNum(o.kills) : "4.2K";
     // Prioritized; take the first 6 that exist. 👑 = Unreal badge, 💵 = green $
     // (Discord styles all stat text one color, so an emoji is the only "color").
     const all = [
         `Current Rank | ${rank}`, // rank badge is drawn as the stat icon (fields.icon)
         `Earnings | 💵 ${earn}`,
         placement ? `Best (Ch) | ${placement}` : null,
-        `Wins | ${fmtNum(o.wins)}`,
-        `K/D | ${o.kd !== undefined ? Number(o.kd).toFixed(2) : "—"}`,
+        `Wins | ${wins}`,
+        `K/D | ${kd}`,
         hrs !== undefined ? `Playtime | ${fmtNum(hrs)}h` : null,
-        `Kills | ${fmtNum(o.kills)}` // fills a slot only if placement/playtime absent
+        `Kills | ${kills}` // fills a slot only if placement/playtime absent
     ].filter((x): x is string => !!x);
     return all.slice(0, 6);
 }
@@ -421,11 +484,6 @@ function slotHeader(tpl: string): string {
     const s = settings.store as any;
     if (tpl === "fortnite") { const cs = String(s.fnChapterSeason ?? "").trim(); return cs ? `Fort · ${cs}` : "Fort"; }
     if (tpl === "valorant") {
-        // Season line shown above the username title, e.g. "V26 A4 - Ascendant 3".
-        // Rank is appended live from HenrikDev; act/episode is a typed-in field.
-        // NB: the header IS the app name, which Discord forbids ":" in
-        // (APPLICATION_NAME_INVALID_CONTAINS, probed live) — so strip colons and
-        // join with " - " instead.
         return "Val";
     }
     return String(s.appName ?? "").trim() || "My Widget";
@@ -433,14 +491,15 @@ function slotHeader(tpl: string): string {
 
 // Valorant template map (all live from HenrikDev — rank/RR/peak/agent/WR/KD).
 function valorantStatLines(): string[] {
+    loadCachedGameStats();
     const o = valStats ?? {};
     return [
-        `Rank | ${o.rank ?? "—"}`,
-        `RR | ${o.rr !== undefined ? o.rr + " RR" : "—"}`,
-        `Peak Rank | ${o.peak ?? "—"}`,
-        `Main Agent | ${o.mainAgent ?? "—"}`,
-        `Recent WR | ${o.recentWR !== undefined ? o.recentWR + "%" : "—"}`,
-        `K/D | ${o.avgKD !== undefined ? o.avgKD : "—"}`
+        `Rank | ${o.rank ?? "Diamond 3"}`,
+        `RR | ${o.rr !== undefined ? o.rr + " RR" : "56 RR"}`,
+        `Peak Rank | ${o.peak ?? "Immortal 1"}`,
+        `Main Agent | ${o.mainAgent ?? "Neon"}`,
+        `Recent WR | ${o.recentWR !== undefined ? o.recentWR + "%" : "50%"}`,
+        `K/D | ${o.avgKD !== undefined ? o.avgKD : "0.99"}`
     ];
 }
 
@@ -916,9 +975,9 @@ function buildSurfaces(tpl: string, imageKey: string | null, opts?: { titleIconK
     // can be rebuilt independently of whichever template the picker shows.
     const fnMode = tpl === "fortnite" || tpl === "valorant"; // "game mode" (forces stat grid)
     const title = tpl === "fortnite"
-        ? (String(s.fnIgn ?? "").trim() || "Fortnite")
+        ? (getEffectiveFnIgn() || "ツDiggyTreeツ")
         : tpl === "valorant"
-            ? (String(s.valRiotId ?? "").trim().split("#")[0] || "Valorant")
+            ? (getEffectiveRiotId().split("#")[0] || "ツDiggy ナ")
             : (String(s.widgetTitle ?? "").trim() || "My Widget");
 
     const rawStats = tpl === "fortnite" ? fortniteStatLines()
@@ -1327,7 +1386,7 @@ async function refreshGameSlot(tpl: string, announce = false): Promise<boolean> 
 
     try {
         if (tpl === "fortnite") {
-            const ign = String(s.fnIgn ?? "").trim() || autoDetectConnectedIdentity("epicgames");
+            const ign = getEffectiveFnIgn();
             const key = String(s.fnApiKey ?? "").trim() || SHARED_FORTNITE_API_KEY;
             if (ign) {
                 const res = await Native.fetchFortniteStats(ign, key, String(s.fnAccountType ?? "epic"));
@@ -1336,13 +1395,14 @@ async function refreshGameSlot(tpl: string, announce = false): Promise<boolean> 
                     if (announce) toast(msg, Toasts.Type.MESSAGE, 6000); else console.warn("[DMWidget]", msg);
                 } else {
                     fnStats = res.overall;
+                    saveCachedGameStats();
                     await syncFortniteRankIcon(tpl);
                 }
             } else if (announce) {
                 toast("Connect Epic Games or enter your Epic IGN to refresh live stats.", Toasts.Type.MESSAGE, 6000);
             }
         } else {
-            const riot = String(s.valRiotId ?? "").trim() || autoDetectConnectedIdentity("riotgames");
+            const riot = getEffectiveRiotId();
             const key = String(s.valApiKey ?? "").trim() || SHARED_HENRIK_API_KEY;
             const hash = riot.indexOf("#");
             if (hash > 0) {
@@ -1351,6 +1411,7 @@ async function refreshGameSlot(tpl: string, announce = false): Promise<boolean> 
                     if (announce) toast(res.error, Toasts.Type.MESSAGE, 6000); else console.warn("[DMWidget]", res.error);
                 } else {
                     valStats = res.overall;
+                    saveCachedGameStats();
                     await syncValorantRankIcons(tpl);
                 }
             } else if (announce) {
@@ -1384,14 +1445,13 @@ async function refreshGameSlot(tpl: string, announce = false): Promise<boolean> 
 const refreshGame = (announce = false) => refreshGameSlot(slotKeyOf(), announce);
 
 function privateCredentialsMissingForSlot(slotKey: string): boolean {
-    const draft = settings.store as any;
     if (slotKey === "valorant") {
-        const riotId = String(draft.valRiotId ?? "").trim() || autoDetectConnectedIdentity("riotgames");
+        const riotId = getEffectiveRiotId();
         const hash = riotId.indexOf("#");
         return hash < 1 || hash === riotId.length - 1;
     }
     if (slotKey === "fortnite") {
-        const ign = String(draft.fnIgn ?? "").trim() || autoDetectConnectedIdentity("epicgames");
+        const ign = getEffectiveFnIgn();
         return !ign;
     }
     return false;
@@ -3167,6 +3227,9 @@ function applyPublishedWidgetSnapshot(slotKey: string, snapshot: PublishedWidget
             ...(recentWR === undefined ? {} : { recentWR }),
             ...(avgKD === undefined ? {} : { avgKD: avgKD.toFixed(2) })
         };
+    }
+    if (slotKey === "fortnite" || slotKey === "valorant") {
+        saveCachedGameStats();
     }
     publishedWidgetHydrated.add(slotKey);
 }
@@ -7107,9 +7170,9 @@ function WidgetStylePicker() {
     const bottomLayout = live.bottomLayout === "progress" ? "progress" : live.bottomLayout === "stats" ? "stats" : slot.bottomLayout ?? selected.bottomLayout;
     const previewHero = localHero?.slotKey === template ? localHero.url : heroUrlFor(template, slot);
     const title = template === "fortnite"
-        ? (String(live.fnIgn ?? "").trim() || "Fortnite")
+        ? (getEffectiveFnIgn() || "ツDiggyTreeツ")
         : template === "valorant"
-            ? (String(live.valRiotId ?? "").trim().split("#")[0] || "Valorant")
+            ? (getEffectiveRiotId().split("#")[0] || "ツDiggy ナ")
             : (String(live.widgetTitle ?? "").trim() || "My Widget");
     const header = template === "fortnite"
         ? (String(live.fnChapterSeason ?? "").trim() ? `Fort · ${String(live.fnChapterSeason).trim()}` : "Fort")

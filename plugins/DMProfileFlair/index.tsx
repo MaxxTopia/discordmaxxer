@@ -3056,22 +3056,13 @@ function buildCss(): string {
             background: transparent !important;
         }
 
-        /* High-contrast text legibility for profile surfaces with custom theme */
+        /* Crisp text legibility for profile surfaces with custom theme */
         [data-dm-flair-theme-applied] [class*="userText" i],
         [data-dm-flair-theme-applied] [class*="nameTag" i],
         [data-dm-flair-theme-applied] [class*="nickname" i],
-        [data-dm-flair-theme-applied] [class*="username" i],
-        [data-dm-flair-theme-applied] [class*="discriminator" i],
-        [data-dm-flair-theme-applied] [class*="userTag" i],
-        [data-dm-flair-theme-applied] h1,
-        [data-dm-flair-theme-applied] h2,
-        [data-dm-flair-theme-applied] h3,
-        [data-dm-flair-theme-applied] [role="heading"] {
+        [data-dm-flair-theme-applied] h1 {
             color: #ffffff !important;
-            text-shadow: 0 1px 3px rgba(0, 0, 0, 0.95), 0 0 8px rgba(0, 0, 0, 0.8) !important;
-        }
-        [data-dm-flair-theme-applied] [data-dm-display-name-style] {
-            filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.95)) drop-shadow(0 0 6px rgba(0, 0, 0, 0.85)) brightness(1.2) contrast(1.15) !important;
+            text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6) !important;
         }
 
         /* Allow profile flair gradient to show through inner layers seamlessly */

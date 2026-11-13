@@ -1119,19 +1119,25 @@ function surfaceEnabled(surface: Surface): boolean {
 
 function hasNameClass(element: HTMLElement): boolean {
     if (scanMemo?.nameClasses.has(element)) return scanMemo.nameClasses.get(element)!;
+    const text = normalizedDisplayName(element.textContent);
+    // Explicitly reject section headings, tabs, and metadata labels from being treated as names
+    if (/^(?:bio|about me|member since|connections|note|note \(only visible to you\)|activity|mutual servers|mutual friends|roles|wishlist|board|profile)$/i.test(text)) {
+        scanMemo?.nameClasses.set(element, false);
+        return false;
+    }
     const className = typeof element.className === "string" ? element.className.toLowerCase() : "";
     const result = /username|display.?name|user.?tag/.test(className)
         || (element.hasAttribute("data-text-variant") && Boolean(element.closest("[class*='panelTitleContainer' i]")))
         || (element.hasAttribute("data-text-variant") && (
             (isProfileLikeContext(element) || getSurface(element) === "self")
-            && profileDisplayNameValues(element).has(normalizedDisplayName(element.textContent))
+            && profileDisplayNameValues(element).has(text)
         ))
         || (isProfileLikeContext(element) && (
-            /(?:^|[-_])(?:name|title|username|display.?name|user.?text|nametag|namecontainer)(?:[-_]|$)/.test(className)
+            /(?:^|[-_])(?:name|title|display.?name|user.?text|nametag)(?:[-_]|$)/.test(className)
             || element.getAttribute("role") === "heading"
             || element.tagName === "H1"
             || element.tagName === "H2"
-        ));
+        ) && profileDisplayNameValues(element).has(text));
     scanMemo?.nameClasses.set(element, result);
     return result;
 }
