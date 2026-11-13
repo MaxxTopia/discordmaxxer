@@ -88,11 +88,8 @@ console.log(`[regenIcons] no-bullet-holes source: ${noHolesSrc.path} (${noHolesS
 const holesSrc = await loadSource(HOLES_PNG, SVG);
 console.log(`[regenIcons] bullet-holes source:    ${holesSrc.path} (${holesSrc.buf.length} bytes)`);
 
-// The taskbar is a user-facing identity surface. The old tray glyph is a
-// tiny white face with transparent padding, which Windows can rasterize as a
-// generic paper icon at taskbar size. Prefer the full Discordmaxxer brand mark
-// here while keeping the existing executable/shortcut/tray sources stable.
-const taskbarSrc = await loadSource(BRANDING_PNG, NO_HOLES_PNG, HOLES_PNG, SVG);
+// Taskbar runtime override icon uses the clean no-bullet-holes Discordmaxxer mascot.
+const taskbarSrc = noHolesSrc;
 console.log(`[regenIcons] branded taskbar source:  ${taskbarSrc.path} (${taskbarSrc.buf.length} bytes)`);
 
 // Tray + taskbar PNGs reuse the no-holes source; aliased for clarity below.

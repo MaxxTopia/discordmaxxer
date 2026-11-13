@@ -466,10 +466,15 @@ function createMainWindow() {
                 });
             }
 
-            // Use the no-bullet-holes Clyde for the small runtime/taskbar
-            // thumbnail while keeping the full character in the shortcut/.exe.
-            const taskbarIcon = nativeImage.createFromPath(join(STATIC_DIR, "taskbar", "taskbar.png"));
-            if (!taskbarIcon.isEmpty()) win.setIcon(taskbarIcon);
+            // Use the Discordmaxxer mascot icon for the window titlebar and taskbar.
+            const runtimeIconPath = getWindowsIconPath() ?? join(STATIC_DIR, "taskbar", "taskbar.png");
+            const taskbarIcon = nativeImage.createFromPath(runtimeIconPath);
+            if (!taskbarIcon.isEmpty()) {
+                win.setIcon(taskbarIcon);
+                win.webContents.on("page-favicon-updated", () => {
+                    win.setIcon(taskbarIcon);
+                });
+            }
         } catch (e) {
             console.warn("[mainWindow] failed to set runtime taskbar icon:", e);
         }
