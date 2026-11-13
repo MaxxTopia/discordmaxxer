@@ -141,7 +141,8 @@ function commandIncludes(process, needle) {
 function isRootProcess(process, kind) {
     const command = String(process.cmd ?? "").toLowerCase();
     if (kind === "maxxer") {
-        return process.name?.toLowerCase() === "electron.exe" && !command.includes("--type=");
+        const name = process.name?.toLowerCase() ?? "";
+        return (name === "electron.exe" || name === "discordmaxxer.exe") && !command.includes("--type=");
     }
     return process.name?.toLowerCase() === "discord.exe" && !command.includes("--type=");
 }
@@ -155,7 +156,10 @@ function findRoots(processes, kind) {
         return [explicit];
     }
 
-    const candidates = processes.filter(p => isRootProcess(p, kind) && commandIncludes(p, identity));
+    const candidates = processes.filter(p => isRootProcess(p, kind) && (
+        commandIncludes(p, identity) ||
+        (kind === "maxxer" && (commandIncludes(p, "discordmaxxer") || normalizePath(p.exe).includes("discordmaxxer")))
+    ));
     if (candidates.length > 0) return candidates;
 
     // Some Discord builds omit the full install path from the root command

@@ -128,7 +128,21 @@ const CURSOR_SVGS: Record<CursorSkin, string> = {
 const CURSOR_CSS = `
     html.anime-cursor-active,
     html.anime-cursor-active body,
-    html.anime-cursor-active * {
+    html.anime-cursor-active a,
+    html.anime-cursor-active button,
+    html.anime-cursor-active input,
+    html.anime-cursor-active textarea,
+    html.anime-cursor-active select,
+    html.anime-cursor-active [role="button"],
+    html.anime-cursor-active [role="tab"],
+    html.anime-cursor-active [role="link"],
+    html.anime-cursor-active [role="menuitem"],
+    html.anime-cursor-active [role="treeitem"],
+    html.anime-cursor-active [class*="clickable" i],
+    html.anime-cursor-active [class*="button" i],
+    html.anime-cursor-active [class*="interactive" i],
+    html.anime-cursor-active [class*="item" i],
+    html.anime-cursor-active [class*="link" i] {
         cursor: none !important;
     }
     .anime-cursor {
@@ -140,11 +154,17 @@ const CURSOR_CSS = `
         display: flex;
         align-items: center;
         justify-content: center;
-        transform: translate3d(-100px, -100px, 0) translate(-50%, -50%);
+        transform: translate3d(-100px, -100px, 0);
         pointer-events: none;
         z-index: 2147483647;
         will-change: transform;
         contain: strict;
+        backface-visibility: hidden;
+    }
+    .anime-cursor svg {
+        pointer-events: none !important;
+        will-change: transform;
+        transform: translateZ(0);
         backface-visibility: hidden;
     }
     .dm-cursor-smoke-container {
@@ -156,6 +176,7 @@ const CURSOR_CSS = `
         pointer-events: none;
         z-index: 2147483646;
         overflow: hidden;
+        contain: strict;
     }
     .anime-cursor,
     .anime-cursor * {
@@ -290,6 +311,11 @@ function emitSmokeIfNeeded(x: number, y: number) {
         lastSmokeX = x;
         lastSmokeY = y;
 
+        // Cap smoke particles to 16 to prevent DOM layer proliferation
+        while (smokeContainer.childElementCount >= 16) {
+            smokeContainer.firstElementChild?.remove();
+        }
+
         const smoke = document.createElement("div");
         smoke.className = "stiiizy-smoke";
         smoke.style.left = (x + (Math.random() * 6 - 3)) + "px";
@@ -393,13 +419,18 @@ function applySkin(skin: CursorSkin | "off") {
     // the cursor cannot appear as a detached ring on a newly mounted page.
     cursorEl.style.opacity = "0";
     if (lastX >= 0 && lastY >= 0) {
-        cursorEl.style.transform = `translate3d(${lastX}px, ${lastY}px, 0) translate(-50%, -50%)`;
+        cursorEl.style.transform = `translate3d(${lastX - 22}px, ${lastY - 22}px, 0)`;
     }
     cursorEl.innerHTML = CURSOR_SVGS[skin];
     document.body.appendChild(cursorEl);
 
+    let isCurrentlyIdle = false;
+    let lastActivityTime = 0;
+    let cursorVisible = false;
+
     const setIdle = (idle: boolean) => {
-        if (!cursorEl) return;
+        if (!cursorEl || isCurrentlyIdle === idle) return;
+        isCurrentlyIdle = idle;
         if (idle) {
             cursorEl.classList.add("anime-cursor--idle");
         } else {
@@ -407,19 +438,29 @@ function applySkin(skin: CursorSkin | "off") {
         }
     };
 
-    const kickActivity = () => {
-        setIdle(false);
-        if (idleTimer) clearTimeout(idleTimer);
-        idleTimer = setTimeout(() => setIdle(true), 2500);
+    const kickActivity = (now: number) => {
+        if (isCurrentlyIdle) {
+            setIdle(false);
+        }
+        if (now - lastActivityTime > 400) {
+            lastActivityTime = now;
+            if (idleTimer) clearTimeout(idleTimer);
+            idleTimer = setTimeout(() => setIdle(true), 2500);
+        }
     };
 
     const hideCursorUntilPointerMoves = () => {
+        cursorVisible = false;
         if (cursorEl) cursorEl.style.opacity = "0";
         if (smokeContainer) smokeContainer.style.visibility = "hidden";
     };
 
     const showCursorForPointer = () => {
-        if (smokeContainer) smokeContainer.style.visibility = "visible";
+        if (!cursorVisible) {
+            cursorVisible = true;
+            if (cursorEl) cursorEl.style.opacity = "1";
+            if (smokeContainer) smokeContainer.style.visibility = "visible";
+        }
     };
 
     blurHandler = () => {
@@ -453,24 +494,19 @@ function applySkin(skin: CursorSkin | "off") {
     document.addEventListener("mouseleave", mouseLeaveHandler);
     document.addEventListener("mouseenter", mouseEnterHandler);
     document.addEventListener("visibilitychange", visibilityHandler);
-    kickActivity();
+    kickActivity(performance.now());
 
     mousemoveHandler = (e: MouseEvent) => {
         lastX = e.clientX;
         lastY = e.clientY;
         showCursorForPointer();
-        kickActivity();
-        if (!mouseRafId) {
-            mouseRafId = requestAnimationFrame(() => {
-                mouseRafId = 0;
-                if (cursorEl) {
-                    cursorEl.style.opacity = "1";
-                    cursorEl.style.transform = `translate3d(${lastX}px, ${lastY}px, 0) translate(-50%, -50%)`;
-                }
-                if (activeSkin === "stiiizy") {
-                    emitSmokeIfNeeded(lastX, lastY);
-                }
-            });
+        const now = performance.now();
+        kickActivity(now);
+        if (cursorEl) {
+            cursorEl.style.transform = `translate3d(${lastX - 22}px, ${lastY - 22}px, 0)`;
+        }
+        if (activeSkin === "stiiizy") {
+            emitSmokeIfNeeded(lastX, lastY);
         }
     };
     window.addEventListener("mousemove", mousemoveHandler, { passive: true });
@@ -482,7 +518,7 @@ function applySkin(skin: CursorSkin | "off") {
         const target = document.fullscreenElement ?? document.body;
         if (cursorEl.parentElement !== target) target.appendChild(cursorEl);
         if (smokeContainer && smokeContainer.parentElement !== target) target.appendChild(smokeContainer);
-        cursorEl.style.transform = `translate3d(${lastX}px, ${lastY}px, 0) translate(-50%, -50%)`;
+        cursorEl.style.transform = `translate3d(${lastX - 22}px, ${lastY - 22}px, 0)`;
     };
     document.addEventListener("fullscreenchange", fullscreenHandler);
 }
