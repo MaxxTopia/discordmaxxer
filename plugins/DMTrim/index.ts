@@ -42,11 +42,24 @@ const PROMO_SELECTOR = [
     '[aria-label*="Promoted" i]',
     '[data-testid*="sponsored" i]',
     '[data-testid*="promoted" i]',
+    '[data-testid="quest-bar-container"]',
+    '[data-testid*="quest-bar" i]',
+    '[data-testid*="quest" i]',
+    '[aria-label*="Quest" i]',
     '[class*="adContainer" i]',
     '[class*="adCard" i]',
     '[class*="advert" i]',
     '[class*="sponsor" i]',
-    '[class*="promoted" i]'
+    '[class*="promoted" i]',
+    '[class*="questBar" i]',
+    '[class*="questsContainer" i]',
+    '[class*="questPrompt" i]',
+    '[class*="questDock" i]',
+    '[class*="questCard" i]',
+    '[class*="questPromotion" i]',
+    '[class*="questNotice" i]',
+    '[class*="questBanner" i]',
+    '[class*="questProgress" i]'
 ].join(",");
 
 // SpotifyControls mounts immediately above the account panel, which is also
@@ -65,6 +78,43 @@ const SPOTIFY_SURFACE_SELECTOR = [
     "[class*='spotify' i]"
 ].join(",");
 
+// Critical user surfaces that must never be hidden or marked by ad-cleaning logic.
+const PROTECTED_SURFACE_SELECTOR = [
+    // Spotify controls
+    "#vc-spotify-player",
+    ".vc-spotify-player",
+    ".vc-spotify-fallback",
+    "[data-dm-spotify-player]",
+    "[data-dm-spotify-surface]",
+    "[data-dm-spotify-slot]",
+    "[id*='spotify' i]",
+    "[class*='spotify' i]",
+    // User account panel: avatar, nametag, settings buttons
+    '[class*="panels_"] > [class*="container_"]',
+    '[class*="panels_"] [class*="avatarWrapper_"]',
+    '[class*="panels_"] [class*="nameTag_"]',
+    '[class*="panels_"] button[aria-label*="Mute" i]',
+    '[class*="panels_"] button[aria-label*="Deafen" i]',
+    '[class*="panels_"] button[aria-label*="User Settings" i]',
+    // Voice call controls
+    'div[class*="connection_"]',
+    'div[class*="voice_"]',
+    '[class*="videoControls_"]',
+    // Chat content and messages
+    '[class*="chatContent" i]',
+    '[class*="messageListItem" i]',
+    '[id^="chat-messages-"]'
+].join(",");
+
+function isProtectedSurface(element: Element | null): boolean {
+    if (!element) return false;
+    try {
+        return element.matches(PROTECTED_SURFACE_SELECTOR) || element.closest(PROTECTED_SURFACE_SELECTOR) !== null;
+    } catch {
+        return true;
+    }
+}
+
 // Keep the stylesheet on stable semantic hooks only. Obfuscated class names
 // are handled by the bounded observer below, where the Spotify guard can run
 // before a node is marked. A broad CSS class selector cannot inspect its
@@ -74,14 +124,18 @@ const PROMO_CSS_SELECTOR = [
     '[aria-label*="Advertisement" i]',
     '[aria-label*="Promoted" i]',
     '[data-testid*="sponsored" i]',
-    '[data-testid*="promoted" i]'
+    '[data-testid*="promoted" i]',
+    '[class*="promotedContainer" i]',
+    '[class*="promotedTag" i]',
+    '[class*="adContainer" i]',
+    '[class*="adCard" i]'
 ].join(",");
 
 const PROMO_MARKER = "data-dmtrim-hidden-promo";
-const PROMO_BRAND_RE = /\bfanduel\b/i;
-const PROMO_LABEL_RE = /\b(?:sponsored|promoted|advertisement|ad choices)\b/i;
-const PROMO_ACTION_RE = /\b(?:get reward|watch\s+\d+\s*(?:s|sec|seconds)?|unlock(?:\s+\d+(?:\.\d+)?x)?)\b/i;
-const PROMO_ATTRIBUTE_RE = /(?:fanduel|sponsor|promot|advert|adcontainer|adcard|reward)/i;
+const PROMO_BRAND_RE = /\b(?:fanduel|violent night)\b/i;
+const PROMO_LABEL_RE = /\b(?:sponsored|promoted|advertisement|ad choices|quest)\b/i;
+const PROMO_ACTION_RE = /\b(?:get reward|claim reward|start quest|accept quest|view quest|watch\s+\d+\s*(?:s|sec|seconds)?|unlock(?:\s+\d+(?:\.\d+)?x)?)\b/i;
+const PROMO_ATTRIBUTE_RE = /(?:fanduel|sponsor|promot|advert|adcontainer|adcard|reward|quest)/i;
 
 function normalizeText(value: string): string {
     return value.replace(/\s+/g, " ").trim();
@@ -130,6 +184,7 @@ function containsSpotifySurface(element: Element): boolean {
 
 function isPromotionalCard(element: Element): boolean {
     if (containsSpotifySurface(element)) return false;
+    if (isProtectedSurface(element)) return false;
     // Real chat messages in channels or DMs are never ad promos.
     if (element.closest('[class*="messageListItem" i], [id^="chat-messages-"], [class*="chatContent" i]')) return false;
 
@@ -155,7 +210,7 @@ function findPromotionalTarget(element: Element): HTMLElement | null {
 
     while (candidate && candidate !== document.body && depth++ < PROMO_ANCESTOR_LIMIT) {
         const rect = candidate.getBoundingClientRect();
-        if (!containsSpotifySurface(candidate) && isPromotionalCard(candidate) && rect.width >= 180 && rect.height >= 48 && rect.height <= 420) {
+        if (!isProtectedSurface(candidate) && !containsSpotifySurface(candidate) && isPromotionalCard(candidate) && rect.width >= 160 && rect.height >= 32 && rect.height <= 480) {
             candidates.push(candidate);
         }
         candidate = candidate.parentElement;
@@ -192,11 +247,68 @@ function hidePromotionalTextNode(node: Node): void {
     target?.setAttribute(PROMO_MARKER, "true");
 }
 
+function checkAndDismissPromotionalDialog(root: Element): void {
+    if (settings.store.hideQuests === false && settings.store.hidePromotedAds === false) return;
+
+    const dialogs: Element[] = [];
+    if (root.getAttribute("role") === "dialog") {
+        dialogs.push(root);
+    }
+    dialogs.push(...Array.from(root.querySelectorAll('[role="dialog"]')));
+
+    for (const dialog of dialogs) {
+        if (!(dialog instanceof HTMLElement)) continue;
+        if (isProtectedSurface(dialog)) continue;
+        // Never touch settings or user profile or normal dialogs
+        if (dialog.querySelector('[class*="standardSidebarView" i], [class*="userProfileModal" i]')) continue;
+
+        const ariaLabel = dialog.getAttribute("aria-label") ?? "";
+        const testId = dialog.getAttribute("data-testid") ?? "";
+        const text = normalizeText((dialog.textContent ?? "").slice(0, 1500));
+
+        const isQuest = /quest/i.test(ariaLabel) || /quest/i.test(testId) || dialog.querySelector('[class*="quest" i], [data-testid*="quest" i]') !== null;
+        const isPromo = (hasPromotionalSignal(text) && /\b(?:quest|promoted|orbs?)\b/i.test(text)) || hasPromotionalStructure(dialog);
+
+        if (isQuest || isPromo) {
+            dialog.setAttribute(PROMO_MARKER, "true");
+            // Attempt to trigger normal close via close button first
+            const closeBtn = dialog.querySelector<HTMLElement>(
+                'button[aria-label*="close" i], [aria-label*="close" i], button[class*="closeButton" i], [class*="closeButton" i]'
+            );
+            if (closeBtn) {
+                closeBtn.click();
+            } else {
+                const escEvent = new KeyboardEvent("keydown", {
+                    key: "Escape",
+                    code: "Escape",
+                    keyCode: 27,
+                    which: 27,
+                    bubbles: true,
+                    cancelable: true
+                });
+                dialog.dispatchEvent(escEvent);
+                window.dispatchEvent(escEvent);
+            }
+
+            // Immediately neutralize the backdrop & layer so clicks pass through without delay
+            const layer = dialog.closest<HTMLElement>('[class*="layer_"], [class*="layerContainer_"]');
+            if (layer) {
+                layer.style.pointerEvents = "none";
+                const backdrop = layer.parentElement?.querySelector<HTMLElement>('[class*="backdrop_"]')
+                    ?? layer.querySelector<HTMLElement>('[class*="backdrop_"]');
+                if (backdrop) backdrop.style.display = "none";
+                dialog.style.display = "none";
+            }
+        }
+    }
+}
+
 function scanPromotionalNode(node: Node): void {
     const root = node.nodeType === Node.TEXT_NODE ? node.parentElement : node;
     if (!root || root.nodeType !== Node.ELEMENT_NODE) return;
 
     const rootElement = root as Element;
+    checkAndDismissPromotionalDialog(rootElement);
     hidePromotionalCard(rootElement);
 
     // Only inspect semantic ad hooks beneath a newly-mounted root. A full
@@ -280,7 +392,8 @@ function stopPromotionalObserver(): void {
 
 function startPromotionalObserver(): void {
     stopPromotionalObserver();
-    if (settings.store.hidePromotedAds === false || !document.body || typeof MutationObserver === "undefined") return;
+    if (settings.store.hidePromotedAds === false && settings.store.hideQuests === false) return;
+    if (!document.body || typeof MutationObserver === "undefined") return;
 
     // Catch semantic cards and already-mounted obfuscated cards before the
     // observer attaches. The delayed passes cover reward cards whose text is
@@ -306,17 +419,29 @@ function startPromotionalObserver(): void {
             for (const record of records) {
                 if (record.type === "childList") {
                     for (const node of record.addedNodes) {
+                        if (node instanceof Element && node.closest?.('[role="textbox"], form, [class*="channelTextArea" i], [contenteditable="true"]')) {
+                            continue;
+                        }
                         if (node.nodeType === Node.TEXT_NODE) {
+                            if (node.parentElement?.closest?.('[role="textbox"], form, [class*="channelTextArea" i], [contenteditable="true"]')) {
+                                continue;
+                            }
                             if (hasPromotionalSignal(node.nodeValue ?? "")) nodes.push(node.parentElement ?? node);
                         } else {
                             nodes.push(node);
                         }
                     }
                 } else if (record.type === "characterData") {
+                    if (record.target.parentElement?.closest?.('[role="textbox"], form, [class*="channelTextArea" i], [contenteditable="true"]')) {
+                        continue;
+                    }
                     if (hasPromotionalSignal(record.target.nodeValue ?? "")) {
                         nodes.push(record.target.parentElement ?? record.target);
                     }
                 } else if (record.type === "attributes" && record.target instanceof Element) {
+                    if (record.target.closest?.('[role="textbox"], form, [class*="channelTextArea" i], [contenteditable="true"]')) {
+                        continue;
+                    }
                     const value = record.target.getAttribute(record.attributeName ?? "") ?? "";
                     if (PROMO_ATTRIBUTE_RE.test(value)) nodes.push(record.target);
                 }
@@ -384,24 +509,41 @@ function buildCss(): string {
 
     if (settings.store.hideQuests !== false) {
         parts.push(`
-            /* Quests: bottom-left promoted quest card above user bar + sidebar tab */
-            div[class*="questsContainer"],
-            div[class*="questBar"],
-            div[class*="questPrompt"],
-            div[class*="questDock"],
-            div[class*="questCard"],
-            div[class*="questPromotion"],
-            div[class*="questNotice"],
-            div[class*="questBanner"],
-            div[class*="questProgress"],
-            [class*="promotedContainer"],
-            [class*="promotedTag"],
-            div[class*="container_"][class*="quest"],
-            div[class*="wrapper_"][class*="quest"],
+            /* Quests: bottom-left promoted quest card above user bar + sidebar tab + dialog */
+            [data-testid="quest-bar-container"],
+            [data-testid*="quest-bar" i],
+            [data-testid*="quest" i],
+            div[class*="questBar" i],
+            div[class*="questBar_"],
+            div[class*="questsContainer" i],
+            div[class*="questsContainer_"],
+            div[class*="questPrompt" i],
+            div[class*="questDock" i],
+            div[class*="questCard" i],
+            div[class*="questCard_"],
+            div[class*="questPromotion" i],
+            div[class*="questNotice" i],
+            div[class*="questBanner" i],
+            div[class*="questBanner_"],
+            div[class*="questProgress" i],
+            div[class*="questProgress_"],
+            div[class*="questChannelCallHeader" i],
+            div[class*="quest_" i],
+            [class*="promotedContainer" i],
+            [class*="promotedTag" i],
+            div[class*="container_"][class*="quest" i],
+            div[class*="wrapper_"][class*="quest" i],
+            [class*="panels_"] [class*="quest" i],
+            [class*="panels_"] [data-testid*="quest" i],
+            [class*="panels_"] [class*="reward" i],
+            [role="dialog"][class*="quest" i],
+            [role="dialog"][aria-label*="Quest" i],
+            [role="dialog"][data-testid*="quest" i],
+            div[class*="questModal" i],
             a[href="/quest-home"],
             a[href*="/quests"],
-            div[class*="questTab_"],
-            div[class*="questHome_"],
+            div[class*="questTab_" i],
+            div[class*="questHome_" i],
             [data-list-item-id*="quests" i],
             [data-list-item-id*="quest-home" i] {
                 display: none !important;
@@ -439,7 +581,10 @@ const settings = definePluginSettings({
         type: OptionType.BOOLEAN,
         description: "Hide sponsored Quest promotional cards above the user panel and the Quests tab in Direct Messages.",
         default: true,
-        onChange: () => refresh()
+        onChange: () => {
+            refresh();
+            startPromotionalObserver();
+        }
     },
     hidePromotedAds: {
         type: OptionType.BOOLEAN,
