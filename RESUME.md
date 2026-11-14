@@ -1,5 +1,35 @@
 # Discordmaxxer — RESUME
 
+## 2026-11-14 — v0.7.150 Fortnite header sanitize, hero preset, and theme restore
+
+- **Scope**: Fix Fortnite widget header displaying `.Fort` instead of `Fort`, restore missing theme (`NotAnotherAnimeTheme`), restore Catwoman hero cutout on Fortnite widget, and support session migration from preview builds.
+- **Root Cause**:
+  1. `sanitizeAppName` only stripped `:` colons and collapsed whitespace, without trimming leading/trailing periods or punctuation delimiters. When registered or patched, Discord's card and profile pill displayed `[F] .Fort` instead of `[F] Fort`.
+  2. The preview build on this machine stored session cookies and themes in `%LocalAppData%\DiscordmaxxerReleasePreview-Codex`. When updating to the release installer (`%LocalAppData%\Discordmaxxer\discordmaxxer.exe`), production Discordmaxxer defaulted to `%AppData%\discordmaxxer`. Because `src/main/constants.ts`'s `migrateLegacyInstalledSessionData` did not include the preview folder in its candidates list, Discord launched with a clean profile, causing the Discord login prompt, unconfigured widget defaults, and empty theme directory.
+  3. `NotAnotherAnimeTheme.theme.css` was missing from `%AppData%\discordmaxxer\themes\`, leaving `enabledThemes` empty.
+  4. The Fortnite slot had `fnHeroPreset` set to `"auto"` with an empty URL instead of the user's saved `"catwoman"` preset.
+- **Changes**:
+  1. `plugins/DMWidget/index.tsx`:
+     - Updated `sanitizeAppName` to strip leading and trailing periods, bullets, middle dots, slashes, and colons (`/^[\s.·•:/-]+/` and `/[\s.·•:/-]+$/`), ensuring all widget apps publish cleanly as `"Fort"`.
+     - Updated `slotHeader("fortnite")` and `WidgetEditor` live preview to prevent stray punctuation in `fnChapterSeason` from rendering as `.Fort`.
+     - Added proactive application name sanitization in `refreshAttachedWidgetStyles`: if the active Fortnite app on Discord starts with `.` or equals `".Fort"`, it automatically sends a PATCH request to Discord's API to restore the official `"Fort"` name.
+  2. `src/main/constants.ts`:
+     - Added `join(process.env.LOCALAPPDATA, "DiscordmaxxerReleasePreview-Codex", "sessionData")` to `migrateLegacyInstalledSessionData` candidates list.
+  3. User Settings & Themes:
+     - Restored the official `NotAnotherAnimeTheme.theme.css` (by puckzxz#2080) to `%AppData%\discordmaxxer\themes\NotAnotherAnimeTheme.theme.css`.
+     - Enabled `"NotAnotherAnimeTheme.theme.css"` under `enabledThemes` in `%AppData%\discordmaxxer\settings\settings.json`.
+     - Restored `fnHeroPreset: "catwoman"`, Catwoman cutout (`https://image.fnbr.co/outfit/5d8610e074b719851d631e9c/featured.png`), `fnEarnings: "$4,440"`, and `fnUnrealRank: "Unreal"`.
+  4. `package.json`: Bumped version to `0.7.150`.
+  5. `docs/releases/v0.7.150.md`: Created release notes.
+- **Verification**:
+  - `pnpm testTypes` (`tsc --noEmit`) passed with 0 errors.
+  - `pnpm overlay:vencord` built clean bundles in 2.0s with 0 warnings.
+  - `pnpm build` passed.
+  - `node overlay-scripts/verify-build.mjs` passed all structural checks with manifest version 0.7.150.
+  - Staged files copied to `%LocalAppData%\Discordmaxxer\resources\vencord-dist`.
+  - Pushed to `github main` and pushed tag `v0.7.150`.
+  - `git status --short --branch` and `git diff --check` passed cleanly.
+
 ## 2026-11-13 — v0.7.149 image viewer click & display fix
 
 - **Scope**: Fix chat message image attachments failing to open or display in the enlarged media viewer modal when clicked.
