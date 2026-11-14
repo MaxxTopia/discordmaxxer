@@ -393,6 +393,31 @@ Napi::Value ResolveWindowProcessId(const Napi::CallbackInfo& info) {
 
     DWORD pid = 0;
     if (GetWindowThreadProcessId(hwnd, &pid) == 0 || pid == 0) return env.Null();
+
+    // If the window belongs to ApplicationFrameHost (UWP apps), find the hosted child window's PID.
+    std::string exe = pid_to_exe_name(pid);
+    if (_stricmp(exe.c_str(), "ApplicationFrameHost.exe") == 0) {
+        struct EnumData {
+            DWORD host_pid;
+            DWORD target_pid;
+        } data{ pid, 0 };
+
+        EnumChildWindows(hwnd, [](HWND child, LPARAM lParam) -> BOOL {
+            auto* pData = reinterpret_cast<EnumData*>(lParam);
+            DWORD child_pid = 0;
+            GetWindowThreadProcessId(child, &child_pid);
+            if (child_pid != 0 && child_pid != pData->host_pid) {
+                pData->target_pid = child_pid;
+                return FALSE;
+            }
+            return TRUE;
+        }, reinterpret_cast<LPARAM>(&data));
+
+        if (data.target_pid != 0) {
+            pid = data.target_pid;
+        }
+    }
+
     return Napi::Number::New(env, static_cast<double>(pid));
 }
 

@@ -16,6 +16,7 @@ function resolveNative() {
         candidates.push(path.join(process.resourcesPath, "winaudio.node"));
     }
     candidates.push(path.join(__dirname, "build", "Release", "winaudio.node"));
+    candidates.push(path.join(__dirname, "prebuilds", "winaudio-x64.node"));
 
     for (const p of candidates) {
         try {

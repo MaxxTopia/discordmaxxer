@@ -211,10 +211,13 @@ if (isWindows) {
         const loopbackTracks = stream.getAudioTracks();
         debug(`original (loopback) audio track count: ${loopbackTracks.length}`);
 
-        // Strict mode is deliberately fail-closed. The main-process source
+        // Strict mode is deliberately fail-closed for application windows. The main-process source
         // handler withholds Chromium's system loopback, and this branch adds
         // only the selected window's process capture after it is ready.
-        if (Settings.store.screensharePerWindowAudio === true) {
+        const isWindowSource = typeof currentSourceId === "string" && currentSourceId.startsWith("window:");
+        const isolateWindowAudio = isWindowSource && Settings.store.screensharePerWindowAudio !== false;
+
+        if (isolateWindowAudio) {
             let strictSession: Awaited<ReturnType<typeof startWinAudioProcessSession>> | null = null;
             try {
                 if (!currentSourceId) throw new Error("no selected Windows share source");
@@ -261,7 +264,7 @@ if (isWindows) {
                 lastEchoInjection = "strict-failed";
                 debug("STRICT AUDIO FAILED — continuing video-only to prevent Discord/system audio leak", String(e));
                 toast(
-                    "Stream audio disabled: Discordmaxxer could not isolate the selected window. Choose the game window or turn off strict audio.",
+                    "Stream audio disabled: Discordmaxxer could not isolate the selected window.",
                     Toasts.Type.FAILURE
                 );
                 return stream;

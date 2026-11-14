@@ -168,10 +168,12 @@ function parseWindowHandle(sourceId: unknown): number | null {
     // Electron's Windows desktop-capturer ids are window:<HWND>:<suffix>.
     // Keep this strict so a screen id or malformed renderer input can never
     // accidentally be treated as a process target.
-    const match = /^window:(0x[0-9a-f]+|[0-9]+)(?::|$)/i.exec(sourceId.trim());
+    const match = /^window:(-?0x[0-9a-f]+|-?[0-9]+)(?::|$)/i.exec(sourceId.trim());
     if (!match) return null;
 
-    const hwnd = Number(match[1]);
+    const raw = Number(match[1]);
+    if (!Number.isFinite(raw) || raw === 0) return null;
+    const hwnd = raw < 0 ? (raw >>> 0) : raw;
     return Number.isSafeInteger(hwnd) && hwnd > 0 ? hwnd : null;
 }
 

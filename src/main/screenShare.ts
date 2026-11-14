@@ -79,11 +79,13 @@ export function registerScreenShareHandler() {
         const streams: Streams = {
             video: source
         };
-        // Strict selected-window audio owns the track whenever enabled. Do
-        // not hand Chromium a system-loopback track first: if the renderer
-        // cannot resolve/capture the selected window, it must fail closed with
-        // video-only output rather than leaking Discord's call audio.
-        const strictWindowAudio = process.platform === "win32" && Settings.store.screensharePerWindowAudio === true;
+        const isWindowChoice = typeof choice.id === "string" && choice.id.startsWith("window:");
+        // Strict selected-window audio owns the track for application shares.
+        // Enabled by default so callers never hear themselves echoed back. Do
+        // not hand Chromium a system-loopback track first: the renderer
+        // isolates the window's audio process tree directly via winaudio.
+        const strictWindowAudio =
+            process.platform === "win32" && isWindowChoice && Settings.store.screensharePerWindowAudio !== false;
         const swapTakesOver = strictWindowAudio;
         if (choice.audio && process.platform === "win32" && !swapTakesOver) {
             streams.audio = "loopback";
