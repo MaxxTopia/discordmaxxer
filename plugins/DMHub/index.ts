@@ -285,7 +285,7 @@ interface QuickToggle {
 
 const QUICK_TOGGLES: QuickToggle[] = [
     { plugin: "VideoBackground", label: "🌟 Video Background", settingKey: "enable", note: "Free for every tier · set URL in Discordmaxxer plugin settings" },
-    { plugin: "DMTheme", label: "🎨 Theme flair", settingKey: "enableFlair", note: "Toggle the extra Discordmaxxer theme personality effects; colors stay applied" },
+    { plugin: "DMTheme", label: "🎨 Theme flair", settingKey: "enableFlair", note: "Toggle the extra Discordmaxxer theme personality effects; colors stay applied", noRestart: true },
     { plugin: "DMDisplayNameStyle", label: "✦ Display Name Style", settingKey: "active", note: "Browse 30 looks in the visual grid", noRestart: true },
     { plugin: "TournamentMode", label: "🎮 Tournament Mode", settingKey: "manuallyActive", note: "Or press Ctrl+Alt+T", noRestart: true },
     { plugin: "CompactView", label: "📐 Compact View", settingKey: "manuallyActive", note: "Or press Ctrl+Alt+H", noRestart: true },
@@ -298,7 +298,8 @@ function vencord(): any {
 }
 
 function isPluginEnabled(name: string): boolean {
-    return !!vencord()?.PlainSettings?.plugins?.[name]?.enabled;
+    const v = vencord();
+    return !!(v?.Settings?.plugins?.[name]?.enabled ?? v?.PlainSettings?.plugins?.[name]?.enabled);
 }
 
 function ensurePluginEnabled(name: string): boolean {
@@ -310,7 +311,9 @@ function ensurePluginEnabled(name: string): boolean {
 }
 
 function getSetting(plugin: string, key: string): boolean {
-    return !!vencord()?.PlainSettings?.plugins?.[plugin]?.[key];
+    const v = vencord();
+    const val = v?.Settings?.plugins?.[plugin]?.[key] ?? v?.PlainSettings?.plugins?.[plugin]?.[key];
+    return !!val;
 }
 
 function setSetting(plugin: string, key: string, value: boolean, noRestart?: boolean): boolean {
