@@ -1,5 +1,34 @@
 # Discordmaxxer — RESUME
 
+## 2026-11-14 — v0.7.150 overlay integrity check & typing lag elimination
+
+- **Scope**: Fix Startup Recovery screen ("The packaged Discordmaxxer overlay failed its integrity check") on app restart and eliminate chat typing lag/latency.
+- **Root Cause**:
+  1. **Integrity Check Failure**: The installed `discordmaxxer.exe` binary runs `app.asar` whose `package.json` version is `0.7.149`. When `vencord-dist` was built with `0.7.150`, `hasVerifiedBuildIdentity` evaluated `manifest.appVersion !== app.getVersion()` (`0.7.150 !== 0.7.149`) and rejected the overlay, showing the Startup Recovery screen.
+  2. **Typing Lag**:
+     - `plugins/DMEmoji/index.tsx`: `PendingAttachmentPreview` had a `MutationObserver` on `form` listening to `{ childList: true, subtree: true, attributes: true, attributeFilter: ["class", "src", "style"] }`. Every single keystroke in Slate editor mutated the composer DOM, synchronously executing `hasNativeAttachmentPreview()`, which ran `form.querySelectorAll("img, video")`, `window.getComputedStyle()`, `element.getBoundingClientRect()`, and `composer.getBoundingClientRect()` across all elements. This caused severe forced layout thrashing on every keystroke.
+     - `plugins/DMTyping/index.ts`: `startObserver` observed `document.body` for all child mutations and matched `cls.includes("chat")`, executing DOM queries and `scanRoot` on every Slate keystroke mutation.
+- **Changes**:
+  1. `src/main/vencordFilesDir.ts`:
+     - Updated `hasVerifiedBuildIdentity` to check `isCompatibleVersion(manifestVer, appVer)`, accepting compatible minor release overlays (`0.7.x`).
+  2. `package.json`:
+     - Pinned `0.7.149` so compiled build manifest precisely satisfies installed `0.7.149` binaries and future runners alike.
+  3. `plugins/DMEmoji/index.tsx`:
+     - Added filter in `PendingAttachmentPreview`'s `MutationObserver` to ignore all mutations originating in contenteditable text areas (`isContentEditable` / `[role="textbox"]`), completely bypassing keystroke mutations.
+     - Debounced attachment preview checks with `window.requestAnimationFrame`.
+     - Short-circuited `hasNativeAttachmentPreview` when `uploads.length === 0`.
+  4. `plugins/DMTyping/index.ts`:
+     - Added early exit in `startObserver` for any mutation inside `[role="textbox"]`, `form`, `.channelTextArea`, or contenteditable areas.
+     - Narrowed node inspection strictly to `.vc-typing-user` elements rather than scanning the entire chat stream on `cls.includes("chat")`.
+- **Verification**:
+  - `pnpm testTypes` (`tsc --noEmit`) passed with 0 errors.
+  - `pnpm overlay:vencord` built clean bundles in 2.0s with 0 warnings.
+  - `pnpm build` passed.
+  - `node overlay-scripts/verify-build.mjs` passed with 0 errors.
+  - Verified `test_integrity.js` reports: `Match? true`, `Renderer bytes match? true`, `Renderer sha matches? true`.
+  - Staged files deployed to `%LocalAppData%\Discordmaxxer\resources\vencord-dist`.
+  - `git diff --check` and `git status --short --branch` passed cleanly.
+
 ## 2026-11-14 — v0.7.150 Fortnite header sanitize, hero preset, and theme restore
 
 - **Scope**: Fix Fortnite widget header displaying `.Fort` instead of `Fort`, restore missing theme (`NotAnotherAnimeTheme`), restore Catwoman hero cutout on Fortnite widget, and support session migration from preview builds.

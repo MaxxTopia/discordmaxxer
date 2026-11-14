@@ -55,9 +55,17 @@ function hasVerifiedBuildIdentity(dir: string): boolean {
             console.warn(`[Discordmaxxer] Rejecting staged Vencord at ${dir}: manifest product is invalid`);
             return false;
         }
-        if (manifest.appVersion !== app.getVersion()) {
+        const manifestVer = String(manifest.appVersion ?? "");
+        const appVer = app.getVersion();
+        const isCompatibleVersion = (mv: string, av: string): boolean => {
+            if (mv === av) return true;
+            const mParts = mv.split(".");
+            const aParts = av.split(".");
+            return mParts.length >= 2 && aParts.length >= 2 && mParts[0] === aParts[0] && mParts[1] === aParts[1];
+        };
+        if (!isCompatibleVersion(manifestVer, appVer)) {
             console.warn(
-                `[Discordmaxxer] Rejecting staged Vencord at ${dir}: manifest version ${String(manifest.appVersion)} does not match app ${app.getVersion()}`
+                `[Discordmaxxer] Rejecting staged Vencord at ${dir}: manifest version ${manifestVer} does not match app ${appVer}`
             );
             return false;
         }

@@ -135,20 +135,18 @@ function startObserver() {
     observer = new MutationObserver(mutations => {
         try {
             for (const m of mutations) {
-                if ((m.target as Element)?.closest?.(".vc-settings-tab, [class*='standardSidebarView']")) {
+                const target = m.target as HTMLElement | null;
+                // Ignore chat composer, settings, message input, and active text editing completely
+                if (!target || target.isContentEditable || target.closest?.(".vc-settings-tab, [class*='standardSidebarView'], [class*='channelTextArea'], form, [role='textbox'], [contenteditable='true']")) {
                     continue;
                 }
                 for (const node of m.addedNodes) {
                     if (!(node instanceof Element)) continue;
                     if (node.classList?.contains("vc-typing-user")) {
                         decorateTypingUser(node as HTMLElement);
-                    } else {
-                        const cls = typeof node.className === "string" ? node.className : "";
-                        if (cls.includes("typing") || cls.includes("chat") || node.firstElementChild) {
-                            if (cls.includes("typing") || node.querySelector?.(".vc-typing-user, [class*='typing']")) {
-                                scanRoot(node);
-                            }
-                        }
+                    } else if (node.firstElementChild) {
+                        const typingNode = node.querySelector?.(".vc-typing-user");
+                        if (typingNode) decorateTypingUser(typingNode as HTMLElement);
                     }
                 }
             }

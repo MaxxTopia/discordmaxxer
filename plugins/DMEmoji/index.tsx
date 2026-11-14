@@ -1245,15 +1245,34 @@ function PendingAttachmentPreview({ channelId }: { channelId: string }) {
             form.insertBefore(host, findComposerInsertionAnchor(form));
             setPortalHost(host);
 
-            const updateNativePreviewState = () => {
-                if (!host || !host.isConnected) return;
-                setNativePreviewVisible(hasNativeAttachmentPreview(form, host));
+            let rafId: number | undefined;
+            const scheduleNativePreviewUpdate = () => {
+                if (rafId !== undefined) return;
+                rafId = window.requestAnimationFrame(() => {
+                    rafId = undefined;
+                    if (!host || !host.isConnected) return;
+                    if (uploads.length === 0) {
+                        setNativePreviewVisible(false);
+                        return;
+                    }
+                    setNativePreviewVisible(hasNativeAttachmentPreview(form, host));
+                });
             };
 
-            updateNativePreviewState();
-            observer = new MutationObserver(() => {
+            scheduleNativePreviewUpdate();
+            observer = new MutationObserver(records => {
                 try {
-                    updateNativePreviewState();
+                    // Ignore mutations originating strictly within the text editing area (Slate editor / textbox)
+                    // so typing characters never triggers layout recalculations.
+                    const relevant = records.some(r => {
+                        const target = r.target as HTMLElement | null;
+                        if (!target) return false;
+                        if (target.isContentEditable || target.getAttribute?.("role") === "textbox" || target.closest?.('[role="textbox"], [contenteditable="true"]')) {
+                            return false;
+                        }
+                        return true;
+                    });
+                    if (relevant) scheduleNativePreviewUpdate();
                 } catch (error) {
                     console.warn("[DMEmoji] native preview observer ignored during navigation:", error);
                 }
@@ -1283,6 +1302,7 @@ function PendingAttachmentPreview({ channelId }: { channelId: string }) {
         return () => {
             cancelled = true;
             if (retryTimer !== undefined) window.clearInterval(retryTimer);
+            if (rafId !== undefined) window.cancelAnimationFrame(rafId);
             observer?.disconnect();
             setPortalHost(null);
             host?.remove();
