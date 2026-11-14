@@ -1,6 +1,27 @@
 # Discordmaxxer — RESUME
 
-## 2026-11-14 — v0.7.150 overlay integrity check & typing lag elimination
+## 2026-11-14 — v0.7.150 DMTrim quest ad dock and modal popup suppression
+
+- **Scope**: Suppress sponsored Quest ad popups (e.g. Violent Night 2 Quest video modal) and the docked Quest bar above the user account panel without breaking legitimate user panels, Spotify mini-player, or voice/call controls.
+- **Root Cause**:
+  1. **Docked Quest Bar**: Discord renders the promotional Quest bar directly above the user account panel in `section[class*="panels_"]`. `DMTrim`'s CSS selectors (`hideQuests`) lacked the modern Discord selectors (`[data-testid="quest-bar-container"]`, `[data-testid*="quest-bar" i]`, `[data-testid*="quest" i]`, `div[class*="questBar_"]`, `div[class*="quest_" i]`, `[class*="panels_"] [class*="quest" i]`, `[class*="panels_"] [class*="reward" i]`). In the MutationObserver fallback, `PROMO_SELECTOR` and `PROMO_ATTRIBUTE_RE` did not include `"quest"`, and `findPromotionalTarget` had a strict minimum height check (`rect.height >= 48`) that failed on compact horizontal bars.
+  2. **Quest Modal / Video Popup**: When auto-promoted or triggered, Discord opens a full-screen modal layer (`role="dialog"`) with a background backdrop. `DMTrim`'s observer had `rect.height <= 420` which rejected full-height modals. Furthermore, simply hiding dialog inner elements via CSS leaves the backdrop overlay (`div[class*="backdrop_"]`) visible and trapping user clicks.
+- **Changes**:
+  1. `plugins/DMTrim/index.ts`:
+     - Expanded `hideQuests` CSS selectors to cover `[data-testid="quest-bar-container"]`, `[data-testid*="quest-bar" i]`, `[data-testid*="quest" i]`, `div[class*="questBar" i]`, `div[class*="questBar_"]`, `div[class*="quest_" i]`, `[class*="panels_"] [class*="quest" i]`, `[class*="panels_"] [data-testid*="quest" i]`, `[class*="panels_"] [class*="reward" i]`, `[role="dialog"][class*="quest" i]`, `[role="dialog"][aria-label*="Quest" i]`, `[role="dialog"][data-testid*="quest" i]`, and `div[class*="questModal" i]`.
+     - Defined `PROTECTED_SURFACE_SELECTOR` (`#vc-spotify-player`, user account panel avatar/nametag/buttons, and voice call controls) and added `isProtectedSurface()` to guarantee that legitimate controls can never be marked or hidden.
+     - Added `checkAndDismissPromotionalDialog()` in `scanPromotionalNode`: detects promotional and quest modal dialogs, immediately marks and hides them, clicks any available close button or dispatches an `Escape` key event to trigger Discord's unmount, and neutralizes the backdrop and sets `pointer-events: none` on the modal layer so user interaction is never blocked.
+     - Expanded `PROMO_SELECTOR`, `PROMO_BRAND_RE`, `PROMO_LABEL_RE`, `PROMO_ACTION_RE`, and `PROMO_ATTRIBUTE_RE` to recognize quests, video watch actions (`watch 59s`), reward buttons (`get reward`, `claim reward`), and quest tokens (`orbs`).
+     - Lowered minimum height threshold in `findPromotionalTarget` from 48px to 32px to capture compact docked bars.
+     - Filtered out Slate/contenteditable composer mutations in `promoObserver` to guarantee zero overhead while typing in chat.
+- **Verification**:
+  - `pnpm testTypes` (`tsc --noEmit`) passed with 0 errors.
+  - `pnpm overlay:vencord` built clean bundles in 2.5s with 0 warnings.
+  - `pnpm build` passed.
+  - `node overlay-scripts/verify-build.mjs` passed all 42 structural checks.
+  - Staged files deployed to `%LocalAppData%\Discordmaxxer\resources\vencord-dist`.
+  - Pushed to `github main` (commit `5ff1f89`).
+  - `git diff --check` and `git status --short --branch` passed cleanly.
 
 - **Scope**: Fix Startup Recovery screen ("The packaged Discordmaxxer overlay failed its integrity check") on app restart and eliminate chat typing lag/latency.
 - **Root Cause**:
