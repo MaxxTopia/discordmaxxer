@@ -1,5 +1,36 @@
 # Discordmaxxer — RESUME
 
+## 2026-11-13 — v0.7.149 image viewer click & display fix
+
+- **Scope**: Fix chat message image attachments failing to open or display in the enlarged media viewer modal when clicked.
+- **Root Cause**:
+  1. `ImageZoom.makeProps` in upstream Vencord was injected into every single `LazyImage` instance across Discord (including chat message attachments, emojis, and avatars) without checking `instance.props.id === ELEMENT_ID`.
+  2. Because `makeProps` attached an `onMouseDown` handler that called `instance.setState({ mouseDown: true })`, pressing down the mouse button on any chat image attachment triggered an immediate React state mutation and DOM re-render during the mouse click gesture.
+  3. This re-render between `mousedown` and `mouseup` caused Chromium and React to drop or suppress the subsequent `click` event, preventing `onClick` / `onZoom` from firing and failing to open Discord's `MediaViewerModal`.
+  4. In addition, `updateMagnifier` previously called `unMountMagnifier()` followed synchronously by `renderMagnifier()` (`createRoot`), triggering React 18 container re-entry errors, and `unMountMagnifier()` was called unconditionally on unmount of any thumbnail in chat.
+  5. `Magnifier.tsx` lacked defensive checks for null element references and missing video elements in `waitFor`.
+- **Changes**:
+  1. `vencord-src/src/plugins/imageZoom/index.tsx`:
+     - Added strict guard `if (instance?.props?.id !== ELEMENT_ID) return {};` in `makeProps`, keeping all chat message images 100% native and free of mouse state mutations.
+     - Updated `updateMagnifier` to update the existing React root via `this.root.render()` instead of unmounting and recreating `createRoot()`.
+     - Scoped `unMountMagnifier(instance)` so unmounting unrelated chat attachments does not destroy the active media viewer magnifier.
+     - Updated the `componentWillUnmount` patch to pass `this` to `unMountMagnifier(this)`.
+  2. `vencord-src/src/plugins/imageZoom/components/Magnifier.tsx`:
+     - Added null checks for `elem` and `video` elements in `waitFor` ready callback.
+     - Added cleanup for `timeupdate` video sync listener upon unmount.
+  3. `overlay-scripts/rebrand-vencord.mjs`:
+     - Added idempotent patches for `ImageZoom` and `Magnifier.tsx` to maintain 100% reproducible builds and clean strict CI overlay passes.
+  4. `package.json`: Bumped version to `0.7.149`.
+  5. `docs/releases/v0.7.149.md`: Created release notes.
+- **Verification**:
+  - `pnpm testTypes` (`tsc --noEmit`) passed with 0 errors.
+  - `$env:DM_STRICT_REBRAND="1"; node overlay-scripts/rebrand-vencord.mjs` passed with 0 warnings (236 idempotent patches).
+  - `pnpm overlay:vencord` built clean bundles in 2.0s with 0 warnings.
+  - `pnpm build` passed.
+  - `node overlay-scripts/verify-build.mjs` passed all structural checks with manifest version 0.7.149.
+  - Verified compiled `vencordDesktopRenderer.js` contains the scoped `instance?.props?.id !== ELEMENT_ID` guard and `unMountMagnifier(this)` dispatch.
+  - `git diff --check` passed cleanly.
+
 ## 2026-11-11 — v0.7.135 unified release candidate
 
 - Source baseline: branch `codex/fix-v0.7.135` at `fedb4c2`, matching GitHub `main`. Latest public tag is `v0.7.134`.

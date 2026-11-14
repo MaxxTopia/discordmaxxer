@@ -1441,6 +1441,170 @@ const PATCHES = [
             '    // Discordmaxxer: keep Discord native image/message context menus.\n' +
             '    // Zoom remains available through the hover magnifier/settings.\n'
     },
+    {
+        file: "src/plugins/imageZoom/index.tsx",
+        marker: "Discordmaxxer: unmount magnifier only on modal image unmount",
+        alreadyAppliedWhen: content => content.includes("Discordmaxxer: unmount magnifier only on modal image unmount") || content.includes("$self.unMountMagnifier(this)"),
+        find:
+            '                {\n' +
+            '                    match: /componentWillUnmount\\(\\){/,\n' +
+            '                    replace: "$&$self.unMountMagnifier();"\n' +
+            '                },',
+        replace:
+            '                {\n' +
+            '                    // Discordmaxxer: unmount magnifier only on modal image unmount\n' +
+            '                    match: /componentWillUnmount\\(\\){/,\n' +
+            '                    replace: "$&$self.unMountMagnifier(this);"\n' +
+            '                },'
+    },
+    {
+        file: "src/plugins/imageZoom/index.tsx",
+        marker: "Discordmaxxer: only attach hover zoom handlers to the enlarged modal image",
+        alreadyAppliedWhen: content => content.includes("Discordmaxxer: only attach hover zoom handlers to the enlarged modal image") || content.includes("if (instance?.props?.id !== ELEMENT_ID) return {};"),
+        find:
+            '    makeProps(instance) {\n' +
+            '        return {\n' +
+            '            onMouseOver: () => this.onMouseOver(instance),\n' +
+            '            onMouseOut: () => this.onMouseOut(instance),\n' +
+            '            onMouseDown: (e: React.MouseEvent) => this.onMouseDown(e, instance),\n' +
+            '            onMouseUp: () => this.onMouseUp(instance),\n' +
+            '            id: instance.props.id,\n' +
+            '        };\n' +
+            '    },',
+        replace:
+            '    makeProps(instance) {\n' +
+            '        // Discordmaxxer: only attach hover zoom handlers to the enlarged modal image.\n' +
+            '        // Leaving chat attachments untouched preserves native image click/open behavior.\n' +
+            '        if (instance?.props?.id !== ELEMENT_ID) return {};\n' +
+            '        return {\n' +
+            '            onMouseOver: () => this.onMouseOver(instance),\n' +
+            '            onMouseOut: () => this.onMouseOut(instance),\n' +
+            '            onMouseDown: (e: React.MouseEvent) => this.onMouseDown(e, instance),\n' +
+            '            onMouseUp: () => this.onMouseUp(instance),\n' +
+            '            id: instance.props.id,\n' +
+            '        };\n' +
+            '    },'
+    },
+    {
+        file: "src/plugins/imageZoom/index.tsx",
+        marker: "Discordmaxxer: update existing magnifier root safely",
+        alreadyAppliedWhen: content => content.includes("Discordmaxxer: update existing root safely without unmount/createRoot collisions"),
+        find:
+            '    renderMagnifier(instance) {\n' +
+            '        try {\n' +
+            '            if (instance.props.id === ELEMENT_ID) {\n' +
+            '                if (!this.currentMagnifierElement) {\n' +
+            '                    this.currentMagnifierElement = <Magnifier size={settings.store.size} zoom={settings.store.zoom} instance={instance} />;\n' +
+            '                    this.root = createRoot(this.element!);\n' +
+            '                    this.root.render(this.currentMagnifierElement);\n' +
+            '                }\n' +
+            '            }\n' +
+            '        } catch (error) {\n' +
+            '            new Logger("ImageZoom").error("Failed to render magnifier:", error);\n' +
+            '        }\n' +
+            '    },\n\n' +
+            '    updateMagnifier(instance) {\n' +
+            '        this.unMountMagnifier();\n' +
+            '        this.renderMagnifier(instance);\n' +
+            '    },\n\n' +
+            '    unMountMagnifier() {\n' +
+            '        this.root?.unmount();\n' +
+            '        this.currentMagnifierElement = null;\n' +
+            '        this.root = null;\n' +
+            '    },',
+        replace:
+            '    renderMagnifier(instance) {\n' +
+            '        try {\n' +
+            '            // Discordmaxxer: safely guard container element and modal id.\n' +
+            '            if (instance?.props?.id === ELEMENT_ID && this.element) {\n' +
+            '                if (!this.currentMagnifierElement) {\n' +
+            '                    this.currentMagnifierElement = <Magnifier size={settings.store.size} zoom={settings.store.zoom} instance={instance} />;\n' +
+            '                    this.root = createRoot(this.element);\n' +
+            '                    this.root.render(this.currentMagnifierElement);\n' +
+            '                }\n' +
+            '            }\n' +
+            '        } catch (error) {\n' +
+            '            new Logger("ImageZoom").error("Failed to render magnifier:", error);\n' +
+            '        }\n' +
+            '    },\n\n' +
+            '    updateMagnifier(instance) {\n' +
+            '        // Discordmaxxer: update existing root safely without unmount/createRoot collisions.\n' +
+            '        if (instance?.props?.id !== ELEMENT_ID) return;\n' +
+            '        if (this.root && this.currentMagnifierElement) {\n' +
+            '            this.currentMagnifierElement = <Magnifier size={settings.store.size} zoom={settings.store.zoom} instance={instance} />;\n' +
+            '            this.root.render(this.currentMagnifierElement);\n' +
+            '        } else {\n' +
+            '            this.renderMagnifier(instance);\n' +
+            '        }\n' +
+            '    },\n\n' +
+            '    unMountMagnifier(instance?: any) {\n' +
+            '        // Discordmaxxer: only unmount magnifier when the modal image itself unmounts.\n' +
+            '        if (instance && instance.props?.id !== ELEMENT_ID) return;\n' +
+            '        this.root?.unmount();\n' +
+            '        this.currentMagnifierElement = null;\n' +
+            '        this.root = null;\n' +
+            '    },'
+    },
+    {
+        file: "src/plugins/imageZoom/components/Magnifier.tsx",
+        marker: "Discordmaxxer: safely guard element and video listeners in ready callback",
+        alreadyAppliedWhen: content => content.includes("Discordmaxxer: safely guard element and video listeners in ready callback"),
+        find:
+            '        waitFor(() => instance.state.readyState === "READY", () => {\n' +
+            '            const elem = document.getElementById(ELEMENT_ID) as HTMLDivElement;\n' +
+            '            element.current = elem;\n' +
+            '            elem.querySelector("img,video")?.setAttribute("draggable", "false");\n' +
+            '            if (instance.props.animated) {\n' +
+            '                originalVideoElementRef.current = elem!.querySelector("video")!;\n' +
+            '                originalVideoElementRef.current.addEventListener("timeupdate", syncVideos);\n' +
+            '            }\n\n' +
+            '            setReady(true);\n' +
+            '        });',
+        replace:
+            '        // Discordmaxxer: safely guard element and video listeners in ready callback.\n' +
+            '        waitFor(() => instance.state.readyState === "READY", () => {\n' +
+            '            const elem = document.getElementById(ELEMENT_ID) as HTMLDivElement | null;\n' +
+            '            if (!elem) return;\n' +
+            '            element.current = elem;\n' +
+            '            elem.querySelector("img,video")?.setAttribute("draggable", "false");\n' +
+            '            if (instance.props.animated) {\n' +
+            '                const videoEl = elem.querySelector("video");\n' +
+            '                if (videoEl) {\n' +
+            '                    originalVideoElementRef.current = videoEl;\n' +
+            '                    videoEl.addEventListener("timeupdate", syncVideos);\n' +
+            '                }\n' +
+            '            }\n\n' +
+            '            setReady(true);\n' +
+            '        });'
+    },
+    {
+        file: "src/plugins/imageZoom/components/Magnifier.tsx",
+        marker: "Discordmaxxer: cleanup video event listeners in Magnifier",
+        alreadyAppliedWhen: content => content.includes("Discordmaxxer: cleanup video event listeners in Magnifier"),
+        find:
+            '        return () => {\n' +
+            '            document.removeEventListener("keydown", onKeyDown);\n' +
+            '            document.removeEventListener("keyup", onKeyUp);\n' +
+            '            document.removeEventListener("mousemove", updateMousePosition);\n' +
+            '            document.removeEventListener("mousedown", onMouseDown);\n' +
+            '            document.removeEventListener("mouseup", onMouseUp);\n' +
+            '            document.removeEventListener("wheel", onWheel);\n' +
+            '        };',
+        replace:
+            '        return () => {\n' +
+            '            document.removeEventListener("keydown", onKeyDown);\n' +
+            '            document.removeEventListener("keyup", onKeyUp);\n' +
+            '            document.removeEventListener("mousemove", updateMousePosition);\n' +
+            '            document.removeEventListener("mousedown", onMouseDown);\n' +
+            '            document.removeEventListener("mouseup", onMouseUp);\n' +
+            '            document.removeEventListener("wheel", onWheel);\n' +
+            '            // Discordmaxxer: cleanup video event listeners in Magnifier\n' +
+            '            if (originalVideoElementRef.current) {\n' +
+            '                originalVideoElementRef.current.removeEventListener("timeupdate", syncVideos);\n' +
+            '                originalVideoElementRef.current = null;\n' +
+            '            }\n' +
+            '        };'
+    },
     // ReverseImageSearch has a second, standalone image-context hook. It can
     // receive frozen/partial menu children while Discord is opening the image
     // viewer; keeping only its message hook preserves the useful search action
