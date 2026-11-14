@@ -1,5 +1,18 @@
 # Discordmaxxer — RESUME
 
+## 2026-11-14 — v0.7.150 overlay alignment and app.asar repack
+
+- **Scope**: Fix Startup Recovery screen ("The packaged Discordmaxxer overlay failed its integrity check") encountered when restarting Discordmaxxer from the taskbar tray menu.
+- **Root Cause**: The installed executable `app.asar` has package version `0.7.150`, while the staged overlay manifest was temporarily rebuilt as `0.7.149`. The legacy `hasVerifiedBuildIdentity` inside `app.asar` strictly rejected `manifest.appVersion !== app.getVersion()` (`0.7.149 !== 0.7.150`).
+- **Fix**:
+  1. Aligned `package.json` to version `0.7.150`.
+  2. Rebuilt and re-staged overlay via `pnpm overlay:vencord`, generating `discordmaxxer-build.json` with version `0.7.150` matching `app.asar`.
+  3. Repacked `%LocalAppData%\Discordmaxxer\resources\app.asar` with the updated `dist/js/main.js` containing relaxed `isCompatibleVersion` checking and backed up original to `app.asar.bak`.
+  4. Deployed matching overlay files to `%LocalAppData%\Discordmaxxer\resources\vencord-dist`.
+- **Verification**:
+  - `hasVerifiedBuildIdentity` test script confirms 100% match across product, version (0.7.150), buildId, plugin inventory, and renderer SHA-256 / byte count.
+  - `pnpm testTypes` and `node overlay-scripts/verify-build.mjs` passed with 0 errors.
+
 ## 2026-11-14 — v0.7.150 DMTrim quest ad dock and modal popup suppression
 
 - **Scope**: Suppress sponsored Quest ad popups (e.g. Violent Night 2 Quest video modal) and the docked Quest bar above the user account panel without breaking legitimate user panels, Spotify mini-player, or voice/call controls.
