@@ -614,16 +614,34 @@ function fortniteStatLines(): string[] {
 
 // Discord rejects an application name containing ":" (and trims to ~60 chars);
 // the widget header IS the app name, so sanitize before any /applications PATCH.
-const sanitizeAppName = (v: string): string => v.replace(/:/g, " ").replace(/\s+/g, " ").trim().slice(0, 60) || "Widget";
+// Strip any leading/trailing periods, bullets, or punctuation so pills like
+// "[F] Fort" never render as "[F] .Fort" or "[F] · Fort".
+const sanitizeAppName = (v: string): string =>
+    v.replace(/:/g, " ")
+     .replace(/^[\s.·•:/-]+/, "")
+     .replace(/[\s.·•:/-]+$/, "")
+     .replace(/\s+/g, " ")
+     .trim()
+     .slice(0, 60) || "Widget";
 
-// The small header line above the title: "Fn · Ch6 S3" / "Val" / the app name.
+// The small header line above the title: "Fort · Ch6 S3" / "Val" / the app name.
 function slotHeader(tpl: string): string {
     const s = safeStore();
-    if (tpl === "fortnite") { const cs = String(s.fnChapterSeason ?? "").trim(); return cs ? `Fort · ${cs}` : "Fort"; }
+    if (tpl === "fortnite") {
+        const rawCs = String(s.fnChapterSeason ?? "")
+            .replace(/^[\s.·•:/-]+/, "")
+            .replace(/[\s.·•:/-]+$/, "")
+            .trim();
+        return rawCs ? `Fort · ${rawCs}` : "Fort";
+    }
     if (tpl === "valorant") {
         return "Val";
     }
-    return String(s.appName ?? "").trim() || "My Widget";
+    const cleanApp = String(s.appName ?? "")
+        .replace(/^[\s.·•:/-]+/, "")
+        .replace(/[\s.·•:/-]+$/, "")
+        .trim();
+    return cleanApp || "My Widget";
 }
 
 // Valorant template map (all live from HenrikDev — rank/RR/peak/agent/WR/KD).
@@ -3549,6 +3567,18 @@ async function refreshAttachedWidgetStyles(force = false): Promise<void> {
             try { application = await fetchApplicationMetadata(appId); } catch { /* a private app may reject metadata */ }
             if (String(currentUserSafe()?.id ?? "") !== accountId || activeSlotsAccountId !== accountId) return;
             if (!slotKey) slotKey = inferWidgetSlot(application);
+            if (slotKey === "fortnite" && application?.name) {
+                const rawName = String(application.name).trim();
+                const expected = sanitizeAppName(slotHeader(slotKey));
+                if (rawName.startsWith(".") || rawName === ".Fort" || rawName !== expected) {
+                    void apiPatch(`/applications/${appId}`, { name: expected })
+                        .then(() => {
+                            application.name = expected;
+                            console.log(`[DMWidget] Sanitized Fortnite app name on Discord: "${rawName}" -> "${expected}"`);
+                        })
+                        .catch(e => console.warn("[DMWidget] Could not sanitize Fortnite app name:", e));
+                }
+            }
             const remoteStyle = remoteWidgetStyleFromApplication(application);
             if (slotKey === "none" && !hasStoredSlot) {
                 // A custom/unknown app with no local slot is not a Val/Fort
@@ -7428,8 +7458,16 @@ function WidgetStylePicker() {
             ? (getEffectiveRiotId().split("#")[0] || (isDiggyUser() ? "ツDiggy ナ" : "Valorant"))
             : (String(live.widgetTitle ?? "").trim() || "My Widget");
     const header = template === "fortnite"
-        ? (String(live.fnChapterSeason ?? "").trim() ? `Fort · ${String(live.fnChapterSeason).trim()}` : "Fort")
-        : template === "valorant" ? "Val" : (String(live.appName ?? "").trim() || "My Widget");
+        ? (() => {
+            const rawCs = String(live.fnChapterSeason ?? "")
+                .replace(/^[\s.·•:/-]+/, "")
+                .replace(/[\s.·•:/-]+$/, "")
+                .trim();
+            return rawCs ? `Fort · ${rawCs}` : "Fort";
+        })()
+        : template === "valorant"
+            ? "Val"
+            : (String(live.appName ?? "").replace(/^[\s.·•:/-]+/, "").replace(/[\s.·•:/-]+$/, "").trim() || "My Widget");
     const rawStats = template === "fortnite" ? fortniteStatLines()
         : template === "valorant" ? valorantStatLines()
             : [1, 2, 3, 4, 5, 6].map(i => String((live as any)[`stat${i}`] ?? ""));
