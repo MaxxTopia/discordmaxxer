@@ -1,5 +1,37 @@
 # Discordmaxxer — RESUME
 
+## 2026-11-15 — v0.7.152 candidate packaged; publish gate pending stats service
+
+- **Local release state**: isolated branch `release/v0.7.152` contains commit
+  `ed45d2d` (`fix: harden Discordmaxxer release candidate`). It includes the
+  streamer-mode account-bar fix, the local `b859809` arRPC fix, bounded
+  renderer recovery, honest widget refresh behavior, the fail-closed stats
+  client boundary, screenshare audio-request guard, and the release notes.
+  The dirty canonical checkout remains untouched.
+- **Verification**: `pnpm test`, plugin registry checks, production build,
+  strict overlay build, packaged-artifact verification, Windows audio tests,
+  `pnpm package:dir`, and `pnpm package:win` passed. The final installer hash
+  matches `dist/latest.yml`; the benchmark analyzer reproduces the recorded
+  idle samples. The loopback audio test was not run because no game session
+  was available.
+- **Package evidence**: local `dist` contains the signed x64 installer,
+  x64/arm64 ZIPs, blockmap, and updater manifest for `0.7.152`. The packaged
+  renderer contains the narrowed Quest selectors, Spotify `/next`, and
+  `enableFlair`; the old broad Quest selectors are absent. This is local
+  package evidence, not public-release proof.
+- **Publish blocker**: the isolated `discordmaxxer-stats` Worker passes its
+  six tests and dry-run, but it does not exist in the authenticated Cloudflare
+  account yet and has no provider secrets. Do not publish a client that
+  silently removes Fortnite/Valorant stats. Replacement provider keys must be
+  entered through Wrangler and the old exposed keys must be rotated by their
+  owner; values must never be pasted into chat or committed.
+- **Next action**: from the isolated Worker directory, enter the replacement
+  secrets with `wrangler secret put FORTNITE_API_KEY` and
+  `wrangler secret put HENRIKDEV_API_KEY`, run `wrangler deploy`, and verify
+  `/health` reports both providers configured. Then recheck the release branch,
+  push `v0.7.152` to `main`, push the tag, and verify the GitHub release,
+  installer assets, and updater manifest before calling it live.
+
 ## 2026-11-15 — streamer-mode account bar regression fixed
 
 - **Root cause**: `DMTrim` used broad substring selectors such as
