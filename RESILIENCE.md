@@ -1,5 +1,28 @@
 # Discordmaxxer — Voice/Compat Resilience Register
 
+## Pre-release security and dependency audit (2026-11-15)
+
+This section is the release-boundary update for the Gemini/Antigravity handoff.
+The existing remote-config worker is a fail-open safety channel; it is not a
+stats proxy, does not hold provider credentials, and must not be described as
+the stats service or as an automatic repair mechanism for rebuild-required
+failures.
+
+| Failure | Blast radius / trigger | Detection | Fix class | Plan B |
+| --- | --- | --- | --- | --- |
+| Provider API credentials embedded in a public client or old release | Every distributed client; static scan or provider 401/403/429 | Secret-pattern scan, source/history review, stats error telemetry | **REBUILD** | Owner-controlled stats proxy; optional user key fallback with honest error copy; rotate exposed credentials after the proxy is live |
+| Stats proxy DNS, deployment, or provider outage | Users requesting Fortnite/Valorant stats; DNS/health failure or upstream timeout | `/health`, bounded client timeout, generic unavailable toast, rate/cache counters | **REBUILD / infra** | Do not pretend stats loaded; allow an optional personal key fallback where configured |
+| Stats proxy abuse or quota exhaustion | Shared service; burst traffic or repeated invalid requests | Per-isolate/IP rate limiter, provider quota alerts, cache hit/miss review | **HOT / infra** | Short cache plus 429; keep the client usable without stats and preserve the personal-key path |
+| Renderer dies after startup | One client; Discord/overlay crash after a successful launch | `render-process-gone`, bounded recovery counter, recovery UI after repeated failure | **RESTART** | Reload at most twice in one window, then show the existing recovery screen |
+| arRPC Windows process probe opens a console | Users with arRPC enabled; WMIC child process spawn | Packaged smoke test and visible taskbar/desktop check | **HOT** | Disable arRPC process presence until a patched build is available |
+| Broad Quest-promotion CSS selector matches Discord's account panel | Users with `DMTrim.hideQuests` enabled; Discord class names such as `containerQuestBarVisible_<hash>` collide with a bare `questBar`/`quest` substring | Account panel `display`/rect probe with Streamer Mode on and off; packaged selector scan | **REBUILD** | Narrow selectors to hashed Quest classes; if Discord changes again, disable Quest hiding while preserving the account/voice/Spotify surfaces |
+| Client/widget data is eventually consistent | One user's updated widget/profile card; Discord hydration lag | Post-mutation re-fetch with timeout and nonempty-entry check | **HOT** | Tell the user to reopen the card or press Ctrl+R; never claim an unverified refresh |
+| Application-window screenshare audio capture fails | Share recipient receives video but no app audio; native capture unavailable | Native capture result and recipient test | **REBUILD / native** | Fail closed to video-only for app windows; retain system-audio behavior for whole-screen shares |
+
+Release rule: a local build or unit test cannot close a runtime, provider,
+recipient, credential-rotation, or visual gate. Keep those gates explicitly
+separate in the release record.
+
 > Maintained 2026-08-17 after the upstream Vencord drift review. This is the
 > pre-mortem of what can nuke the client — especially
 > all-users-at-once — with a detection signal and a plan B for each.

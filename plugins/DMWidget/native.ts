@@ -31,18 +31,16 @@ const USER_AGENT = "DiscordBot (https://maxxtopia.com, 1.0.0)";
 // ---- encrypted bot-token store (for dynamic stat pushes) -------------------
 // Mechanism B keeps the app's bot token so refreshes don't re-prompt 2FA. It's
 // encrypted at rest with the OS keychain (Electron safeStorage / DPAPI) and only
-// ever decrypted in this main process at push time. A "PLAIN:" prefix is the
-// fallback when safeStorage is unavailable (rare headless case) so we never
-// silently store a bare token as if it were encrypted.
+// ever decrypted in this main process at push time. If OS encryption is not
+// available, fail closed rather than silently writing a reusable bot token.
 function tokenPath(): string {
     return join(app.getPath("userData"), "dm-widget-token.bin");
 }
 export async function storeWidgetToken(_: IpcMainInvokeEvent, token: string): Promise<{ ok: true; } | { error: string; }> {
     try {
         if (!token) return { error: "empty token" };
-        const buf = safeStorage.isEncryptionAvailable()
-            ? safeStorage.encryptString(token)
-            : Buffer.from("PLAIN:" + token, "utf8");
+        if (!safeStorage.isEncryptionAvailable()) return { error: "OS encryption is unavailable; token was not stored" };
+        const buf = safeStorage.encryptString(token);
         writeFileSync(tokenPath(), buf);
         return { ok: true };
     } catch (e) { return { error: String((e as any)?.message ?? e) }; }
@@ -52,7 +50,9 @@ function readWidgetToken(): string | null {
         const p = tokenPath();
         if (!existsSync(p)) return null;
         const buf = readFileSync(p);
-        if (buf.subarray(0, 6).toString("utf8") === "PLAIN:") return buf.subarray(6).toString("utf8");
+        // Refuse the legacy plaintext format. Leave the file untouched so a
+        // user can recover or delete it deliberately, but never use it.
+        if (buf.subarray(0, 6).toString("utf8") === "PLAIN:") return null;
         return safeStorage.isEncryptionAvailable() ? safeStorage.decryptString(buf) : null;
     } catch { return null; }
 }
@@ -82,7 +82,7 @@ export async function fetchImageData(
 }
 
 // Small GET-JSON helper (native = no CORS) shared by the stat fetchers.
-function httpsJson(host: string, path: string, headers: Record<string, string>): Promise<{ status: number; json: any; }> {
+function httpsJson(host: string, path: string, headers: Record<string, string> = {}, maxBytes = 512_000): Promise<{ status: number; json: any; }> {
     return new Promise(resolve => {
         const req = request({
             method: "GET",
@@ -96,8 +96,19 @@ function httpsJson(host: string, path: string, headers: Record<string, string>):
             }
         }, res => {
             let buf = "";
-            res.on("data", d => (buf += d));
-            res.on("end", () => { let json: any = null; try { json = JSON.parse(buf); } catch { /* leave null */ } resolve({ status: res.statusCode ?? 0, json }); });
+            let size = 0;
+            let oversized = false;
+            res.on("data", d => {
+                size += Buffer.byteLength(d);
+                if (size <= maxBytes) buf += d;
+                else oversized = true;
+            });
+            res.on("end", () => {
+                if (oversized) return resolve({ status: 0, json: null });
+                let json: any = null;
+                try { json = JSON.parse(buf); } catch { /* leave null */ }
+                resolve({ status: res.statusCode ?? 0, json });
+            });
         });
         req.setTimeout(12000, () => req.destroy(new Error("request timed out")));
         req.on("error", () => resolve({ status: 0, json: null }));
@@ -105,19 +116,46 @@ function httpsJson(host: string, path: string, headers: Record<string, string>):
     });
 }
 
-const DEFAULT_HENRIK_KEY = "HDEV-7906df4e-ba8f-492a-96f4-ae5a2088c0a8";
-const DEFAULT_FORTNITE_KEY = "42abbe8c1fadf7d84a3de60e7178808112419414662cc2e738c15bb6c753102c";
+// Provider credentials stay in the server-side Worker. The optional key
+// arguments below are personal advanced overrides only; they are never a
+// built-in/shared credential and are used only if the proxy cannot answer.
+const STATS_PROXY_HOST = "discordmaxxer-stats.maxxtopia.workers.dev";
+
+function statsProxyError(label: string, status: number): string {
+    if (status === 404) return `${label} player was not found or the stats are private`;
+    if (status === 429) return `${label} stats service is busy; try again shortly`;
+    return `${label} stats service is unavailable; try again later or add a personal key as a fallback`;
+}
+
+function providerError(label: string, status: number): string {
+    if (status === 404) return `${label} player was not found or the stats are private`;
+    if (status === 401 || status === 403) return `${label} rejected the personal key`;
+    if (status === 429) return `${label} provider rate limit reached`;
+    return `${label} provider is unavailable`;
+}
+
+function validStatsProxyResponse(json: any): boolean {
+    return json?.ok === true && typeof json.name === "string" && json.overall && typeof json.overall === "object";
+}
+
+function normalizeFortniteAuth(key: string): string {
+    return /^ApiKey\s/i.test(key) ? key : `ApiKey ${key}`;
+}
 
 // ---- Valorant stats (HenrikDev — MMR is v3, matches are v4) -----------------
 export async function fetchValorantStats(
     _: IpcMainInvokeEvent, name: string, tag: string, region: string, platform: string, apiKey: string
 ): Promise<{ ok: true; name: string; overall: Record<string, any>; } | { error: string; }> {
-    const effectiveKey = String(apiKey || "").trim() || DEFAULT_HENRIK_KEY;
     if (!name || !tag) return { error: "missing Riot ID (Name#Tag)" };
-    const auth = { Authorization: effectiveKey };
     const enc = encodeURIComponent;
     const plat = platform || "pc";
     const reg = region || "na";
+    const proxy = await httpsJson(STATS_PROXY_HOST, `/v1/valorant/stats?name=${enc(name)}&tag=${enc(tag)}&region=${enc(reg)}&platform=${enc(plat)}`);
+    if (validStatsProxyResponse(proxy.json)) return { ok: true, name: proxy.json.name, overall: proxy.json.overall };
+
+    const personalKey = String(apiKey || "").trim();
+    if (!personalKey) return { error: statsProxyError("Valorant", proxy.status) };
+    const auth = { Authorization: personalKey };
     // HenrikDev is normally quick, but an intermediary can otherwise hand a
     // manual refresh the same cached MMR response. Keep the request fresh
     // without changing the provider or account lookup.
@@ -125,8 +163,7 @@ export async function fetchValorantStats(
 
     const mmr = await httpsJson("api.henrikdev.xyz", `/valorant/v3/mmr/${enc(reg)}/${plat}/${enc(name)}/${enc(tag)}?refresh=${refresh}`, auth);
     if (mmr.status !== 200 || !mmr.json?.data) {
-        const msg = mmr.json?.errors?.[0]?.message ?? (typeof mmr.json?.status === "string" ? mmr.json.status : `HTTP ${mmr.status}`);
-        return { error: `Valorant MMR: ${msg} (check Riot ID, region + that the key is valid)` };
+        return { error: providerError("Valorant MMR", mmr.status) };
     }
     const cur = mmr.json.data.current ?? {};
     const peak = mmr.json.data.peak ?? {};
@@ -161,29 +198,26 @@ export async function fetchValorantStats(
 export async function fetchFortniteStats(
     _: IpcMainInvokeEvent, name: string, apiKey: string, accountType: string
 ): Promise<{ ok: true; name: string; overall: Record<string, number>; } | { error: string; }> {
-    const effectiveKey = String(apiKey || "").trim() || DEFAULT_FORTNITE_KEY;
     if (!name) return { error: "missing Epic display name (IGN)" };
-    return new Promise(resolve => {
-        const path = `/v2/stats/br/v2?name=${encodeURIComponent(name)}&accountType=${encodeURIComponent(accountType || "epic")}&timeWindow=lifetime`;
-        const req = request(
-            { method: "GET", host: "fortnite-api.com", path, headers: { Authorization: effectiveKey, "User-Agent": USER_AGENT } },
-            res => {
-                let buf = "";
-                res.on("data", d => (buf += d));
-                res.on("end", () => {
-                    try {
-                        const j = JSON.parse(buf);
-                        if (j.status && j.status !== 200) return resolve({ error: `${j.status}: ${j.error ?? "stats unavailable (is the account name exact + stats public?)"}` });
-                        const o = j?.data?.stats?.all?.overall ?? {};
-                        resolve({ ok: true, name: j?.data?.account?.name ?? name, overall: { wins: o.wins, kills: o.kills, kd: o.kd, winRate: o.winRate, matches: o.matches, top1: o.top1, killsPerMatch: o.killsPerMatch, minutesPlayed: o.minutesPlayed } });
-                    } catch { resolve({ error: "couldn't parse the stats response" }); }
-                });
-            }
-        );
-        req.setTimeout(12000, () => req.destroy(new Error("stats request timed out")));
-        req.on("error", e => resolve({ error: String((e as any)?.message ?? e) }));
-        req.end();
-    });
+    const type = accountType || "epic";
+    const enc = encodeURIComponent;
+    const proxy = await httpsJson(STATS_PROXY_HOST, `/v1/fortnite/stats?name=${enc(name)}&accountType=${enc(type)}`);
+    if (validStatsProxyResponse(proxy.json)) return { ok: true, name: proxy.json.name, overall: proxy.json.overall };
+
+    const personalKey = String(apiKey || "").trim();
+    if (!personalKey) return { error: statsProxyError("Fortnite", proxy.status) };
+    const path = `/v2/stats/br/v2?name=${enc(name)}&accountType=${enc(type)}&timeWindow=lifetime`;
+    const direct = await httpsJson("fortnite-api.com", path, { Authorization: normalizeFortniteAuth(personalKey) });
+    const providerStatus = Number(direct.json?.status) || direct.status;
+    if (direct.status !== 200 || providerStatus !== 200) return { error: providerError("Fortnite", providerStatus) };
+    const raw = direct.json?.data?.stats?.all?.overall ?? {};
+    const overall: Record<string, number> = {};
+    for (const key of ["wins", "kills", "kd", "winRate", "matches", "top1", "killsPerMatch", "minutesPlayed"]) {
+        const value = Number(raw[key]);
+        if (Number.isFinite(value)) overall[key] = value;
+    }
+    if (!Object.keys(overall).length) return { error: "Fortnite player was not found or the stats are private" };
+    return { ok: true, name: typeof direct.json?.data?.account?.name === "string" ? direct.json.data.account.name : name, overall };
 }
 
 // The header-clean identity PATCH shared by the initial claim and every dynamic

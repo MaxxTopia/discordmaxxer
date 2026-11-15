@@ -58,6 +58,10 @@ const HUB_CSS = `
         justify-content: center;
         width: 32px;
         height: 32px;
+        min-width: 32px;
+        max-width: 32px;
+        flex: 0 0 32px;
+        box-sizing: border-box;
         margin: 0 2px;
         padding: 0;
         border-radius: 50%;
@@ -819,6 +823,7 @@ function injectButton() {
     const fab = document.createElement("button");
     fab.id = FAB_ID;
     fab.title = "Discordmaxxer — quick toggles";
+    fab.setAttribute("aria-label", "Discordmaxxer — quick toggles");
     fab.innerHTML = `<img src="${FAB_LOGO_DATA}" width="26" height="26" alt="Discordmaxxer" style="display:block;pointer-events:none;border-radius:50%"/>`;
     fab.addEventListener("click", e => {
         e.preventDefault();

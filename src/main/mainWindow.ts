@@ -55,6 +55,10 @@ applyDeckKeyboardFix();
 
 app.on("before-quit", () => {
     isQuitting = true;
+    if (postStartupRendererRecoveryTimer !== null) {
+        clearTimeout(postStartupRendererRecoveryTimer);
+        postStartupRendererRecoveryTimer = null;
+    }
 });
 
 export let mainWin: BrowserWindow;
@@ -63,6 +67,9 @@ const STARTUP_PREPARATION_TIMEOUT_MS = 20_000;
 const STARTUP_RENDERER_TIMEOUT_MS = 25_000;
 const STARTUP_PROBE_INTERVAL_MS = 250;
 const MAX_STARTUP_NAVIGATION_RETRIES = 3;
+const MAX_POST_STARTUP_RENDERER_RECOVERIES = 2;
+const POST_STARTUP_RENDERER_RECOVERY_WINDOW_MS = 60_000;
+const POST_STARTUP_RENDERER_RECOVERY_DELAY_MS = 250;
 const retryDelay = 1000;
 
 let retryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -77,6 +84,9 @@ let navigationRetryCount = 0;
 let recoveryHandlersRegistered = false;
 let startupFailureIpcRegistered = false;
 let createWindowsPromise: Promise<void> | null = null;
+let postStartupRendererRecoveryAttempts = 0;
+let postStartupRendererRecoveryWindowStartedAt = 0;
+let postStartupRendererRecoveryTimer: ReturnType<typeof setTimeout> | null = null;
 
 function makeSettingsListenerHelpers<O extends object>(o: SettingsStore<O>) {
     const listeners = new Map<(data: any) => void, PropertyKey>();
@@ -562,10 +572,61 @@ function markStartupReady(attempt: number) {
 
     startupReady = true;
     startupRecoveryShown = false;
+    if (
+        postStartupRendererRecoveryWindowStartedAt > 0 &&
+        Date.now() - postStartupRendererRecoveryWindowStartedAt >= POST_STARTUP_RENDERER_RECOVERY_WINDOW_MS
+    ) {
+        postStartupRendererRecoveryAttempts = 0;
+        postStartupRendererRecoveryWindowStartedAt = 0;
+        recordStartupEvent("renderer-recovery-budget-reset", { attempt });
+    }
     clearStartupWatch();
     recordStartupEvent("renderer-ready", { attempt, targetUrl: startupTargetUrl });
     closeStartupRecovery();
     AppEvents.emit("appLoaded");
+}
+
+function recoverRendererAfterCrash(details: unknown) {
+    if (isQuitting || !mainWin || mainWin.isDestroyed()) return;
+
+    const now = Date.now();
+    if (
+        postStartupRendererRecoveryWindowStartedAt === 0 ||
+        now - postStartupRendererRecoveryWindowStartedAt >= POST_STARTUP_RENDERER_RECOVERY_WINDOW_MS
+    ) {
+        postStartupRendererRecoveryWindowStartedAt = now;
+        postStartupRendererRecoveryAttempts = 0;
+    }
+
+    if (postStartupRendererRecoveryAttempts >= MAX_POST_STARTUP_RENDERER_RECOVERIES) {
+        startupReady = false;
+        failStartup("The Discord renderer crashed repeatedly after startup.", details);
+        return;
+    }
+
+    postStartupRendererRecoveryAttempts += 1;
+    startupReady = false;
+    recordStartupEvent("renderer-recovery-scheduled", {
+        attempt: postStartupRendererRecoveryAttempts,
+        maxAttempts: MAX_POST_STARTUP_RENDERER_RECOVERIES,
+        details
+    });
+
+    if (postStartupRendererRecoveryTimer !== null) clearTimeout(postStartupRendererRecoveryTimer);
+    postStartupRendererRecoveryTimer = setTimeout(() => {
+        postStartupRendererRecoveryTimer = null;
+        if (isQuitting || !mainWin || mainWin.isDestroyed()) return;
+
+        recordStartupEvent("renderer-recovery-started", {
+            attempt: postStartupRendererRecoveryAttempts,
+            targetUrl: startupTargetUrl
+        });
+        // A renderer process can die after Discord has already become usable.
+        // Re-enter the existing bounded startup watch so the crash page is
+        // replaced automatically and a recovery window appears only when the
+        // reload itself cannot become ready.
+        loadUrl(undefined, true);
+    }, POST_STARTUP_RENDERER_RECOVERY_DELAY_MS);
 }
 
 function beginStartupWatch(targetUrl: string) {
@@ -832,6 +893,7 @@ async function createWindowsInternal() {
     mainWin.webContents.on("render-process-gone", (_event, details) => {
         recordStartupEvent("render-process-gone", details);
         if (!startupReady) failStartup("The Discord renderer stopped during startup.", details);
+        else recoverRendererAfterCrash(details);
     });
 
     mainWin.webContents.on("unresponsive", () => {

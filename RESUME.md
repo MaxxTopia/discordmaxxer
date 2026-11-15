@@ -1,5 +1,123 @@
 # Discordmaxxer — RESUME
 
+## 2026-11-15 — streamer-mode account bar regression fixed
+
+- **Root cause**: `DMTrim` used broad substring selectors such as
+  `[class*="questBar"]` and `[class*="container_"][class*="quest"]` while
+  hiding Quest promotions. Discord's real account panel currently includes
+  `containerQuestBarVisible_<hash>`, so the cleanup rule hid the complete
+  username/mute/deafen/settings bar. Streamer Mode only made the symptom more
+  noticeable; it was not the cause.
+- **Fix**: `plugins/DMTrim/index.ts` now requires Discord's hashed-class
+  separator for the Quest-specific rules and removes the broad account/panel
+  selectors. `plugins/DMHub/index.ts` also constrains the quick-toggle FAB to
+  a fixed 32px flex slot and gives it an accessible label.
+- **Runtime proof**: the freshly packaged isolated candidate was checked with
+  Streamer Mode **on** and **off**. In both states the account panel rendered
+  at full size with the username, DMHub button, mute, deafen, input/output
+  options, and user-settings control. Clicking DMHub opened the quick-toggle
+  panel. The stock Discord client was not modified.
+- **Artifact proof**: the packaged `resources/vencord-dist` bundle contains
+  the narrowed selectors and DMHub label, and no longer contains the three
+  broad selectors that caused the collision. The candidate process was
+  stopped after testing; no live installation, push, tag, or public release
+  occurred.
+- **Release state**: source/build/overlay/package checks remain passing and
+  the local `b859809` arRPC fix is included. The stats proxy/credential
+  rotation and the remaining Spotify, Theme Flair, widget-refresh,
+  screenshare-recipient, startup-recovery, and post-install gates still block
+  a truthful public release.
+
+## 2026-11-15 — pre-release secret and provider-boundary hardening
+
+- **Included local release fix**: the code and lockfile portion of `b859809`
+  (`arrpc` Windows process scans now use `windowsHide: true`) is included in
+  this candidate. It was applied directly rather than cherry-picked as a
+  separate commit because that commit's `RESUME.md` change overlaps this
+  uncommitted audit checkpoint. No push, tag, installer upload, or live-client
+  change occurred.
+- **Release blocker found**: both shared provider credentials had been shipped
+  in the desktop client and are present in historical release commits. Their
+  values are intentionally not recorded here or printed. The current source
+  no longer embeds them; the provider owners still need to rotate the exposed
+  credentials after the replacement proxy is deployed. Do not rewrite history
+  or revoke credentials automatically as part of this audit.
+- **Stats boundary**: `api.maxxtopia.com` does not currently resolve and no
+  existing Maxxtopia stats Worker was found. An isolated Worker candidate is
+  at `C:\Users\Diggy\projects\maxxtopia-discordmaxxer-stats-audit-2026-11-15\discordmaxxer-stats-worker`.
+  It keeps provider keys server-side, validates inputs, bounds provider
+  responses, sanitizes output, caches successful results briefly, rate-limits
+  requests, and passed its six local tests. It has not been deployed or
+  assigned a production hostname.
+- **Credential storage**: widget-token persistence now refuses to write when
+  Windows OS encryption is unavailable and refuses legacy plaintext token
+  files. Existing plaintext files are not deleted automatically.
+- **Next action**: complete the source/build/overlay/package gates, confirm the
+  Worker deployment/account/secret path without exposing values, rotate the
+  old provider credentials, then run real Spotify skip, Theme Flair,
+  widget-refresh, screenshare-recipient, startup-recovery, and post-install
+  checks before any public release.
+
+## 2026-11-15 — Gemini/Antigravity handoff audit checkpoint
+
+- **Scope**: Audit the public `v0.7.151` line after Gemini/Antigravity work; preserve the dirty canonical checkout at `C:\Users\Diggy\projects\discordmaxxer`; investigate widget refresh/zero-key stats, renderer-crash recovery, screenshare audio, Theme Flair, MAXXER++ badge, and matched performance evidence.
+- **Recovered evidence**: The local Antigravity transcript at `C:\Users\Diggy\.gemini\antigravity\brain\615ac276-90a1-4d8e-a5c7-d3c91b9395a0\.system_generated\logs\transcript.jsonl` confirms the Gemini changes and direct installed-app repacks. Public `origin/main` is at `29c5739`, with the published release `v0.7.151` at `df9d53d`; the installed build manifest reports `0.7.151` and commit `df9d53d`. This is source/public/install evidence, not a claim of field-perfect behavior.
+- **Confirmed source findings**:
+  1. Fortnite stats use `fortnite-api.com/v2/stats/br/v2` with a client-embedded shared key fallback. The provider's official docs require an `Authorization` API key for this endpoint; putting a shared secret in a public client is not a durable distribution design and the exposed key must be rotated by its owner before a safer proxy is shipped.
+  2. Fortnite's editor already enables refresh when an Epic display name is present, but its copy still says a personal key is required. The current provider path is not Fortnite Tracker; it is Fortnite-API.
+  3. `src/main/mainWindow.ts` only calls startup recovery for `render-process-gone` before `startupReady`; a post-startup renderer death has no bounded recovery path.
+  4. Application-window screenshare audio is fail-closed when strict process capture cannot be established; whole-screen shares remain system audio. Native/recipient tests are still required.
+- **Decisions**: Use this isolated worktree only. Make scoped fixes only after inspecting the existing recovery API. Do not push, tag, publish, or mutate live data in this audit without explicit authorization for the new release. Do not print provider credentials.
+- **Next actions**: patch the renderer-crash recovery path and honest Fortnite/widget update UX if the exact implementation remains safe; run type/build/overlay/native checks; run a fresh matched benchmark set if the launch harness is available; record remaining human gates and the publish decision.
+
+## 2026-11-15 — audit candidate verification follow-up
+
+- **Candidate-only source changes in this isolated worktree**:
+  - `src/main/mainWindow.ts`: a post-startup renderer death now gets up to two
+    bounded reload attempts inside a 60-second window; repeated failure opens
+    the existing recovery UI instead of leaving Chromium's crash page visible.
+    The timer is cleared during quit and the existing startup watchdog remains
+    the readiness gate.
+  - `plugins/DMWidget/index.tsx`: widget update/deploy re-fetches the current
+    profile through Discord's profile hydration path with a 2.5-second bound;
+    it only claims immediate refresh when a proven widget entry is present;
+    otherwise the toast tells the user to reopen the card/Ctrl+R. Fortnite copy
+    now accurately describes the Epic display name and optional personal-key
+    override. The provider credential is still client-embedded and is not
+    considered safe for a new public release.
+  - `src/renderer/patches/screenShareFixes.ts`: the audio swap now honors both
+    picker state and the actual `getDisplayMedia` request, so stale state cannot
+    add audio after an explicit `audio: false` request.
+  - `overlay-scripts/analyze-bench.mjs`: added the analyzer already referenced
+    by `package.json`, including tail CPU/RAM summaries and JSON output.
+- **Current candidate verification**: `pnpm test`, `pnpm build`,
+  `pnpm verifyPlugins`, `pnpm overlay:vencord` (zero rebrand warnings),
+  `pnpm verify:build`, `pnpm -C packages/winaudio test`, `pnpm package:dir`,
+  `node --check overlay-scripts/analyze-bench.mjs`, and `git diff --check`
+  passed. The packaged `dist/win-unpacked/resources/app.asar` exists and its
+  package version and staged overlay manifest both report `0.7.151`.
+- **Static feature evidence**: the staged renderer contains the Spotify slot
+  before the account panel and the Spotify `/next` route; Theme Flair's
+  `enableFlair` setting is compiled; the MAXXER++ badge source and bundle have
+  no old white arc path and retain the rounded `++` geometry/sweep effect.
+- **Fresh matched idle benchmark**: installed Discordmaxxer, 30 seconds,
+  guarded visible window, tail CPU median/p95 `33.13%/40.01%` and RAM
+  median/p95 `835.7/836.5 MB`, RAM drift `+1.2 MB`. Stock Discord, same
+  harness, tail CPU median/p95 `91.54%/130.96%` and RAM median/p95
+  `485.3/491.7 MB`, RAM drift `-6.4 MB`. This is process CPU/memory evidence
+  only; it is not a gameplay, latency, voice, screenshare, or visual-quality
+  proof, and the earlier high-CPU warm sample was a settling-phase artifact.
+- **Release boundary**: these audit edits are not committed, pushed, packaged,
+  installed, or published. Public/install state remains v0.7.151. The dirty
+  canonical Gemini checkout was not reset, cleaned, or merged. Benchmark CSV
+  and metadata files in this worktree are retained as evidence.
+- **Remaining gates**: rotate the exposed provider credential and move Fortnite
+  stats behind an owner-controlled server-side proxy before a new public
+  release; perform real Spotify playback/skip, Theme Flair off/on persistence,
+  widget update/profile-card refresh, screenshare app-audio recipient, and
+  post-startup crash-recovery acceptance tests. Do not call the release
+  flawless until those user/device gates pass.
+
 ## 2026-11-14 — v0.7.150 overlay alignment and app.asar repack
 
 - **Scope**: Fix Startup Recovery screen ("The packaged Discordmaxxer overlay failed its integrity check") encountered when restarting Discordmaxxer from the taskbar tray menu.

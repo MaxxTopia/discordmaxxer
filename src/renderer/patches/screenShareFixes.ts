@@ -191,7 +191,12 @@ if (isWindows) {
         const stream = await original.call(this, opts);
         registerScreenShareVideoTracks(stream);
 
-        debug("getDisplayMedia called", { audioRequested: !!currentSettings?.audio });
+        // Treat the actual media request as an additional safety boundary. The
+        // picker state normally mirrors opts.audio, but a stale picker value
+        // must never make this wrapper add an audio track after the caller
+        // explicitly requested video-only capture.
+        const audioRequested = currentSettings?.audio === true && opts?.audio !== false;
+        debug("getDisplayMedia called", { audioRequested });
 
         // Cap resolution/framerate before Discord ingests the stream. The
         // sender-side retry in ScreenSharePicker handles the later negotiation
@@ -203,7 +208,7 @@ if (isWindows) {
         }
 
         // Video-only share, or audio not requested → nothing to de-echo.
-        if (!currentSettings?.audio) {
+        if (!audioRequested) {
             lastEchoInjection = "video-only";
             return stream;
         }

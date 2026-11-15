@@ -1244,9 +1244,6 @@ async function authorizeApp(appId: string) {
     }
 }
 
-const SHARED_HENRIK_API_KEY = "HDEV-7906df4e-ba8f-492a-96f4-ae5a2088c0a8";
-const SHARED_FORTNITE_API_KEY = "42abbe8c1fadf7d84a3de60e7178808112419414662cc2e738c15bb6c753102c";
-
 function autoDetectConnectedIdentity(platform: "riotgames" | "epicgames", userId?: string): string {
     try {
         const uid = userId || UserStore?.getCurrentUser?.()?.id;
@@ -1551,36 +1548,36 @@ async function refreshGameSlot(tpl: string, announce = false): Promise<boolean> 
     try {
         if (tpl === "fortnite") {
             const ign = getEffectiveFnIgn();
-            const key = String(s.fnApiKey ?? "").trim() || SHARED_FORTNITE_API_KEY;
-            if (ign) {
-                const res = await Native.fetchFortniteStats(ign, key, String(s.fnAccountType ?? "epic"));
-                if ("error" in res) {
-                    const msg = `Fortnite stats: ${res.error}`;
-                    if (announce) toast(msg, Toasts.Type.MESSAGE, 6000); else console.warn("[DMWidget]", msg);
-                } else {
-                    fnStats = res.overall;
-                    saveCachedGameStats();
-                    await syncFortniteRankIcon(tpl);
-                }
-            } else if (announce) {
-                toast("Connect Epic Games or enter your Epic IGN to refresh live stats.", Toasts.Type.MESSAGE, 6000);
+            const key = String(s.fnApiKey ?? "").trim();
+            if (!ign) {
+                if (announce) toast("Connect Epic Games or enter your Epic IGN to refresh live stats.", Toasts.Type.MESSAGE, 6000);
+                return false;
             }
+            const res = await Native.fetchFortniteStats(ign, key, String(s.fnAccountType ?? "epic"));
+            if ("error" in res) {
+                const msg = `Fortnite stats: ${res.error}`;
+                if (announce) toast(msg, Toasts.Type.MESSAGE, 6000); else console.warn("[DMWidget]", msg);
+                return false;
+            }
+            fnStats = res.overall;
+            saveCachedGameStats();
+            await syncFortniteRankIcon(tpl);
         } else {
             const riot = getEffectiveRiotId();
-            const key = String(s.valApiKey ?? "").trim() || SHARED_HENRIK_API_KEY;
+            const key = String(s.valApiKey ?? "").trim();
             const hash = riot.indexOf("#");
-            if (hash > 0) {
-                const res = await Native.fetchValorantStats(riot.slice(0, hash), riot.slice(hash + 1), String(s.valRegion ?? "na"), "pc", key);
-                if ("error" in res) {
-                    if (announce) toast(res.error, Toasts.Type.MESSAGE, 6000); else console.warn("[DMWidget]", res.error);
-                } else {
-                    valStats = res.overall;
-                    saveCachedGameStats();
-                    await syncValorantRankIcons(tpl);
-                }
-            } else if (announce) {
-                toast("Connect Riot Games or enter your Riot ID (Name#Tag) to refresh live stats.", Toasts.Type.MESSAGE, 6000);
+            if (hash <= 0 || hash === riot.length - 1) {
+                if (announce) toast("Connect Riot Games or enter your Riot ID (Name#Tag) to refresh live stats.", Toasts.Type.MESSAGE, 6000);
+                return false;
             }
+            const res = await Native.fetchValorantStats(riot.slice(0, hash), riot.slice(hash + 1), String(s.valRegion ?? "na"), "pc", key);
+            if ("error" in res) {
+                if (announce) toast(res.error, Toasts.Type.MESSAGE, 6000); else console.warn("[DMWidget]", res.error);
+                return false;
+            }
+            valStats = res.overall;
+            saveCachedGameStats();
+            await syncValorantRankIcons(tpl);
         }
 
         const err = await republishConfig(tpl);
@@ -1589,12 +1586,18 @@ async function refreshGameSlot(tpl: string, announce = false): Promise<boolean> 
             if (announce) toast(msg, Toasts.Type.FAILURE, 8000); else console.warn("[DMWidget]", msg);
             return false;
         }
+        const profileRefreshed = announce
+            ? await refreshCurrentProfileAfterWidgetMutation(String(currentUserSafe()?.id ?? ""))
+            : false;
+        const refreshHint = profileRefreshed
+            ? " Discord profile data was refreshed."
+            : " Reopen the profile card or press Ctrl+R if an already-open profile still shows the old values.";
         if (announce) {
             if (tpl === "fortnite") {
-                toast(`Fortnite widget refreshed — ${fmtNum(fnStats?.wins)} wins, ${fnStats?.kd?.toFixed?.(2) ?? "—"} K/D.`, Toasts.Type.SUCCESS, 6000);
+                toast(`Fortnite widget refreshed — ${fmtNum(fnStats?.wins)} wins, ${fnStats?.kd?.toFixed?.(2) ?? "—"} K/D.${refreshHint}`, Toasts.Type.SUCCESS, 8000);
             } else {
                 const rr = valStats?.rr !== undefined ? `${valStats.rr} RR` : "RR unavailable";
-                toast(`Valorant widget refreshed — ${valStats?.rank ?? "—"}, ${rr}, main ${valStats?.mainAgent ?? "—"}.`, Toasts.Type.SUCCESS, 8000);
+                toast(`Valorant widget refreshed — ${valStats?.rank ?? "—"}, ${rr}, main ${valStats?.mainAgent ?? "—"}.${refreshHint}`, Toasts.Type.SUCCESS, 9000);
             }
         }
         return true;
@@ -1759,7 +1762,14 @@ async function deployWidget(): Promise<void> {
 
         // Claim onto the profile identity so others can see it (best effort).
         await finalizeIdentity(id.appId, me.id);
-        toast("Widget deployed and updated on your profile board!", Toasts.Type.SUCCESS, 6000);
+        const profileRefreshed = await refreshCurrentProfileAfterWidgetMutation(me.id);
+        toast(
+            profileRefreshed
+                ? "Widget deployed and updated on your profile board. Discord profile data was refreshed."
+                : "Widget deployed and updated on your profile board. Reopen the profile card or press Ctrl+R if an already-open profile still shows old content.",
+            Toasts.Type.SUCCESS,
+            9000
+        );
     } catch (e: any) {
         console.warn("[DMWidget] deploy failed:", e);
         toast(`Widget deploy failed: ${classifyDiscordError(e)}`, Toasts.Type.FAILURE, 9000);
@@ -4089,6 +4099,31 @@ async function fetchUserProfileMetadata(userId: string): Promise<any> {
     const resolved = direct ?? native;
     if (resolved) dispatchUserProfileSuccess(resolved, userId);
     return resolved;
+}
+
+// A successful Discord widget mutation does not always invalidate the profile
+// cache that is already open in the current client. Refresh the authenticated
+// profile best-effort so an Update/Refresh action can repaint immediately; the
+// bounded timeout keeps a slow Discord response from blocking the user's
+// publish flow forever.
+async function refreshCurrentProfileAfterWidgetMutation(userId: string): Promise<boolean> {
+    if (!userId) return false;
+    let timeoutId: number | undefined;
+    try {
+        const timeout = new Promise<null>(resolve => {
+            timeoutId = window.setTimeout(() => resolve(null), 2500);
+        });
+        const profile = await Promise.race([fetchUserProfileMetadata(userId), timeout]);
+        // A successful profile HTTP response can still be an empty shell while
+        // Discord's widgets route catches up. Only claim an immediate refresh
+        // when the hydrated response actually contains a proven widget entry.
+        return Boolean(profile && foreignProfileWidgetEntries(profile, userId)?.length);
+    } catch (error) {
+        console.warn("[DMWidget] current profile refresh skipped after widget mutation", error);
+        return false;
+    } finally {
+        if (timeoutId !== undefined) window.clearTimeout(timeoutId);
+    }
 }
 
 function clearVisibleWidgetOwnerProfileRetry(ownerId: string): void {
@@ -8002,9 +8037,9 @@ function WidgetEditor() {
     }, [slotKey, created]);
     const privateCredentialsMissing = created && privateCredentialsMissingForSlot(slotKey);
     const privateCredentialLabel = slotKey === "valorant"
-        ? "Riot ID (Name#Tag) and HenrikDev key"
+        ? "Riot ID (Name#Tag)"
         : slotKey === "fortnite"
-            ? "Epic IGN and Fortnite API key"
+            ? "Epic display name"
             : "private game credentials";
     const previewHero = heroUrlFor(slotKey, id);
     const selectedFortniteHero = String(live.fnHeroPreset ?? "auto");
@@ -8131,21 +8166,22 @@ function WidgetEditor() {
             {live.gameTemplate === "fortnite" && (
                 <div style={{ border: "1px solid var(--background-modifier-accent)", borderRadius: 8, padding: "8px 12px", fontSize: 12.5, lineHeight: 1.5, color: "var(--text-muted)" }}>
                     <b style={{ color: "var(--text-normal)" }}>🎮 Fortnite live stats</b> — Wins / K-D / Kills / Win-Rate auto-refresh from your public
-                    career stats (needs your Epic career stats set <b>public</b> + your API key). Unreal rank + earnings are the two you fill in.
+                    career stats (set your Epic career stats <b>public</b> and enter the exact Epic display name). The normal path uses the Discordmaxxer stats service; no personal key is required.
+                    Unreal rank + earnings are the two you fill in.
                     Auto-updates on launch and every 30 min while open.
                 </div>
             )}
             {live.gameTemplate === "valorant" && (
                 <div style={{ border: "1px solid var(--background-modifier-accent)", borderRadius: 8, padding: "8px 12px", fontSize: 12.5, lineHeight: 1.5, color: "var(--text-muted)" }}>
                     <b style={{ color: "var(--text-normal)" }}>🎯 Valorant live stats</b> — Rank / RR / Peak / Main Agent / Recent Win-Rate / K-D, all
-                    auto-pulled from your Riot ID (HenrikDev API key + region required). Auto-updates on launch and every 30 min while open.
+                    auto-pulled from your Riot ID through the Discordmaxxer stats service. A personal key is only an advanced fallback. Auto-updates on launch and every 30 min while open.
                 </div>
             )}
 
             {isGameWidget && (
                 <div style={{ border: "1px solid var(--background-modifier-accent)", borderRadius: 8, padding: "10px 12px", display: "flex", flexDirection: "column", gap: 8 }}>
                     <div style={{ fontSize: 12.5, lineHeight: 1.45, color: "var(--text-muted)" }}>
-                        <b style={{ color: "var(--text-normal)" }}>{slotKey === "valorant" ? "Valorant live-stat credentials" : "Fortnite live-stat credentials"}</b> — needed to fetch live stats and auto-update your card. Values stay securely saved on this PC and auto-refresh every 30 minutes.
+                        <b style={{ color: "var(--text-normal)" }}>{slotKey === "valorant" ? "Valorant live-stat settings" : "Fortnite live-stat settings"}</b> — the player identity is needed to fetch live stats and auto-update your card. The normal path does not require a personal provider key; an optional key is only a fallback on this PC. Auto-refresh runs every 30 minutes.
                     </div>
                     {slotKey === "valorant" ? <>
                         <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12, color: "var(--text-muted)" }}>
@@ -8160,8 +8196,8 @@ function WidgetEditor() {
                                     Get key at api.henrikdev.xyz ↗
                                 </a>
                             </span>
-                            <input aria-label="HenrikDev API key" type="password" autoComplete="off" value={String(live.valApiKey ?? "")} placeholder="Discordmaxxer shared key active (or paste custom key)" style={credentialInputStyle} onChange={event => { setSetting("valApiKey", event.currentTarget.value); force(value => value + 1); }} />
-                            <span style={{ fontSize: 11, color: "var(--text-muted)", opacity: 0.85 }}>✓ Shared HenrikDev key is active by default — no personal key required.</span>
+                            <input aria-label="HenrikDev API key optional fallback" type="password" autoComplete="off" value={String(live.valApiKey ?? "")} placeholder="Optional personal key for fallback" style={credentialInputStyle} onChange={event => { setSetting("valApiKey", event.currentTarget.value); force(value => value + 1); }} />
+                            <span style={{ fontSize: 11, color: "var(--text-muted)", opacity: 0.85 }}>The normal path uses the Discordmaxxer stats service. This optional personal key is used only if that service is unavailable.</span>
                         </label>
                     </> : <>
                         <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12, color: "var(--text-muted)" }}>
@@ -8170,13 +8206,13 @@ function WidgetEditor() {
                         </label>
                         <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12, color: "var(--text-muted)" }}>
                             <span style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                                <span>Fortnite API key</span>
+                                <span>Fortnite API key (optional override)</span>
                                 <a href="https://dash.fortnite-api.com" target="_blank" rel="noreferrer noopener" style={{ color: "var(--text-link)", fontSize: 11, textDecoration: "underline" }}>
                                     Get free key at dash.fortnite-api.com ↗
                                 </a>
                             </span>
-                            <input aria-label="Fortnite API key" type="password" autoComplete="off" value={String(live.fnApiKey ?? "")} placeholder="Paste your fortnite-api.com key" style={credentialInputStyle} onChange={event => { setSetting("fnApiKey", event.currentTarget.value); force(value => value + 1); }} />
-                            <span style={{ fontSize: 11, color: "var(--text-muted)", opacity: 0.85 }}>Free: Generate a free API key at dash.fortnite-api.com and paste it here.</span>
+                            <input aria-label="Fortnite API key optional fallback" type="password" autoComplete="off" value={String(live.fnApiKey ?? "")} placeholder="Optional personal key for fallback" style={credentialInputStyle} onChange={event => { setSetting("fnApiKey", event.currentTarget.value); force(value => value + 1); }} />
+                            <span style={{ fontSize: 11, color: "var(--text-muted)", opacity: 0.85 }}>The normal path uses the Discordmaxxer stats service. This optional personal key is used only if that service is unavailable.</span>
                         </label>
                     </>}
                 </div>
