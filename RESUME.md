@@ -4714,3 +4714,17 @@ Release/proof boundary:
 - Diggy test owed: start a real Spotify track in the installed release and
   click skip-next once. Voice and screenshare-with-audio were not changed and
   remain unverified optional quality checks.
+
+## 2026-11-15 - v0.7.151 published
+
+- Public state: commit `df9d53d17dfdd8ba411534f75175468ddcab9e1a` is on
+  `origin/main`, tag `v0.7.151` is pushed, and the GitHub release is public at
+  `https://github.com/MaxxTopia/discordmaxxer/releases/tag/v0.7.151`.
+- Publication proof: release workflow run `43738468353` completed successfully.
+  The public installer, x64 ZIP, arm64 ZIP, blockmap, and `latest.yml` all
+  returned HTTP 200; `latest.yml` reports version `0.7.151` and the published
+  installer size/hash.
+- User boundary: the source/build/package/runtime gates passed, but Diggy still
+  needs to start a real Spotify track and click skip-next once in the installed
+  release. Voice and screenshare-with-audio remain unverified optional quality
+  checks. The canonical dirty Gemini checkout was not reset, cleaned, or merged.
