@@ -214,7 +214,6 @@ function makeMaxxerPlusPlusBadgeSvg(animated: boolean, finish: string): string {
     <clipPath id="dmpp-clip-${finish}"><circle cx="12" cy="12" r="10.4"/></clipPath>
   </defs>
   <circle cx="12" cy="12" r="11" fill="url(#dmpp-base-${finish})" stroke="url(#dmpp-ring-${finish})" stroke-width="1.1"/>
-  <path d="M 3.8,11 A 9.2,9.2 0 0,1 20.2,11" fill="none" stroke="rgba(255,255,255,0.45)" stroke-width="0.75"/>
   <g clip-path="url(#dmpp-clip-${finish})">${sheen}</g>
   <!-- Minted ++ emblem with 3D bevel shadow and crisp rounded geometry -->
   <g fill="${p.shadow}" opacity="0.65" transform="translate(0, 0.75)">

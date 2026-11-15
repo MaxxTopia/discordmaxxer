@@ -81,6 +81,7 @@ const PLUGINS_DEFAULT_ON: string[] = [
     "DMEmoji", // local animated emoji library & chat attachment button
     "DMBeta", // MAXXER++ perk: opt-in beta channel for prerelease GitHub tags
     "DMVotes", // MAXXER++ perk: panel for voting on candidate features (polls in #vip-chat)
+    "SpotifyControls", // Spotify mini-player above the account panel with playback controls
     "PlaylistmaxxingPresence" // music.maxxtopia.com rich-presence listening card
 ];
 

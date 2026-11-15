@@ -50,5 +50,10 @@ if (document.readyState === "loading") {
 
 const headObserver = new MutationObserver(updateFavicon);
 if (document.head) {
-    headObserver.observe(document.head, { childList: true, subtree: true, attributes: true, attributeFilter: ["href"] });
+    headObserver.observe(document.head, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ["href"]
+    });
 }

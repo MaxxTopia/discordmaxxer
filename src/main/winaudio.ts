@@ -173,7 +173,7 @@ function parseWindowHandle(sourceId: unknown): number | null {
 
     const raw = Number(match[1]);
     if (!Number.isFinite(raw) || raw === 0) return null;
-    const hwnd = raw < 0 ? (raw >>> 0) : raw;
+    const hwnd = raw < 0 ? raw >>> 0 : raw;
     return Number.isSafeInteger(hwnd) && hwnd > 0 ? hwnd : null;
 }
 

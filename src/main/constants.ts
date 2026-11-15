@@ -60,7 +60,9 @@ function migrateLegacyInstalledSessionData(destination: string) {
     const candidates = [
         join(app.getPath("userData"), "sessionData"),
         join(app.getPath("appData"), "DiscordmaxxerPortable", "sessionData"),
-        typeof process.env.LOCALAPPDATA === "string" ? join(process.env.LOCALAPPDATA, "DiscordmaxxerReleasePreview-Codex", "sessionData") : "",
+        typeof process.env.LOCALAPPDATA === "string"
+            ? join(process.env.LOCALAPPDATA, "DiscordmaxxerReleasePreview-Codex", "sessionData")
+            : "",
         join(app.getPath("appData"), "Vesktop", "sessionData"),
         join(app.getPath("appData"), "Vencord", "sessionData"),
         join(vesktopDir, "Data", "sessionData")

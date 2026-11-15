@@ -4690,3 +4690,27 @@ Release/proof boundary:
   message/image context menus and copy, composer send/paste and attachment
   preview, folder child-server navigation, plugin settings recovery, and
   startup/login persistence.
+
+## 2026-11-15 - v0.7.151 Spotify and MAXXER++ release candidate
+
+- Scope: enable the existing `SpotifyControls` plugin by default and remove
+  the one explicit white SVG arc from the MAXXER++ supporter badge. The
+  candidate is based on the public v0.7.150 tag; the dirty canonical Gemini
+  checkout remains separate and was not reset or cleaned.
+- Runtime evidence: authenticated candidate Discord showed the Spotify slot
+  as a sibling before the account panel, `SpotifyControls` registered and
+  enabled, and the profile popout showed the MAXXER++ badge. The rendered
+  badge SVG contains the minted rectangles, gradients, and sweep animation,
+  with no white arc and no font-text fallback. Theme flair generated its
+  stylesheet when opted in; the saved external-source/disabled-flair settings
+  were restored afterward.
+- Verification: `pnpm test`, `pnpm verifyPlugins`, native Windows audio tests,
+  strict overlay build, artifact verifier, `pnpm package:dir`, and
+  `pnpm package:win` passed. The installer, x64 ZIP, arm64 ZIP, blockmap, and
+  `latest.yml` were produced; the installer hash matches the updater manifest.
+- Release boundary: this entry records the candidate before publication.
+  Antigravity/Gemini chat history was not present in the project or Codex
+  workspace, so source, repository history, and runtime evidence were used.
+- Diggy test owed: start a real Spotify track in the installed release and
+  click skip-next once. Voice and screenshare-with-audio were not changed and
+  remain unverified optional quality checks.

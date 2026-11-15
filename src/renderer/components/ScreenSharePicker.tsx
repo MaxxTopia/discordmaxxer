@@ -200,7 +200,9 @@ export function openScreenSharePicker(screens: Source[], skipPicker: boolean) {
             };
             return (async () => {
                 if (isWindows) {
-                    try { await VesktopNative.virtmic.startSystem([]); } catch {}
+                    try {
+                        await VesktopNative.virtmic.startSystem([]);
+                    } catch {}
                 }
                 return pick;
             })();
