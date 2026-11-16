@@ -4887,3 +4887,33 @@ Release/proof boundary:
   needs to start a real Spotify track and click skip-next once in the installed
   release. Voice and screenshare-with-audio remain unverified optional quality
   checks. The canonical dirty Gemini checkout was not reset, cleaned, or merged.
+
+## 2026-11-15 - v0.7.152 navigation/runtime gate
+
+- Candidate state: `release/v0.7.152` at `83fb22b` remains local and unpublished.
+  The public client is still v0.7.151; no public release, tag, installer upload,
+  or live-client change was made during this check. The dirty canonical Gemini
+  checkout and the audit worktree's untracked runtime/benchmark artifacts were
+  left untouched.
+- Runtime proof: the signed-in verified v0.7.152 candidate launched with the
+  rebuilt `vencord-dist` fingerprint matching the executable. A 22-step route
+  stress test across servers, channels, and DMs produced zero stale/theme-only
+  failures; the rendered theme remained present and the bottom account panel
+  remained visible at approximately 413x58. A read-only DOM check also found
+  the `vencord-themes` style using a Blob URL, six mounted app children, and a
+  visible account panel. No renderer-liveness failure or recovery event was
+  logged.
+- Verification: `pnpm test` passed (`eslint src` and `tsc --noEmit`), the build
+  verifier passed, and `validate-all --skip badge` passed. The badge step was
+  intentionally skipped because it mutates account/API-backed settings. This
+  evidence supports the candidate fix for the reported channel/server stale
+  screen and missing bottom bar, but it is not proof of every optional plugin.
+- Remaining gates before publication: standard ship/package/updater checks plus
+  Diggy's real-user acceptance for Spotify track and skip-next, Theme Flair
+  persistence, Widget Update/Deploy and card refresh, MAXXER++ badge appearance,
+  and live voice/screenshare behavior. Stop at the publish gate until Diggy
+  explicitly approves publishing v0.7.152.
+- Best next action: complete the documented release gates, then publish only the
+  intended v0.7.152 commit and verify the public release assets and updater
+  manifest. Do not add a blind navigation patch based on the old v0.7.151
+  failure unless a new candidate runtime reproduction appears.
