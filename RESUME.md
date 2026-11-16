@@ -4917,3 +4917,21 @@ Release/proof boundary:
   intended v0.7.152 commit and verify the public release assets and updater
   manifest. Do not add a blind navigation patch based on the old v0.7.151
   failure unless a new candidate runtime reproduction appears.
+
+## 2026-11-15 - v0.7.152 published
+
+- Public state: commit `d0aecb21e02d39f3f31225c51941348d53d8414b` is on
+  `origin/main`, tag `v0.7.152` is pushed, and the GitHub release is public at
+  `https://github.com/MaxxTopia/discordmaxxer/releases/tag/v0.7.152`.
+- Publication proof: release workflow `43793808243` completed successfully in
+  6m14s. The installer, x64 ZIP, arm64 ZIP, blockmap, and `latest.yml` are all
+  uploaded and returned HTTP 200. Public `latest.yml` reports version `0.7.152`
+  and installer size `211999553` with the matching updater SHA-512 value.
+- Release boundary: this publication replaces v0.7.151 for updater consumers.
+  The local signed-in navigation stress test remains the evidence for the
+  channel/server stale-screen and missing-bottom-bar fix; public recipient and
+  device behavior still needs Diggy's normal post-update acceptance.
+- Diggy test owed: update the installed client, confirm the About version is
+  v0.7.152, then test repeated server/channel navigation, Spotify track and
+  skip-next, Theme Flair persistence, Widget Update/Deploy and profile-card
+  refresh, MAXXER++ badge appearance, and any desired voice/screenshare session.
