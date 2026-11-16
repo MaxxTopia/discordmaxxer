@@ -1104,7 +1104,8 @@ function getPendingMessageUploads(channelId: string): CloudUpload[] {
         const store = UploadAttachmentStore as unknown as { getUploads?: unknown };
         const getUploads = store && typeof store.getUploads === "function" ? store.getUploads : null;
         if (!getUploads) return [];
-        return getUploads.call(store, channelId, DraftType.ChannelMessage) ?? [];
+        const uploads = getUploads.call(store, channelId, DraftType.ChannelMessage);
+        return Array.isArray(uploads) ? uploads : [];
     } catch {
         // UploadAttachmentStore is a lazy webpack proxy. It can legitimately
         // be unavailable during DM navigation; the native composer remains
@@ -1146,12 +1147,40 @@ function hasNativeAttachmentPreview(form: HTMLFormElement, fallbackHost: HTMLEle
     return Array.from(form.querySelectorAll<HTMLImageElement | HTMLVideoElement>("img, video")).some(element => {
         if (fallbackHost.contains(element) || !isVisibleComposerElement(element)) return false;
 
-        const source = element.currentSrc || element.src;
+        const source = element.currentSrc || element.getAttribute("src") || "";
+        if (!source) return false;
+
+        // Discord can mount an attachment shell before its media has a source
+        // or before Chromium has decoded the first frame. Treating that shell
+        // as a finished preview hides DMEmoji's fallback and leaves a blank
+        // card on slower uploads.
+        const ready = element instanceof HTMLImageElement
+            ? element.complete && element.naturalWidth > 0
+            : element.readyState >= 2;
+        if (!ready) return false;
+
         const attachmentContainer = element.closest(
             '[class*="attachment" i], [class*="upload" i], [data-testid*="attachment" i], [data-list-id*="upload" i]'
         );
         return Boolean(attachmentContainer || source.startsWith("blob:") || source.startsWith("data:"));
     });
+}
+
+function pendingUploadSignature(upload: CloudUpload): string {
+    const file = upload.item?.file;
+    if (!(file instanceof Blob)) return `${upload.uniqueId || upload.id || upload.filename}:no-file`;
+
+    return [
+        upload.uniqueId || upload.id || upload.filename,
+        file.name,
+        file.size,
+        file.type,
+        file.lastModified
+    ].join(":");
+}
+
+function pendingUploadsSignature(uploads: CloudUpload[]): string {
+    return uploads.map(pendingUploadSignature).join("\u001f");
 }
 
 type PendingAttachmentPreviewItem = {
@@ -1170,15 +1199,35 @@ function PendingAttachmentPreview({ channelId }: { channelId: string }) {
     const [portalHost, setPortalHost] = useState<HTMLElement | null>(null);
     const [nativePreviewVisible, setNativePreviewVisible] = useState(false);
     const [expandedId, setExpandedId] = useState<string | null>(null);
+    const uploadsRef = useRef<CloudUpload[]>([]);
+    const uploadsSignatureRef = useRef("");
+    const nativePreviewRefreshRef = useRef<(() => void) | null>(null);
+    uploadsRef.current = uploads;
 
     useEffect(() => {
+        // Do not carry a same-signature upload list or native-preview state
+        // across DM/channel routes. UploadAttachmentStore is channel-scoped,
+        // and Discord can tear down the old composer before the new one is
+        // mounted.
+        uploadsSignatureRef.current = "";
+        setUploads([]);
+        setNativePreviewVisible(false);
+        nativePreviewRefreshRef.current = null;
+
         let cancelled = false;
         const refresh = () => {
             try {
                 const nextUploads = getPendingMessageUploads(channelId);
-                if (!cancelled) setUploads(nextUploads);
+                const nextSignature = pendingUploadsSignature(nextUploads);
+                if (!cancelled && nextSignature !== uploadsSignatureRef.current) {
+                    uploadsSignatureRef.current = nextSignature;
+                    setUploads(nextUploads);
+                }
             } catch (error) {
-                if (!cancelled) setUploads([]);
+                if (!cancelled && uploadsSignatureRef.current !== "") {
+                    uploadsSignatureRef.current = "";
+                    setUploads([]);
+                }
                 console.warn("[DMEmoji] attachment store unavailable during navigation:", error);
             }
         };
@@ -1232,34 +1281,46 @@ function PendingAttachmentPreview({ channelId }: { channelId: string }) {
         let retryTimer: number | undefined;
         let observer: MutationObserver | undefined;
         let host: HTMLDivElement | undefined;
+        let rafId: number | undefined;
+        let scheduleNativePreviewUpdate = () => undefined;
+        let removeMediaListeners: (() => void) | undefined;
 
         const attach = () => {
             if (cancelled) return true;
 
-            const form = findMessageComposerForm();
-            if (!form) return false;
+            const currentForm = findMessageComposerForm();
+            if (!currentForm) return false;
 
             host = document.createElement("div");
             host.className = "dmemoji-pending-attachment-host";
             host.dataset.dmemojiPendingPreview = "true";
-            form.insertBefore(host, findComposerInsertionAnchor(form));
+            currentForm.insertBefore(host, findComposerInsertionAnchor(currentForm));
             setPortalHost(host);
 
-            let rafId: number | undefined;
-            const scheduleNativePreviewUpdate = () => {
+            scheduleNativePreviewUpdate = () => {
                 if (rafId !== undefined) return;
                 rafId = window.requestAnimationFrame(() => {
                     rafId = undefined;
                     if (!host || !host.isConnected) return;
-                    if (uploads.length === 0) {
+                    if (uploadsRef.current.length === 0) {
                         setNativePreviewVisible(false);
                         return;
                     }
-                    setNativePreviewVisible(hasNativeAttachmentPreview(form, host));
+                    setNativePreviewVisible(hasNativeAttachmentPreview(currentForm, host));
                 });
             };
+            nativePreviewRefreshRef.current = scheduleNativePreviewUpdate;
 
             scheduleNativePreviewUpdate();
+            const onMediaStateChange = () => scheduleNativePreviewUpdate?.();
+            currentForm.addEventListener("load", onMediaStateChange, true);
+            currentForm.addEventListener("loadeddata", onMediaStateChange, true);
+            currentForm.addEventListener("error", onMediaStateChange, true);
+            removeMediaListeners = () => {
+                currentForm.removeEventListener("load", onMediaStateChange, true);
+                currentForm.removeEventListener("loadeddata", onMediaStateChange, true);
+                currentForm.removeEventListener("error", onMediaStateChange, true);
+            };
             observer = new MutationObserver(records => {
                 try {
                     // Ignore mutations originating strictly within the text editing area (Slate editor / textbox)
@@ -1277,7 +1338,7 @@ function PendingAttachmentPreview({ channelId }: { channelId: string }) {
                     console.warn("[DMEmoji] native preview observer ignored during navigation:", error);
                 }
             });
-            observer.observe(form, {
+            observer.observe(currentForm, {
                 childList: true,
                 subtree: true,
                 attributes: true,
@@ -1304,10 +1365,18 @@ function PendingAttachmentPreview({ channelId }: { channelId: string }) {
             if (retryTimer !== undefined) window.clearInterval(retryTimer);
             if (rafId !== undefined) window.cancelAnimationFrame(rafId);
             observer?.disconnect();
+            removeMediaListeners?.();
+            if (nativePreviewRefreshRef.current === scheduleNativePreviewUpdate) {
+                nativePreviewRefreshRef.current = null;
+            }
             setPortalHost(null);
             host?.remove();
         };
     }, [channelId]);
+
+    useEffect(() => {
+        nativePreviewRefreshRef.current?.();
+    }, [uploads]);
 
     if (!portalHost || nativePreviewVisible || previewItems.length === 0) return null;
 

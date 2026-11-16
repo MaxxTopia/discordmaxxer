@@ -25,6 +25,8 @@ import { activateFreeProfile, getMyHwid, readBinding, reserveFreeActivationWindo
 const FAB_ID = "dm-hub-fab";
 const PANEL_ID = "dm-hub-panel";
 const PANEL_ROOT_ID = "dm-hub-panel-root";
+const ACCOUNT_PANEL_SELECTOR = '[class*="panels_"]';
+const ACCOUNT_TOOLBAR_SELECTOR = '[class*="buttons_"], [class*="buttonContainer_"], [class*="buttonRow_"]';
 
 // Horror-Clyde mark, NO bullet holes — Variant B (cream body, black outline,
 // red eyes, devil horns, speech-tail). Same source as build/tray-source.png.
@@ -808,20 +810,23 @@ function togglePanel() {
 
 // Inject the FAB button into Discord's user-panel toolbar, immediately to the
 // LEFT of the mic mute button. The toolbar re-renders on focus changes, so we
-// re-inject from a MutationObserver.
+// re-inject from a MutationObserver. Keep both queries scoped to the account
+// panel: a global mute-button fallback can attach DMHub to a voice call or a
+// message component and make the real bottom bar look missing.
 function injectButton() {
-    // Match the mic mute/unmute button specifically. The old `*="ute" i` matched
-    // ANY button whose aria-label contains "ute" (could anchor the FAB to the
-    // wrong control); require "mute" and scope to the user-panel toolbar.
-    const mic = (document.querySelector('[class*="panels_"] button[aria-label*="mute" i]')
-        ?? document.querySelector('button[aria-label*="mute" i]')) as HTMLButtonElement | null;
+    const mic = document.querySelector(`${ACCOUNT_PANEL_SELECTOR} button[aria-label*="mute" i]`) as HTMLButtonElement | null;
     if (!mic) return;
-    const micParent = mic.parentElement; // audioButtonParent__5e764
-    const buttonsRow = micParent?.parentElement; // buttons__37e49
-    if (!buttonsRow || buttonsRow.querySelector(`#${FAB_ID}`)) return;
+
+    const accountPanel = mic.closest(ACCOUNT_PANEL_SELECTOR);
+    const micParent = mic.parentElement;
+    const buttonsRow = (mic.closest(ACCOUNT_TOOLBAR_SELECTOR) as HTMLElement | null)
+        ?? micParent?.parentElement;
+    if (!(accountPanel instanceof HTMLElement) || !(buttonsRow instanceof HTMLElement) || !accountPanel.contains(buttonsRow)) return;
+    if (buttonsRow.querySelector(`#${FAB_ID}`)) return;
 
     const fab = document.createElement("button");
     fab.id = FAB_ID;
+    fab.setAttribute("data-dm-account-surface", "true");
     fab.title = "Discordmaxxer — quick toggles";
     fab.setAttribute("aria-label", "Discordmaxxer — quick toggles");
     fab.innerHTML = `<img src="${FAB_LOGO_DATA}" width="26" height="26" alt="Discordmaxxer" style="display:block;pointer-events:none;border-radius:50%"/>`;
@@ -831,7 +836,8 @@ function injectButton() {
         togglePanel();
     });
 
-    buttonsRow.insertBefore(fab, micParent ?? buttonsRow.firstChild);
+    const anchor = micParent && buttonsRow.contains(micParent) ? micParent : mic;
+    buttonsRow.insertBefore(fab, anchor);
 }
 
 let injectScheduled = false;

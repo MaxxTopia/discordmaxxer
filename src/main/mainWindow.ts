@@ -59,6 +59,7 @@ app.on("before-quit", () => {
         clearTimeout(postStartupRendererRecoveryTimer);
         postStartupRendererRecoveryTimer = null;
     }
+    clearRuntimeLivenessWatch();
 });
 
 export let mainWin: BrowserWindow;
@@ -70,6 +71,9 @@ const MAX_STARTUP_NAVIGATION_RETRIES = 3;
 const MAX_POST_STARTUP_RENDERER_RECOVERIES = 2;
 const POST_STARTUP_RENDERER_RECOVERY_WINDOW_MS = 60_000;
 const POST_STARTUP_RENDERER_RECOVERY_DELAY_MS = 250;
+const RUNTIME_LIVENESS_INTERVAL_MS = 1_000;
+const RUNTIME_LIVENESS_GRACE_MS = 5_000;
+const RUNTIME_LIVENESS_FAILURE_THRESHOLD = 3;
 const retryDelay = 1000;
 
 let retryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -87,6 +91,7 @@ let createWindowsPromise: Promise<void> | null = null;
 let postStartupRendererRecoveryAttempts = 0;
 let postStartupRendererRecoveryWindowStartedAt = 0;
 let postStartupRendererRecoveryTimer: ReturnType<typeof setTimeout> | null = null;
+let runtimeLivenessTimer: ReturnType<typeof setInterval> | null = null;
 
 function makeSettingsListenerHelpers<O extends object>(o: SettingsStore<O>) {
     const listeners = new Map<(data: any) => void, PropertyKey>();
@@ -527,6 +532,13 @@ function createMainWindow() {
 
 const runVencordMain = once(() => require(join(VENCORD_FILES_DIR, "vencordDesktopMain.js")));
 
+function clearRuntimeLivenessWatch() {
+    if (runtimeLivenessTimer !== null) {
+        clearInterval(runtimeLivenessTimer);
+        runtimeLivenessTimer = null;
+    }
+}
+
 function clearStartupWatch() {
     if (startupWatchdogTimer !== null) {
         clearTimeout(startupWatchdogTimer);
@@ -540,6 +552,7 @@ function clearStartupWatch() {
         clearTimeout(unresponsiveTimer);
         unresponsiveTimer = null;
     }
+    clearRuntimeLivenessWatch();
 }
 
 function startupDiagnosticId() {
@@ -583,7 +596,95 @@ function markStartupReady(attempt: number) {
     clearStartupWatch();
     recordStartupEvent("renderer-ready", { attempt, targetUrl: startupTargetUrl });
     closeStartupRecovery();
+    startRuntimeLivenessWatch();
     AppEvents.emit("appLoaded");
+}
+
+function startRuntimeLivenessWatch() {
+    clearRuntimeLivenessWatch();
+    if (!mainWin || mainWin.isDestroyed()) return;
+
+    const startedAt = Date.now();
+    let consecutiveFailures = 0;
+    let probeInFlight = false;
+    const probe = `(() => {
+        const mount = document.querySelector('#app-mount');
+        if (!mount) return { healthy: false, reason: 'mount-missing' };
+
+        const mountStyle = getComputedStyle(mount);
+        const mountRect = mount.getBoundingClientRect();
+        const mountVisible = mount.childElementCount > 0 &&
+            mountRect.width > 4 &&
+            mountRect.height > 4 &&
+            mountStyle.display !== 'none' &&
+            mountStyle.visibility !== 'hidden' &&
+            Number.parseFloat(mountStyle.opacity || '1') > 0;
+        const surfaces = Array.from(mount.querySelectorAll(
+            '[role="main"], [role="navigation"], nav, [data-list-id="chat-messages"], [class*="sidebar_"], [class*="guilds_"], [class*="content_"]'
+        ));
+        const hasVisibleSurface = surfaces.some(element => {
+            const style = getComputedStyle(element);
+            const rect = element.getBoundingClientRect();
+            return rect.width > 4 &&
+                rect.height > 4 &&
+                style.display !== 'none' &&
+                style.visibility !== 'hidden' &&
+                Number.parseFloat(style.opacity || '1') > 0;
+        });
+
+        return {
+            healthy: mountVisible && hasVisibleSurface,
+            reason: mountVisible ? (hasVisibleSurface ? 'ok' : 'surface-hidden') : 'mount-hidden',
+            childCount: mount.childElementCount
+        };
+    })()`;
+
+    runtimeLivenessTimer = setInterval(() => {
+        if (
+            isQuitting ||
+            !startupReady ||
+            startupRecoveryShown ||
+            !mainWin ||
+            mainWin.isDestroyed() ||
+            Date.now() - startedAt < RUNTIME_LIVENESS_GRACE_MS ||
+            probeInFlight
+        ) {
+            return;
+        }
+
+        probeInFlight = true;
+        try {
+            void mainWin.webContents
+                .executeJavaScript(probe, true)
+                .then(result => {
+                    if (!startupReady || startupRecoveryShown) return;
+
+                    const health = result as { healthy?: boolean; reason?: string; childCount?: number } | undefined;
+                    if (health?.healthy === true) {
+                        consecutiveFailures = 0;
+                        return;
+                    }
+
+                    consecutiveFailures += 1;
+                    recordStartupEvent("renderer-liveness-failure", {
+                        consecutiveFailures,
+                        reason: health?.reason ?? "unknown",
+                        childCount: health?.childCount ?? null
+                    });
+                    if (consecutiveFailures < RUNTIME_LIVENESS_FAILURE_THRESHOLD) return;
+
+                    clearRuntimeLivenessWatch();
+                    recoverRendererAfterCrash({ reason: "renderer-liveness", health });
+                })
+                .catch(error => recordStartupEvent("renderer-liveness-probe-error", describeStartupError(error)))
+                .finally(() => {
+                    probeInFlight = false;
+                });
+        } catch (error) {
+            recordStartupEvent("renderer-liveness-probe-error", describeStartupError(error));
+            probeInFlight = false;
+        }
+    }, RUNTIME_LIVENESS_INTERVAL_MS);
 }
 
 function recoverRendererAfterCrash(details: unknown) {

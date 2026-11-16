@@ -1,5 +1,14 @@
 # Discordmaxxer — RESUME
 
+## 2026-11-15 — v0.7.152 blank-route, attachment, history, and DMHub follow-up
+
+- **Scope**: follow up on the public v0.7.151 reports that server navigation can leave only the external theme visible, image attachments can be visually blank before send, MessageLogger deleted-history actions disappeared, and the DMHub/account bottom bar was absent in the observed run.
+- **Source changes**: `src/main/mainWindow.ts` now has a delayed, three-strike post-startup surface liveness check that uses the existing bounded renderer recovery path; `plugins/DMEmoji/index.tsx` resets state per channel, deduplicates upload polling, waits for decoded media, and listens for media state changes; the overlaid MessageLogger patch resolves `MessageStore` records before adding history actions; `plugins/DMHub/index.ts` now scopes its mute/toolbar lookup to the account panel and uses semantic toolbar fallbacks; `overlay-scripts/verify-build.mjs` checks all of these contracts.
+- **Evidence boundary**: the theme-only blank state was not reproducible on demand in the installed v0.7.151 runtime, so the liveness watch is bounded recovery hardening, not proof of the original runtime trigger. The attached blank/grey preview screenshots are consistent with the two lifecycle defects now guarded in source. The next package must be checked for a visible DMHub FAB and the full bottom account bar.
+- **Verification so far**: `pnpm test`, plugin registry checks, production build, strict overlay with zero warnings, expanded integrity checks, directory packaging, x64/arm64 packaging, installer/blockmap generation, updater-hash verification, `git diff --check`, ASCII shipped-script checks, and the Worker Node test suite (6/6) all passed. The exact packaged candidate launched cleanly in an isolated profile and reached Discord's login surface; a signed-in bottom-bar visual check is still session-gated. The installed v0.7.151 runtime was also checked: its account-panel accessibility region had no DMHub control, matching the reported defect. No push, tag, installer upload, or public release has occurred.
+- **Separate provider state**: the user's personal Fortnite key works in DMWidget, proving the key/IGN path; the shared Worker secret previously returned an upstream 401 and remains a release blocker for zero-key all-user stats until the exact working secret is re-entered and live-probed. Values must not be printed or committed.
+- **Next action**: commit the reviewed source/docs changes, keep the release stopped because the shared Fortnite Worker still returns 503, and obtain a signed-in candidate bottom-bar check plus a successful live Worker probe before any public tag. The temporary isolated profile and benchmark exports remain untracked and must not be staged.
+
 ## 2026-11-15 — v0.7.152 candidate packaged; publish gate pending stats service
 
 - **Local release state**: isolated branch `release/v0.7.152` contains commit

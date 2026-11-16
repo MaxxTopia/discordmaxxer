@@ -68,6 +68,82 @@ if (actualVencordCommit !== VENCORD_SOURCE_PIN.commit) {
 }
 
 const PATCHES = [
+    {
+        file: "src/plugins/messageLogger/index.tsx",
+        marker: "Discordmaxxer: harden MessageLogger context history.",
+        find:
+            "const patchMessageContextMenu: NavContextMenuPatchCallback = (children, props) => {\n" +
+            "    const { message } = props;\n" +
+            "    const { deleted, id, channel_id } = message;\n\n" +
+            "    if (!doesMessageHaveHistory(message)) return;\n\n" +
+            "    toggle: {\n" +
+            "        if (!deleted) break toggle;\n\n" +
+            "        const domElement = document.getElementById(`chat-messages-${channel_id}-${id}`);\n" +
+            "        if (!domElement) break toggle;\n\n" +
+            "        children.push((\n" +
+            "            <Menu.MenuItem\n" +
+            "                id={TOGGLE_DELETE_STYLE_ID}\n" +
+            "                key={TOGGLE_DELETE_STYLE_ID}\n" +
+            "                label=\"Toggle Deleted Highlight\"\n" +
+            "                action={() => domElement.classList.toggle(\"messagelogger-deleted\")}\n" +
+            "            />\n" +
+            "        ));\n" +
+            "    }\n\n" +
+            "    children.push((\n" +
+            "        <Menu.MenuItem\n" +
+            "            id={REMOVE_HISTORY_ID}\n" +
+            "            key={REMOVE_HISTORY_ID}\n" +
+            "            label=\"Remove Message History\"\n" +
+            "            color=\"danger\"\n" +
+            "            action={() => {\n" +
+            "                clearMessageHistory(message);\n" +
+            "            }}\n" +
+            "        />\n" +
+            "    ));\n" +
+            "};",
+        replace:
+            "// Discordmaxxer: harden MessageLogger context history.\n" +
+            "const patchMessageContextMenu: NavContextMenuPatchCallback = (children, props) => {\n" +
+            "    // Discord can pass a lightweight context-menu message while the\n" +
+            "    // full deleted record remains in MessageStore. Resolve that record\n" +
+            "    // first, but fail closed while a route is being torn down.\n" +
+            "    const contextMessage = props?.message as MLMessage | undefined;\n" +
+            "    if (!contextMessage?.id || !contextMessage.channel_id) return;\n\n" +
+            "    let storedMessage: MLMessage | undefined;\n" +
+            "    try {\n" +
+            "        storedMessage = MessageStore.getMessage(contextMessage.channel_id, contextMessage.id) as MLMessage | undefined;\n" +
+            "    } catch {\n" +
+            "        storedMessage = undefined;\n" +
+            "    }\n" +
+            "    const message = storedMessage && doesMessageHaveHistory(storedMessage) ? storedMessage : contextMessage;\n" +
+            "    const { deleted, id, channel_id } = message;\n\n" +
+            "    if (!doesMessageHaveHistory(message)) return;\n\n" +
+            "    toggle: {\n" +
+            "        if (!deleted) break toggle;\n\n" +
+            "        const domElement = document.getElementById(`chat-messages-${channel_id}-${id}`);\n" +
+            "        if (!domElement) break toggle;\n\n" +
+            "        children.push((\n" +
+            "            <Menu.MenuItem\n" +
+            "                id={TOGGLE_DELETE_STYLE_ID}\n" +
+            "                key={TOGGLE_DELETE_STYLE_ID}\n" +
+            "                label=\"Toggle Deleted Highlight\"\n" +
+            "                action={() => domElement.classList.toggle(\"messagelogger-deleted\")}\n" +
+            "            />\n" +
+            "        ));\n" +
+            "    }\n\n" +
+            "    children.push((\n" +
+            "        <Menu.MenuItem\n" +
+            "            id={REMOVE_HISTORY_ID}\n" +
+            "            key={REMOVE_HISTORY_ID}\n" +
+            "            label=\"Remove Message History\"\n" +
+            "            color=\"danger\"\n" +
+            "            action={() => {\n" +
+            "                clearMessageHistory(message);\n" +
+            "            }}\n" +
+            "        />\n" +
+            "    ));\n" +
+            "};"
+    },
     // ── SpotifyControls: fail closed while Discord's Spotify modules load ──
     // Discord can mount the account panel before the Spotify webpack exports
     // exist. The upstream store performed the lookup eagerly and then called

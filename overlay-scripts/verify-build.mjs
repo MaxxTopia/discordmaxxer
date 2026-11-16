@@ -225,6 +225,61 @@ if (!existsSync(overlaySourceRoot)) {
     } else {
         fail("custom folder sidebar still has an unsafe mount or undefined folder-ID helper");
     }
+
+    const messageLoggerSource = readOverlaySource("plugins/messageLogger/index.tsx");
+    const messageLoggerMarkers = [
+        "Discordmaxxer: harden MessageLogger context history.",
+        "props?.message",
+        "MessageStore.getMessage",
+        'label=\"Remove Message History\"'
+    ];
+    const missingMessageLoggerMarkers = messageLoggerMarkers.filter(marker => !messageLoggerSource.includes(marker));
+    if (missingMessageLoggerMarkers.length === 0) {
+        ok("MessageLogger resolves full deleted/edit history before adding its context actions");
+    } else {
+        fail(`MessageLogger history action hardening is incomplete: missing ${missingMessageLoggerMarkers.join(", ")}`);
+    }
+
+    const dmEmojiSource = readFileSync(join(ROOT, "plugins", "DMEmoji", "index.tsx"), "utf8");
+    const dmEmojiPreviewMarkers = [
+        "pendingUploadsSignature",
+        "nativePreviewRefreshRef",
+        "naturalWidth > 0",
+        "readyState >= 2",
+        "uploadsSignatureRef.current = \"\";"
+    ];
+    const missingDmEmojiMarkers = dmEmojiPreviewMarkers.filter(marker => !dmEmojiSource.includes(marker));
+    if (missingDmEmojiMarkers.length === 0) {
+        ok("DMEmoji attachment preview has stable upload identity and loaded-media detection");
+    } else {
+        fail(`DMEmoji attachment preview hardening is incomplete: missing ${missingDmEmojiMarkers.join(", ")}`);
+    }
+
+    const dmHubSource = readFileSync(join(ROOT, "plugins", "DMHub", "index.ts"), "utf8");
+    const dmHubMarkers = [
+        "const ACCOUNT_PANEL_SELECTOR",
+        "const ACCOUNT_TOOLBAR_SELECTOR",
+        'button[aria-label*=\"mute\" i]',
+        "data-dm-account-surface",
+        "buttonsRow.insertBefore(fab, anchor)"
+    ];
+    const missingDmHubMarkers = dmHubMarkers.filter(marker => !dmHubSource.includes(marker));
+    if (missingDmHubMarkers.length === 0) {
+        ok("DMHub is anchored to the real account-panel toolbar and reinsertable after Discord re-renders it");
+    } else {
+        fail(`DMHub account-bar anchoring is incomplete: missing ${missingDmHubMarkers.join(", ")}`);
+    }
+
+    const dmTrimSource = readFileSync(join(ROOT, "plugins", "DMTrim", "index.ts"), "utf8");
+    if (
+        dmTrimSource.includes('[class*="panels_"] > [class*="container_"]') &&
+        dmTrimSource.includes('div[class*="questBar_"]') &&
+        !dmTrimSource.includes('div[class*="questBar" i]')
+    ) {
+        ok("DMTrim protects the account panel and does not ship the broad QuestBar selector");
+    } else {
+        fail("DMTrim account-panel protection or narrowed QuestBar selector is missing");
+    }
 }
 
 // 3) The Vesktop shell build output (what electron-builder packages).
@@ -254,6 +309,8 @@ const startupMarkers = [
     [shellMain, "did-fail-load", "main-process navigation watchdog"],
     [shellMain, "Discord did not finish loading within the startup timeout.", "renderer startup timeout"],
     [shellMain, "The plugin engine did not become ready within the startup timeout.", "plugin preparation timeout"],
+    [shellMain, "renderer-liveness-failure", "post-startup renderer liveness watchdog"],
+    [shellMain, "surface-hidden", "visible Discord surface probe"],
     [shellPreload, "DM_STARTUP_ERROR", "renderer startup error reporting"],
     [shellPreload, "renderer-script-load", "empty renderer bundle reporting"]
 ];
