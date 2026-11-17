@@ -38,6 +38,7 @@ interface WinAudioModule {
     enumerateAudioSessions: () => {
         sessions: Array<{ pid: number; processName: string; displayName: string; isActive: boolean }>;
     };
+    enumerateProcesses: () => Array<[number, string]>;
     resolveWindowProcessId: (hwnd: number) => number | null;
     startProcessLoopback: (
         targetPid: number,
@@ -112,6 +113,18 @@ function load(): WinAudioModule | null {
         loadError = String(e?.message || e);
         console.warn("[winaudio] load failed:", loadError);
         return null;
+    }
+}
+
+// Shared by the Rich Presence worker. Keeping process enumeration in the
+// native main-process bridge avoids spawning WMIC or another console utility.
+export function enumerateProcesses(): Array<[number, string]> {
+    const mod = load();
+    if (!mod) return [];
+    try {
+        return mod.enumerateProcesses();
+    } catch {
+        return [];
     }
 }
 

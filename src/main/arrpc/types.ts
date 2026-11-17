@@ -5,7 +5,8 @@
  */
 
 export type ArRpcEvent = ArRpcActivityEvent | ArRpcInviteEvent | ArRpcLinkEvent;
-export type ArRpcHostEvent = ArRpcHostAckInviteEvent | ArRpcHostAckLinkEvent;
+export type ArRpcHostEvent = ArRpcHostAckInviteEvent | ArRpcHostAckLinkEvent | ArRpcProcessResponseEvent;
+export type ArRpcWorkerEvent = ArRpcEvent | ArRpcProcessRequestEvent;
 
 export interface ArRpcActivityEvent {
     type: "activity";
@@ -35,4 +36,15 @@ export interface ArRpcHostAckLinkEvent {
     type: "ack-link";
     nonce: string;
     data: boolean;
+}
+
+export interface ArRpcProcessRequestEvent {
+    type: "processes-request";
+    nonce: string;
+}
+
+export interface ArRpcProcessResponseEvent {
+    type: "processes-response";
+    nonce: string;
+    data: Array<[number, string]>;
 }

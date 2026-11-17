@@ -271,6 +271,40 @@ std::string pid_to_exe_name(uint32_t pid) {
     return out;
 }
 
+// Enumerate running processes without launching a console utility. The
+// Rich Presence scanner only needs PID + executable path, and using the
+// Windows Toolhelp/API path keeps this work inside the app process.
+Napi::Value EnumerateProcesses(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    Napi::Array result = Napi::Array::New(env);
+
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot == INVALID_HANDLE_VALUE) return result;
+
+    PROCESSENTRY32W entry{};
+    entry.dwSize = sizeof(entry);
+    if (Process32FirstW(snapshot, &entry)) {
+        do {
+            HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, entry.th32ProcessID);
+            if (!process) continue;
+
+            std::vector<wchar_t> path(32768);
+            DWORD length = static_cast<DWORD>(path.size());
+            if (QueryFullProcessImageNameW(process, 0, path.data(), &length) && length > 0) {
+                Napi::Array item = Napi::Array::New(env, 2);
+                item.Set(uint32_t{0}, Napi::Number::New(env, entry.th32ProcessID));
+                item.Set(uint32_t{1}, Napi::String::New(env, utf16_to_utf8(path.data())));
+                result.Set(result.Length(), item);
+            }
+
+            CloseHandle(process);
+        } while (Process32NextW(snapshot, &entry));
+    }
+
+    CloseHandle(snapshot);
+    return result;
+}
+
 std::vector<SessionInfo> enumerate_sessions_impl() {
     std::vector<SessionInfo> out;
     ComPtr<IMMDeviceEnumerator> enumerator;
@@ -886,6 +920,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("stopCapture", Napi::Function::New(env, StopCapture));
     exports.Set("isCapturing", Napi::Function::New(env, IsCapturing));
     exports.Set("enumerateAudioSessions", Napi::Function::New(env, EnumerateAudioSessions));
+    exports.Set("enumerateProcesses", Napi::Function::New(env, EnumerateProcesses));
     exports.Set("resolveWindowProcessId", Napi::Function::New(env, ResolveWindowProcessId));
     exports.Set("startProcessLoopback", Napi::Function::New(env, StartProcessLoopback));
     exports.Set("drainChunks", Napi::Function::New(env, DrainChunks));

@@ -10,7 +10,8 @@ import { MessageChannel, Worker } from "worker_threads";
 
 import { sendRendererCommand } from "../ipcCommands";
 import { Settings } from "../settings";
-import { ArRpcEvent, ArRpcHostEvent } from "./types";
+import { enumerateProcesses } from "../winaudio";
+import { ArRpcHostEvent, ArRpcWorkerEvent } from "./types";
 
 let worker: Worker | undefined;
 
@@ -47,15 +48,26 @@ export async function initArRPC() {
             transferList: [workerPort]
         });
 
-        hostPort.on("message", async ({ type, nonce, data }: ArRpcEvent) => {
+        hostPort.on("message", async (message: ArRpcWorkerEvent) => {
+            const { type, nonce } = message;
             switch (type) {
+                case "processes-request": {
+                    const response: ArRpcHostEvent = {
+                        type: "processes-response",
+                        nonce,
+                        data: enumerateProcesses()
+                    };
+                    hostPort.postMessage(response);
+                    break;
+                }
+
                 case "activity": {
-                    sendRendererCommand(IpcCommands.RPC_ACTIVITY, data);
+                    sendRendererCommand(IpcCommands.RPC_ACTIVITY, message.data);
                     break;
                 }
 
                 case "invite": {
-                    const invite = String(data);
+                    const invite = String(message.data);
 
                     const response: ArRpcHostEvent = {
                         type: "ack-invite",
@@ -80,7 +92,9 @@ export async function initArRPC() {
                         data: false
                     };
 
-                    response.data = await sendRendererCommand(IpcCommands.RPC_DEEP_LINK, data).catch(() => false);
+                    response.data = await sendRendererCommand(IpcCommands.RPC_DEEP_LINK, message.data).catch(
+                        () => false
+                    );
 
                     hostPort.postMessage(response);
                     break;

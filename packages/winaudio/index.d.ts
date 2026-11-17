@@ -110,6 +110,9 @@ export interface ListSessionsResult {
  */
 export function enumerateAudioSessions(): ListSessionsResult;
 
+/** Enumerate running processes as [pid, absolute executable path] tuples. */
+export function enumerateProcesses(): Array<[number, string]>;
+
 /**
  * Resolve an Electron desktop-capturer `window:<HWND>:...` handle to the
  * owning Windows process. Returns null when the handle is stale or invalid.
