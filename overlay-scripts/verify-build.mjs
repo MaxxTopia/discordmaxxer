@@ -194,8 +194,9 @@ if (!existsSync(overlaySourceRoot)) {
         fail(`native composer context-menu bridge is incomplete: missing ${missingComposerMarkers.join(", ")}`);
     }
     const pluginManagerSource = readOverlaySource("api/PluginManager.ts");
-    if (/DISCORDMAXXER_NATIVE_MENU_IDS\.has\(navId\) && name !== ["']WebContextMenus["']/.test(pluginManagerSource)) {
-        ok("third-party message/image menu patches stay blocked while the built-in image route is allowed");
+    if (/DISCORDMAXXER_NATIVE_MENU_IDS\.has\(navId\) && !DISCORDMAXXER_NATIVE_MENU_PATCH_PLUGINS\.has\(name\)/.test(pluginManagerSource) &&
+        /DISCORDMAXXER_NATIVE_MENU_PATCH_PLUGINS = new Set\(\["MessageLogger", "WebContextMenus"\]\)/.test(pluginManagerSource)) {
+        ok("unsafe message/image menu patches stay blocked while MessageLogger history and native desktop menus remain available");
     } else {
         fail("PluginManager does not preserve the native menu boundary around WebContextMenus");
     }

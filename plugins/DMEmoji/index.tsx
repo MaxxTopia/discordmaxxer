@@ -1154,21 +1154,55 @@ function hasNativeAttachmentPreview(form: HTMLFormElement, fallbackHost: HTMLEle
         // or before Chromium has decoded the first frame. Treating that shell
         // as a finished preview hides DMEmoji's fallback and leaves a blank
         // card on slower uploads.
-        const ready = element instanceof HTMLImageElement
-            ? element.complete && element.naturalWidth > 0
-            : element.readyState >= 2;
+        const rect = element.getBoundingClientRect();
+        const ready = element.tagName === "IMG"
+            ? (element as HTMLImageElement).complete && (element as HTMLImageElement).naturalWidth > 0
+            : (element as HTMLVideoElement).readyState >= 2;
         if (!ready) return false;
+        if (rect.width <= 1 || rect.height <= 1) return false;
 
         const attachmentContainer = element.closest(
             '[class*="attachment" i], [class*="upload" i], [data-testid*="attachment" i], [data-list-id*="upload" i]'
         );
-        return Boolean(attachmentContainer || source.startsWith("blob:") || source.startsWith("data:"));
+        // Data URLs are also used by Discord's toolbar icons. They are not
+        // evidence that an uploaded attachment has rendered, so only accept
+        // them when the element is inside a known attachment container.
+        return Boolean(attachmentContainer || source.startsWith("blob:"));
     });
 }
 
+function isBlobLike(value: unknown): value is Blob {
+    if (!value || (typeof value !== "object" && typeof value !== "function")) return false;
+
+    const candidate = value as Partial<Blob>;
+    // UploadAttachmentStore can hand a File from a different renderer realm.
+    // `instanceof Blob` is false across realms even though object URL creation
+    // is valid for that file.
+    return typeof candidate.size === "number" &&
+        typeof candidate.type === "string" &&
+        typeof candidate.slice === "function";
+}
+
+function createPreviewUrl(file: unknown): string | undefined {
+    if (!isBlobLike(file)) return undefined;
+
+    try {
+        return URL.createObjectURL(file);
+    } catch {
+        // A future Discord wrapper may expose Blob methods without being
+        // accepted by Chromium's object URL implementation. Copying it into
+        // this realm gives the preview a safe second chance.
+        try {
+            return URL.createObjectURL(new Blob([file], { type: file.type }));
+        } catch {
+            return undefined;
+        }
+    }
+}
+
 function pendingUploadSignature(upload: CloudUpload): string {
-    const file = upload.item?.file;
-    if (!(file instanceof Blob)) return `${upload.uniqueId || upload.id || upload.filename}:no-file`;
+    const file = upload.item?.file as unknown;
+    if (!isBlobLike(file)) return `${upload.uniqueId || upload.id || upload.filename}:no-file`;
 
     return [
         upload.uniqueId || upload.id || upload.filename,
@@ -1185,7 +1219,7 @@ function pendingUploadsSignature(uploads: CloudUpload[]): string {
 
 type PendingAttachmentPreviewItem = {
     upload: CloudUpload;
-    url: string;
+    url?: string;
     kind: "image" | "video" | "file";
 };
 
@@ -1244,11 +1278,11 @@ function PendingAttachmentPreview({ channelId }: { channelId: string }) {
         () =>
             uploads
                 .map(upload => {
-                    const file = upload.item?.file;
-                    if (!(file instanceof Blob)) return null;
-
                     const kind = upload.isImage ? "image" : upload.isVideo ? "video" : "file";
-                    return { upload, url: URL.createObjectURL(file), kind };
+                    // Keep a card even if object URL creation fails. A named
+                    // non-blank fallback is preferable to hiding the upload
+                    // and making the composer look empty.
+                    return { upload, url: createPreviewUrl(upload.item?.file), kind };
                 })
                 .filter((item): item is PendingAttachmentPreviewItem => item !== null),
         [uploads]
@@ -1256,7 +1290,9 @@ function PendingAttachmentPreview({ channelId }: { channelId: string }) {
 
     useEffect(() => {
         return () => {
-            for (const item of previewItems) URL.revokeObjectURL(item.url);
+            for (const item of previewItems) {
+                if (item.url) URL.revokeObjectURL(item.url);
+            }
         };
     }, [previewItems]);
 
@@ -1278,48 +1314,82 @@ function PendingAttachmentPreview({ channelId }: { channelId: string }) {
 
     useEffect(() => {
         let cancelled = false;
-        let retryTimer: number | undefined;
+        let attachmentTimer: number | undefined;
         let observer: MutationObserver | undefined;
+        let activeForm: HTMLFormElement | undefined;
         let host: HTMLDivElement | undefined;
         let rafId: number | undefined;
-        let scheduleNativePreviewUpdate = () => undefined;
+        let scheduleNativePreviewUpdate: () => void = () => undefined;
         let removeMediaListeners: (() => void) | undefined;
 
-        const attach = () => {
-            if (cancelled) return true;
+        const detach = () => {
+            observer?.disconnect();
+            observer = undefined;
+            removeMediaListeners?.();
+            removeMediaListeners = undefined;
+            if (rafId !== undefined) {
+                window.cancelAnimationFrame(rafId);
+                rafId = undefined;
+            }
 
-            const currentForm = findMessageComposerForm();
-            if (!currentForm) return false;
+            const detachedHost = host;
+            host = undefined;
+            activeForm = undefined;
+            if (nativePreviewRefreshRef.current === scheduleNativePreviewUpdate) {
+                nativePreviewRefreshRef.current = null;
+            }
+            detachedHost?.remove();
+            setPortalHost(current => (current === detachedHost ? null : current));
+            setNativePreviewVisible(false);
+        };
 
-            host = document.createElement("div");
-            host.className = "dmemoji-pending-attachment-host";
-            host.dataset.dmemojiPendingPreview = "true";
-            currentForm.insertBefore(host, findComposerInsertionAnchor(currentForm));
-            setPortalHost(host);
+        const attach = (currentForm: HTMLFormElement) => {
+            if (cancelled) return;
+            if (activeForm === currentForm && host?.isConnected) {
+                scheduleNativePreviewUpdate();
+                return;
+            }
 
+            // Discord replaces the chat form during navigation and sometimes
+            // during an upload. Rebind the portal to the visible form instead
+            // of leaving it attached to a disconnected or hidden form.
+            detach();
+            const nextHost = document.createElement("div");
+            nextHost.className = "dmemoji-pending-attachment-host";
+            nextHost.dataset.dmemojiPendingPreview = "true";
+            const anchor = findComposerInsertionAnchor(currentForm);
+            if (anchor?.parentNode === currentForm) currentForm.insertBefore(nextHost, anchor);
+            else currentForm.appendChild(nextHost);
+
+            activeForm = currentForm;
+            host = nextHost;
+            setPortalHost(nextHost);
+
+            const observedForm = currentForm;
+            const observedHost = nextHost;
             scheduleNativePreviewUpdate = () => {
                 if (rafId !== undefined) return;
                 rafId = window.requestAnimationFrame(() => {
                     rafId = undefined;
-                    if (!host || !host.isConnected) return;
+                    if (activeForm !== observedForm || !observedHost.isConnected) return;
                     if (uploadsRef.current.length === 0) {
                         setNativePreviewVisible(false);
                         return;
                     }
-                    setNativePreviewVisible(hasNativeAttachmentPreview(currentForm, host));
+                    setNativePreviewVisible(hasNativeAttachmentPreview(observedForm, observedHost));
                 });
             };
             nativePreviewRefreshRef.current = scheduleNativePreviewUpdate;
 
             scheduleNativePreviewUpdate();
             const onMediaStateChange = () => scheduleNativePreviewUpdate?.();
-            currentForm.addEventListener("load", onMediaStateChange, true);
-            currentForm.addEventListener("loadeddata", onMediaStateChange, true);
-            currentForm.addEventListener("error", onMediaStateChange, true);
+            observedForm.addEventListener("load", onMediaStateChange, true);
+            observedForm.addEventListener("loadeddata", onMediaStateChange, true);
+            observedForm.addEventListener("error", onMediaStateChange, true);
             removeMediaListeners = () => {
-                currentForm.removeEventListener("load", onMediaStateChange, true);
-                currentForm.removeEventListener("loadeddata", onMediaStateChange, true);
-                currentForm.removeEventListener("error", onMediaStateChange, true);
+                observedForm.removeEventListener("load", onMediaStateChange, true);
+                observedForm.removeEventListener("loadeddata", onMediaStateChange, true);
+                observedForm.removeEventListener("error", onMediaStateChange, true);
             };
             observer = new MutationObserver(records => {
                 try {
@@ -1344,33 +1414,31 @@ function PendingAttachmentPreview({ channelId }: { channelId: string }) {
                 attributes: true,
                 attributeFilter: ["class", "src", "style"]
             });
-            return true;
         };
 
-        if (!attach()) {
-            retryTimer = window.setInterval(() => {
-                try {
-                    if (attach() && retryTimer !== undefined) {
-                        window.clearInterval(retryTimer);
-                        retryTimer = undefined;
-                    }
-                } catch (error) {
-                    console.warn("[DMEmoji] composer attachment retry ignored during navigation:", error);
+        const ensureAttachment = () => {
+            try {
+                const currentForm = findMessageComposerForm();
+                if (!currentForm) {
+                    if (activeForm || host) detach();
+                    return;
                 }
-            }, 250);
-        }
+                attach(currentForm);
+            } catch (error) {
+                console.warn("[DMEmoji] composer attachment retry ignored during navigation:", error);
+            }
+        };
+
+        ensureAttachment();
+        // The chat form is replaced after the route has already settled when
+        // Discord begins or finishes an upload. Keep this lightweight watcher
+        // alive for the lifetime of the button so the preview follows it.
+        attachmentTimer = window.setInterval(ensureAttachment, 250);
 
         return () => {
             cancelled = true;
-            if (retryTimer !== undefined) window.clearInterval(retryTimer);
-            if (rafId !== undefined) window.cancelAnimationFrame(rafId);
-            observer?.disconnect();
-            removeMediaListeners?.();
-            if (nativePreviewRefreshRef.current === scheduleNativePreviewUpdate) {
-                nativePreviewRefreshRef.current = null;
-            }
-            setPortalHost(null);
-            host?.remove();
+            if (attachmentTimer !== undefined) window.clearInterval(attachmentTimer);
+            detach();
         };
     }, [channelId]);
 
@@ -1390,9 +1458,11 @@ function PendingAttachmentPreview({ channelId }: { channelId: string }) {
                         aria-label={`Preview ${upload.filename}`}
                         onClick={() => setExpandedId(upload.uniqueId || upload.id)}
                     >
-                        {kind === "image" && <img src={url} alt={upload.filename} />}
-                        {kind === "video" && <video src={url} muted autoPlay loop playsInline />}
-                        {kind === "file" && <span aria-hidden="true">FILE</span>}
+                        {kind === "image" && url && <img src={url} alt={upload.filename} />}
+                        {kind === "video" && url && <video src={url} muted autoPlay loop playsInline />}
+                        {(!url || kind === "file") && (
+                            <span aria-hidden="true">{kind === "file" ? "FILE" : kind === "video" ? "VIDEO" : "IMAGE"}</span>
+                        )}
                     </button>
                     <span className="dmemoji-pending-attachment-name" title={upload.filename}>
                         {upload.filename}
@@ -1438,14 +1508,16 @@ function PendingAttachmentPreview({ channelId }: { channelId: string }) {
                         >
                             ×
                         </button>
-                        {expandedItem.kind === "image" && (
+                        {expandedItem.kind === "image" && expandedItem.url && (
                             <img src={expandedItem.url} alt={expandedItem.upload.filename} />
                         )}
-                        {expandedItem.kind === "video" && (
+                        {expandedItem.kind === "video" && expandedItem.url && (
                             <video src={expandedItem.url} controls autoPlay loop playsInline />
                         )}
-                        {expandedItem.kind === "file" && (
-                            <div className="dmemoji-pending-attachment-lightbox-file">FILE</div>
+                        {(!expandedItem.url || expandedItem.kind === "file") && (
+                            <div className="dmemoji-pending-attachment-lightbox-file">
+                                {expandedItem.kind === "file" ? "FILE" : expandedItem.kind === "video" ? "VIDEO" : "IMAGE"}
+                            </div>
                         )}
                         <span>{expandedItem.upload.filename}</span>
                     </div>

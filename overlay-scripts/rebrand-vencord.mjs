@@ -1710,7 +1710,8 @@ const PATCHES = [
         marker: "Discordmaxxer: preserve native message menus.",
         find: "export const startPlugin = traceFunction(\"startPlugin\", function startPlugin(p: Plugin) {",
         replace:
-            "const DISCORDMAXXER_NATIVE_MENU_IDS = new Set([\"message\", \"message-actions\", \"image-context\"]);\n\n" +
+            "const DISCORDMAXXER_NATIVE_MENU_IDS = new Set([\"message\", \"message-actions\", \"image-context\"]);\n" +
+            "const DISCORDMAXXER_NATIVE_MENU_PATCH_PLUGINS = new Set([\"MessageLogger\", \"WebContextMenus\"]);\n\n" +
             "// Discordmaxxer: preserve native message menus.\n" +
             "export const startPlugin = traceFunction(\"startPlugin\", function startPlugin(p: Plugin) {"
     },
@@ -1728,7 +1729,7 @@ const PATCHES = [
             "    if (contextMenus) {\n" +
             "        logger.debug(\"Adding context menus patches of plugin\", name);\n" +
             "        for (const navId in contextMenus) {\n" +
-            "            if (DISCORDMAXXER_NATIVE_MENU_IDS.has(navId) && name !== \"WebContextMenus\") {\n" +
+            "            if (DISCORDMAXXER_NATIVE_MENU_IDS.has(navId) && !DISCORDMAXXER_NATIVE_MENU_PATCH_PLUGINS.has(name)) {\n" +
             "                logger.debug(\"Keeping native Discord context menu\", navId, name);\n" +
             "                continue;\n" +
             "            }\n" +
@@ -1750,7 +1751,7 @@ const PATCHES = [
             "    if (contextMenus) {\n" +
             "        logger.debug(\"Removing context menus patches of plugin\", name);\n" +
             "        for (const navId in contextMenus) {\n" +
-            "            if (DISCORDMAXXER_NATIVE_MENU_IDS.has(navId) && name !== \"WebContextMenus\") continue;\n" +
+            "            if (DISCORDMAXXER_NATIVE_MENU_IDS.has(navId) && !DISCORDMAXXER_NATIVE_MENU_PATCH_PLUGINS.has(name)) continue;\n" +
             "            removeContextMenuPatch(navId, contextMenus[navId]);\n" +
             "        }\n" +
             "    }"
