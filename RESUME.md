@@ -4952,29 +4952,45 @@ Release/proof boundary:
   objects, safely creates object URLs, keeps a named fallback card when a URL
   cannot be created, rejects toolbar data-URL images as false native previews,
   and rebinds its preview portal whenever Discord replaces the chat form during
-  navigation or upload. The dirty nested Vencord
-  `src/plugins/messageLogger/index.tsx` keeps the existing stored-message
-  context-menu hardening and adds quiet compatibility patches for the wrapped
-  `MESSAGE_DELETE`, `MESSAGE_DELETE_BULK`, and `MESSAGE_UPDATE` module shape.
+  navigation or upload. The tracked Vencord overlay now permits only the
+  hardened `MessageLogger` and `WebContextMenus` plugins through the native
+  message-menu guard, restoring MessageLogger's `Remove Message History`
+  action without reopening unrelated native-menu patches. The dirty nested
+  Vencord `src/plugins/messageLogger/index.tsx` keeps the existing
+  stored-message context-menu hardening and adds quiet compatibility patches for
+  the wrapped `MESSAGE_DELETE`, `MESSAGE_DELETE_BULK`, and `MESSAGE_UPDATE`
+  module shape.
 - Release intent: Diggy explicitly authorized publishing the repaired client;
   v0.7.154 is the release target for this session.
-- Verification so far: `pnpm testTypes`, `pnpm test` (eslint plus TypeScript),
-  `pnpm verifyPlugins`, `DM_SKIP_VENCORD_INSTALL=1 pnpm overlay:vencord`,
-  `node overlay-scripts/verify-build.mjs`, and both outer/nested `git diff --check`
-  passed. The candidate overlay is staged in this worktree's `vencord-dist`.
-- Boundary: source is still local and uncommitted at this checkpoint. The
-  canonical dirty checkout and unrelated nested Vencord changes were preserved;
-  packaging, publication, and live updater verification remain in progress.
-- Diggy tests owed: run this candidate in the client and attach a real image in
-  a DM, confirming that a nonblank preview remains visible before sending even
-  after navigation/form refresh. With MessageLogger enabled, right-click the
-  greyed deleted entry shown in screenshot 3 and confirm `Remove Message
-  History` appears, then use it only if desired.
+- Verification: `pnpm testTypes`, `pnpm test` (eslint plus TypeScript),
+  `pnpm verifyPlugins`, strict `DM_SKIP_VENCORD_INSTALL=1 pnpm overlay:vencord`,
+  `node overlay-scripts/verify-build.mjs`, `pnpm build`, `pnpm package:dir`,
+  `pnpm package:win`, ASCII-safe script checks, and both outer/nested
+  `git diff --check` passed. The clean GitHub release workflow also passed all
+  fresh-clone overlay, build, verification, packaging, upload, and notification
+  steps in run `44258186649`.
+- Public state: commit `85337a236a2962cb98a64cbae74918cd326f9e69` is on
+  `origin/main`, annotated tag `v0.7.154` is pushed, and the public release is
+  `https://github.com/MaxxTopia/discordmaxxer/releases/tag/v0.7.154`. The
+  installer, x64 ZIP, arm64 ZIP, blockmap, and `latest.yml` are uploaded; the
+  updater manifest returned HTTP 200 and reports version `0.7.154`.
+- Boundary: the canonical dirty checkout and unrelated nested Vencord changes
+  were preserved. A packaged local smoke run reached the first-launch screen
+  but did not reach Vencord readiness, so it is not live-behavior proof. The
+  installed client remains v0.7.153 until Diggy updates/restarts it.
+- Diggy tests owed: update the installed client and attach a real image in a DM,
+  confirming that a nonblank preview remains visible before sending even after
+  navigation/form refresh. With MessageLogger enabled, right-click the greyed
+  deleted entry shown in screenshot 3 and confirm `Remove Message History`
+  appears, then use it only if desired. Start a real Spotify track and click
+  skip-next once; that prior Spotify repair is carried into v0.7.154 but still
+  lacks real-user acceptance.
 - Known risks: no real upload/delete runtime acceptance has been performed yet;
   static bundle verification cannot prove that Discord's current runtime takes
   the compatibility patch. If the test still fails, capture the context menu
   after deletion (not before) and the current renderer console error so the next
   repair can target the remaining runtime shape.
-- Best next action: finish the documented v0.7.154 package/release gates, push
-  the main commit and tag, then verify the public release assets before handing
-  the live-client tests back to Diggy.
+- Best next action: update/restart the installed client and perform the three
+  user-side checks above. If one still fails, capture the current renderer
+  console error and the exact post-action UI state; the public release is ready
+  for that acceptance pass.
