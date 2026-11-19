@@ -1,5 +1,43 @@
 # Discordmaxxer — RESUME
 
+## 2026-11-19 — Tournament Mode full-screen image viewer candidate
+
+- **Observed report**: with Tournament Mode enabled, clicking a Discord image
+  opened the dark native viewer backdrop but the image never appeared. The same
+  click worked with Tournament Mode off. This symptom is distinct from the
+  earlier ImageZoom attachment-click regression; the current ImageZoom overlay
+  already preserves Discord's native attachment image node and modal lifecycle.
+- **Root cause**: Tournament Mode's global external-theme safeguard pauses every
+  CSS animation. Discord's native media viewer uses an entrance animation to
+  reveal the image after the backdrop, so the viewer could remain on its hidden
+  frame while the dim layer stayed visible.
+- **Fix**: `plugins/TournamentMode/index.ts` now lets animation clocks run for
+  accessible dialogs and Discord media/image-modal class surfaces, including
+  their pseudo-elements, while continuing to pause the rest of the renderer.
+  `overlay-scripts/verify-build.mjs` now fails a build if this viewer safeguard
+  is removed.
+- **Candidate state**: isolated branch
+  `codex/tournament-image-viewer-fix` at
+  `C:\Users\Diggy\projects\discordmaxxer-release-0.7.156`; the canonical dirty
+  checkout at `C:\Users\Diggy\projects\discordmaxxer` remains untouched. The
+  candidate is based on published `origin/main`/v0.7.155 and has not been
+  committed, pushed, tagged, installed, or published.
+- **Verification**: `git diff --check`, `pnpm test`, `pnpm build`, strict pinned
+  Vencord overlay, `node overlay-scripts/verify-build.mjs`, and
+  `pnpm package:dir` passed. The packaged candidate contains the staged
+  `vencord-dist` bundle and the new media-viewer markers. The local executable
+  is unsigned (`NotSigned`), matching the existing SmartScreen/public-trust
+  caveat.
+- **Open acceptance gate**: no signed-in click-through of a full-screen image
+  in Tournament Mode has been run against this candidate yet. The current
+  installed client is an older build, so source/build/package evidence is not
+  runtime proof. After launching the candidate, confirm: open a static image
+  with Tournament Mode on, image visible, close viewer, repeat once with mode
+  off; then optionally check a GIF/video attachment separately.
+- **Next action**: review the two-file diff, run the signed-in candidate click
+  test, then bump the release version and publish only after the release
+  decision is authorized. No public release claim is valid yet.
+
 ## 2026-11-19 — v0.7.155 startup-timeout recovery published
 
 - **Scope**: repair the recurring startup recovery screen reported while opening

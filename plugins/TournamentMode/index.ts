@@ -162,6 +162,32 @@ const PERF_CSS = `
     html[data-dm-tournament-mode] *::after {
         animation-play-state: paused !important;
     }
+    /* Discord's native full-screen media viewer is a transient interaction
+     * surface. Its entrance animation reveals the image after the backdrop;
+     * freezing that animation can leave only the dark backdrop visible. Keep
+     * viewer/modal motion running while the rest of the renderer stays paused.
+     * The role selector covers Discord's accessible dialog; the class-token
+     * selectors cover builds whose viewer is mounted without that role. */
+    html[data-dm-tournament-mode] [role="dialog"],
+    html[data-dm-tournament-mode] [role="dialog"] *,
+    html[data-dm-tournament-mode] [role="dialog"]::before,
+    html[data-dm-tournament-mode] [role="dialog"]::after,
+    html[data-dm-tournament-mode] [role="dialog"] *::before,
+    html[data-dm-tournament-mode] [role="dialog"] *::after,
+    html[data-dm-tournament-mode] [class*="mediaViewer"],
+    html[data-dm-tournament-mode] [class*="mediaViewer"] *,
+    html[data-dm-tournament-mode] [class*="mediaViewer"]::before,
+    html[data-dm-tournament-mode] [class*="mediaViewer"]::after,
+    html[data-dm-tournament-mode] [class*="mediaViewer"] *::before,
+    html[data-dm-tournament-mode] [class*="mediaViewer"] *::after,
+    html[data-dm-tournament-mode] [class*="imageModal"],
+    html[data-dm-tournament-mode] [class*="imageModal"] *,
+    html[data-dm-tournament-mode] [class*="imageModal"]::before,
+    html[data-dm-tournament-mode] [class*="imageModal"]::after,
+    html[data-dm-tournament-mode] [class*="imageModal"] *::before,
+    html[data-dm-tournament-mode] [class*="imageModal"] *::after {
+        animation-play-state: running !important;
+    }
 `;
 
 // Tournament's reduced-cost presentation profile. This deliberately targets

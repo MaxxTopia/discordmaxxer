@@ -210,6 +210,20 @@ if (!existsSync(overlaySourceRoot)) {
         fail("ImageZoom still owns Discord's native image context-menu route");
     }
 
+    const tournamentModeSource = readFileSync(join(ROOT, "plugins", "TournamentMode", "index.ts"), "utf8");
+    const mediaViewerMotionMarkers = [
+        'html[data-dm-tournament-mode] [role="dialog"]',
+        '[class*="mediaViewer"]',
+        '[class*="imageModal"]',
+        "animation-play-state: running !important;"
+    ];
+    const missingMediaViewerMotionMarkers = mediaViewerMotionMarkers.filter(marker => !tournamentModeSource.includes(marker));
+    if (missingMediaViewerMotionMarkers.length === 0) {
+        ok("Tournament Mode leaves native media-viewer/modal entrance animations running");
+    } else {
+        fail(`Tournament Mode media-viewer animation safeguard is incomplete: missing ${missingMediaViewerMotionMarkers.join(", ")}`);
+    }
+
     const betterFoldersSource = readOverlaySource("plugins/betterFolders/index.tsx");
     const guardedFolderPredicates = betterFoldersSource.match(/predicate: \(\) => settings\.store\.sidebar && DISCORDMAXXER_CUSTOM_SIDEBAR_SUPPORTED/g)?.length ?? 0;
     if (betterFoldersSource.includes("export const DISCORDMAXXER_CUSTOM_SIDEBAR_SUPPORTED = false;") && guardedFolderPredicates >= 3) {
