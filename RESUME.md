@@ -1,5 +1,41 @@
 # Discordmaxxer — RESUME
 
+## 2026-11-19 — v0.7.155 startup-timeout recovery candidate
+
+- **Scope**: repair the recurring startup recovery screen reported while opening
+  the installed v0.7.154 client. The diagnostic `0.7.154-9556-mwntixz4` matched
+  a 25-second gap after `navigation-requested`, with no `document-loaded` or
+  `renderer-ready` event. This proves the readiness watchdog fired; it does not
+  prove Discord, Vencord, or the network was the original underlying cause.
+- **Fix**: `src/main/mainWindow.ts` now retries a timed-out renderer up to three
+  times with bounded backoff, records timeout/recovery events, resets the retry
+  budget after a successful renderer-ready event, and ignores stale navigation
+  failures from superseded attempts. The existing diagnostic remains only after
+  the bounded automatic recovery budget is exhausted.
+- **Candidate state**: isolated branch `codex/startup-timeout-recovery` is based
+  on public `v0.7.154` and is versioned `0.7.155`. The dirty canonical checkout
+  at `C:\Users\Diggy\projects\discordmaxxer` remains untouched. No public
+  v0.7.155 tag or release exists yet.
+- **Verification so far**: `git diff --check`, `pnpm test`, `pnpm build`, strict
+  `DM_STRICT_REBRAND=1 pnpm overlay:vencord`, `node overlay-scripts/verify-build.mjs`,
+  `pnpm package:dir`, and `pnpm package:win` passed. The x64/arm64 ZIPs,
+  installer, uninstaller, blockmap, and `latest.yml` all report 0.7.155; the
+  local Authenticode check reports `NotSigned`, so the existing SmartScreen/public
+  trust caveat remains. The packaged candidate's `app.asar` contains the
+  automatic-recovery markers. An isolated packaged smoke launch reached
+  `document-loaded` in about 2.6 seconds and `renderer-ready` in about 10.1
+  seconds with no startup-recovery event.
+- **Evidence boundary**: this removes the observed single-watchdog false-failure
+  path and provides bounded automatic recovery. A total Discord outage, broken
+  local profile, or renderer crash can still require the final diagnostic; no
+  client can truthfully guarantee startup under those conditions. A real signed-in
+  user launch remains the acceptance gate after installation.
+- **Next action**: finish the version-aligned Windows package and documented
+  pre-publish checks, then push the authorized `v0.7.155` tag and verify the
+  GitHub release assets and updater manifest. Diggy should then update/restart
+  the installed client and confirm a normal launch plus the earlier DM image,
+  deleted-history, and Spotify checks.
+
 ## 2026-11-15 — v0.7.152 blank-route, attachment, history, and DMHub follow-up
 
 - **Scope**: follow up on the public v0.7.151 reports that server navigation can leave only the external theme visible, image attachments can be visually blank before send, MessageLogger deleted-history actions disappeared, and the DMHub/account bottom bar was absent in the observed run.

@@ -68,6 +68,9 @@ const STARTUP_PREPARATION_TIMEOUT_MS = 20_000;
 const STARTUP_RENDERER_TIMEOUT_MS = 25_000;
 const STARTUP_PROBE_INTERVAL_MS = 250;
 const MAX_STARTUP_NAVIGATION_RETRIES = 3;
+const MAX_STARTUP_TIMEOUT_RECOVERIES = 3;
+const STARTUP_TIMEOUT_RECOVERY_BASE_DELAY_MS = 1_000;
+const STARTUP_TIMEOUT_RECOVERY_MAX_DELAY_MS = 5_000;
 const MAX_POST_STARTUP_RENDERER_RECOVERIES = 2;
 const POST_STARTUP_RENDERER_RECOVERY_WINDOW_MS = 60_000;
 const POST_STARTUP_RENDERER_RECOVERY_DELAY_MS = 250;
@@ -88,6 +91,8 @@ let navigationRetryCount = 0;
 let recoveryHandlersRegistered = false;
 let startupFailureIpcRegistered = false;
 let createWindowsPromise: Promise<void> | null = null;
+let startupTimeoutRecoveryAttempts = 0;
+let startupTimeoutRecoveryTimer: ReturnType<typeof setTimeout> | null = null;
 let postStartupRendererRecoveryAttempts = 0;
 let postStartupRendererRecoveryWindowStartedAt = 0;
 let postStartupRendererRecoveryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -552,6 +557,10 @@ function clearStartupWatch() {
         clearTimeout(unresponsiveTimer);
         unresponsiveTimer = null;
     }
+    if (startupTimeoutRecoveryTimer !== null) {
+        clearTimeout(startupTimeoutRecoveryTimer);
+        startupTimeoutRecoveryTimer = null;
+    }
     clearRuntimeLivenessWatch();
 }
 
@@ -583,6 +592,14 @@ function failStartup(reason: string, error?: unknown) {
 function markStartupReady(attempt: number) {
     if (attempt !== startupAttempt || startupReady) return;
 
+    if (startupTimeoutRecoveryAttempts > 0) {
+        recordStartupEvent("startup-timeout-recovery-succeeded", {
+            attempt,
+            recoveries: startupTimeoutRecoveryAttempts
+        });
+        startupTimeoutRecoveryAttempts = 0;
+    }
+
     startupReady = true;
     startupRecoveryShown = false;
     if (
@@ -598,6 +615,50 @@ function markStartupReady(attempt: number) {
     closeStartupRecovery();
     startRuntimeLivenessWatch();
     AppEvents.emit("appLoaded");
+}
+
+function recoverStartupAfterTimeout(attempt: number) {
+    if (attempt !== startupAttempt || startupReady || startupRecoveryShown || isQuitting) return;
+
+    clearStartupWatch();
+    recordStartupEvent("startup-timeout", {
+        attempt,
+        recoveryAttempts: startupTimeoutRecoveryAttempts,
+        maxRecoveries: MAX_STARTUP_TIMEOUT_RECOVERIES,
+        targetUrl: startupTargetUrl
+    });
+
+    if (startupTimeoutRecoveryAttempts >= MAX_STARTUP_TIMEOUT_RECOVERIES) {
+        failStartup("Discord did not finish loading after automatic recovery attempts.");
+        return;
+    }
+
+    startupTimeoutRecoveryAttempts += 1;
+    const delay = Math.min(
+        STARTUP_TIMEOUT_RECOVERY_BASE_DELAY_MS * 2 ** (startupTimeoutRecoveryAttempts - 1),
+        STARTUP_TIMEOUT_RECOVERY_MAX_DELAY_MS
+    );
+
+    updateSplashMessage(
+        `Discord is taking longer than usual. Retrying automatically (${startupTimeoutRecoveryAttempts}/${MAX_STARTUP_TIMEOUT_RECOVERIES})...`
+    );
+    recordStartupEvent("startup-timeout-recovery-scheduled", {
+        attempt,
+        recoveryAttempt: startupTimeoutRecoveryAttempts,
+        delay,
+        targetUrl: startupTargetUrl
+    });
+
+    startupTimeoutRecoveryTimer = setTimeout(() => {
+        startupTimeoutRecoveryTimer = null;
+        if (isQuitting || startupReady || startupRecoveryShown) return;
+
+        recordStartupEvent("startup-timeout-recovery-started", {
+            recoveryAttempt: startupTimeoutRecoveryAttempts,
+            targetUrl: startupTargetUrl
+        });
+        loadUrl(undefined, true);
+    }, delay);
 }
 
 function startRuntimeLivenessWatch() {
@@ -739,7 +800,7 @@ function beginStartupWatch(targetUrl: string) {
 
     const attempt = startupAttempt;
     startupWatchdogTimer = setTimeout(() => {
-        failStartup("Discord did not finish loading within the startup timeout.");
+        recoverStartupAfterTimeout(attempt);
     }, STARTUP_RENDERER_TIMEOUT_MS);
 
     recordStartupEvent("navigation-start", { attempt, targetUrl });
@@ -782,7 +843,9 @@ function startRendererProbe(attempt: number) {
 function retryStartup() {
     recordStartupEvent("startup-retry-requested");
     startupRecoveryShown = false;
+    startupTimeoutRecoveryAttempts = 0;
     navigationRetryCount = 0;
+    updateSplashMessage("");
     closeStartupRecovery();
 
     if (!mainWin || mainWin.isDestroyed()) {
@@ -863,6 +926,7 @@ export function loadUrl(uri: string | undefined, resetRetries = true) {
             startRendererProbe(attempt);
         })
         .catch(error => {
+            if (attempt !== startupAttempt || startupRecoveryShown) return;
             const failure = error as { url?: string; code?: string };
             retryUrl(failure.url || targetUrl, failure.code || "ERR_UNKNOWN", error);
         });
