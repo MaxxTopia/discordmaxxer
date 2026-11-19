@@ -1,5 +1,41 @@
 # Discordmaxxer — RESUME
 
+## 2026-11-19 — Per-account badge isolation audit
+
+- **Observed request**: verify that Diggy's `MAXXER++` rank badge cannot appear
+  on another user's profile, and that each profile shows its own rank.
+- **Source finding**: Vencord evaluates profile-badge `shouldShow` callbacks
+  with the viewed profile's `userId`. `DMTierFlair` uses the private/local
+  `getMyTier()` path only when that ID is the current account; every other ID
+  resolves through the public roster. `DMBadge` also gates against the viewed
+  `userId`, so its generic Discordmaxxer mark does not substitute the rank
+  badge.
+- **Live read-only check**: the current roster reported 15 users, with 3
+  `MAXXER++` entries and 12 free entries; the two known Diggy accounts are
+  currently marked `MAXXER++`. No account settings or roster data were changed.
+- **Hardening**: `overlay-scripts/verify-build.mjs` now fails the release if
+  the self-only tier guard, other-user roster fallback, viewed-user badge gate,
+  or virtualized-row cleanup markers are removed. This is a regression guard;
+  the runtime badge logic itself did not need a behavior change.
+- **Verification**: strict pinned `pnpm overlay:vencord`,
+  `node overlay-scripts/verify-build.mjs`, `pnpm test`, and `git diff --check`
+  passed. The staged renderer manifest now matches the candidate source.
+- **Candidate state**: isolated branch
+  `codex/tournament-image-viewer-fix` at
+  `C:\Users\Diggy\projects\discordmaxxer-release-0.7.156`; the canonical
+  dirty checkout at `C:\Users\Diggy\projects\discordmaxxer` remains
+  untouched. This badge-audit commit is local only; it is not pushed, tagged,
+  installed, or published.
+- **Evidence boundary**: no signed-in cross-account click-through was run on
+  this candidate. `MAXXER++` currently has a separate profile coin; `MAXXER`
+  and `MAXXER+` use their tier-colored ring/name/banner styling rather than
+  separate icon coins. A real non-`MAXXER++` profile check remains the runtime
+  acceptance gate.
+- **Next action**: if the runtime check passes, retain this release gate when
+  the candidate is next authorized for packaging/publication. If separate icon
+  badges for `MAXXER` and `MAXXER+` are desired, treat that as a separate UI
+  feature rather than changing the isolation rule.
+
 ## 2026-11-19 — Tournament Mode full-screen image viewer candidate
 
 - **Observed report**: with Tournament Mode enabled, clicking a Discord image

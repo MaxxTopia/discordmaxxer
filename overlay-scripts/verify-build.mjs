@@ -295,6 +295,36 @@ if (!existsSync(overlaySourceRoot)) {
     } else {
         fail("DMTrim account-panel protection or narrowed QuestBar selector is missing");
     }
+
+    // Profile badges are evaluated once per viewed user. Keep the current
+    // account's private/local tier override behind an explicit user-ID guard;
+    // every other profile must resolve through the public roster. This is a
+    // source-level regression contract for the cross-account isolation rule.
+    const tierFlairSource = readFileSync(join(ROOT, "plugins", "DMTierFlair", "index.tsx"), "utf8");
+    const tierIsolationContract = /function getDisplayTier\(userId: string\): Tier[\s\S]*?if \(UserStore\.getCurrentUser\(\)\?\.id === userId\) return getMyTier\(\);[\s\S]*?return getRosterTier\(userId\);/.test(tierFlairSource);
+    const tierFlairMarkers = [
+        'shouldShow: ({ userId }: { userId: string }) => getDisplayTier(userId) >= Tier.MAXXER_PLUS_PLUS',
+        "const tier = getDisplayTier(userId);",
+        '[data-dm-tier], [data-dm-founder], [data-dm-tier-for]',
+        "delete el.dataset.dmTierFor;"
+    ];
+    const missingTierFlairMarkers = tierFlairMarkers.filter(marker => !tierFlairSource.includes(marker));
+    if (tierIsolationContract && missingTierFlairMarkers.length === 0) {
+        ok("profile tier badges stay isolated to the viewed user ID");
+    } else {
+        const reasons = [
+            !tierIsolationContract ? "self-tier guard or other-user roster fallback is missing" : "",
+            ...missingTierFlairMarkers.map(marker => `missing ${marker}`)
+        ].filter(Boolean);
+        fail(`profile tier badge isolation contract is incomplete: ${reasons.join(", ")}`);
+    }
+
+    const dmBadgeSource = readFileSync(join(ROOT, "plugins", "DMBadge", "index.tsx"), "utf8");
+    if (dmBadgeSource.includes("shouldShow: ({ userId }) => knownIds.has(userId) || getRosterTier(userId) !== Tier.FREE")) {
+        ok("generic Discordmaxxer badge also resolves against the viewed user ID");
+    } else {
+        fail("generic Discordmaxxer badge is missing its viewed-user ID gate");
+    }
 }
 
 // 3) The Vesktop shell build output (what electron-builder packages).
