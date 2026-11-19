@@ -20,8 +20,8 @@
   `codex/tournament-image-viewer-fix` at
   `C:\Users\Diggy\projects\discordmaxxer-release-0.7.156`; the canonical dirty
   checkout at `C:\Users\Diggy\projects\discordmaxxer` remains untouched. The
-  candidate is based on published `origin/main`/v0.7.155 and has not been
-  committed, pushed, tagged, installed, or published.
+  candidate is based on published `origin/main`/v0.7.155 and is committed as
+  `80717fe`; it has not been pushed, tagged, installed, or published.
 - **Verification**: `git diff --check`, `pnpm test`, `pnpm build`, strict pinned
   Vencord overlay, `node overlay-scripts/verify-build.mjs`, and
   `pnpm package:dir` passed. The packaged candidate contains the staged
@@ -34,8 +34,8 @@
   runtime proof. After launching the candidate, confirm: open a static image
   with Tournament Mode on, image visible, close viewer, repeat once with mode
   off; then optionally check a GIF/video attachment separately.
-- **Next action**: review the two-file diff, run the signed-in candidate click
-  test, then bump the release version and publish only after the release
+- **Next action**: review the committed source diff, run the signed-in candidate
+  click test, then bump the release version and publish only after the release
   decision is authorized. No public release claim is valid yet.
 
 ## 2026-11-19 — v0.7.155 startup-timeout recovery published
