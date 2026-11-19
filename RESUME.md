@@ -1,6 +1,6 @@
 # Discordmaxxer — RESUME
 
-## 2026-11-19 — v0.7.155 startup-timeout recovery candidate
+## 2026-11-19 — v0.7.155 startup-timeout recovery published
 
 - **Scope**: repair the recurring startup recovery screen reported while opening
   the installed v0.7.154 client. The diagnostic `0.7.154-9556-mwntixz4` matched
@@ -12,10 +12,11 @@
   budget after a successful renderer-ready event, and ignores stale navigation
   failures from superseded attempts. The existing diagnostic remains only after
   the bounded automatic recovery budget is exhausted.
-- **Candidate state**: isolated branch `codex/startup-timeout-recovery` is based
-  on public `v0.7.154` and is versioned `0.7.155`. The dirty canonical checkout
-  at `C:\Users\Diggy\projects\discordmaxxer` remains untouched. No public
-  v0.7.155 tag or release exists yet.
+- **Published state**: commit `5f0e15a955968cbadeb04bb751300a865631a01e`
+  is on `origin/main`; tag `v0.7.155` and the public GitHub release are live.
+  Release workflow run `44580952908` completed successfully, publishing the
+  x64/arm64 ZIPs, installer, blockmap, and `latest.yml`. The dirty canonical
+  checkout at `C:\Users\Diggy\projects\discordmaxxer` remains untouched.
 - **Verification so far**: `git diff --check`, `pnpm test`, `pnpm build`, strict
   `DM_STRICT_REBRAND=1 pnpm overlay:vencord`, `node overlay-scripts/verify-build.mjs`,
   `pnpm package:dir`, and `pnpm package:win` passed. The x64/arm64 ZIPs,
@@ -30,11 +31,15 @@
   local profile, or renderer crash can still require the final diagnostic; no
   client can truthfully guarantee startup under those conditions. A real signed-in
   user launch remains the acceptance gate after installation.
-- **Next action**: finish the version-aligned Windows package and documented
-  pre-publish checks, then push the authorized `v0.7.155` tag and verify the
-  GitHub release assets and updater manifest. Diggy should then update/restart
-  the installed client and confirm a normal launch plus the earlier DM image,
-  deleted-history, and Spotify checks.
+- **Public verification**: release `v0.7.155` is published at
+  `https://github.com/MaxxTopia/discordmaxxer/releases/tag/v0.7.155`; the live
+  `latest.yml` reports version `0.7.155`, points to the public installer, and
+  reports its published size/hash. The installed client remains a separate
+  acceptance gate until it updates/restarts.
+- **Next action**: Diggy should update/restart the installed client and confirm
+  a normal launch plus the earlier DM image, deleted-history, and Spotify
+  checks. If SmartScreen appears, capture it separately: the local package
+  signature check reported `NotSigned`, so public trust remains a known caveat.
 
 ## 2026-11-15 — v0.7.152 blank-route, attachment, history, and DMHub follow-up
 
