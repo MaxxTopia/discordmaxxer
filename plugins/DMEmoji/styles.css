@@ -455,10 +455,15 @@
     min-height: 64px;
     overflow-x: auto;
     padding: 6px 8px;
+    position: relative;
+    width: 100%;
 }
 
 .dmemoji-pending-attachment-host {
-    display: contents;
+    display: block;
+    flex: 0 0 auto;
+    min-height: 0;
+    width: 100%;
 }
 
 .dmemoji-pending-attachment {

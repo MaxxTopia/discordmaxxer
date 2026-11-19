@@ -257,8 +257,13 @@ if (!existsSync(overlaySourceRoot)) {
 
     const dmEmojiSource = readFileSync(join(ROOT, "plugins", "DMEmoji", "index.tsx"), "utf8");
     const dmEmojiPreviewMarkers = [
+        "normalizePendingUploads",
+        "PENDING_UPLOAD_GRACE_MS",
         "pendingUploadsSignature",
         "nativePreviewRefreshRef",
+        "failedPreviewIds",
+        "removePendingUpload",
+        "onError={markMediaFailed}",
         "naturalWidth > 0",
         "readyState >= 2",
         "uploadsSignatureRef.current = \"\";"

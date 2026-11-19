@@ -64,6 +64,7 @@ const FILE_KEY_PREFIX = "Discordmaxxer_DMEmoji_file_";
 const MAX_FILE_BYTES = 4 * 1024 * 1024;
 const ACCEPTED_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 const IEMOJI_KEYBOARD_URL = "https://www.iemoji.com/keyboard";
+const PENDING_UPLOAD_GRACE_MS = 2500;
 
 // Legacy modal aliases from @utils/modal.
 const LegacyModalRoot: any = ModalRoot;
@@ -1099,13 +1100,51 @@ function triggerNativeComposerSend(input: HTMLElement): void {
     }
 }
 
+function normalizePendingUploads(value: unknown): CloudUpload[] {
+    if (!value) return [];
+
+    let candidates: unknown[];
+    if (Array.isArray(value)) {
+        candidates = value;
+    } else if (typeof value === "object" && value !== null && "uploads" in value) {
+        const nested = (value as { uploads?: unknown }).uploads;
+        candidates = Array.isArray(nested) ? nested : [];
+    } else if (typeof value === "object" && value !== null && Symbol.iterator in value) {
+        try {
+            candidates = Array.from(value as Iterable<unknown>);
+        } catch {
+            candidates = [];
+        }
+    } else {
+        candidates = [];
+    }
+
+    return candidates.filter((candidate): candidate is CloudUpload => {
+        if (!candidate || typeof candidate !== "object") return false;
+        const upload = candidate as Partial<CloudUpload>;
+        return (typeof upload.uniqueId === "string" || typeof upload.id === "string" || typeof upload.filename === "string") &&
+            upload.status !== "REMOVED_FROM_MSG_DRAFT" &&
+            upload.status !== "CANCELLED";
+    });
+}
+
 function getPendingMessageUploads(channelId: string): CloudUpload[] {
     try {
         const store = UploadAttachmentStore as unknown as { getUploads?: unknown };
         const getUploads = store && typeof store.getUploads === "function" ? store.getUploads : null;
         if (!getUploads) return [];
-        const uploads = getUploads.call(store, channelId, DraftType.ChannelMessage);
-        return Array.isArray(uploads) ? uploads : [];
+
+        // Discord has shipped both the typed (channel, draft type) signature
+        // and a legacy (channel) signature. Prefer the current call, but do
+        // not turn a harmless signature drift into an invisible attachment.
+        try {
+            const uploads = normalizePendingUploads(getUploads.call(store, channelId, DraftType.ChannelMessage));
+            if (uploads.length > 0) return uploads;
+        } catch {
+            // Try the legacy call below.
+        }
+
+        return normalizePendingUploads(getUploads.call(store, channelId));
     } catch {
         // UploadAttachmentStore is a lazy webpack proxy. It can legitimately
         // be unavailable during DM navigation; the native composer remains
@@ -1164,10 +1203,10 @@ function hasNativeAttachmentPreview(form: HTMLFormElement, fallbackHost: HTMLEle
         const attachmentContainer = element.closest(
             '[class*="attachment" i], [class*="upload" i], [data-testid*="attachment" i], [data-list-id*="upload" i]'
         );
-        // Data URLs are also used by Discord's toolbar icons. They are not
-        // evidence that an uploaded attachment has rendered, so only accept
-        // them when the element is inside a known attachment container.
-        return Boolean(attachmentContainer || source.startsWith("blob:"));
+        // Data and blob URLs are also used by Discord's toolbar and picker
+        // surfaces. They are not evidence that an uploaded attachment has
+        // rendered unless the element is inside a known attachment container.
+        return Boolean(attachmentContainer);
     });
 }
 
@@ -1233,8 +1272,10 @@ function PendingAttachmentPreview({ channelId }: { channelId: string }) {
     const [portalHost, setPortalHost] = useState<HTMLElement | null>(null);
     const [nativePreviewVisible, setNativePreviewVisible] = useState(false);
     const [expandedId, setExpandedId] = useState<string | null>(null);
+    const [failedPreviewIds, setFailedPreviewIds] = useState<Set<string>>(() => new Set());
     const uploadsRef = useRef<CloudUpload[]>([]);
     const uploadsSignatureRef = useRef("");
+    const uploadRecoveryRef = useRef({ emptySince: 0 });
     const nativePreviewRefreshRef = useRef<(() => void) | null>(null);
     uploadsRef.current = uploads;
 
@@ -1246,6 +1287,8 @@ function PendingAttachmentPreview({ channelId }: { channelId: string }) {
         uploadsSignatureRef.current = "";
         setUploads([]);
         setNativePreviewVisible(false);
+        setFailedPreviewIds(new Set());
+        uploadRecoveryRef.current.emptySince = 0;
         nativePreviewRefreshRef.current = null;
 
         let cancelled = false;
@@ -1253,11 +1296,31 @@ function PendingAttachmentPreview({ channelId }: { channelId: string }) {
             try {
                 const nextUploads = getPendingMessageUploads(channelId);
                 const nextSignature = pendingUploadsSignature(nextUploads);
+                if (nextUploads.length > 0) {
+                    uploadRecoveryRef.current.emptySince = 0;
+                } else if (uploadsRef.current.length > 0) {
+                    // Discord briefly reports an empty store while it swaps
+                    // the composer/form during an upload. Do not destroy the
+                    // only actionable preview during that handoff.
+                    if (uploadRecoveryRef.current.emptySince === 0) {
+                        uploadRecoveryRef.current.emptySince = Date.now();
+                        return;
+                    }
+                    if (Date.now() - uploadRecoveryRef.current.emptySince < PENDING_UPLOAD_GRACE_MS) return;
+                }
+
                 if (!cancelled && nextSignature !== uploadsSignatureRef.current) {
                     uploadsSignatureRef.current = nextSignature;
                     setUploads(nextUploads);
                 }
             } catch (error) {
+                if (!cancelled && uploadsRef.current.length > 0) {
+                    if (uploadRecoveryRef.current.emptySince === 0) {
+                        uploadRecoveryRef.current.emptySince = Date.now();
+                        return;
+                    }
+                    if (Date.now() - uploadRecoveryRef.current.emptySince < PENDING_UPLOAD_GRACE_MS) return;
+                }
                 if (!cancelled && uploadsSignatureRef.current !== "") {
                     uploadsSignatureRef.current = "";
                     setUploads([]);
@@ -1296,7 +1359,15 @@ function PendingAttachmentPreview({ channelId }: { channelId: string }) {
         };
     }, [previewItems]);
 
-    const expandedItem = previewItems.find(item => (item.upload.uniqueId || item.upload.id) === expandedId);
+    useEffect(() => {
+        const activeIds = new Set(previewItems.map(item => item.upload.uniqueId || item.upload.id || item.upload.filename));
+        setFailedPreviewIds(current => {
+            const next = new Set(Array.from(current).filter(id => activeIds.has(id)));
+            return next.size === current.size ? current : next;
+        });
+    }, [previewItems]);
+
+    const expandedItem = previewItems.find(item => (item.upload.uniqueId || item.upload.id || item.upload.filename) === expandedId);
 
     useEffect(() => {
         if (!expandedItem) setExpandedId(null);
@@ -1450,44 +1521,79 @@ function PendingAttachmentPreview({ channelId }: { channelId: string }) {
 
     return ReactDOM.createPortal(
         <div className="dmemoji-pending-attachment-preview" role="status" aria-live="polite">
-            {previewItems.map(({ upload, url, kind }) => (
-                <div className="dmemoji-pending-attachment" key={upload.uniqueId || upload.id}>
-                    <button
-                        type="button"
-                        className="dmemoji-pending-attachment-media"
-                        aria-label={`Preview ${upload.filename}`}
-                        onClick={() => setExpandedId(upload.uniqueId || upload.id)}
-                    >
-                        {kind === "image" && url && <img src={url} alt={upload.filename} />}
-                        {kind === "video" && url && <video src={url} muted autoPlay loop playsInline />}
-                        {(!url || kind === "file") && (
-                            <span aria-hidden="true">{kind === "file" ? "FILE" : kind === "video" ? "VIDEO" : "IMAGE"}</span>
-                        )}
-                    </button>
-                    <span className="dmemoji-pending-attachment-name" title={upload.filename}>
-                        {upload.filename}
-                    </span>
-                    <button
-                        type="button"
-                        className="dmemoji-pending-attachment-remove"
-                        aria-label={`Remove ${upload.filename}`}
-                        onClick={() => {
-                            try {
-                                upload.removeFromMsgDraft();
-                            } catch (error) {
-                                console.error("[DMEmoji] Could not remove pending upload", error);
-                                Toasts.show({
-                                    message: "Could not remove that attachment",
-                                    id: Toasts.genId(),
-                                    type: Toasts.Type.FAILURE
-                                });
-                            }
-                        }}
-                    >
-                        ×
-                    </button>
-                </div>
-            ))}
+            {previewItems.map(({ upload, url, kind }) => {
+                const previewId = upload.uniqueId || upload.id || upload.filename;
+                const mediaFailed = failedPreviewIds.has(previewId);
+                const showMedia = Boolean(url) && !mediaFailed;
+                const markMediaReady = () => setFailedPreviewIds(current => {
+                    if (!current.has(previewId)) return current;
+                    const next = new Set(current);
+                    next.delete(previewId);
+                    return next;
+                });
+                const markMediaFailed = () => setFailedPreviewIds(current => {
+                    if (current.has(previewId)) return current;
+                    const next = new Set(current);
+                    next.add(previewId);
+                    return next;
+                });
+                const removePendingUpload = () => {
+                    try {
+                        upload.removeFromMsgDraft();
+                        const nextUploads = uploadsRef.current.filter(candidate => candidate !== upload);
+                        uploadsSignatureRef.current = pendingUploadsSignature(nextUploads);
+                        setUploads(nextUploads);
+                        setExpandedId(current => current === previewId ? null : current);
+                    } catch (error) {
+                        console.error("[DMEmoji] Could not remove pending upload", error);
+                        Toasts.show({
+                            message: "Could not remove that attachment",
+                            id: Toasts.genId(),
+                            type: Toasts.Type.FAILURE
+                        });
+                    }
+                };
+
+                return (
+                    <div className="dmemoji-pending-attachment" key={previewId}>
+                        <button
+                            type="button"
+                            className="dmemoji-pending-attachment-media"
+                            aria-label={`Preview ${upload.filename}`}
+                            onClick={() => setExpandedId(previewId)}
+                        >
+                            {kind === "image" && showMedia && (
+                                <img src={url} alt={upload.filename} onError={markMediaFailed} onLoad={markMediaReady} />
+                            )}
+                            {kind === "video" && showMedia && (
+                                <video
+                                    src={url}
+                                    muted
+                                    autoPlay
+                                    loop
+                                    playsInline
+                                    onError={markMediaFailed}
+                                    onLoadedData={markMediaReady}
+                                />
+                            )}
+                            {(!showMedia || kind === "file") && (
+                                <span aria-hidden="true">{kind === "file" ? "FILE" : kind === "video" ? "VIDEO" : "IMAGE"}</span>
+                            )}
+                        </button>
+                        <span className="dmemoji-pending-attachment-name" title={upload.filename}>
+                            {upload.filename}
+                        </span>
+                        <button
+                            type="button"
+                            className="dmemoji-pending-attachment-remove"
+                            aria-label={`Remove ${upload.filename}`}
+                            onClick={removePendingUpload}
+                        >
+                            ×
+                        </button>
+                    </div>
+                );
+            })}
             {expandedItem && (
                 <div
                     className="dmemoji-pending-attachment-lightbox"
@@ -1508,13 +1614,24 @@ function PendingAttachmentPreview({ channelId }: { channelId: string }) {
                         >
                             ×
                         </button>
-                        {expandedItem.kind === "image" && expandedItem.url && (
-                            <img src={expandedItem.url} alt={expandedItem.upload.filename} />
+                        {expandedItem.kind === "image" && expandedItem.url && !failedPreviewIds.has(expandedItem.upload.uniqueId || expandedItem.upload.id || expandedItem.upload.filename) && (
+                            <img
+                                src={expandedItem.url}
+                                alt={expandedItem.upload.filename}
+                                onError={() => setFailedPreviewIds(current => new Set(current).add(expandedItem.upload.uniqueId || expandedItem.upload.id || expandedItem.upload.filename))}
+                            />
                         )}
-                        {expandedItem.kind === "video" && expandedItem.url && (
-                            <video src={expandedItem.url} controls autoPlay loop playsInline />
+                        {expandedItem.kind === "video" && expandedItem.url && !failedPreviewIds.has(expandedItem.upload.uniqueId || expandedItem.upload.id || expandedItem.upload.filename) && (
+                            <video
+                                src={expandedItem.url}
+                                controls
+                                autoPlay
+                                loop
+                                playsInline
+                                onError={() => setFailedPreviewIds(current => new Set(current).add(expandedItem.upload.uniqueId || expandedItem.upload.id || expandedItem.upload.filename))}
+                            />
                         )}
-                        {(!expandedItem.url || expandedItem.kind === "file") && (
+                        {(!expandedItem.url || failedPreviewIds.has(expandedItem.upload.uniqueId || expandedItem.upload.id || expandedItem.upload.filename) || expandedItem.kind === "file") && (
                             <div className="dmemoji-pending-attachment-lightbox-file">
                                 {expandedItem.kind === "file" ? "FILE" : expandedItem.kind === "video" ? "VIDEO" : "IMAGE"}
                             </div>
