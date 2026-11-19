@@ -1,5 +1,28 @@
 # Discordmaxxer — RESUME
 
+## 2026-11-19 — v0.7.156 release candidate prepared
+
+- **Release scope**: publish the Tournament Mode full-screen image-viewer fix.
+  The badge work in this candidate is a release-time isolation guard; it does
+  not change the already-correct per-account badge resolver.
+- **Version**: package and release notes are aligned at `0.7.156`.
+- **Verification**: `pnpm test`, strict pinned `pnpm overlay:vencord`,
+  `pnpm build`, `node overlay-scripts/verify-build.mjs`, and
+  `pnpm package:dir` passed. The packaged x64 candidate was created at
+  `dist\win-unpacked`.
+- **Runtime boundary**: the packaged binary launched from this worktree, but
+  the validator was pointed at a fresh first-launch preview profile and could
+  not reach a signed-in Discord/Vencord surface within 60 seconds. No
+  user-facing image click-through was claimed; the installed client and its
+  account remain untouched.
+- **Publish state**: owner authorization to publish is recorded in the current
+  task, but the version commit and `v0.7.156` tag have not yet been pushed.
+  The canonical dirty checkout at `C:\Users\Diggy\projects\discordmaxxer`
+  remains untouched.
+- **Next action**: run the ASCII/no-authorship preflight, commit the intended
+  release files, push `main`, tag `v0.7.156`, and verify the public release and
+  updater manifest.
+
 ## 2026-11-19 — Per-account badge isolation audit
 
 - **Observed request**: verify that Diggy's `MAXXER++` rank badge cannot appear
