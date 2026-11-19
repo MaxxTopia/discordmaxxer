@@ -1,6 +1,6 @@
 # Discordmaxxer — RESUME
 
-## 2026-11-19 — v0.7.156 release candidate prepared
+## 2026-11-19 — v0.7.156 published
 
 - **Release scope**: publish the Tournament Mode full-screen image-viewer fix.
   The badge work in this candidate is a release-time isolation guard; it does
@@ -10,18 +10,27 @@
   `pnpm build`, `node overlay-scripts/verify-build.mjs`, and
   `pnpm package:dir` passed. The packaged x64 candidate was created at
   `dist\win-unpacked`.
+- **Publish state**: commit `8ca1d37` is pushed to `main`, tag `v0.7.156` is
+  pushed, and GitHub Actions run `44616587052` completed successfully. The
+  public release is
+  `https://github.com/MaxxTopia/discordmaxxer/releases/tag/v0.7.156`.
+  It contains the x64 and arm64 ZIPs, the Windows installer, its blockmap, and
+  `latest.yml` advertising version `0.7.156`.
 - **Runtime boundary**: the packaged binary launched from this worktree, but
   the validator was pointed at a fresh first-launch preview profile and could
   not reach a signed-in Discord/Vencord surface within 60 seconds. No
   user-facing image click-through was claimed; the installed client and its
-  account remain untouched.
-- **Publish state**: owner authorization to publish is recorded in the current
-  task, but the version commit and `v0.7.156` tag have not yet been pushed.
-  The canonical dirty checkout at `C:\Users\Diggy\projects\discordmaxxer`
-  remains untouched.
-- **Next action**: run the ASCII/no-authorship preflight, commit the intended
-  release files, push `main`, tag `v0.7.156`, and verify the public release and
-  updater manifest.
+  account remain untouched. A signed-in install/update and Tournament Mode
+  image click-through remain the user's acceptance gate.
+- **Canonical checkout**: the dirty checkout at
+  `C:\Users\Diggy\projects\discordmaxxer` remains untouched.
+- **New observation**: a separate DM attachment-preview report shows an empty
+  pre-send preview surface. This is not covered by v0.7.156 and needs a
+  separate diagnosis/fix; the screenshot alone does not prove whether the
+  blank surface is Discord's native upload shell or DMEmoji's fallback.
+- **Next action**: install/update v0.7.156 and perform the signed-in image
+  click-through. Then, if the blank DM preview reproduces, capture the
+  attachment DOM/store state and prepare a separately authorized patch.
 
 ## 2026-11-19 — Per-account badge isolation audit
 
