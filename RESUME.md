@@ -1,5 +1,38 @@
 # Discordmaxxer — RESUME
 
+## 2026-11-19 — DM image/video attachment preview hardening candidate
+
+- **Observed report**: an image or video selected in a DM could leave a blank
+  pre-send surface with no usable preview, view, or remove action. The attached
+  screenshot alone could not distinguish Discord's native upload shell from
+  DMEmoji's fallback, so this patch hardens both integration boundaries.
+- **Fix**: normalize the current and legacy `UploadAttachmentStore` return
+  shapes; keep the last valid upload through Discord's short composer/store
+  handoff; retain an actionable named card when object-URL media fails; add
+  image/video load-error fallbacks and a lightbox action; remove uploads
+  optimistically after Discord accepts `removeFromMsgDraft`; and stop the
+  fallback host from using `display: contents`, which could leave the preview
+  surface laid out but visually empty.
+- **Version/state**: local commit `78ad43f` on isolated branch
+  `codex/tournament-image-viewer-fix` at
+  `C:\Users\Diggy\projects\discordmaxxer-release-0.7.156`. It is not pushed,
+  tagged, installed, or published. Public `v0.7.156` remains unchanged.
+- **Verification**: `pnpm test`, strict pinned `pnpm overlay:vencord`,
+  `pnpm build`, `node overlay-scripts/verify-build.mjs`, `git diff --check`,
+  and a fresh `pnpm package:dir` all passed. The x64 candidate executable is
+  at `dist\win-unpacked\discordmaxxer.exe`.
+- **Runtime boundary**: no signed-in attachment send/remove/view test has run
+  against this candidate. The documented dev client was not running, and the
+  only running Discordmaxxer process is the older installed build; it was not
+  replaced or reloaded. A packaged first-launch check would only prove startup,
+  not the signed-in Discord upload path.
+- **Canonical checkout**: the dirty checkout at
+  `C:\Users\Diggy\projects\discordmaxxer` remains untouched.
+- **Next action**: install/update this candidate only after authorization, then
+  test one image and one video in a DM: preview appears, click opens the
+  preview, remove clears it before send, and send succeeds. If that passes,
+  prepare a separately authorized public release.
+
 ## 2026-11-19 — v0.7.156 published
 
 - **Release scope**: publish the Tournament Mode full-screen image-viewer fix.
