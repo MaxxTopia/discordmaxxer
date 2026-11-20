@@ -20,23 +20,33 @@
   throttling after readiness or failure. This prevents a normal route
   transition from being mistaken for a dead renderer while preserving the
   existing recovery path for a renderer that never mounts.
-- **Verification**: `pnpm overlay:vencord`, `pnpm build:dev`, `pnpm test`,
-  `pnpm verify:build`, and `git diff --check` passed. A clean isolated launch
-  of the rebuilt bundle reached `renderer-ready` on the first navigation in
+- **Verification**: the strict overlay, TypeScript/ESLint tests, application
+  build, artifact-integrity verification, directory packaging, Windows
+  packaging, ASCII shipped-script check, `git diff --check`, and the post-build
+  renderer validator passed. The validator passed inventory, visual,
+  CompactView/Tournament Mode hotkeys, and MassDelete wiring; its badge phase
+  was intentionally skipped because that check writes account settings. A
+  clean isolated launch reached `renderer-ready` on the first navigation in
   about 9.8 seconds (preparation about 0.08 seconds, document load about 1.7
   seconds) with no startup timeout or recovery event. The temporary timing
-  probes used for diagnosis were removed before this candidate build.
-- **Release state**: the source fix is committed locally on branch
-  `codex/startup-fast-0.7.159` and the package version is bumped to `0.7.160`.
-  The canonical dirty checkout at `C:\Users\Diggy\projects\discordmaxxer`
-  remains untouched; publication is pending the documented release checks.
+  probes used for diagnosis were removed before release.
+- **Release state**: commit `9b84fe3` is on `main`, tag `v0.7.160` is
+  published, and the Release workflow (`44724908159`) plus the main test
+  workflow (`44724886668`) completed successfully. The public release is
+  `https://github.com/MaxxTopia/discordmaxxer/releases/tag/v0.7.160`; its
+  x64/ARM64 archives, installer, blockmap, and `latest.yml` are uploaded, and
+  the public updater manifest returned HTTP 200 reporting `0.7.160`. The
+  canonical dirty checkout at `C:\Users\Diggy\projects\discordmaxxer`
+  remains untouched.
 - **Remaining acceptance**: update/restart the installed client and confirm
-  normal startup, Tournament Mode startup, and a signed-in DM session. The
-  isolated smoke launch does not prove account/device behavior or guarantee a
-  remote Discord outage cannot be slow.
-- **Next action**: complete the strict release build and, with the now-granted
-  authorization, push `main`, tag `v0.7.160`, and verify the public installer
-  and updater manifest.
+  normal startup and Tournament Mode startup on the user's machine. The clean
+  isolated smoke launch and CI release checks do not prove signed-in account
+  or device behavior, and cannot guarantee a remote Discord outage will never
+  be slow.
+- **Next action**: restart or update the installed client to `v0.7.160` and
+  report the observed startup time or any recovery screen that remains. If it
+  still appears, capture the exact version and startup log so the remaining
+  failure can be separated from the fixed renderer scheduling issue.
 
 ## 2026-11-20 — v0.7.159 attachment-preview repair published
 
