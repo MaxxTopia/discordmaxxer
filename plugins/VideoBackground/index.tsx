@@ -231,7 +231,9 @@ function buildCss() {
            surfaces and removed their background image, leaving a blank pending
            attachment card. Keep this list at the app frame's first two levels;
            never style arbitrary descendants because a hashed class happens to
-           contain "bg" or "base".
+           contain "bg" or "base". Only clear the structural background color;
+           Discord keeps ownership of background images used by native media
+           surfaces.
            NOTE: never use backticks in this block - it is a template literal. */
         html body #app-mount,
         html body #app-mount > div,
@@ -259,9 +261,7 @@ function buildCss() {
         html body #app-mount > div > div > [class*=" bg_"],
         html body #app-mount > div > div > [class^="base_"],
         html body #app-mount > div > div > [class*=" base_"] {
-            background: transparent !important;
             background-color: transparent !important;
-            background-image: none !important;
         }
 
         #${VIDEO_ID} {

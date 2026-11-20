@@ -266,7 +266,9 @@ if (!existsSync(overlaySourceRoot)) {
         "onError={markMediaFailed}",
         "naturalWidth > 0",
         "readyState >= 2",
-        "uploadsSignatureRef.current = \"\";"
+        "uploadsSignatureRef.current = \"\";",
+        "if (uploadsRef.current.length === 0)",
+        "}, [channelId, uploads.length]);"
     ];
     const missingDmEmojiMarkers = dmEmojiPreviewMarkers.filter(marker => !dmEmojiSource.includes(marker));
     if (missingDmEmojiMarkers.length === 0) {
@@ -285,7 +287,13 @@ if (!existsSync(overlaySourceRoot)) {
         'html body [class*=" base_"]'
     ];
     const hasUnsafeVideoBackgroundSelector = unsafeVideoBackgroundSelectors.some(selector => videoBackgroundSource.includes(selector));
-    if (!hasUnsafeVideoBackgroundSelector && videoBackgroundSource.includes('html body #app-mount > div > div[class*="bg"]')) {
+    if (
+        !hasUnsafeVideoBackgroundSelector &&
+        videoBackgroundSource.includes('html body #app-mount > div > div[class*="bg"]') &&
+        videoBackgroundSource.includes("background-color: transparent !important;") &&
+        !videoBackgroundSource.includes("background-image: none !important;") &&
+        !videoBackgroundSource.includes("background: transparent !important;")
+    ) {
         ok("VideoBackground limits transparent clears to app-frame structure and preserves native attachment surfaces");
     } else {
         fail("VideoBackground still has descendant-wide background clears that can blank native attachment previews");

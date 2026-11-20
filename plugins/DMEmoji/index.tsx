@@ -1489,6 +1489,14 @@ function PendingAttachmentPreview({ channelId }: { channelId: string }) {
 
         const ensureAttachment = () => {
             try {
+                // Do not insert a foreign node into Discord's React-owned form
+                // until the upload store confirms a real pending attachment.
+                // An empty host can make the native attachment list look
+                // present but blank during the file-picker handoff.
+                if (uploadsRef.current.length === 0) {
+                    if (activeForm || host) detach();
+                    return;
+                }
                 const currentForm = findMessageComposerForm();
                 if (!currentForm) {
                     if (activeForm || host) detach();
@@ -1511,7 +1519,7 @@ function PendingAttachmentPreview({ channelId }: { channelId: string }) {
             if (attachmentTimer !== undefined) window.clearInterval(attachmentTimer);
             detach();
         };
-    }, [channelId]);
+    }, [channelId, uploads.length]);
 
     useEffect(() => {
         nativePreviewRefreshRef.current?.();

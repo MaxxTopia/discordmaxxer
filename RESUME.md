@@ -1,5 +1,30 @@
 # Discordmaxxer — RESUME
 
+## 2026-11-20 — v0.7.159 attachment-preview repair in progress
+
+- **Observed report**: the installed v0.7.158 client still creates an empty
+  pending-attachment list item in a DM. The live accessibility tree contains
+  the composer form and list item, but no media, filename, or remove control;
+  normal received images/videos render correctly.
+- **Diagnosis**: v0.7.158 narrowed VideoBackground's selectors but still used
+  `background` and `background-image: none` on structural layers. Separately,
+  DMEmoji inserted an empty foreign host into every composer before its upload
+  store had a real item. The two boundaries can leave Discord's native pending
+  attachment surface blank. The Spotify modal toast seen in the same session is
+  a separate runtime/plugin error and is not being treated as the attachment
+  cause.
+- **Fix in progress**: v0.7.159 removes the background shorthand/image clear,
+  gates the DMEmoji fallback host on a non-empty upload store, and adds release
+  integrity markers for both safeguards. The canonical dirty checkout at
+  `C:\Users\Diggy\projects\discordmaxxer` remains untouched.
+- **Runtime evidence**: installed app is v0.7.158 and the live process is the
+  installed published build. No local file was uploaded or sent through the UI;
+  that action remains user-authorized acceptance testing, not an automated
+  claim.
+- **Next action**: run the documented test, strict overlay, verify, build, and
+  Windows packaging gates; then publish v0.7.159 and validate the public release
+  assets before the Diggy-owned signed-in image/video test.
+
 ## 2026-11-19 — v0.7.158 native attachment preview fix published
 
 - **Observed report**: the normal Discord image/video attachment surface can
