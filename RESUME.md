@@ -1,5 +1,34 @@
 # Discordmaxxer — RESUME
 
+## 2026-11-19 — v0.7.157 published
+
+- **Release state**: commit `5be5f2f` is pushed to `main`, tag `v0.7.157` is
+  pushed, and GitHub Actions run `44646869092` completed successfully. The
+  public stable release is
+  `https://github.com/MaxxTopia/discordmaxxer/releases/tag/v0.7.157`.
+- **Published artifacts**: the release contains the x64 and arm64 ZIPs, the
+  signed combined Windows installer, its block map, and `latest.yml`. The
+  public updater manifest advertises version `0.7.157` and points to the
+  published `Discordmaxxer-Setup-0.7.157.exe` with matching size and SHA-512.
+- **Included fixes**: DM image/video attachment previews remain visible and
+  actionable through Discord's composer handoff; startup readiness begins at
+  navigation commit, requires a visible real Discord surface (including the
+  logged-out auth form), and recovers from the remote `Opening Discord App.`
+  shell on a bounded 18-second failure window.
+- **Verification**: local `pnpm test`, `pnpm build`, strict pinned
+  `pnpm overlay:vencord`, build-integrity verification, `pnpm package:dir`,
+  and `pnpm package:win` passed. A fresh-profile packaged smoke launch
+  reached `renderer-ready` on first navigation without startup recovery.
+- **Runtime boundary**: the installed client was not replaced or restarted.
+  Signed-in startup, DM image/video send/view/remove, and Tournament Mode
+  image click-through remain user acceptance checks after updating. No claim
+  of those signed-in/device behaviors is being made from the local smoke test.
+- **Canonical checkout**: the dirty checkout at
+  `C:\Users\Diggy\projects\discordmaxxer` remains untouched.
+- **Next action**: update/restart the installed client and run the three
+  signed-in acceptance checks above; report the exact startup log if the
+  recovery screen reappears.
+
 ## 2026-11-19 — v0.7.157 startup watchdog hardening candidate
 
 - **Observed incident**: the installed `v0.7.156` client could remain on
