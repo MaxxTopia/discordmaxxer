@@ -1,6 +1,6 @@
 # Discordmaxxer — RESUME
 
-## 2026-11-20 — v0.7.159 attachment-preview repair in progress
+## 2026-11-20 — v0.7.159 attachment-preview repair published
 
 - **Observed report**: the installed v0.7.158 client still creates an empty
   pending-attachment list item in a DM. The live accessibility tree contains
@@ -13,17 +13,25 @@
   attachment surface blank. The Spotify modal toast seen in the same session is
   a separate runtime/plugin error and is not being treated as the attachment
   cause.
-- **Fix in progress**: v0.7.159 removes the background shorthand/image clear,
+- **Fix shipped**: v0.7.159 removes the background shorthand/image clear,
   gates the DMEmoji fallback host on a non-empty upload store, and adds release
-  integrity markers for both safeguards. The canonical dirty checkout at
+  integrity markers for both safeguards. Commit `e78da1b` was pushed to
+  `main`; tag `v0.7.159` and GitHub Release workflow `44672293580` completed
+  successfully. The canonical dirty checkout at
   `C:\Users\Diggy\projects\discordmaxxer` remains untouched.
+- **Build evidence**: local `pnpm test`, strict overlay build, artifact
+  verification, application build, unpacked packaging, signed x64/arm64 zips,
+  and the Windows installer all passed. GitHub test workflow `44672279557`
+  also passed. Public `latest.yml` reports `0.7.159` and
+  `Discordmaxxer-Setup-0.7.159.exe`.
 - **Runtime evidence**: installed app is v0.7.158 and the live process is the
   installed published build. No local file was uploaded or sent through the UI;
   that action remains user-authorized acceptance testing, not an automated
   claim.
-- **Next action**: run the documented test, strict overlay, verify, build, and
-  Windows packaging gates; then publish v0.7.159 and validate the public release
-  assets before the Diggy-owned signed-in image/video test.
+- **Remaining acceptance**: update/restart the installed client, then select
+  one image and one video in a DM. Confirm each preview is visible, can be
+  opened and removed before sending, and sends normally. No file was selected
+  or sent automatically, so this final signed-in UI gate remains open.
 
 ## 2026-11-19 — v0.7.158 native attachment preview fix published
 
