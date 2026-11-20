@@ -20,7 +20,7 @@ import { definePluginSettings } from "@api/Settings";
 import { managedStyleRootNode } from "@api/Styles";
 import { createAndAppendStyle } from "@utils/css";
 import { React, Toasts as DiscordToasts } from "@webpack/common";
-import definePlugin, { OptionType } from "@utils/types";
+import definePlugin, { OptionType, StartAt } from "@utils/types";
 
 import { hasTier, Tier, TIER_LABELS } from "../_dm-shared/vip";
 import { showDiscordmaxxerStatusToast } from "../_dm-shared/statusToast";
@@ -648,6 +648,7 @@ export default definePlugin({
     authors: [{ name: "Diggy", id: 0n }],
     settings,
     settingsAboutComponent: CursorSettingsAbout,
+    startAt: StartAt.DOMContentLoaded,
 
     start() {
         style = createAndAppendStyle("dm-cursor-style", managedStyleRootNode);

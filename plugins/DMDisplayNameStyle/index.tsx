@@ -19,7 +19,7 @@
 import { definePluginSettings } from "@api/Settings";
 import { managedStyleRootNode } from "@api/Styles";
 import { createAndAppendStyle } from "@utils/css";
-import definePlugin, { OptionType } from "@utils/types";
+import definePlugin, { OptionType, StartAt } from "@utils/types";
 import { Toasts as DiscordToasts } from "@webpack/common";
 import { React, UserStore } from "@webpack/common";
 
@@ -1792,6 +1792,7 @@ export default definePlugin({
         `Creative local display-name styling with ${PRESET_ORDER.length} presets, bundled offline Great Vibes, Fraktur, and comic typefaces, flame/swash/spark ornaments, Custom Lab colors, and per-surface scope. Profile popouts, member/right-side lists, DM headers, and message authors can all be styled locally, with separate toggles for each surface. Motion does not follow the OS reduced-motion preference; Tournament Mode pauses it automatically. This does not edit your account; open Discord's native profile editor for the separate account-level Display Name Styles feature.`,
     authors: [{ name: "Diggy", id: 0n }],
     settings,
+    startAt: StartAt.DOMContentLoaded,
 
     start() {
         style = createAndAppendStyle("dm-display-name-style", managedStyleRootNode);

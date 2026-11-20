@@ -39,7 +39,7 @@ import { definePluginSettings } from "@api/Settings";
 import { managedStyleRootNode } from "@api/Styles";
 import * as DataStore from "@api/DataStore";
 import { createAndAppendStyle } from "@utils/css";
-import definePlugin, { OptionType } from "@utils/types";
+import definePlugin, { OptionType, StartAt } from "@utils/types";
 import { Button, ChannelStore, React, RestAPI, SelectedChannelStore, Toasts as DiscordToasts, UserStore } from "@webpack/common";
 
 import { makePersistentValue } from "../_dm-shared/persist";
@@ -4296,6 +4296,7 @@ export default definePlugin({
         "Free showcase fields with server-side roster validation. Animated content auto-suppresses when TournamentMode is on.",
     authors: [{ name: "Diggy", id: 0n }],
     settings,
+    startAt: StartAt.DOMContentLoaded,
 
     start() {
         cleanUpLeakedRootThemes();

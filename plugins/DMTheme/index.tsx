@@ -26,7 +26,7 @@ import { definePluginSettings } from "@api/Settings";
 import { managedStyleRootNode } from "@api/Styles";
 import { createAndAppendStyle } from "@utils/css";
 import { React, Toasts } from "@webpack/common";
-import definePlugin, { OptionType } from "@utils/types";
+import definePlugin, { OptionType, StartAt } from "@utils/types";
 
 import {
     DEFAULT_THEME,
@@ -377,6 +377,7 @@ export default definePlugin({
         "Eight-theme system. Free: Maxxer (magenta+cobalt), Val (Valorant), Sonic (gold+cobalt), DMC (gothic), BO3 (military). MAXXER+ exclusives: Akatsuki (bone+blood+void), DMC: Devil Trigger (Dante red + Sparda blue + DT pulse), Eminence in Shadow (slime+atomic-lightning). Each overrides Discord's full color graph + adds personality flair (typing dots, mention animations, hover effects).",
     authors: [{ name: "Diggy", id: 0n }],
     settings,
+    startAt: StartAt.DOMContentLoaded,
 
     start() {
         style = createAndAppendStyle("dm-theme", managedStyleRootNode);

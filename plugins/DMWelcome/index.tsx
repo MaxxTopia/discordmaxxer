@@ -19,7 +19,7 @@
 import { managedStyleRootNode } from "@api/Styles";
 import { definePluginSettings } from "@api/Settings";
 import { createAndAppendStyle } from "@utils/css";
-import definePlugin, { OptionType } from "@utils/types";
+import definePlugin, { OptionType, StartAt } from "@utils/types";
 import { Toasts as DiscordToasts, UserStore } from "@webpack/common";
 
 import { BUNDLES } from "../_dm-shared/bundles";
@@ -869,6 +869,7 @@ export default definePlugin({
         "First-launch plugin tour: identity consent (DMBadge channels), one-click bundles (Music & Vibes / Streamer Loadout / Privacy & Anti-track), and a curated card list of featured plugins with plain-English copy. Re-openable from the DM Hub anytime; auto-shows again when new featured plugins ship.",
     authors: [{ name: "Diggy", id: 0n }],
     settings,
+    startAt: StartAt.DOMContentLoaded,
 
     start() {
         style = createAndAppendStyle("dm-welcome", managedStyleRootNode);

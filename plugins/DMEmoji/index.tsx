@@ -16,7 +16,7 @@ import ErrorBoundary from "@components/ErrorBoundary";
 import { Devs } from "@utils/constants";
 import { copyWithToast, insertTextIntoChatInputBox } from "@utils/discord";
 import { ModalCloseButton, ModalContent, ModalHeader, ModalRoot, ModalSize } from "@utils/modal";
-import definePlugin, { IconComponent, OptionType } from "@utils/types";
+import definePlugin, { IconComponent, OptionType, StartAt } from "@utils/types";
 import type { CloudUpload } from "@vencord/discord-types";
 import { Message, RenderModalProps } from "@vencord/discord-types";
 import {
@@ -1772,6 +1772,7 @@ export default definePlugin({
     tags: ["Chat", "Emotes", "Media"],
     authors: [{ name: "Diggy", id: 0n }],
     settings,
+    startAt: StartAt.DOMContentLoaded,
     chatBarButton: {
         icon: DMEmojiIcon as IconComponent,
         render: DMEmojiButton

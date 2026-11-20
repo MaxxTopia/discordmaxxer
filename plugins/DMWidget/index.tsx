@@ -35,7 +35,7 @@
  */
 
 import { definePluginSettings } from "@api/Settings";
-import definePlugin, { OptionType, PluginNative } from "@utils/types";
+import definePlugin, { OptionType, PluginNative, StartAt } from "@utils/types";
 import * as DataStore from "@api/DataStore";
 import { AuthenticationStore, Button, React, RestAPI, Toasts, UserProfileStore, UserStore } from "@webpack/common";
 import { fetchUserProfile } from "@utils/discord";
@@ -8479,6 +8479,7 @@ export default definePlugin({
     authors: [{ name: "Diggy", id: 0n }],
     settingsAboutComponent: WidgetStylePicker,
     settings,
+    startAt: StartAt.DOMContentLoaded,
 
     // Live game-stat refresh: once on start (after the client settles) + every
     // 30 min while running. Guards inside refreshFortnite make it a no-op unless

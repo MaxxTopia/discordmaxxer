@@ -15,7 +15,7 @@
 
 import { addProfileBadge, BadgePosition, ProfileBadge, removeProfileBadge } from "@api/Badges";
 import { definePluginSettings } from "@api/Settings";
-import definePlugin, { OptionType } from "@utils/types";
+import definePlugin, { OptionType, StartAt } from "@utils/types";
 import { React, RestAPI, Toasts as DiscordToasts, UserStore } from "@webpack/common";
 
 import { getRosterStatus, getRosterTier, refreshRoster } from "../_dm-shared/roster";
@@ -229,6 +229,7 @@ export default definePlugin({
         "A small Discordmaxxer-only profile badge. Other Discordmaxxer users can see it; vanilla Discord users see no change. The settings page explains visibility and roster behavior before the advanced fields.",
     authors: [{ name: "Diggy", id: 0n }],
     settings,
+    startAt: StartAt.DOMContentLoaded,
 
     async start() {
         rebuildKnownIds();

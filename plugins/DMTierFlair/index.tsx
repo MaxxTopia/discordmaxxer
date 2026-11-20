@@ -28,7 +28,7 @@ import { addProfileBadge, BadgePosition, ProfileBadge, removeProfileBadge } from
 import { definePluginSettings } from "@api/Settings";
 import { managedStyleRootNode } from "@api/Styles";
 import { createAndAppendStyle } from "@utils/css";
-import definePlugin, { OptionType } from "@utils/types";
+import definePlugin, { OptionType, StartAt } from "@utils/types";
 import { UserStore } from "@webpack/common";
 
 import { getRosterFounderNumber, getRosterStatus, getRosterTier, onRosterChange, refreshRoster } from "../_dm-shared/roster";
@@ -792,6 +792,7 @@ export default definePlugin({
         "Cross-user status flex (Hypixel-style). Avatar rings, name tints, popout banners, a selectable animated MAXXER++ tier badge, and numbered Founder gems for users in the public roster. Pure cosmetic, opt-out per surface, no webpack patches.",
     authors: [{ name: "Diggy", id: 0n }],
     settings,
+    startAt: StartAt.DOMContentLoaded,
 
     start() {
         tierFlairStarted = true;

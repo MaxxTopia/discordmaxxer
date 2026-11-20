@@ -30,6 +30,7 @@ import { createAboutWindow } from "./about";
 import { initArRPC } from "./arrpc";
 import { CommandLine } from "./cli";
 import { BrowserUserAgent, DEFAULT_HEIGHT, DEFAULT_WIDTH, MIN_HEIGHT, MIN_WIDTH } from "./constants";
+import { isVoiceActive } from "./discordmaxxerPerf";
 import { AppEvents } from "./events";
 import { darwinURL } from "./index";
 import { sendRendererCommand } from "./ipcCommands";
@@ -66,8 +67,8 @@ export let mainWin: BrowserWindow;
 
 const STARTUP_PREPARATION_TIMEOUT_MS = 20_000;
 // Recover before a user spends half a minute staring at Discord's remote
-// "Opening Discord App" shell. Normal startup is allowed to finish sooner via
-// the surface probe below; this is only the bounded failure path.
+// "Opening Discord App" shell. A visible app mount is accepted sooner; this
+// is only the bounded failure path for a renderer that never mounts.
 const STARTUP_RENDERER_TIMEOUT_MS = 18_000;
 const STARTUP_PROBE_INTERVAL_MS = 250;
 const MAX_STARTUP_NAVIGATION_RETRIES = 3;
@@ -100,6 +101,7 @@ let postStartupRendererRecoveryAttempts = 0;
 let postStartupRendererRecoveryWindowStartedAt = 0;
 let postStartupRendererRecoveryTimer: ReturnType<typeof setTimeout> | null = null;
 let runtimeLivenessTimer: ReturnType<typeof setInterval> | null = null;
+let startupRendererSchedulingLogged = false;
 
 function makeSettingsListenerHelpers<O extends object>(o: SettingsStore<O>) {
     const listeners = new Map<(data: any) => void, PropertyKey>();
@@ -403,6 +405,54 @@ function getWindowsIconPath(): string | undefined {
     return candidates.find(candidate => existsSync(candidate));
 }
 
+function keepStartupRendererResponsive() {
+    if (startupReady || !mainWin || mainWin.isDestroyed()) return;
+
+    try {
+        mainWin.webContents.setBackgroundThrottling(false);
+        if (!startupRendererSchedulingLogged) {
+            startupRendererSchedulingLogged = true;
+            recordStartupEvent("startup-renderer-throttling-disabled");
+        }
+    } catch (error) {
+        recordStartupEvent("startup-renderer-throttling-error", describeStartupError(error));
+    }
+}
+
+function restoreStartupRendererScheduling() {
+    if (!mainWin || mainWin.isDestroyed()) return;
+
+    try {
+        // Match the steady-state policy used by discordmaxxerPerf.ts: idle
+        // windows may throttle, while an active call/stream stays responsive.
+        const allowThrottling = !isVoiceActive();
+        mainWin.webContents.setBackgroundThrottling(allowThrottling);
+        if (startupRendererSchedulingLogged) {
+            startupRendererSchedulingLogged = false;
+            recordStartupEvent("startup-renderer-throttling-restored", { allowThrottling });
+        }
+    } catch (error) {
+        recordStartupEvent("startup-renderer-throttling-restore-error", describeStartupError(error));
+    }
+}
+
+function revealMainWindowBehindSplash() {
+    if (CommandLine.values["start-minimized"] || Settings.store.enableSplashScreen === false) return;
+    if (!mainWin || mainWin.isDestroyed() || mainWin.isVisible()) return;
+
+    try {
+        // The splash remains always-on-top. Showing the Discord window
+        // inactive behind it changes the renderer from a background document
+        // to a visible document while Discord finishes mounting its surface.
+        // This avoids Chromium/Discord deferring the exact work the startup
+        // probe is waiting for, without flashing unfinished UI to users.
+        mainWin.showInactive();
+        recordStartupEvent("startup-renderer-window-revealed");
+    } catch (error) {
+        recordStartupEvent("startup-renderer-window-reveal-error", describeStartupError(error));
+    }
+}
+
 function buildBrowserWindowOptions(): BrowserWindowConstructorOptions {
     const { staticTitle, transparencyOption, enableMenu, customTitleBar, splashTheming, splashBackground } =
         Settings.store;
@@ -471,6 +521,13 @@ function createMainWindow() {
     removeVencordSettingsListeners();
 
     const win = (mainWin = new BrowserWindow(buildBrowserWindowOptions()));
+
+    // Keep the renderer responsive for this bounded startup phase. Chromium
+    // treats a hidden window as background work, so showing it behind the
+    // always-on-top splash lets Discord mount its React surface without
+    // exposing unfinished UI. markStartupReady restores normal idle policy.
+    keepStartupRendererResponsive();
+    revealMainWindowBehindSplash();
 
     // Tell Windows which icon belongs to this taskbar identity. BrowserWindow's
     // `icon` option and setIcon() update the window icon, but Windows can keep a
@@ -575,6 +632,7 @@ function failStartup(reason: string, error?: unknown) {
     if (startupRecoveryShown) return;
 
     startupRecoveryShown = true;
+    restoreStartupRendererScheduling();
     clearStartupWatch();
     if (retryTimer !== null) {
         clearTimeout(retryTimer);
@@ -604,6 +662,7 @@ function markStartupReady(attempt: number) {
     }
 
     startupReady = true;
+    restoreStartupRendererScheduling();
     startupRecoveryShown = false;
     if (
         postStartupRendererRecoveryWindowStartedAt > 0 &&
@@ -666,7 +725,7 @@ function recoverStartupAfterTimeout(attempt: number) {
 
 const RENDERER_HEALTH_PROBE = `(() => {
     const mount = document.querySelector('#app-mount');
-    if (!mount) return { healthy: false, reason: 'mount-missing' };
+    if (!mount) return { healthy: false, mounted: false, reason: 'mount-missing' };
 
     const mountStyle = getComputedStyle(mount);
     const mountRect = mount.getBoundingClientRect();
@@ -691,6 +750,7 @@ const RENDERER_HEALTH_PROBE = `(() => {
 
     return {
         healthy: mountVisible && hasVisibleSurface,
+        mounted: mountVisible,
         reason: mountVisible ? (hasVisibleSurface ? 'ok' : 'surface-hidden') : 'mount-hidden',
         childCount: mount.childElementCount
     };
@@ -725,8 +785,11 @@ function startRuntimeLivenessWatch() {
                 .then(result => {
                     if (!startupReady || startupRecoveryShown) return;
 
-                    const health = result as { healthy?: boolean; reason?: string; childCount?: number } | undefined;
-                    if (health?.healthy === true) {
+                    const health = result as { mounted?: boolean; reason?: string; childCount?: number } | undefined;
+                    // Liveness is about the renderer being mounted and
+                    // responsive, not whether Discord has finished changing
+                    // routes. A loading shell should not trigger a reload.
+                    if (health?.mounted === true) {
                         consecutiveFailures = 0;
                         return;
                     }
@@ -825,14 +888,23 @@ function startRendererProbe(attempt: number) {
         if (!mainWin || mainWin.isDestroyed()) return;
         if (probeInFlight) return;
 
+        // A perf-mode or voice-state update can re-apply the steady-state
+        // throttling policy while startup is still in progress. Reassert the
+        // temporary startup policy on each probe tick so the renderer cannot
+        // be starved before readiness is observed.
+        keepStartupRendererResponsive();
         probeInFlight = true;
 
         try {
             void mainWin.webContents
                 .executeJavaScript(RENDERER_HEALTH_PROBE, true)
                 .then(result => {
-                    const health = result as { healthy?: boolean } | undefined;
-                    if (health?.healthy === true) markStartupReady(attempt);
+                    const health = result as { mounted?: boolean } | undefined;
+                    // A visible #app-mount is a live Discord shell even when
+                    // its first route has not painted a navigation/chat
+                    // surface yet. Do not reload that normal transition or
+                    // leave the startup splash covering it.
+                    if (health?.mounted === true) markStartupReady(attempt);
                 })
                 .catch(error => recordStartupEvent("renderer-probe-error", describeStartupError(error)))
                 .finally(() => {
@@ -932,6 +1004,7 @@ export function loadUrl(uri: string | undefined, resetRetries = true) {
         .then(() => {
             if (attempt !== startupAttempt || startupRecoveryShown) return;
             recordStartupEvent("document-loaded", { attempt, targetUrl });
+            revealMainWindowBehindSplash();
             startRendererProbe(attempt);
         })
         .catch(error => {

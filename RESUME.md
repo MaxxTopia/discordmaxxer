@@ -1,5 +1,45 @@
 # Discordmaxxer — RESUME
 
+## 2026-11-20 — startup latency repair candidate
+
+- **Observed incident**: the installed `v0.7.159` client prepared Vencord in
+  under a second and loaded Discord's document a few seconds later, but the
+  strict renderer probe could wait until roughly 18 seconds and trigger a
+  recovery reload. That is why users could see the startup recovery screen
+  even while Discord's renderer was still progressing.
+- **Diagnosis**: the delay was in Discord's renderer mounting and route
+  transition, not plugin-file preparation. The main window was hidden behind
+  the splash while Chromium could treat it as background work, and readiness
+  required a deeper navigation surface than the first visible Discord shell.
+  The custom visual plugins also did optional startup work before the DOM was
+  ready.
+- **Candidate fix**: defer the optional visual/UI plugin `start()` calls until
+  `DOMContentLoaded`; keep background throttling disabled only during bounded
+  startup, reveal the renderer behind the always-on-top splash, accept a
+  visible `#app-mount` as startup/liveness proof, and restore normal idle
+  throttling after readiness or failure. This prevents a normal route
+  transition from being mistaken for a dead renderer while preserving the
+  existing recovery path for a renderer that never mounts.
+- **Verification**: `pnpm overlay:vencord`, `pnpm build:dev`, `pnpm test`,
+  `pnpm verify:build`, and `git diff --check` passed. A clean isolated launch
+  of the rebuilt bundle reached `renderer-ready` on the first navigation in
+  about 9.8 seconds (preparation about 0.08 seconds, document load about 1.7
+  seconds) with no startup timeout or recovery event. The temporary timing
+  probes used for diagnosis were removed before this candidate build.
+- **Release state**: source changes are isolated on branch
+  `codex/startup-fast-0.7.159` at
+  `C:\Users\Diggy\projects\discordmaxxer-startup-fast-0.7.159`. They are not
+  committed, pushed, packaged, installed, or published. The canonical dirty
+  checkout at `C:\Users\Diggy\projects\discordmaxxer` remains untouched;
+  the installed client is still the previously published build.
+- **Remaining acceptance**: update/restart the installed client and confirm
+  normal startup, Tournament Mode startup, and a signed-in DM session. The
+  isolated smoke launch does not prove account/device behavior or guarantee a
+  remote Discord outage cannot be slow.
+- **Next action**: review and authorize the intended version bump, packaging,
+  push/tag, and public release sequence; do not publish this candidate without
+  that release approval.
+
 ## 2026-11-20 — v0.7.159 attachment-preview repair published
 
 - **Observed report**: the installed v0.7.158 client still creates an empty
