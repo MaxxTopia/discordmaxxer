@@ -1,6 +1,6 @@
 # Discordmaxxer — RESUME
 
-## 2026-11-20 — startup latency repair candidate
+## 2026-11-20 — v0.7.160 startup latency repair release
 
 - **Observed incident**: the installed `v0.7.159` client prepared Vencord in
   under a second and loaded Discord's document a few seconds later, but the
@@ -13,7 +13,7 @@
   required a deeper navigation surface than the first visible Discord shell.
   The custom visual plugins also did optional startup work before the DOM was
   ready.
-- **Candidate fix**: defer the optional visual/UI plugin `start()` calls until
+- **Fix**: defer the optional visual/UI plugin `start()` calls until
   `DOMContentLoaded`; keep background throttling disabled only during bounded
   startup, reveal the renderer behind the always-on-top splash, accept a
   visible `#app-mount` as startup/liveness proof, and restore normal idle
@@ -26,19 +26,17 @@
   about 9.8 seconds (preparation about 0.08 seconds, document load about 1.7
   seconds) with no startup timeout or recovery event. The temporary timing
   probes used for diagnosis were removed before this candidate build.
-- **Release state**: source changes are isolated on branch
-  `codex/startup-fast-0.7.159` at
-  `C:\Users\Diggy\projects\discordmaxxer-startup-fast-0.7.159`. They are not
-  committed, pushed, packaged, installed, or published. The canonical dirty
-  checkout at `C:\Users\Diggy\projects\discordmaxxer` remains untouched;
-  the installed client is still the previously published build.
+- **Release state**: the source fix is committed locally on branch
+  `codex/startup-fast-0.7.159` and the package version is bumped to `0.7.160`.
+  The canonical dirty checkout at `C:\Users\Diggy\projects\discordmaxxer`
+  remains untouched; publication is pending the documented release checks.
 - **Remaining acceptance**: update/restart the installed client and confirm
   normal startup, Tournament Mode startup, and a signed-in DM session. The
   isolated smoke launch does not prove account/device behavior or guarantee a
   remote Discord outage cannot be slow.
-- **Next action**: review and authorize the intended version bump, packaging,
-  push/tag, and public release sequence; do not publish this candidate without
-  that release approval.
+- **Next action**: complete the strict release build and, with the now-granted
+  authorization, push `main`, tag `v0.7.160`, and verify the public installer
+  and updater manifest.
 
 ## 2026-11-20 — v0.7.159 attachment-preview repair published
 
