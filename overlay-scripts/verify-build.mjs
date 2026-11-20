@@ -358,6 +358,7 @@ const shellPreload = join(ROOT, "dist", "js", "preload.js");
 const startupMarkers = [
     [shellMain, "did-fail-load", "main-process navigation watchdog"],
     [shellMain, "startup-timeout-recovery-scheduled", "automatic startup timeout recovery"],
+    [shellMain, "renderer-probe-started", "navigation-commit startup surface probe"],
     [shellMain, "Discord did not finish loading after automatic recovery attempts.", "terminal startup timeout diagnostic"],
     [shellMain, "The plugin engine did not become ready within the startup timeout.", "plugin preparation timeout"],
     [shellMain, "renderer-liveness-failure", "post-startup renderer liveness watchdog"],

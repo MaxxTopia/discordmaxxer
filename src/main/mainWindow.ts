@@ -65,7 +65,10 @@ app.on("before-quit", () => {
 export let mainWin: BrowserWindow;
 
 const STARTUP_PREPARATION_TIMEOUT_MS = 20_000;
-const STARTUP_RENDERER_TIMEOUT_MS = 25_000;
+// Recover before a user spends half a minute staring at Discord's remote
+// "Opening Discord App" shell. Normal startup is allowed to finish sooner via
+// the surface probe below; this is only the bounded failure path.
+const STARTUP_RENDERER_TIMEOUT_MS = 18_000;
 const STARTUP_PROBE_INTERVAL_MS = 250;
 const MAX_STARTUP_NAVIGATION_RETRIES = 3;
 const MAX_STARTUP_TIMEOUT_RECOVERIES = 3;
@@ -661,6 +664,38 @@ function recoverStartupAfterTimeout(attempt: number) {
     }, delay);
 }
 
+const RENDERER_HEALTH_PROBE = `(() => {
+    const mount = document.querySelector('#app-mount');
+    if (!mount) return { healthy: false, reason: 'mount-missing' };
+
+    const mountStyle = getComputedStyle(mount);
+    const mountRect = mount.getBoundingClientRect();
+    const mountVisible = mount.childElementCount > 0 &&
+        mountRect.width > 4 &&
+        mountRect.height > 4 &&
+        mountStyle.display !== 'none' &&
+        mountStyle.visibility !== 'hidden' &&
+        Number.parseFloat(mountStyle.opacity || '1') > 0;
+    const surfaces = Array.from(mount.querySelectorAll(
+        '[role="main"], [role="navigation"], nav, form, [data-list-id="chat-messages"], [class*="authBox_"], [class*="sidebar_"], [class*="guilds_"], [class*="content_"]'
+    ));
+    const hasVisibleSurface = surfaces.some(element => {
+        const style = getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return rect.width > 4 &&
+            rect.height > 4 &&
+            style.display !== 'none' &&
+            style.visibility !== 'hidden' &&
+            Number.parseFloat(style.opacity || '1') > 0;
+    });
+
+    return {
+        healthy: mountVisible && hasVisibleSurface,
+        reason: mountVisible ? (hasVisibleSurface ? 'ok' : 'surface-hidden') : 'mount-hidden',
+        childCount: mount.childElementCount
+    };
+})()`;
+
 function startRuntimeLivenessWatch() {
     clearRuntimeLivenessWatch();
     if (!mainWin || mainWin.isDestroyed()) return;
@@ -668,37 +703,7 @@ function startRuntimeLivenessWatch() {
     const startedAt = Date.now();
     let consecutiveFailures = 0;
     let probeInFlight = false;
-    const probe = `(() => {
-        const mount = document.querySelector('#app-mount');
-        if (!mount) return { healthy: false, reason: 'mount-missing' };
-
-        const mountStyle = getComputedStyle(mount);
-        const mountRect = mount.getBoundingClientRect();
-        const mountVisible = mount.childElementCount > 0 &&
-            mountRect.width > 4 &&
-            mountRect.height > 4 &&
-            mountStyle.display !== 'none' &&
-            mountStyle.visibility !== 'hidden' &&
-            Number.parseFloat(mountStyle.opacity || '1') > 0;
-        const surfaces = Array.from(mount.querySelectorAll(
-            '[role="main"], [role="navigation"], nav, [data-list-id="chat-messages"], [class*="sidebar_"], [class*="guilds_"], [class*="content_"]'
-        ));
-        const hasVisibleSurface = surfaces.some(element => {
-            const style = getComputedStyle(element);
-            const rect = element.getBoundingClientRect();
-            return rect.width > 4 &&
-                rect.height > 4 &&
-                style.display !== 'none' &&
-                style.visibility !== 'hidden' &&
-                Number.parseFloat(style.opacity || '1') > 0;
-        });
-
-        return {
-            healthy: mountVisible && hasVisibleSurface,
-            reason: mountVisible ? (hasVisibleSurface ? 'ok' : 'surface-hidden') : 'mount-hidden',
-            childCount: mount.childElementCount
-        };
-    })()`;
+    const probe = RENDERER_HEALTH_PROBE;
 
     runtimeLivenessTimer = setInterval(() => {
         if (
@@ -808,6 +813,11 @@ function beginStartupWatch(targetUrl: string) {
 }
 
 function startRendererProbe(attempt: number) {
+    // did-navigate starts this before loadURL resolves. Waiting for the full
+    // page load can leave users on Discord's "Opening Discord App" shell while
+    // the actual app surface is already usable.
+    if (startupProbeTimer !== null) return;
+
     let probeInFlight = false;
 
     const probe = () => {
@@ -819,12 +829,10 @@ function startRendererProbe(attempt: number) {
 
         try {
             void mainWin.webContents
-                .executeJavaScript(
-                    `(() => { const mount = document.querySelector("#app-mount"); return Boolean(mount && mount.childElementCount > 0); })()`,
-                    true
-                )
-                .then(isReady => {
-                    if (isReady === true) markStartupReady(attempt);
+                .executeJavaScript(RENDERER_HEALTH_PROBE, true)
+                .then(result => {
+                    const health = result as { healthy?: boolean } | undefined;
+                    if (health?.healthy === true) markStartupReady(attempt);
                 })
                 .catch(error => recordStartupEvent("renderer-probe-error", describeStartupError(error)))
                 .finally(() => {
@@ -836,8 +844,9 @@ function startRendererProbe(attempt: number) {
         }
     };
 
-    probe();
+    recordStartupEvent("renderer-probe-started", { attempt, trigger: "navigation-commit" });
     startupProbeTimer = setInterval(probe, STARTUP_PROBE_INTERVAL_MS);
+    probe();
 }
 
 function retryStartup() {
@@ -1052,7 +1061,13 @@ async function createWindowsInternal() {
         if (responseCode >= 300 && !isDiscordOrigin) {
             retryUrl(url, `HTTP ${responseCode}`, new Error(`Discord navigation escaped to ${url}`));
             console.warn(`'did-navigate': Caught bad page response: ${responseCode}, retrying the main app`);
+            return;
         }
+
+        // Start checking the actual app surface at navigation commit. The
+        // loadURL promise waits for every page resource and can otherwise
+        // keep startup on Discord's intermediate loading shell for too long.
+        if (!startupReady && !startupRecoveryShown) startRendererProbe(startupAttempt);
     });
 
     mainWin.webContents.on("render-process-gone", (_event, details) => {

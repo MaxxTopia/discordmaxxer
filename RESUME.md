@@ -1,5 +1,41 @@
 # Discordmaxxer — RESUME
 
+## 2026-11-19 — v0.7.157 startup watchdog hardening candidate
+
+- **Observed incident**: the installed `v0.7.156` client could remain on
+  Discord's remote `Opening Discord App.` shell for the full 25-second
+  renderer watchdog window. Its startup log recorded the first navigation
+  timing out at `00:06:54Z`, a retry after an intermediate `ERR_UNKNOWN`
+  navigation, and eventual recovery at `00:07:23Z`; Vencord preparation was
+  ready in milliseconds, so this was not a plugin download failure.
+- **Fix**: begin the renderer probe at navigation commit instead of waiting
+  for the full `loadURL` promise; require a visible Discord app surface before
+  declaring readiness; accept the real logged-out auth form as a valid surface;
+  make the probe idempotent; and reduce the bounded recovery window from 25 to
+  18 seconds. The shared surface probe is used by both startup readiness and
+  runtime liveness, and the startup log records its trigger.
+- **Version/state**: `package.json` and release notes are prepared for
+  `0.7.157` on isolated branch `codex/tournament-image-viewer-fix` at
+  `C:\Users\Diggy\projects\discordmaxxer-release-0.7.156`. The candidate is
+  not yet committed, pushed, tagged, installed, or published. Public
+  `v0.7.156` remains unchanged.
+- **Verification**: `pnpm test`, `pnpm build`, strict pinned
+  `pnpm overlay:vencord`, `node overlay-scripts/verify-build.mjs`, and a
+  rebuilt `pnpm package:dir` passed. A fresh-profile packaged smoke launch
+  reached `renderer-ready` on the first navigation at `00:24:26Z` and showed
+  the logged-out Discord login surface; it did not enter startup recovery.
+  Final `pnpm package:win`, commit, tag, GitHub Actions publication, and live
+  release-asset verification remain.
+- **Runtime boundary**: no signed-in startup, DM image/video send/view/remove,
+  or Tournament Mode image click-through has been run on the candidate. The
+  installed client and its account remain untouched. User acceptance remains
+  required after update.
+- **Canonical checkout**: the dirty checkout at
+  `C:\Users\Diggy\projects\discordmaxxer` remains untouched.
+- **Next action**: run the final Windows packaging gate, review and commit
+  only the intended `0.7.157` files, push `main` and tag `v0.7.157`, wait for
+  the release workflow, and verify the public assets and updater manifest.
+
 ## 2026-11-19 — DM image/video attachment preview hardening candidate
 
 - **Observed report**: an image or video selected in a DM could leave a blank
