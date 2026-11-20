@@ -1,6 +1,6 @@
 # Discordmaxxer — RESUME
 
-## 2026-11-19 — v0.7.158 native attachment preview fix candidate
+## 2026-11-19 — v0.7.158 native attachment preview fix published
 
 - **Observed report**: the normal Discord image/video attachment surface can
   appear as an empty box before send when Discordmaxxer's VideoBackground is
@@ -12,11 +12,14 @@
   layers and add a build-integrity guard that rejects the descendant-wide
   selectors. The normal Discord composer and its native attachment path stay
   in control; DMEmoji is not the fix for this reported surface.
-- **Version/state**: local commit `56bc6b2` contains package version `0.7.158`
-  on isolated branch `codex/tournament-image-viewer-fix` at
-  `C:\Users\Diggy\projects\discordmaxxer-release-0.7.156`. It is not yet
-  pushed, tagged, installed, or published. Public `v0.7.157` remains
-  unchanged.
+- **Version/state**: commit `4b8942d` is pushed to `main`, tag `v0.7.158` is
+  pushed, and GitHub Actions release run `44655825348` completed
+  successfully. The public stable release is
+  `https://github.com/MaxxTopia/discordmaxxer/releases/tag/v0.7.158`.
+- **Published artifacts**: the release contains the x64 and arm64 ZIPs, the
+  signed combined Windows installer, its block map, and `latest.yml`. The
+  public updater manifest advertises `0.7.158` and points to the published
+  `Discordmaxxer-Setup-0.7.158.exe` with matching size and SHA-512.
 - **Verification**: `pnpm test`, strict pinned `pnpm overlay:vencord`,
   `node overlay-scripts/verify-build.mjs`, `pnpm build`, `pnpm package:dir`,
   `pnpm package:win`, and `git diff --check` passed. The signed x64/arm64
@@ -24,9 +27,9 @@
 - **Runtime boundary**: no signed-in image/video select, preview, remove,
   view, or send test has run against this candidate. The canonical dirty
   checkout at `C:\Users\Diggy\projects\discordmaxxer` remains untouched.
-- **Next action**: push `main` and tag `v0.7.158`, verify the release workflow
-  and public updater manifest, then have Diggy update/restart and run the
-  signed-in acceptance test.
+- **Next action**: have Diggy update/restart the installed client and run the
+  signed-in image/video acceptance test; report the exact startup log if the
+  recovery screen reappears.
 
 ## 2026-11-19 — v0.7.157 published
 
