@@ -224,51 +224,41 @@ function buildCss() {
             --background-surface-highest: rgba(0, 0, 0, ${sidebarAlpha * 0.8}) !important;
         }
 
-        /* STRUCTURAL clear, hash-independent. Everything below matches Discord's
-           HASHED classes (bg_d4b6c2), which Discord rotates constantly - that's
-           why this feature silently broke: the old selectors matched nothing and
-           an opaque bg_ layer painted straight over a video that was playing
-           fine. #app-mount is an ID Discord has used forever, and the frame and
-           background layers are its first two levels of children. Clearing those
-           works regardless of what the class hashes are this week.
+        /* STRUCTURAL clear, hash-independent. Discord rotates the hashes on
+           structural classes (bg_d4b6c2, app_b1f720), so the selectors must use
+           stable root ancestry rather than matching every descendant by class.
+           The old descendant-wide bg_/base_ rules also matched native upload
+           surfaces and removed their background image, leaving a blank pending
+           attachment card. Keep this list at the app frame's first two levels;
+           never style arbitrary descendants because a hashed class happens to
+           contain "bg" or "base".
            NOTE: never use backticks in this block - it is a template literal. */
         html body #app-mount,
         html body #app-mount > div,
         html body #app-mount > div > div[class*="bg"],
         html body #app-mount > div > div[class*="app"],
-
-        /* Class-selector fallback for structural divs Discord paints
-           backgrounds on directly. html prefix raises specificity above
-           single-class theme rules; html body chain raises further. */
-        html,
-        html body,
-        html body [class^="appMount"],
-        html body [class*=" appMount"],
-        html body [class^="app-"],
-        html body [class*=" app-"],
-        /* Modern Discord hashes classes with an UNDERSCORE (app_b1f720,
-           bg_d4b6c2, base_a4d4d9). The hyphen forms above are the OLD format
-           (app-2rEoOp) and match nothing on current Discord, which left the
-           bg_ element opaque and painted right over the video. Keep both.
-           NOTE: no backticks in here - this whole block is a template literal. */
-        html body [class^="app_"],
-        html body [class*=" app_"],
-        html body [class^="layers"],
-        html body [class*=" layers"],
-        html body [class^="layer"]:first-child,
-        html body [class*=" layer"]:first-child,
-        html body [class^="bg-"],
-        html body [class*=" bg-"],
-        html body [class^="bg_"],
-        html body [class*=" bg_"],
-        html body [class*="container"][class*="root"],
-        html body [class*="base-"][class*="base"],
-        html body [class^="base_"],
-        html body [class*=" base_"],
-        html body [class^="chat"][class*="chat"] > [class*="content"],
-        html body [class*="chatContent"],
-        html body [class*="visualRefresh"],
-        html body [class*="pageWrapper"] {
+        html body #app-mount > div > [class^="appMount"],
+        html body #app-mount > div > [class*=" appMount"],
+        html body #app-mount > div > [class^="app-"],
+        html body #app-mount > div > [class*=" app-"],
+        html body #app-mount > div > [class^="app_"],
+        html body #app-mount > div > [class*=" app_"],
+        html body #app-mount > div > [class^="layers"],
+        html body #app-mount > div > [class*=" layers"],
+        html body #app-mount > div > [class^="bg-"],
+        html body #app-mount > div > [class*=" bg-"],
+        html body #app-mount > div > [class^="bg_"],
+        html body #app-mount > div > [class*=" bg_"],
+        html body #app-mount > div > [class^="base_"],
+        html body #app-mount > div > [class*=" base_"],
+        html body #app-mount > div > div > [class^="layers"],
+        html body #app-mount > div > div > [class*=" layers"],
+        html body #app-mount > div > div > [class^="bg-"],
+        html body #app-mount > div > div > [class*=" bg-"],
+        html body #app-mount > div > div > [class^="bg_"],
+        html body #app-mount > div > div > [class*=" bg_"],
+        html body #app-mount > div > div > [class^="base_"],
+        html body #app-mount > div > div > [class*=" base_"] {
             background: transparent !important;
             background-color: transparent !important;
             background-image: none !important;

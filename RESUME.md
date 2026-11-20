@@ -1,5 +1,33 @@
 # Discordmaxxer — RESUME
 
+## 2026-11-19 — v0.7.158 native attachment preview fix candidate
+
+- **Observed report**: the normal Discord image/video attachment surface can
+  appear as an empty box before send when Discordmaxxer's VideoBackground is
+  active. That leaves the native preview, view, and remove controls unusable.
+- **Root cause**: VideoBackground cleared `background-image` on arbitrary
+  descendants whose rotating Discord class names contained `bg_` or `base_`.
+  Discord's native pending-attachment surface can use that background layer.
+- **Fix**: limit transparent clearing to the app-frame's root structural
+  layers and add a build-integrity guard that rejects the descendant-wide
+  selectors. The normal Discord composer and its native attachment path stay
+  in control; DMEmoji is not the fix for this reported surface.
+- **Version/state**: local commit `56bc6b2` contains package version `0.7.158`
+  on isolated branch `codex/tournament-image-viewer-fix` at
+  `C:\Users\Diggy\projects\discordmaxxer-release-0.7.156`. It is not yet
+  pushed, tagged, installed, or published. Public `v0.7.157` remains
+  unchanged.
+- **Verification**: `pnpm test`, strict pinned `pnpm overlay:vencord`,
+  `node overlay-scripts/verify-build.mjs`, `pnpm build`, `pnpm package:dir`,
+  `pnpm package:win`, and `git diff --check` passed. The signed x64/arm64
+  installer and ZIP artifacts were produced locally.
+- **Runtime boundary**: no signed-in image/video select, preview, remove,
+  view, or send test has run against this candidate. The canonical dirty
+  checkout at `C:\Users\Diggy\projects\discordmaxxer` remains untouched.
+- **Next action**: push `main` and tag `v0.7.158`, verify the release workflow
+  and public updater manifest, then have Diggy update/restart and run the
+  signed-in acceptance test.
+
 ## 2026-11-19 — v0.7.157 published
 
 - **Release state**: commit `5be5f2f` is pushed to `main`, tag `v0.7.157` is

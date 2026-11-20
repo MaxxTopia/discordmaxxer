@@ -275,6 +275,22 @@ if (!existsSync(overlaySourceRoot)) {
         fail(`DMEmoji attachment preview hardening is incomplete: missing ${missingDmEmojiMarkers.join(", ")}`);
     }
 
+    const videoBackgroundSource = readFileSync(join(ROOT, "plugins", "VideoBackground", "index.tsx"), "utf8");
+    const unsafeVideoBackgroundSelectors = [
+        'html body [class^="bg-"]',
+        'html body [class*=" bg-"]',
+        'html body [class^="bg_"]',
+        'html body [class*=" bg_"]',
+        'html body [class^="base_"]',
+        'html body [class*=" base_"]'
+    ];
+    const hasUnsafeVideoBackgroundSelector = unsafeVideoBackgroundSelectors.some(selector => videoBackgroundSource.includes(selector));
+    if (!hasUnsafeVideoBackgroundSelector && videoBackgroundSource.includes('html body #app-mount > div > div[class*="bg"]')) {
+        ok("VideoBackground limits transparent clears to app-frame structure and preserves native attachment surfaces");
+    } else {
+        fail("VideoBackground still has descendant-wide background clears that can blank native attachment previews");
+    }
+
     const dmHubSource = readFileSync(join(ROOT, "plugins", "DMHub", "index.ts"), "utf8");
     const dmHubMarkers = [
         "const ACCOUNT_PANEL_SELECTOR",
