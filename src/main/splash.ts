@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-import { BrowserWindow, ipcMain } from "electron";
+import { BrowserWindow, ipcMain, screen } from "electron";
 import { join } from "path";
 import { SplashProps } from "shared/browserWinProperties";
 
@@ -45,6 +45,20 @@ export function createSplashWindow(startMinimized = false) {
 
     loadView(splash, "splash.html");
 
+    // Keep Discord's renderer and the desktop out of sight from the first
+    // frame. The old 300x350 window was enough for the original hidden-main
+    // startup path, but once the renderer is intentionally revealed for
+    // responsiveness it lets Discord's own loading shell bleed around it.
+    // The splash view keeps its compact branded card centered inside this
+    // opaque startup cover.
+    if (!startMinimized) {
+        const bounds = screen.getPrimaryDisplay().workArea;
+        splash.setBounds(bounds, false);
+        splash.setAlwaysOnTop(true, "floating");
+        splash.showInactive();
+        splash.moveTop();
+    }
+
     const { splashBackground, splashColor, splashTheming, splashPixelated } = Settings.store;
 
     if (splashTheming !== false) {
@@ -65,6 +79,36 @@ export function createSplashWindow(startMinimized = false) {
     }
 
     return splash;
+}
+
+/**
+ * Keep the renderer visible for Chromium's startup scheduling without
+ * exposing its intermediate Discord loading document to the user.
+ */
+export function coverStartupWindow(mainWindow?: BrowserWindow) {
+    if (!splash || splash.isDestroyed()) return false;
+
+    const display =
+        mainWindow && !mainWindow.isDestroyed()
+            ? screen.getDisplayMatching(mainWindow.getBounds())
+            : screen.getPrimaryDisplay();
+
+    try {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+            // Parent the cover to the renderer window so a Windows z-order
+            // change cannot put Discord above the branded startup surface.
+            splash.setParentWindow(mainWindow);
+        }
+
+        splash.setBounds(display.workArea, false);
+        splash.setAlwaysOnTop(true, "floating");
+        splash.showInactive();
+        splash.moveTop();
+        return true;
+    } catch (error) {
+        console.warn("[splash] failed to keep startup cover above Discord:", error);
+        return false;
+    }
 }
 
 export function updateSplashMessage(message: string) {

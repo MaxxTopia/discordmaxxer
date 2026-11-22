@@ -37,6 +37,7 @@ import { sendRendererCommand } from "./ipcCommands";
 import { Settings, State, VencordSettings } from "./settings";
 import {
     closeStartupRecovery,
+    coverStartupWindow,
     createSplashWindow,
     registerStartupRecoveryHandlers,
     showStartupRecovery,
@@ -66,11 +67,12 @@ app.on("before-quit", () => {
 export let mainWin: BrowserWindow;
 
 const STARTUP_PREPARATION_TIMEOUT_MS = 20_000;
-// Recover before a user spends half a minute staring at Discord's remote
-// "Opening Discord App" shell. A visible app mount is accepted sooner; this
-// is only the bounded failure path for a renderer that never mounts.
+// Keep recovery bounded while the branded startup cover hides Discord's
+// intermediate "Opening Discord App" shell. Readiness is based on a usable
+// Discord surface below, not merely an allocated React mount.
 const STARTUP_RENDERER_TIMEOUT_MS = 18_000;
 const STARTUP_PROBE_INTERVAL_MS = 250;
+const STARTUP_HEALTHY_PROBES_REQUIRED = 2;
 const MAX_STARTUP_NAVIGATION_RETRIES = 3;
 const MAX_STARTUP_TIMEOUT_RECOVERIES = 3;
 const STARTUP_TIMEOUT_RECOVERY_BASE_DELAY_MS = 1_000;
@@ -438,16 +440,16 @@ function restoreStartupRendererScheduling() {
 
 function revealMainWindowBehindSplash() {
     if (CommandLine.values["start-minimized"] || Settings.store.enableSplashScreen === false) return;
-    if (!mainWin || mainWin.isDestroyed() || mainWin.isVisible()) return;
+    if (!mainWin || mainWin.isDestroyed()) return;
 
     try {
-        // The splash remains always-on-top. Showing the Discord window
-        // inactive behind it changes the renderer from a background document
-        // to a visible document while Discord finishes mounting its surface.
-        // This avoids Chromium/Discord deferring the exact work the startup
-        // probe is waiting for, without flashing unfinished UI to users.
-        mainWin.showInactive();
-        recordStartupEvent("startup-renderer-window-revealed");
+        const wasVisible = mainWin.isVisible();
+        // Showing the Discord window inactive changes the renderer from a
+        // background document to a visible document while Discord finishes
+        // mounting its surface. The branded cover is reasserted both on the
+        // first reveal and on every navigation transition.
+        if (!wasVisible) mainWin.showInactive();
+        if (coverStartupWindow(mainWin) && !wasVisible) recordStartupEvent("startup-renderer-window-revealed");
     } catch (error) {
         recordStartupEvent("startup-renderer-window-reveal-error", describeStartupError(error));
     }
@@ -748,11 +750,30 @@ const RENDERER_HEALTH_PROBE = `(() => {
             Number.parseFloat(style.opacity || '1') > 0;
     });
 
+    const hasVisibleOpeningShell = Array.from(document.querySelectorAll('body *')).some(element => {
+        const text = (element.textContent || '').trim();
+        if (!/^Opening Discord App\\.?$/i.test(text)) return false;
+        const style = getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return rect.width > 4 &&
+            rect.height > 4 &&
+            style.display !== 'none' &&
+            style.visibility !== 'hidden' &&
+            Number.parseFloat(style.opacity || '1') > 0;
+    });
+
     return {
-        healthy: mountVisible && hasVisibleSurface,
+        healthy: mountVisible && hasVisibleSurface && !hasVisibleOpeningShell,
         mounted: mountVisible,
-        reason: mountVisible ? (hasVisibleSurface ? 'ok' : 'surface-hidden') : 'mount-hidden',
-        childCount: mount.childElementCount
+        reason: !mountVisible
+            ? 'mount-hidden'
+            : hasVisibleOpeningShell
+              ? 'discord-opening-shell'
+              : hasVisibleSurface
+                ? 'ok'
+                : 'surface-hidden',
+        childCount: mount.childElementCount,
+        openingShell: hasVisibleOpeningShell
     };
 })()`;
 
@@ -882,6 +903,7 @@ function startRendererProbe(attempt: number) {
     if (startupProbeTimer !== null) return;
 
     let probeInFlight = false;
+    let healthyProbeCount = 0;
 
     const probe = () => {
         if (attempt !== startupAttempt || startupReady || startupRecoveryShown) return;
@@ -899,12 +921,16 @@ function startRendererProbe(attempt: number) {
             void mainWin.webContents
                 .executeJavaScript(RENDERER_HEALTH_PROBE, true)
                 .then(result => {
-                    const health = result as { mounted?: boolean } | undefined;
-                    // A visible #app-mount is a live Discord shell even when
-                    // its first route has not painted a navigation/chat
-                    // surface yet. Do not reload that normal transition or
-                    // leave the startup splash covering it.
-                    if (health?.mounted === true) markStartupReady(attempt);
+                    const health = result as { healthy?: boolean } | undefined;
+                    // Require two consecutive healthy observations. This
+                    // avoids dismissing the cover during a one-frame mount or
+                    // while Discord is still showing its generic opening shell.
+                    if (health?.healthy === true) {
+                        healthyProbeCount += 1;
+                        if (healthyProbeCount >= STARTUP_HEALTHY_PROBES_REQUIRED) markStartupReady(attempt);
+                    } else {
+                        healthyProbeCount = 0;
+                    }
                 })
                 .catch(error => recordStartupEvent("renderer-probe-error", describeStartupError(error)))
                 .finally(() => {
@@ -1137,9 +1163,11 @@ async function createWindowsInternal() {
             return;
         }
 
-        // Start checking the actual app surface at navigation commit. The
-        // loadURL promise waits for every page resource and can otherwise
-        // keep startup on Discord's intermediate loading shell for too long.
+        // Reassert the opaque startup cover at every navigation commit before
+        // checking the usable app surface. The loadURL promise waits for
+        // every page resource and can otherwise leave the intermediate shell
+        // exposed for too long.
+        revealMainWindowBehindSplash();
         if (!startupReady && !startupRecoveryShown) startRendererProbe(startupAttempt);
     });
 

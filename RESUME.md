@@ -1,5 +1,38 @@
 # Discordmaxxer — RESUME
 
+## 2026-11-22 — v0.7.161 startup splash hardening release
+
+- **Observed incident**: v0.7.160 could expose Discord's generic `Opening
+  Discord App.` surface and the desktop around the window while the renderer
+  was still retrying navigation. The installed startup log showed Vencord
+  preparation completing quickly, followed by a slow renderer retry path.
+- **Diagnosis**: the separate 300x350 transparent splash could not cover the
+  already-visible renderer, and startup readiness accepted a mounted Discord
+  shell before it was actually usable.
+- **Local fix**: keep the unique Discordmaxxer splash as an opaque full-work
+  area startup cover, parent it to the main window, and reassert its z-order
+  during navigation. Require two consecutive healthy probes, reject the exact
+  `Opening Discord App.` shell, and keep renderer throttling disabled only for
+  bounded startup.
+- **Verification**: `pnpm test`, strict overlay build, artifact verification,
+  `pnpm build:dev`, and `git diff --check` passed. An isolated temporary
+  profile showed only the Discordmaxxer splash during startup, then reached
+  Discord's usable login surface; its startup log recorded renderer readiness
+  on the first navigation at about 7.8 seconds after navigation began. The
+  temporary runtime was stopped afterward. The signed-in installed client was
+  not changed.
+- **Release state**: package version `0.7.161` is prepared in the isolated
+  worktree `C:\Users\Diggy\projects\discordmaxxer-startup-fast-0.7.159`.
+  Publication is authorized for this task but is still pending the required
+  build and package checks. The canonical dirty checkout at
+  `C:\Users\Diggy\projects\discordmaxxer` remains untouched.
+- **Remaining acceptance**: after publication, update/restart the installed
+  client and confirm startup on this signed-in machine. The isolated login
+  smoke test does not prove the signed-in account path or a remote Discord
+  outage.
+- **Next action**: complete the strict release build, publish v0.7.161, verify
+  the public artifacts, then install and test the updater on this PC.
+
 ## 2026-11-20 — v0.7.160 startup latency repair release
 
 - **Observed incident**: the installed `v0.7.159` client prepared Vencord in
