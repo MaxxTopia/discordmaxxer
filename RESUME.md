@@ -15,23 +15,34 @@
   `Opening Discord App.` shell, and keep renderer throttling disabled only for
   bounded startup.
 - **Verification**: `pnpm test`, strict overlay build, artifact verification,
-  `pnpm build:dev`, and `git diff --check` passed. An isolated temporary
-  profile showed only the Discordmaxxer splash during startup, then reached
-  Discord's usable login surface; its startup log recorded renderer readiness
-  on the first navigation at about 7.8 seconds after navigation began. The
-  temporary runtime was stopped afterward. The signed-in installed client was
-  not changed.
-- **Release state**: package version `0.7.161` is prepared in the isolated
-  worktree `C:\Users\Diggy\projects\discordmaxxer-startup-fast-0.7.159`.
-  Publication is authorized for this task but is still pending the required
-  build and package checks. The canonical dirty checkout at
+  `pnpm build`, directory packaging, Windows packaging, and `git diff --check`
+  passed. An isolated temporary profile showed only the Discordmaxxer splash
+  during startup, then reached Discord's usable login surface. The published
+  installer was downloaded and its SHA-512 matched `latest.yml` exactly.
+- **Release state**: commit `5ff8d1fafc0f360803c773116f76178844dd8c23` is
+  pushed to `origin/main`; annotated tag `v0.7.161` is pushed; GitHub Actions
+  release run `45045294651` completed successfully; and the public release is
+  live at https://github.com/MaxxTopia/discordmaxxer/releases/tag/v0.7.161.
+  The canonical dirty checkout at
   `C:\Users\Diggy\projects\discordmaxxer` remains untouched.
-- **Remaining acceptance**: after publication, update/restart the installed
-  client and confirm startup on this signed-in machine. The isolated login
-  smoke test does not prove the signed-in account path or a remote Discord
-  outage.
-- **Next action**: complete the strict release build, publish v0.7.161, verify
-  the public artifacts, then install and test the updater on this PC.
+- **Installed-client verification**: the existing installation was updated
+  from `0.7.160.0` to `0.7.161.0` at
+  `C:\Users\Diggy\AppData\Local\Discordmaxxer\discordmaxxer.exe`. The
+  signed-in client reached the populated Discord UI on the first launch
+  attempt. The new v0.7.161 startup log reached `renderer-ready` 8.453 seconds
+  after navigation began, with no `startup-timeout`, `startup-recovery`, or
+  `navigation-failed` event.
+- **Remaining acceptance**: the static artifact gates cover the DM
+  attachment-preview safeguards, deleted-message history actions, Spotify
+  integration, tournament image-viewer safeguards, and per-viewed-user badge
+  isolation. This session did not manually send a new DM image/video, remove a
+  deleted-message history entry, open an image in tournament mode, exercise the
+  Spotify modal, or compare badges on a second account; those remain Diggy's
+  visual/recipient acceptance checks.
+- **Next action**: spot-check the DM image/video preview and deleted-message
+  history removal in the updated client. If those pass, this release is closed;
+  if either still fails, capture the exact runtime state and startup log around
+  that one path rather than reverting the startup fix.
 
 ## 2026-11-20 — v0.7.160 startup latency repair release
 
