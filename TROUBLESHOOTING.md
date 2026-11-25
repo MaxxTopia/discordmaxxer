@@ -147,9 +147,9 @@ no-op (nothing breaks). What each DM means and what to do:
 | "RELEASE FAILED for vX.Y.Z" | The failed run found no GitHub Release after its retry check; nothing is available to download | Open the linked run and read the failing step. Stale-rebrand → fix find-strings (see "stay current"). Integrity → the overlay produced a bad bundle, re-run. |
 | "RELEASE RUN FAILED after publishing vX.Y.Z" | The GitHub Release is live, but a later workflow step failed, such as attaching notes or notifying the site | Open the release link and run link. Users can download the published artifacts; repair the failed follow-up step separately. |
 | "RELEASE PARTIAL for vX.Y.Z" | A GitHub Release record exists but is draft or has no uploaded assets | Treat it as not ready for users. Open the run, confirm which publish step stopped, and finish or recreate the release safely. |
-| "upstream drift detected" | A dependency (Electron/Vencord) fell behind upstream | Review the tracking issue; decide if an Electron/Vencord bump is needed. Run required automated checks; a real voice session is optional, non-blocking evidence. |
+| "upstream drift needs review" | A dependency (Electron/Vencord) fell behind upstream, or the existing finding changed | Open the direct tracking-issue link in the DM, decide if an update is needed, and run the required automated checks. The workflow refreshes one open issue and suppresses unchanged weekly DMs; a real voice session is optional, non-blocking evidence. |
 | "auto-rebump shipped CANARY ...-beta.1" | The ShowHiddenChannels fix landed; a **prerelease** auto-shipped to beta users only | Review the beta and automated release checks before promotion. A real voice call is optional and does not block promotion. |
-| "auto-rebump FAILED to verify" | The auto re-pin didn't verify clean; nothing shipped | A rebrand patch needs updating vs new Vencord (see the manual-review issue). |
+| "auto-rebump failed" | The auto re-pin, rebrand/build gate, or canary follow-up failed | Open the direct run/issue links. The alert states whether the re-pin reached `main`, whether a canary was published, or whether nothing shipped; update the rebrand patch if the gate failed. |
 
 **Canary auto-rebump:** `vencord-shc-autobump.yml` watches Vencord bug #4256; when
 it closes, it re-pins Vencord and ships a **`-beta.1` prerelease** (only DMBeta /
@@ -157,8 +157,14 @@ it closes, it re-pins Vencord and ships a **`-beta.1` prerelease** (only DMBeta 
 beta and automated checks before promoting to stable; a real voice test is
 optional, non-blocking evidence. This is the audit-2026-06-26 H1 safeguard.
 
-**Drift detection:** `upstream-watch.yml` (weekly) opens a tracking issue **and**
-DMs when Electron/Vencord move ahead of our pins.
+**Drift detection:** `upstream-watch.yml` (weekly) maintains one tracking issue
+per open finding. It refreshes the issue when the measured drift changes and
+DMs only on a new or changed finding, with the direct issue and workflow links.
+
+**Auto-rebump toolchain:** the SHC auto-rebump uses Node 22 and enables
+Corepack before installing Vencord's own `packageManager` version. The root
+project still uses its pinned pnpm version; do not downgrade the nested install
+back to Node 20 or omit `corepack enable`.
 
 ---
 

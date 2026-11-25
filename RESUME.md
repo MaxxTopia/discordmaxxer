@@ -5395,3 +5395,34 @@ Release/proof boundary:
   user-side checks above. If one still fails, capture the current renderer
   console error and the exact post-action UI state; the public release is ready
   for that acceptance pass.
+
+## 2026-11-24 - Maxx-bot alert and CI repair candidate
+
+- Scope: repair the repeated Maxx-bot alerts found while reviewing the recent
+  Discordmaxxer DMs, without touching the dirty canonical checkout. The public
+  baseline remains v0.7.161; no GitHub issue, branch, release, deployment, or
+  external message was changed during this candidate pass.
+- Source changes in isolated worktree
+  `C:\Users\Diggy\projects\discordmaxxer-fix-alerts-20261124` on branch
+  `codex/fix-maxx-alerts-20261124`:
+  `.github/workflows/vencord-shc-autobump.yml` now uses Node 22, enables
+  Corepack before the nested Vencord install, serializes scheduled/manual runs,
+  deduplicates open manual-review issues and DMs, and reports whether the
+  re-pin reached `main` or a canary was published. `.github/workflows/
+  upstream-watch.yml` now serializes runs, refreshes one tracking issue when
+  the measured finding changes, and suppresses unchanged weekly DMs while
+  including direct issue/run links. `TROUBLESHOOTING.md` documents the new
+  alert semantics and toolchain requirement.
+- Verification: Prettier parsed both workflow YAML files and reported them
+  formatted; a temporary package-manager probe confirmed `corepack enable`
+  resolves a nested `packageManager: pnpm@12.15.0` project to pnpm 12.15.0;
+  `git diff --check` is clean. The application test/build suite was not run
+  because this candidate only changes workflow/documentation files.
+- Current boundary: the candidate is local and unpushed. Existing open issues
+  from the prior alert burst, including the auto-rebump duplicates and the
+  stale upstream tracking issue, were intentionally left unchanged pending
+  explicit approval for live issue edits. The canonical dirty checkout and
+  unrelated work remain untouched.
+- Best next action: review this isolated diff, authorize the push if desired,
+  then dispatch each repaired watcher once and verify one direct DM per new or
+  changed finding, with no repeat DM while the issue body is unchanged.

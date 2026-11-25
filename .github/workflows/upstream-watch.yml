@@ -13,6 +13,12 @@ on:
         - cron: "0 14 * * 1" # Mondays 14:00 UTC
     workflow_dispatch: {}
 
+# Prevent a scheduled run and a manual run from racing into duplicate issue
+# edits or duplicate first-detection notifications.
+concurrency:
+    group: upstream-watch
+    cancel-in-progress: false
+
 permissions:
     contents: read
     issues: write
@@ -83,6 +89,7 @@ jobs:
                   fi
 
             - name: Open tracking issue if behind
+              id: track
               if: steps.cmp.outputs.behind == 'true'
               shell: bash
               env:
@@ -92,13 +99,6 @@ jobs:
               run: |
                   set -euo pipefail
                   TITLE="[upstream] Dependencies behind upstream — review for voice/compat fixes"
-
-                  # Idempotent: don't pile up duplicates while one is open.
-                  EXISTING=$(gh issue list -R "$REPO" --state open --search "in:title \"[upstream] Dependencies behind upstream\"" --json number -q '.[0].number' 2>/dev/null || true)
-                  if [ -n "${EXISTING:-}" ]; then
-                      echo "Open tracking issue #$EXISTING already exists; skipping."
-                      exit 0
-                  fi
 
                   BODY=$(cat <<EOF
                   Automated check: Discordmaxxer's bundled dependencies have fallen behind upstream.
@@ -113,20 +113,49 @@ jobs:
                   After any bump: \`pnpm install && pnpm overlay:vencord && pnpm build\`, then
                   **test a real voice call** before releasing.
 
-                  _Opened automatically by .github/workflows/upstream-watch.yml. Close when handled._
+                  _Maintained automatically by .github/workflows/upstream-watch.yml. Close when handled._
                   EOF
                   )
 
-                  gh issue create -R "$REPO" --title "$TITLE" --body "$BODY" || \
-                      echo "Could not create issue (check Settings → Actions → Workflow permissions = read/write, and that Issues are enabled)."
+                  # Idempotent: don't pile up duplicates while one is open.
+                  EXISTING=$(gh issue list -R "$REPO" --state open --search "in:title \"[upstream] Dependencies behind upstream\"" --json number -q '.[0].number' 2>/dev/null || true)
+                  if [ -n "${EXISTING:-}" ]; then
+                      ISSUE_URL="${GITHUB_SERVER_URL}/${REPO}/issues/${EXISTING}"
+                      CURRENT_BODY=$(gh issue view "$EXISTING" -R "$REPO" --json body -q .body 2>/dev/null || true)
+                      if [ "$CURRENT_BODY" != "$BODY" ]; then
+                          gh issue edit "$EXISTING" -R "$REPO" --body "$BODY" || \
+                              echo "Could not refresh the existing tracking issue body."
+                          echo "notify=true" >> "$GITHUB_OUTPUT"
+                          echo "Refreshed existing tracking issue #$EXISTING; a changed finding will be reported once."
+                      else
+                          echo "notify=false" >> "$GITHUB_OUTPUT"
+                          echo "Open tracking issue #$EXISTING is current; suppressing repeat notification."
+                      fi
+                      echo "issue_url=$ISSUE_URL" >> "$GITHUB_OUTPUT"
+                      exit 0
+                  fi
+
+                  ISSUE_URL=$(gh issue create -R "$REPO" --title "$TITLE" --body "$BODY" 2>/dev/null || true)
+                  if [ -n "${ISSUE_URL:-}" ]; then
+                      echo "notify=true" >> "$GITHUB_OUTPUT"
+                      echo "issue_url=$ISSUE_URL" >> "$GITHUB_OUTPUT"
+                  else
+                      # A permissions failure must still be visible, but it is
+                      # exceptional; normal repeat runs are suppressed by the
+                      # tracking issue above.
+                      echo "notify=true" >> "$GITHUB_OUTPUT"
+                      echo "issue_url=${GITHUB_SERVER_URL}/${REPO}/issues" >> "$GITHUB_OUTPUT"
+                      echo "Could not create issue (check workflow issue permissions)."
+                  fi
 
             # Push the same drift alert to Diggy via the Maxx bot so it's noticed
             # without watching the Issues tab. No-op if MAXX_BOT_TOKEN isn't set.
             - name: DM Diggy via Maxx bot
-              if: steps.cmp.outputs.behind == 'true'
+              if: steps.cmp.outputs.behind == 'true' && steps.track.outputs.notify == 'true'
               shell: bash
               env:
                   MAXX_BOT_TOKEN: ${{ secrets.MAXX_BOT_TOKEN }}
                   SUMMARY: ${{ steps.cmp.outputs.summary }}
+                  ISSUE_URL: ${{ steps.track.outputs.issue_url }}
               run: |
-                  bash scripts/notify-maxx.sh "[Discordmaxxer] upstream drift detected -- a dependency is behind upstream (voice/compat risk). Review the tracking issue: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/issues"
+                  bash scripts/notify-maxx.sh "[Discordmaxxer] upstream drift needs review (voice/compat risk). ${SUMMARY} Review: ${ISSUE_URL} Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"

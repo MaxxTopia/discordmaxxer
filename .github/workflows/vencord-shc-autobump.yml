@@ -10,7 +10,8 @@ name: Vencord SHC auto-rebump
 #   3. ships a CANARY (prerelease, -beta.1) ONLY if that gate is green — so only
 #      beta-opted (DMBeta) users auto-update to it, NOT everyone — and DMs Diggy
 #      to test a voice call + promote to stable,
-#   4. otherwise opens an issue + DMs for manual review and ships nothing.
+#   4. otherwise opens or reuses one issue, reports the exact failure state once,
+#      and never publishes an unverified canary.
 # So a broken OR unverified bump can never auto-reach the whole user base (audit
 # 2026-06-26 H1). Diggy opted into auto-re-bump (2026-06-14). Disable anytime in
 # the Actions tab. Manual run: workflow_dispatch.
@@ -19,6 +20,12 @@ on:
     schedule:
         - cron: "0 16 * * *" # daily 16:00 UTC — cheap check; heavy job only runs when the fix lands
     workflow_dispatch: {}
+
+# A scheduled run and a manually dispatched run must not race each other into
+# creating duplicate review issues or pushing two re-pins at once.
+concurrency:
+    group: vencord-shc-autobump
+    cancel-in-progress: false
 
 permissions:
     contents: write
@@ -63,10 +70,16 @@ jobs:
         runs-on: windows-latest
         steps:
             - uses: actions/checkout@v6
-            - uses: pnpm/action-setup@v6
-            - uses: actions/setup-node@v6
+            - uses: pnpm/action-setup@v6 # Use the root packageManager for the app
+
+            # Vencord's current packageManager requires Node 22. Node 20 let
+            # this workflow reach the nested install, where Corepack tried to
+            # invoke Vencord's pnpm through a broken runner path and the job
+            # failed before the rebrand gate could run.
+            - name: Use Node.js 22
+              uses: actions/setup-node@v6
               with:
-                  node-version: 20
+                  node-version: 22
                   cache: "pnpm"
 
             - name: Re-pin Vencord + bump version
@@ -94,7 +107,12 @@ jobs:
 
             - name: Install Vencord deps
               working-directory: vencord-src
-              run: pnpm install --frozen-lockfile
+              # Resolve Vencord's own packageManager field instead of forcing
+              # the root project's pnpm binary onto its lockfile.
+              run: |
+                  corepack enable
+                  pnpm --version
+                  pnpm install --frozen-lockfile
 
             - name: Apply rebrand + build overlay — GATE on 0 rebrand warnings
               shell: bash
@@ -122,6 +140,7 @@ jobs:
                   git add .github/workflows/release.yml
                   git commit -m "chore: re-pin Vencord (ShowHiddenChannels fix #${VENCORD_ISSUE} landed); canary v${{ needs.gate.outputs.version }}-beta.1 shipped for verification"
                   git push origin HEAD:main
+                  echo "REBUMP_PUSHED=true" >> "$GITHUB_ENV"
 
             # Integrity gate before publish (same as the primary release path).
             - name: Verify build artifacts
@@ -132,6 +151,11 @@ jobs:
               env:
                   GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+            - name: Record canary publication
+              if: success()
+              shell: bash
+              run: echo "CANARY_PUBLISHED=true" >> "$GITHUB_ENV"
+
             - name: DM Diggy — canary shipped, needs verify + promote
               if: success()
               shell: bash
@@ -140,14 +164,49 @@ jobs:
               run: |
                   bash scripts/notify-maxx.sh "[Discordmaxxer] auto-rebump shipped CANARY prerelease v${{ needs.gate.outputs.version }}-beta.1 (Vencord #${VENCORD_ISSUE} fix). Only beta-opted users get it. TEST a voice call, then promote to stable: bump package.json to ${{ needs.gate.outputs.version }}, tag v${{ needs.gate.outputs.version }}, push."
 
-            - name: On failure — open a manual-review issue + DM, ship nothing
+            # Keep one open review issue per incident and make the alert match
+            # what actually reached main or GitHub before the failure.
+            - name: On failure — record manual review and alert once
               if: failure()
               shell: bash
               env:
                   GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
                   MAXX_BOT_TOKEN: ${{ secrets.MAXX_BOT_TOKEN }}
               run: |
-                  gh issue create -R "${{ github.repository }}" \
-                      --title "[auto-rebump] Vencord re-bump needs manual review" \
-                      --body "Vencord #${VENCORD_ISSUE} closed, so the auto-rebump tried to move our pin to main \`${{ needs.gate.outputs.sha }}\` (canary v${{ needs.gate.outputs.version }}-beta.1) — but the rebrand, integrity check, or build did NOT verify clean, so **nothing shipped**. A rebrand patch likely needs updating against the new Vencord. Do it manually: check out that SHA in vencord-src, run \`pnpm overlay:vencord\`, fix any warning find-strings, then release. See the v0.7.34 commit + TROUBLESHOOTING.md." || true
-                  bash scripts/notify-maxx.sh "[Discordmaxxer] auto-rebump FAILED to verify clean -- nothing shipped. A rebrand patch likely needs updating vs the new Vencord. See the manual-review issue + TROUBLESHOOTING.md."
+                  set -u
+                  TITLE="[auto-rebump] Vencord re-bump needs manual review"
+                  RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+
+                  if [ "${CANARY_PUBLISHED:-false}" = "true" ]; then
+                    OUTCOME="A canary release was published, but a later verification or notification step failed."
+                  elif [ "${REBUMP_PUSHED:-false}" = "true" ]; then
+                    OUTCOME="The Vencord re-pin was pushed to main, but the canary release did not finish."
+                  else
+                    OUTCOME="The rebrand, integrity check, or build failed before the re-pin was pushed; no canary was published."
+                  fi
+
+                  EXISTING=$(gh issue list -R "${{ github.repository }}" --state open \
+                      --search "in:title \"${TITLE}\"" --json number -q '.[0].number' 2>/dev/null || true)
+                  if [ -n "${EXISTING:-}" ]; then
+                    ISSUE_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/issues/${EXISTING}"
+                    echo "Open manual-review issue #${EXISTING} already exists; suppressing duplicate issue and DM."
+                    exit 0
+                  fi
+
+                  BODY=$(cat <<EOF
+                  Vencord #${VENCORD_ISSUE} closed, so the auto-rebump tried to move our pin to main \`${{ needs.gate.outputs.sha }}\` (canary v${{ needs.gate.outputs.version }}-beta.1).
+
+                  ${OUTCOME}
+
+                  A rebrand patch may need updating against the new Vencord. Do it manually: check out that SHA in vencord-src, run \`pnpm overlay:vencord\`, fix any warning find-strings, then release. See TROUBLESHOOTING.md.
+
+                  Failed run: ${RUN_URL}
+                  EOF
+                  )
+                  ISSUE_URL=$(gh issue create -R "${{ github.repository }}" \
+                      --title "$TITLE" --body "$BODY" 2>/dev/null || true)
+                  if [ -n "${ISSUE_URL:-}" ]; then
+                    bash scripts/notify-maxx.sh "[Discordmaxxer] auto-rebump failed. ${OUTCOME} Review: ${ISSUE_URL} Run: ${RUN_URL}"
+                  else
+                    bash scripts/notify-maxx.sh "[Discordmaxxer] auto-rebump failed and the manual-review issue could not be created. ${OUTCOME} Run: ${RUN_URL}"
+                  fi
