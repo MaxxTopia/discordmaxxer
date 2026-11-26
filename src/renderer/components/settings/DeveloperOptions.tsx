@@ -4,20 +4,20 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-import { BaseText, Button, Heading, Paragraph, TextButton } from "@vencord/types/components";
+import { Button, Heading, Paragraph, TextButton } from "@vencord/types/components";
+import { Margins, openModal, useForceUpdater } from "@vencord/types/utils";
+import { React } from "@vencord/types/webpack/common";
+import { getOutboundVideoStats, OutboundVideoStat } from "renderer/patches/rtcStats";
+import { Settings as SettingsStore, State } from "renderer/settings";
 import {
-    Margins,
+    BaseText,
     ModalCloseButton,
     ModalContent,
     ModalHeader,
     ModalRoot,
     ModalSize,
-    openModal,
-    useForceUpdater
-} from "@vencord/types/utils";
-import { React, Toasts } from "@vencord/types/webpack/common";
-import { getOutboundVideoStats, OutboundVideoStat } from "renderer/patches/rtcStats";
-import { Settings as SettingsStore, State } from "renderer/settings";
+    Toasts
+} from "renderer/vencordCompat";
 import { Settings } from "shared/settings";
 
 import { cl, SettingsComponent } from "./Settings";

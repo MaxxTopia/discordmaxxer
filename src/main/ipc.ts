@@ -11,9 +11,9 @@ import {
     app,
     BrowserWindow,
     clipboard,
+    ClipboardItem,
     dialog,
     IpcMainInvokeEvent,
-    nativeImage,
     RelaunchOptions,
     session,
     shell
@@ -207,10 +207,12 @@ function escapeHtmlAttr(s: string) {
 }
 
 handle(IpcEvents.CLIPBOARD_COPY_IMAGE, async (_, buf: ArrayBuffer, src: string) => {
-    clipboard.write({
-        html: `<img src="${escapeHtmlAttr(src)}">`,
-        image: nativeImage.createFromBuffer(Buffer.from(buf))
-    });
+    await clipboard.write([
+        new ClipboardItem({
+            "text/html": `<img src="${escapeHtmlAttr(src)}">`,
+            "image/png": new Blob([buf], { type: "image/png" })
+        })
+    ]);
 });
 
 function openDebugPage(page: string) {

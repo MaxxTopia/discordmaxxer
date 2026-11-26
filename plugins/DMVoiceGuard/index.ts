@@ -24,11 +24,9 @@
  */
 
 import definePlugin from "@utils/types";
-import { FluxDispatcher, Toasts as DiscordToasts } from "@webpack/common";
+import { FluxDispatcher } from "@webpack/common";
 
-import { showDiscordmaxxerStatusToast } from "../_dm-shared/statusToast";
-
-const Toasts = { ...DiscordToasts, show: showDiscordmaxxerStatusToast };
+import { Toasts } from "../_dm-shared/compat";
 
 const FAIL_WINDOW_MS = 30_000;
 const FAIL_THRESHOLD = 3; // repeated generic voice-socket closes within the window

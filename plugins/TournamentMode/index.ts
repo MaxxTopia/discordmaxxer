@@ -44,8 +44,9 @@ import { definePluginSettings } from "@api/Settings";
 import { managedStyleRootNode } from "@api/Styles";
 import { createAndAppendStyle } from "@utils/css";
 import definePlugin, { OptionType } from "@utils/types";
-import { ChannelRTCStore, FluxDispatcher, RTCConnectionStore, SelectedChannelStore, Toasts } from "@webpack/common";
+import { ChannelRTCStore, FluxDispatcher, RTCConnectionStore, SelectedChannelStore } from "@webpack/common";
 
+import { Toasts } from "../_dm-shared/compat";
 import { hideDiscordmaxxerStatusToast, showDiscordmaxxerStatusToast } from "../_dm-shared/statusToast";
 
 const HOTKEY_ID = "discordmaxxer.TournamentMode";

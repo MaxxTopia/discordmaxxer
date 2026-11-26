@@ -37,11 +37,12 @@
 import { definePluginSettings } from "@api/Settings";
 import definePlugin, { OptionType, PluginNative, StartAt } from "@utils/types";
 import * as DataStore from "@api/DataStore";
-import { AuthenticationStore, Button, React, RestAPI, Toasts, UserProfileStore, UserStore } from "@webpack/common";
+import { AuthenticationStore, React, RestAPI, UserProfileStore, UserStore } from "@webpack/common";
 import { fetchUserProfile } from "@utils/discord";
 
 import { makePersistentValue } from "../_dm-shared/persist";
 import { WIDGET_STYLE_PRESETS, type WidgetStylePreset, widgetStylePreset } from "../_dm-shared/widgetStylePresets";
+import { Button, Toasts } from "../_dm-shared/compat";
 import { DEFAULT_APP_ICONS, FN_RANK_ICONS } from "./logos";
 import { showDiscordmaxxerStatusToast } from "../_dm-shared/statusToast";
 

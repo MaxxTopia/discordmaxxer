@@ -11,11 +11,9 @@
 
 import { definePluginSettings } from "@api/Settings";
 import definePlugin, { OptionType } from "@utils/types";
-import { React, Toasts as DiscordToasts } from "@webpack/common";
+import { React } from "@webpack/common";
 
-import { showDiscordmaxxerStatusToast } from "../_dm-shared/statusToast";
-
-const Toasts = { ...DiscordToasts, show: showDiscordmaxxerStatusToast };
+import { Toasts } from "../_dm-shared/compat";
 
 type MonitorState = "off" | "starting" | "running" | "error";
 

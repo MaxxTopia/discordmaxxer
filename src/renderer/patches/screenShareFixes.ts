@@ -5,10 +5,10 @@
  */
 
 import { Logger } from "@vencord/types/utils";
-import { Toasts } from "@vencord/types/webpack/common";
 import { currentSettings, currentSourceId } from "renderer/components/ScreenSharePicker";
 import { Settings, State } from "renderer/settings";
 import { isLinux } from "renderer/utils";
+import { Toasts } from "renderer/vencordCompat";
 import {
     resolveWinAudioSourceProcessId,
     startWinAudioExcludeSelfSession,

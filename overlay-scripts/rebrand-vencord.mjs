@@ -71,6 +71,7 @@ const PATCHES = [
     {
         file: "src/plugins/messageLogger/index.tsx",
         marker: "Discordmaxxer: harden MessageLogger context history.",
+        obsoleteWhen: content => content.includes("const patchMessageContextMenu: NavContextMenuPatchCallback = (children, { message }) =>"),
         find:
             "const patchMessageContextMenu: NavContextMenuPatchCallback = (children, props) => {\n" +
             "    const { message } = props;\n" +
@@ -143,6 +144,35 @@ const PATCHES = [
             "        />\n" +
             "    ));\n" +
             "};"
+    },
+    {
+        file: "src/plugins/messageLogger/index.tsx",
+        marker: "Discordmaxxer: harden MessageLogger context history.",
+        find:
+            "const patchMessageContextMenu: NavContextMenuPatchCallback = (children, { message }) => {\n" +
+            "    const { deleted, id, channel_id } = message;\n",
+        replace:
+            "// Discordmaxxer: harden MessageLogger context history.\n" +
+            "const patchMessageContextMenu: NavContextMenuPatchCallback = (children, props) => {\n" +
+            "    // Discord can pass a lightweight context-menu message while the\n" +
+            "    // full deleted record remains in MessageStore. Resolve that record\n" +
+            "    // first, but fail closed while a route is being torn down.\n" +
+            "    const contextMessage = props?.message as MLMessage | undefined;\n" +
+            "    if (!contextMessage?.id || !contextMessage.channel_id) return;\n\n" +
+            "    let storedMessage: MLMessage | undefined;\n" +
+            "    try {\n" +
+            "        storedMessage = MessageStore.getMessage(contextMessage.channel_id, contextMessage.id) as MLMessage | undefined;\n" +
+            "    } catch {\n" +
+            "        storedMessage = undefined;\n" +
+            "    }\n" +
+            "    const message = storedMessage && doesMessageHaveHistory(storedMessage) ? storedMessage : contextMessage;\n" +
+            "    const { deleted, id, channel_id } = message;\n"
+    },
+    {
+        file: "src/plugins/messageLogger/index.tsx",
+        marker: "Discordmaxxer: normalize MessageLogger history action label.",
+        find: 'label="Clear Message History"',
+        replace: 'label="Remove Message History"'
     },
     // ── SpotifyControls: fail closed while Discord's Spotify modules load ──
     // Discord can mount the account panel before the Spotify webpack exports
@@ -494,6 +524,7 @@ const PATCHES = [
     // module 626584's `A` undefined and prevents Discord from mounting.
     {
         file: "src/webpack/patchWebpack.ts",
+        obsoleteWhen: content => content.includes('defineProps(values, "value")'),
         find:
             "            this.d = function (exports, definition) {\n" +
             "                for (const key in definition) {\n" +
@@ -561,13 +592,13 @@ const PATCHES = [
     },
     {
         file: "src/components/settings/DonateButton.tsx",
-        find: '            Donate\n',
-        replace: '            View VIP\n'
+        find: '        children: <><Heart />Donate</>',
+        replace: '        children: <>View VIP</>'
     },
     {
         file: "src/components/settings/DonateButton.tsx",
-        find: 'className="vc-donate-button"',
-        replace: 'className="dm-vip-button"'
+        find: '        className: "vc-donate-button",',
+        replace: '        className: "dm-vip-button",'
     },
 
     // ── D. Settings sidebar: rename "Vencord" link + "Vencord Settings" header ──
@@ -640,8 +671,8 @@ const PATCHES = [
     // ── G. Updater tab — strip Vencord/Vesktop dual-attribution card + descriptions ──
     {
         file: "src/components/settings/tabs/updater/index.tsx",
-        find: '<HeadingSecondary>Vesktop & Vencord</HeadingSecondary>',
-        replace: '<HeadingSecondary>Discordmaxxer Updates</HeadingSecondary>'
+        find: '<Heading className={Margins.bottom8}>Vesktop & Vencord</Heading>',
+        replace: '<Heading className={Margins.bottom8}>Discordmaxxer Updates</Heading>'
     },
     {
         file: "src/components/settings/tabs/updater/index.tsx",
@@ -672,6 +703,7 @@ const PATCHES = [
     },
     {
         file: "src/components/settings/DonateButton.tsx",
+        obsoleteWhen: content => content.includes('children: <>View VIP</>'),
         find: "<Heart />\n            View VIP",
         replace: "View VIP"
     },
@@ -700,6 +732,7 @@ const PATCHES = [
     // ── L. Monaco QuickCSS editor window title ──
     {
         file: "src/main/monacoWin.html",
+        optional: true,
         find: "<title>Vencord QuickCSS Editor</title>",
         replace: "<title>Discordmaxxer QuickCSS Editor</title>"
     },
@@ -719,8 +752,8 @@ const PATCHES = [
     // ── O. Updater — outdated-app card ──
     {
         file: "src/components/settings/tabs/updater/index.tsx",
-        find: "<HeadingSecondary>Vesktop Outdated</HeadingSecondary>",
-        replace: "<HeadingSecondary>Discordmaxxer Outdated</HeadingSecondary>"
+        find: '<Heading className={Margins.bottom8}>Vesktop Outdated</Heading>',
+        replace: '<Heading className={Margins.bottom8}>Discordmaxxer Outdated</Heading>'
     },
     {
         file: "src/components/settings/tabs/updater/index.tsx",
@@ -847,18 +880,18 @@ const PATCHES = [
     },
     {
         file: "src/plugins/_core/supportHelper.tsx",
-        find: '<Forms.FormText>You are using an outdated version of Vencord! Chances are, your issue is already fixed.</Forms.FormText>',
-        replace: '<Forms.FormText>You are using an outdated version of Discordmaxxer! Chances are, your issue is already fixed.</Forms.FormText>'
+        find: '<Paragraph>You are using an outdated version of Vencord! Chances are, your issue is already fixed.</Paragraph>',
+        replace: '<Paragraph>You are using an outdated version of Discordmaxxer! Chances are, your issue is already fixed.</Paragraph>'
     },
     {
         file: "src/plugins/_core/supportHelper.tsx",
-        find: '<Forms.FormText>You are using an externally updated Vencord version, which we do not provide support for!</Forms.FormText>',
-        replace: '<Forms.FormText>You are using an externally updated Discordmaxxer build, which we do not provide support for!</Forms.FormText>'
+        find: '<Paragraph>You are using an externally updated Vencord version, which we do not provide support for!</Paragraph>',
+        replace: '<Paragraph>You are using an externally updated Discordmaxxer build, which we do not provide support for!</Paragraph>'
     },
     {
         file: "src/plugins/_core/supportHelper.tsx",
-        find: '<Forms.FormText>You are using a custom build of Vencord, which we do not provide support for!</Forms.FormText>',
-        replace: '<Forms.FormText>You are using a custom build of Discordmaxxer, which we do not provide support for!</Forms.FormText>'
+        find: '<Paragraph>You are using a custom build of Vencord, which we do not provide support for!</Paragraph>',
+        replace: '<Paragraph>You are using a custom build of Discordmaxxer, which we do not provide support for!</Paragraph>'
     },
     {
         file: "src/plugins/_core/supportHelper.tsx",
@@ -1179,7 +1212,9 @@ const PATCHES = [
     },
     {
         file: "src/components/settings/tabs/plugins/PluginModal.tsx",
-        obsoleteWhen: content => content.includes("Discordmaxxer: compact static plugin authors."),
+        obsoleteWhen: content => content.includes("Discordmaxxer: compact static plugin authors.") ||
+            content.includes('import { RenderModalProps, User } from "@vencord/discord-types";') ||
+            content.includes("import { Clickable, FluxDispatcher, Modal, openModal"),
         marker: "Discordmaxxer: use legacy plugin settings imports.",
         find: "Forms, Modal, openModal, React, Text, Tooltip, useEffect, useMemo, UserStore, UserSummaryItem, UserUtils, useState",
         replace: "Forms, Modal, openModal, React, Text, Tooltip, useEffect, useMemo, UserStore, UserUtils, useState"
@@ -1198,13 +1233,18 @@ const PATCHES = [
     },
     {
         file: "src/components/settings/tabs/plugins/PluginModal.tsx",
-        obsoleteWhen: content => content.includes("Discordmaxxer: compact static plugin authors."),
+        obsoleteWhen: content => content.includes("Discordmaxxer: compact static plugin authors.") ||
+            content.includes("Discordmaxxer: normalize plugin author metadata."),
+        alreadyAppliedWhen: content => content.includes("Discordmaxxer: normalize plugin author metadata.") ||
+            content.includes("Discordmaxxer: compact static plugin authors."),
         find: 'import { RenderModalProps, User } from "@vencord/discord-types";',
         replace: 'import { User } from "@vencord/discord-types";'
     },
     {
         file: "src/components/settings/tabs/plugins/PluginModal.tsx",
         marker: "Discordmaxxer: use legacy plugin settings imports.",
+        obsoleteWhen: content => content.includes('import { RenderModalProps, User } from "@vencord/discord-types";') ||
+            content.includes('import { Heading } from "@components/Heading";'),
         find: 'import { Clickable, FluxDispatcher, Forms, Modal, openModal, React, Text, Tooltip, useEffect, useMemo, UserStore, UserUtils, useState } from "@webpack/common";',
         replace:
             '// Discordmaxxer: use legacy plugin settings imports.\n' +
@@ -1213,12 +1253,24 @@ const PATCHES = [
     },
     {
         file: "src/components/settings/tabs/plugins/PluginModal.tsx",
+        marker: "Discordmaxxer: use current PluginModal imports.",
+        find: 'import { Clickable, FluxDispatcher, Modal, openModal, React, Tooltip, useEffect, useMemo, UserStore, UserSummaryItem, UserUtils, useState } from "@webpack/common";',
+        replace: 'import { Modal, openModal, React, useMemo } from "@webpack/common";'
+    },
+    {
+        file: "src/components/settings/tabs/plugins/PluginModal.tsx",
+        obsoleteWhen: content => content.includes("Discordmaxxer: normalize plugin author metadata.") ||
+            content.includes('import { RenderModalProps, User } from "@vencord/discord-types";'),
+        alreadyAppliedWhen: content => content.includes("Discordmaxxer: normalize plugin author metadata.") ||
+            content.includes("Discordmaxxer: compact static plugin authors."),
         find: "interface PluginModalProps extends RenderModalProps {",
         replace: "interface PluginModalProps extends ModalProps {"
     },
     {
         file: "src/components/settings/tabs/plugins/PluginModal.tsx",
-        alreadyAppliedWhen: content => content.includes("<ModalRoot transitionState={transitionState}"),
+        obsoleteWhen: content => content.includes('<Heading tag="h3">') && content.includes("        <Modal"),
+        alreadyAppliedWhen: content => content.includes("<ModalRoot transitionState={transitionState}") ||
+            content.includes('<Heading tag="h3">') && content.includes("        <Modal"),
         find:
             '        <Modal\n' +
             '            transitionState={transitionState}\n' +
@@ -1290,6 +1342,9 @@ const PATCHES = [
     },
     {
         file: "src/components/settings/tabs/plugins/PluginModal.tsx",
+        obsoleteWhen: content => content.includes('<Heading tag="h3">') && content.includes("        <Modal"),
+        alreadyAppliedWhen: content => content.includes("<ModalRoot transitionState={transitionState}") ||
+            content.includes('<Heading tag="h3">') && content.includes("        <Modal"),
         find: "        </Modal>\n    );",
         replace: "            </ModalContent>\n        </ModalRoot>\n    );"
     },
@@ -1299,13 +1354,13 @@ const PATCHES = [
         find:
             "        const { settings } = plugin;\n" +
             "        if (!hasSettings || !settings)\n" +
-            "            return <Forms.FormText>There are no settings for this plugin.</Forms.FormText>;\n\n" +
+            "            return <Paragraph>There are no settings for this plugin.</Paragraph>;\n\n" +
             "        const options = Object.entries(settings.def).map(([key, setting]) => {",
         replace:
             "        const { settings } = plugin;\n" +
             "        const definitions = settings?.def;\n" +
             "        if (!hasSettings || !settings || !definitions || typeof definitions !== \"object\")\n" +
-            "            return <Forms.FormText>There are no settings for this plugin.</Forms.FormText>;\n\n" +
+            "            return <Paragraph>There are no settings for this plugin.</Paragraph>;\n\n" +
             "        const options = Object.entries(definitions).map(([key, setting]) => {"
     },
     {
@@ -1434,8 +1489,8 @@ const PATCHES = [
     // webScreenShareFixes.web: "vesktop clients"
     {
         file: "src/plugins/webScreenShareFixes.web/index.ts",
-        find: 'description: "Removes 2500kbps bitrate cap on chromium and vesktop clients.",',
-        replace: 'description: "Removes 2500kbps bitrate cap on chromium-based and Electron clients.",'
+        find: "chromium and vesktop clients",
+        replace: "chromium-based and Electron clients"
     },
     // Carry forward Vencord be77396b: stop the hidden stream-preview video
     // from continuing to decode after its source is detached. Without the
@@ -1445,6 +1500,7 @@ const PATCHES = [
     // source checkouts receive the safeguard as well.
     {
         file: "src/plugins/webScreenShareFixes.web/index.ts",
+        obsoleteWhen: content => content.includes('replace: "pause(),$1.srcObject=null"'),
         find:
             '                },\n' +
             '            ]\n' +
@@ -2409,6 +2465,7 @@ const PATCHES = [
             '        init.cache = "no-cache";\n\n' +
             '    DonorBadges = await fetch("https://badges.vencord.dev/badges.json", init)\n' +
             '        .then(r => r.json());\n' +
+            '    DirectoryBadges = {};\n' +
             '}',
         replace:
             'async function loadBadges(_noCache = false) {\n' +
@@ -2416,6 +2473,7 @@ const PATCHES = [
             '    // "support the project" modal). Empty map keeps the upstream\n' +
             '    // getDonorBadges() flow intact but harmless.\n' +
             '    DonorBadges = {};\n' +
+            '    DirectoryBadges = {};\n' +
             '}'
     },
 
@@ -2584,12 +2642,12 @@ const PATCHES = [
         alreadyAppliedWhen: content => content.includes("Discordmaxxer: leave native folder route selection untouched."),
         find:
             "        CHANNEL_SELECT(data) {\n" +
-            "            if (!settings.store.closeAllFolders && !settings.store.forceOpen)\n",
+            "            if (!settings.store.closeAllFolders && !settings.store.forceOpen && !settings.store.closeServerFolder)\n",
         replace:
             "        CHANNEL_SELECT(data) {\n" +
             "            // Discordmaxxer: leave native folder route selection untouched.\n" +
             "            if (!DISCORDMAXXER_CUSTOM_SIDEBAR_SUPPORTED) return;\n" +
-            "            if (!settings.store.closeAllFolders && !settings.store.forceOpen)\n"
+            "            if (!settings.store.closeAllFolders && !settings.store.forceOpen && !settings.store.closeServerFolder)\n"
     },
     {
         file: "src/plugins/betterFolders/index.tsx",
@@ -3403,8 +3461,15 @@ const PATCHES = [
     },
     {
         file: "src/components/settings/tabs/plugins/PluginModal.tsx",
+        obsoleteWhen: content => content.includes('import { Modal, openModal, React, useMemo } from "@webpack/common";'),
         find: 'import { Clickable, FluxDispatcher, Forms, React, Text, Tooltip, useEffect, useMemo, UserStore, UserUtils, useState } from "@webpack/common";\n',
         replace: 'import { Forms, React, Text, useEffect, useMemo } from "@webpack/common";\n'
+    },
+    {
+        file: "src/components/settings/tabs/plugins/PluginModal.tsx",
+        marker: "Discordmaxxer: keep PluginModal modal props import.",
+        find: 'import { RenderModalProps, User } from "@vencord/discord-types";\n',
+        replace: 'import { RenderModalProps } from "@vencord/discord-types";\n'
     },
     {
         file: "src/components/settings/tabs/plugins/PluginModal.tsx",
@@ -4273,6 +4338,10 @@ for (const p of PATCHES) {
 
     const path = join(VENCORD_SRC, p.file);
     if (!existsSync(path)) {
+        if (p.optional) {
+            skipped++;
+            continue;
+        }
         warnings.push(`File not found: ${p.file}`);
         continue;
     }

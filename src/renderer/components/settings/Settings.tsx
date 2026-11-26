@@ -7,10 +7,11 @@
 import "./settings.css";
 
 import { classNameFactory } from "@vencord/types/api/Styles";
-import { BaseText, Divider, ErrorBoundary } from "@vencord/types/components";
+import { Divider, ErrorBoundary } from "@vencord/types/components";
 import { ComponentType } from "react";
 import { Settings, useSettings } from "renderer/settings";
 import { isMac, isWindows } from "renderer/utils";
+import { BaseText } from "renderer/vencordCompat";
 
 import { AutoStartToggle } from "./AutoStartToggle";
 import { ChromeWindowOcclusionToggle } from "./ChromeWindowOcclusionToggle";

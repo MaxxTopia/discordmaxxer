@@ -66,7 +66,14 @@ const isSandboxed = typeof __dirname === "undefined";
 try {
     if (isSandboxed) {
         // While sandboxed, Electron "polyfills" these APIs as local variables.
-        // We have to pass them as arguments as they are not global
+        // We have to pass them as arguments as they are not global. Recent
+        // Electron sandboxed preloads no longer expose Buffer as a local,
+        // and the current Vencord preload does not require it at startup.
+        // Read it through typeof so an absent optional global cannot abort
+        // the entire preload before Vencord has a chance to initialize.
+        const sandboxBuffer = typeof Buffer === "undefined" ? undefined : Buffer;
+        const sandboxClearImmediate = typeof clearImmediate === "undefined" ? undefined : clearImmediate;
+        const sandboxSetImmediate = typeof setImmediate === "undefined" ? undefined : setImmediate;
         Function(
             "require",
             "Buffer",
@@ -74,7 +81,7 @@ try {
             "clearImmediate",
             "setImmediate",
             ipcRenderer.sendSync(IpcEvents.GET_VENCORD_PRELOAD_SCRIPT)
-        )(require, Buffer, process, clearImmediate, setImmediate);
+        )(require, sandboxBuffer, process, sandboxClearImmediate, sandboxSetImmediate);
     } else {
         require(ipcRenderer.sendSync(IpcEvents.DEPRECATED_GET_VENCORD_PRELOAD_SCRIPT_PATH));
     }

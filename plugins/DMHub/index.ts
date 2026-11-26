@@ -16,7 +16,7 @@ import { managedStyleRootNode } from "@api/Styles";
 import { openPluginModal } from "@components/settings/tabs";
 import { createAndAppendStyle } from "@utils/css";
 import definePlugin from "@utils/types";
-import { Toasts } from "@webpack/common";
+import { Toasts } from "../_dm-shared/compat";
 
 import { showDiscordmaxxerStatusToast } from "../_dm-shared/statusToast";
 import { getMyTier, hasTier, Tier, TIER_LABELS } from "../_dm-shared/vip";

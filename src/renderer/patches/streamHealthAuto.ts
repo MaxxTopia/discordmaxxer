@@ -4,9 +4,9 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-import { Toasts } from "@vencord/types/webpack/common";
 import { Settings } from "renderer/settings";
 import { isWindows } from "renderer/utils";
+import { Toasts } from "renderer/vencordCompat";
 
 import { getOutboundVideoStats } from "./rtcStats";
 import { getLastEchoInjection } from "./screenShareFixes";

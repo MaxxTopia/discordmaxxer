@@ -18,15 +18,13 @@
  */
 
 import { definePluginSettings } from "@api/Settings";
-import { Toasts as DiscordToasts } from "@webpack/common";
 import { React } from "@webpack/common";
 import definePlugin, { OptionType } from "@utils/types";
 
 import { hasTier, Tier, tierGateMessage } from "../_dm-shared/vip";
-import { showDiscordmaxxerStatusToast } from "../_dm-shared/statusToast";
+import { Toasts } from "../_dm-shared/compat";
 
 const VIP_GATE = Tier.MAXXER_PLUS_PLUS;
-const Toasts = { ...DiscordToasts, show: showDiscordmaxxerStatusToast };
 
 declare global {
     interface Window {

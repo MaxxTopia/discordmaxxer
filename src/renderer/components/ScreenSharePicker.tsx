@@ -8,28 +8,17 @@ import "./screenSharePicker.css";
 
 import { classNameFactory } from "@vencord/types/api/Styles";
 import {
-    BaseText,
     Button,
     Card,
     CogWheel,
     FormSwitch,
     Heading,
-    HeadingTertiary,
     Margins,
     Paragraph,
     RestartIcon,
     Span
 } from "@vencord/types/components";
-import {
-    closeModal,
-    Logger,
-    ModalCloseButton,
-    Modals,
-    ModalSize,
-    openModal,
-    useAwaiter,
-    useForceUpdater
-} from "@vencord/types/utils";
+import { closeModal, Logger, openModal, useAwaiter, useForceUpdater } from "@vencord/types/utils";
 import { onceReady } from "@vencord/types/webpack";
 import {
     FluxDispatcher,
@@ -45,6 +34,7 @@ import { addPatch } from "renderer/patches/shared";
 import { settleScreenShareVideoQuality } from "renderer/patches/videoQuality";
 import { State, useSettings, useVesktopState } from "renderer/settings";
 import { isLinux, isWindows } from "renderer/utils";
+import { BaseText, HeadingTertiary, ModalCloseButton, Modals, ModalSize } from "renderer/vencordCompat";
 import { getActiveWinAudioSession } from "renderer/winaudioBridge";
 import type { Node } from "shared/venmicTypes";
 
@@ -856,9 +846,14 @@ function ModalComponent({
                             );
 
                             if (conn) {
-                                conn.videoStreamParameters[0].maxFrameRate = frameRate;
-                                conn.videoStreamParameters[0].maxResolution.height = height;
-                                conn.videoStreamParameters[0].maxResolution.width = width;
+                                const videoParameters = conn.videoStreamParameters?.[0];
+                                if (videoParameters) {
+                                    videoParameters.maxFrameRate = frameRate;
+                                    if (videoParameters.maxResolution) {
+                                        videoParameters.maxResolution.height = height;
+                                        videoParameters.maxResolution.width = width;
+                                    }
+                                }
                             }
 
                             submit({
@@ -890,7 +885,9 @@ function ModalComponent({
                                 const conn = [...MediaEngineStore.getMediaEngine().connections].find(
                                     connection => connection.streamUserId === UserStore.getCurrentUser().id
                                 );
-                                return conn?.input?.stream?.getVideoTracks?.()[0];
+                                const input = (conn as unknown as { input?: { stream?: MediaStream } } | undefined)
+                                    ?.input;
+                                return input?.stream?.getVideoTracks?.()[0];
                             }, settings.contentHint).then(applied => {
                                 if (applied) logger.info("Settled screenshare video quality after sender negotiation");
                             });

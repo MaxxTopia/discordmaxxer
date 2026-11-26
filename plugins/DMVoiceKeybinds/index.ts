@@ -27,13 +27,10 @@ import {
     FluxDispatcher,
     MediaEngineStore,
     RTCConnectionStore,
-    SelectedChannelStore,
-    Toasts as DiscordToasts
+    SelectedChannelStore
 } from "@webpack/common";
 
-import { showDiscordmaxxerStatusToast } from "../_dm-shared/statusToast";
-
-const Toasts = { ...DiscordToasts, show: showDiscordmaxxerStatusToast };
+import { Toasts } from "../_dm-shared/compat";
 
 const MUTE_ID = "discordmaxxer.VoiceKeybinds.mute";
 const DEAFEN_ID = "discordmaxxer.VoiceKeybinds.deafen";

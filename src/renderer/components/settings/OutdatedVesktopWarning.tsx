@@ -4,9 +4,10 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-import { Button, Card, HeadingTertiary, Paragraph } from "@vencord/types/components";
+import { Button, Card, Paragraph } from "@vencord/types/components";
 import { useAwaiter } from "@vencord/types/utils";
 import { useState } from "@vencord/types/webpack/common";
+import { HeadingTertiary } from "renderer/vencordCompat";
 import type { UpdaterCheckResult } from "shared/IpcEvents";
 
 import { cl } from "./Settings";

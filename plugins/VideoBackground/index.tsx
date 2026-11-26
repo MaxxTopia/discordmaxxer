@@ -21,9 +21,10 @@ import { definePluginSettings } from "@api/Settings";
 import { managedStyleRootNode } from "@api/Styles";
 import { createAndAppendStyle } from "@utils/css";
 import definePlugin, { OptionType, StartAt } from "@utils/types";
-import { Button, React, Toasts } from "@webpack/common";
+import { React } from "@webpack/common";
 
 import { makePersistentValue } from "../_dm-shared/persist";
+import { Button, Toasts } from "../_dm-shared/compat";
 import { showDiscordmaxxerStatusToast } from "../_dm-shared/statusToast";
 import { getMyTier, Tier, TIER_LABELS } from "../_dm-shared/vip";
 

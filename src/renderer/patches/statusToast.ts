@@ -10,7 +10,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-import { Toasts } from "@vencord/types/webpack/common";
+import { Toasts } from "renderer/vencordCompat";
 
 const STATUS_TOAST_ID = "discordmaxxer-visible-status-toast";
 

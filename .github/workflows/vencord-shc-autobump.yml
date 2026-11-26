@@ -89,6 +89,7 @@ jobs:
                   SHA="${{ needs.gate.outputs.sha }}"
                   VER="${{ needs.gate.outputs.version }}"
                   sed -i -E "s/vencord-src checkout [0-9a-f]{40}/vencord-src checkout ${SHA}/" .github/workflows/release.yml
+                  VENCORD_SHA="${SHA}" node -e 'const fs=require("fs");const f="overlay-scripts/vencord-source.json";const p=JSON.parse(fs.readFileSync(f,"utf8"));p.commit=process.env.VENCORD_SHA;fs.writeFileSync(f,JSON.stringify(p,null,4)+"\n")'
                   # CANARY: build a PRERELEASE version so electron-builder marks
                   # the GitHub release as a prerelease — only DMBeta (allowPrerelease)
                   # users auto-update to it. The base version stays clean on main;
@@ -114,8 +115,17 @@ jobs:
                   pnpm --version
                   pnpm install --frozen-lockfile
 
+            - name: Sync pinned Vencord metadata
+              shell: bash
+              run: |
+                  set -euo pipefail
+                  VENCORD_SHA="${{ needs.gate.outputs.sha }}" node -e 'const fs=require("fs");const cp=require("child_process");const f="overlay-scripts/vencord-source.json";const p=JSON.parse(fs.readFileSync(f,"utf8"));const actual=cp.execFileSync("git",["-C","vencord-src","rev-parse","HEAD"],{encoding:"utf8"}).trim();if(actual!==process.env.VENCORD_SHA)throw new Error(`Vencord checkout ${actual} does not match requested ${process.env.VENCORD_SHA}`);const upstream=JSON.parse(fs.readFileSync("vencord-src/package.json","utf8"));if(typeof upstream.version!=="string"||!upstream.version)throw new Error("Vencord package.json has no version");p.commit=actual;p.packageVersion=upstream.version;fs.writeFileSync(f,JSON.stringify(p,null,4)+"\n")'
+                  echo "Pinned Vencord metadata to ${{ needs.gate.outputs.sha }} / $(node -p "require('./overlay-scripts/vencord-source.json').packageVersion")"
+
             - name: Apply rebrand + build overlay — GATE on 0 rebrand warnings
               shell: bash
+              env:
+                  DM_STRICT_REBRAND: "1"
               run: |
                   set -o pipefail
                   pnpm overlay:vencord 2>&1 | tee overlay.log
@@ -129,22 +139,24 @@ jobs:
             - name: Build
               run: pnpm build
 
-            - name: Commit re-pin to main
-              shell: bash
-              run: |
-                  git config user.name "github-actions[bot]"
-                  git config user.email "github-actions[bot]@users.noreply.github.com"
-                  # Commit ONLY the Vencord re-pin (the durable fix). Do NOT commit
-                  # the -beta.1 version — main keeps its clean base version so the
-                  # eventual stable promotion is a normal tag, not a beta string.
-                  git add .github/workflows/release.yml
-                  git commit -m "chore: re-pin Vencord (ShowHiddenChannels fix #${VENCORD_ISSUE} landed); canary v${{ needs.gate.outputs.version }}-beta.1 shipped for verification"
-                  git push origin HEAD:main
-                  echo "REBUMP_PUSHED=true" >> "$GITHUB_ENV"
-
             # Integrity gate before publish (same as the primary release path).
             - name: Verify build artifacts
               run: node overlay-scripts/verify-build.mjs
+
+            - name: Commit re-pin to main
+              shell: bash
+              run: |
+                  set -euo pipefail
+                  git diff --check
+                  git config user.name "github-actions[bot]"
+                  git config user.email "github-actions[bot]@users.noreply.github.com"
+                  # Commit ONLY the Vencord pin and its provenance metadata (the
+                  # durable fix). Do NOT commit the -beta.1 version — main keeps
+                  # its clean base version so stable promotion is a normal tag.
+                  git add .github/workflows/release.yml overlay-scripts/vencord-source.json
+                  git commit -m "chore: re-pin Vencord (ShowHiddenChannels fix #${VENCORD_ISSUE} landed); canary v${{ needs.gate.outputs.version }}-beta.1 shipped for verification"
+                  git push origin HEAD:main
+                  echo "REBUMP_PUSHED=true" >> "$GITHUB_ENV"
 
             - name: Publish CANARY (prerelease) release
               run: pnpm electron-builder --windows --publish always

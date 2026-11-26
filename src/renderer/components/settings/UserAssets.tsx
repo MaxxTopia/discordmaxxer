@@ -6,21 +6,12 @@
 
 import "./UserAssets.css";
 
-import { BaseText, Button, FormSwitch } from "@vencord/types/components";
-import {
-    Margins,
-    ModalCloseButton,
-    ModalContent,
-    ModalHeader,
-    ModalRoot,
-    ModalSize,
-    openModal,
-    wordsFromCamel,
-    wordsToTitle
-} from "@vencord/types/utils";
+import { Button, FormSwitch } from "@vencord/types/components";
+import { Margins, openModal, wordsFromCamel, wordsToTitle } from "@vencord/types/utils";
 import { showToast, useState } from "@vencord/types/webpack/common";
 import { UserAssetType } from "main/userAssets";
 import { useSettings } from "renderer/settings";
+import { BaseText, ModalCloseButton, ModalContent, ModalHeader, ModalRoot, ModalSize } from "renderer/vencordCompat";
 
 import { SettingsComponent } from "./Settings";
 
@@ -67,7 +58,7 @@ function Asset({ asset }: { asset: UserAssetType }) {
                 settings.splashPixelated = false;
             }
         } else if (res === "failed") {
-            showToast("Something went wrong. Please try again");
+            showToast({ text: "Something went wrong. Please try again" });
         }
     };
 

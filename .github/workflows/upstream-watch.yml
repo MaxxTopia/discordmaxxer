@@ -49,6 +49,9 @@ jobs:
 
                   # Our Vencord pin = the commit SHA release.yml checks out.
                   OUR_VENCORD=$(grep -oE 'vencord-src checkout [0-9a-f]{7,40}' .github/workflows/release.yml | grep -oE '[0-9a-f]{7,40}' | head -1 || echo "unknown")
+                  # The overlay independently validates this provenance file;
+                  # detect a workflow/source-json split before a release hits it.
+                  OUR_VENCORD_META=$(node -p "require('./overlay-scripts/vencord-source.json').commit" 2>/dev/null || echo "unknown")
                   # Vencord ships a rolling devbuild (main); its semver tags lag
                   # months behind main, where plugin patches are kept current vs
                   # Discord — so we track main commit-AGE drift, not tags.
@@ -65,9 +68,13 @@ jobs:
                   echo "our_electron=$OUR_ELECTRON"   >> "$GITHUB_OUTPUT"
                   echo "up_electron=$UP_ELECTRON"     >> "$GITHUB_OUTPUT"
                   echo "our_vencord=$OUR_VENCORD"     >> "$GITHUB_OUTPUT"
+                  echo "our_vencord_meta=$OUR_VENCORD_META" >> "$GITHUB_OUTPUT"
                   echo "up_vencord=$UP_VENCORD"       >> "$GITHUB_OUTPUT"
 
                   BEHIND=""
+                  if [ "$OUR_VENCORD" != "unknown" ] && [ "$OUR_VENCORD_META" != "unknown" ] && [ "$OUR_VENCORD" != "$OUR_VENCORD_META" ]; then
+                  BEHIND="${BEHIND}- Vencord pin mismatch: release workflow checks out \`$OUR_VENCORD\`, but overlay metadata expects \`$OUR_VENCORD_META\`\n"
+                  fi
                   if [ -n "$UP_ELECTRON" ] && [ "$OUR_ELECTRON" != "$UP_ELECTRON" ]; then
                       # only flag if upstream is strictly newer
                       NEWER=$(printf '%s\n%s\n' "$OUR_ELECTRON" "$UP_ELECTRON" | sort -V | tail -1)

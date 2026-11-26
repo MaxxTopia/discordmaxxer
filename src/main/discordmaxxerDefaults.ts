@@ -35,7 +35,8 @@ const PLUGINS_DEFAULT_ON: string[] = [
     "VolumeBooster",
     "FixCodeblockGap",
     "NoReplyMention",
-    "CopyStickerLinks",
+    // CopyStickerLinks was removed upstream; StickerPaste is the maintained
+    // sticker-copy path and remains enabled above.
     "ValidReply",
     "BetterFolders",
     "BetterSettings",

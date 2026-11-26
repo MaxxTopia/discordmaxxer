@@ -20,11 +20,9 @@ import definePlugin, { IconComponent, OptionType, StartAt } from "@utils/types";
 import type { CloudUpload } from "@vencord/discord-types";
 import { Message, RenderModalProps } from "@vencord/discord-types";
 import {
-    Button,
     ChannelStore,
     DraftType,
     EmojiStore,
-    Forms,
     GuildStore,
     MessageActions,
     openModal,
@@ -37,27 +35,7 @@ import {
     useState,
 } from "@webpack/common";
 
-import { showDiscordmaxxerStatusToast } from "../_dm-shared/statusToast";
-
-// Keep this plugin's toast facade independent from Discord's lazy webpack
-// Toasts proxy. During route changes the proxy can briefly be unresolved;
-// spreading it or reading Toasts.Type in a click handler then throws before
-// the handler can send the message.
-const Toasts = {
-    Type: {
-        MESSAGE: "message",
-        SUCCESS: "success",
-        FAILURE: "failure"
-    } as const,
-    genId: () => `dmemoji-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-    show: (options: { message: string; type?: string; id?: string }) => {
-        try {
-            showDiscordmaxxerStatusToast(options);
-        } catch (error) {
-            console.error("[DMEmoji] Could not render status toast", error);
-        }
-    }
-};
+import { Button, Forms, Toasts } from "../_dm-shared/compat";
 
 const RECORDS_KEY = "Discordmaxxer_DMEmoji_records";
 const FILE_KEY_PREFIX = "Discordmaxxer_DMEmoji_file_";

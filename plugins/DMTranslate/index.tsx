@@ -20,17 +20,12 @@ import { Message, RenderModalProps } from "@vencord/discord-types";
 
 const getNative = () => (typeof VencordNative !== "undefined" ? VencordNative?.pluginHelpers?.DMTranslate : undefined) as PluginNative<typeof import("./native")> | undefined;
 import {
-    Button,
-    Forms,
     openModal,
-    Toasts as DiscordToasts,
     useEffect,
     useState
 } from "@webpack/common";
 
-import { showDiscordmaxxerStatusToast } from "../_dm-shared/statusToast";
-
-const Toasts = { ...DiscordToasts, show: showDiscordmaxxerStatusToast };
+import { Button, Forms, Toasts } from "../_dm-shared/compat";
 
 const GOOGLE_TRANSLATE_KEY = "AIzaSyDLEeFI5OtFBwYBIoK_jj5m32rZK5CkCXA";
 const MAX_MESSAGE_LENGTH = 5000;

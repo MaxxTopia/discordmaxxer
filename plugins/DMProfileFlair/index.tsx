@@ -40,15 +40,13 @@ import { managedStyleRootNode } from "@api/Styles";
 import * as DataStore from "@api/DataStore";
 import { createAndAppendStyle } from "@utils/css";
 import definePlugin, { OptionType, StartAt } from "@utils/types";
-import { Button, ChannelStore, React, RestAPI, SelectedChannelStore, Toasts as DiscordToasts, UserStore } from "@webpack/common";
+import { ChannelStore, React, RestAPI, SelectedChannelStore, UserStore } from "@webpack/common";
 
 import { makePersistentValue } from "../_dm-shared/persist";
 import { getRosterProfileFlair, isRosterReady, onRosterChange, ProfileFlair, refreshRoster, rosterHasAnyAvatarFlair } from "../_dm-shared/roster";
 import { getMyTier, Tier } from "../_dm-shared/vip";
 import { activateFreeProfile, getMyHwid, normalizeCode, readBinding, reserveFreeActivationWindow } from "../_dm-shared/vipClaim";
-import { showDiscordmaxxerStatusToast } from "../_dm-shared/statusToast";
-
-const Toasts = { ...DiscordToasts, show: showDiscordmaxxerStatusToast };
+import { Button, Toasts } from "../_dm-shared/compat";
 
 const WORKER_PROFILE_URL = "https://optmaxxing-vip.maxxtopia.workers.dev/profile";
 const WORKER_PROFILE_MEDIA_URL = "https://optmaxxing-vip.maxxtopia.workers.dev/profile-media";

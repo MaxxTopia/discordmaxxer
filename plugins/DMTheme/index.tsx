@@ -25,7 +25,7 @@
 import { definePluginSettings } from "@api/Settings";
 import { managedStyleRootNode } from "@api/Styles";
 import { createAndAppendStyle } from "@utils/css";
-import { React, Toasts } from "@webpack/common";
+import { React } from "@webpack/common";
 import definePlugin, { OptionType, StartAt } from "@utils/types";
 
 import {
@@ -42,6 +42,7 @@ import {
     ThemeVisibility
 } from "../_dm-shared/themes";
 import { hasTier, TIER_LABELS } from "../_dm-shared/vip";
+import { Toasts } from "../_dm-shared/compat";
 import { showDiscordmaxxerStatusToast } from "../_dm-shared/statusToast";
 
 let style: HTMLStyleElement;

@@ -34,9 +34,8 @@ jobs:
             - uses: actions/checkout@v6
             - uses: pnpm/action-setup@v6 # Install pnpm using packageManager key in package.json
 
-            # Node 22, not 20: the pinned Vencord's packageManager is pnpm 11,
-            # which requires Node >= 22.13 (it imports `node:sqlite`). On Node 20
-            # the "Install Vencord deps" step dies with ERR_UNKNOWN_BUILTIN_MODULE.
+            # Node 22, not 20: current Vencord main requires Node >= 22 and
+            # Corepack must resolve the nested pnpm declared by its package.json.
             - name: Use Node.js 22
               uses: actions/setup-node@v6
               with:
@@ -67,22 +66,19 @@ jobs:
             - name: Install dependencies
               run: pnpm install --frozen-lockfile
 
-            # Discordmaxxer ships a forked Vencord with 61 rebrand patches +
+            # Discordmaxxer ships a forked Vencord with a strict rebrand overlay +
             # 11 custom plugins side-loaded into vencord-src/src/userplugins/.
             # The build pipeline (pnpm overlay:vencord) needs vencord-src to
             # exist on disk; it's gitignored and not in our repo, so clone it
-            # here at the pinned commit. Vencord moved to a rolling "devbuild":
-            # its semver tags (latest v1.14.13) lag months behind main, where
-            # plugin patches are kept current against Discord's client. Pinning
-            # the old tag is why ShowHiddenChannels / FakeNitro / etc. broke
-            # ("Patch had no effect"). So we pin a main COMMIT, not a tag. To
-            # bump: set this SHA + check out the same in your local vencord-src,
-            # re-run `pnpm overlay:vencord`, and verify the rebrand applies
-            # cleanly. upstream-watch.yml flags when main moves ahead of this pin.
+            # here at the pinned commit. Vencord's semver tags lag main, where
+            # plugin patches are kept current against Discord's client. Pin a
+            # main COMMIT, not a tag. This SHA is also recorded in
+            # overlay-scripts/vencord-source.json; both files must move together.
+            # upstream-watch.yml checks that relationship and commit-age drift.
             - name: Clone Vencord at pinned commit
               run: |
                   git clone https://github.com/Vendicated/Vencord.git vencord-src
-                  git -C vencord-src checkout ef29bbeb6119cfb53d1273ed78147bcc97d91261
+                  git -C vencord-src checkout d086992fb674299a2fa05ac6432edc3a777389f3
 
             - name: Install Vencord deps
               working-directory: vencord-src

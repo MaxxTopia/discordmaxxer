@@ -4,9 +4,10 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-import { Card, ErrorBoundary, HeadingTertiary, Paragraph, TextButton } from "@vencord/types/components";
+import { Card, ErrorBoundary, Paragraph, TextButton } from "@vencord/types/components";
 import { FluxDispatcher, InviteActions } from "@vencord/types/webpack/common";
 import type { PropsWithChildren } from "react";
+import { HeadingTertiary } from "renderer/vencordCompat";
 
 async function openSupportChannel() {
     const code = "YVbdG2ZRG4";
