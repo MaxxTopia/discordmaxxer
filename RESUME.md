@@ -1,6 +1,6 @@
 # Discordmaxxer — RESUME
 
-## 2026-11-26 — upstream drift repair validated (candidate)
+## 2026-11-26 — upstream drift repair landed; release gate open
 
 - **Scope**: repair the upstream Vencord drift that was breaking the automated
   ShowHiddenChannels/rebrand path, make the source pin self-consistent, align
@@ -28,11 +28,12 @@
   Electron `45.5.0` and contains `resources/winaudio.node`. A fresh source
   launch reached `renderer-ready`; the read-only `validate-all.mjs --skip
   badge` suite passed inventory, visual hub, hotkeys, and MassDelete wiring.
-- **State boundary**: validated local commit on the candidate branch; it is not
-  yet pushed, deployed, tagged, or released. The app version remains
-  `0.7.161`; no public tag is being created from this candidate. No GitHub
-  issue was edited/closed, no external message was sent, and no local Discord
-  client was used to inspect DMs.
+- **State boundary**: code commit `a6a947acd7e600810a7163670141277bb78d334f`
+  is pushed fast-forward to `origin/main`. It is not deployed, tagged, or
+  released. The app version remains `0.7.161`; no public tag is being created
+  from this work. The canonical dirty checkout is untouched. No GitHub issue
+  was edited/closed, no external message was sent, and no local Discord client
+  was used to inspect DMs.
 - **Known limits**: the source/dev launch reports the expected missing native
   audio lookup while the packaged directory contains the native module; a
   packaged executable launch was stopped cleanly but did not provide a CDP
@@ -40,10 +41,9 @@
   installed-client UI behavior, including DM/media acceptance, still need a
   human gate after a release. The existing Electron zstd workaround remains
   in place, and the open upstream issue list was not altered.
-- **Next action**: commit this reviewed candidate and push the code to
-  `origin/main` without tagging it. After CI and a release decision, bump the
-  next patch version and perform the bounded signed-in voice/screenshare and
-  DM/media smoke tests.
+- **Next action**: let main CI complete, then make a separate release decision.
+  If approved, bump the next patch version and perform the bounded signed-in
+  voice/screenshare and DM/media smoke tests before tagging a public release.
 
 ## 2026-11-22 — v0.7.161 startup splash hardening release
 
