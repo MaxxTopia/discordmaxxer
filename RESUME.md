@@ -33,7 +33,8 @@
   released. The app version remains `0.7.161`; no public tag is being created
   from this work. The canonical dirty checkout is untouched. No GitHub issue
   was edited/closed, no external message was sent, and no local Discord client
-  was used to inspect DMs.
+  was used to inspect DMs. Main test workflow `45895323426` passed install,
+  tests, and TypeScript compilation after the landing.
 - **Known limits**: the source/dev launch reports the expected missing native
   audio lookup while the packaged directory contains the native module; a
   packaged executable launch was stopped cleanly but did not provide a CDP
@@ -41,9 +42,9 @@
   installed-client UI behavior, including DM/media acceptance, still need a
   human gate after a release. The existing Electron zstd workaround remains
   in place, and the open upstream issue list was not altered.
-- **Next action**: let main CI complete, then make a separate release decision.
-  If approved, bump the next patch version and perform the bounded signed-in
-  voice/screenshare and DM/media smoke tests before tagging a public release.
+- **Next action**: make a separate release decision. If approved, bump the
+  next patch version and perform the bounded signed-in voice/screenshare and
+  DM/media smoke tests before tagging a public release.
 
 ## 2026-11-22 — v0.7.161 startup splash hardening release
 
