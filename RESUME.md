@@ -1,5 +1,37 @@
 # Discordmaxxer — RESUME
 
+## 2026-11-26 — v0.7.162 published and verified
+
+- **Published source**: commit `54c58e7` is on `origin/main`; annotated tag
+  `v0.7.162` is pushed. The clean release workflow `45961244886` completed
+  successfully in 4m24s, including dependency install, pinned Vencord clone,
+  strict overlay, build, artifact verification, Electron Builder, release-note
+  attachment, and the release notification step.
+- **Live release**: [GitHub release](https://github.com/MaxxTopia/discordmaxxer/releases/tag/v0.7.162)
+  is public and non-draft. It contains the x64 ZIP, ARM64 ZIP, unsigned NSIS
+  installer, blockmap, and updater manifest. `latest.yml` returned HTTP 200,
+  declares version `0.7.162`, and points to
+  `Discordmaxxer-Setup-0.7.162.exe`; the installer and x64 ZIP both returned
+  HTTP 200. The installer remains subject to the normal Windows SmartScreen
+  trust warning because this project does not code-sign it.
+- **Local evidence boundary**: source/overlay/build checks passed locally. The
+  local v0.7.162 directory package stalled while copying the Electron runtime
+  after C: ran out of practical space, so the clean GitHub run is the packaging
+  proof for this release. The default-device native audio probe was 3/4 because
+  capture returned no chunks; no native audio source changed. A prior packaged
+  candidate was manually smoke-tested signed in for normal Discord navigation
+  after disabling the optional theme palette. Voice/screenshare, DM/media,
+  second-PC, and installed-update acceptance are still unclaimed.
+- **Safety boundary**: only the isolated candidate was changed; the dirty
+  canonical checkout at `C:\Users\Diggy\projects\discordmaxxer` was not
+  reset, cleaned, or staged. No widget, skin, cursor, DM, voice, or Tournament
+  Mode source was changed by the release-preparation pass.
+- **Next action**: update the installed client from the published installer or
+  updater, confirm About shows `0.7.162`, then do the user's normal Discord
+  navigation/DM/widget/skin smoke test. Treat voice/screenshare and any
+  second-PC benchmark as optional follow-up gates, not as already-proven
+  release behavior.
+
 ## 2026-11-26 — v0.7.162 release candidate prepared
 
 - **Scope**: promote the already-reviewed upstream-compatibility and watcher
