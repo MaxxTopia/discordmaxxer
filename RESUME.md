@@ -1,5 +1,79 @@
 # Discordmaxxer — RESUME
 
+## 2026-11-26 — v0.7.162 release candidate prepared
+
+- **Scope**: promote the already-reviewed upstream-compatibility and watcher
+  hardening from `origin/main` at `97b822d` as patch version `0.7.162`. Work is
+  isolated to `C:\Users\Diggy\projects\discordmaxxer-perf-candidate-20261126`
+  on `codex/perf-release-candidate-20261126`; the dirty canonical checkout at
+  `C:\Users\Diggy\projects\discordmaxxer` remains untouched.
+- **Source changes**: bump `package.json` to `0.7.162` and add
+  `docs/releases/v0.7.162.md`. No widget, skin, cursor, DM, voice, or
+  Tournament Mode source was changed in this release-preparation pass.
+- **Verification**: `pnpm test`, `pnpm build`, strict overlay with
+  `DM_STRICT_REBRAND=1` and `0` warnings, and
+  `node overlay-scripts/verify-build.mjs` pass, including the manifest
+  version/fingerprint and plugin/startup/native-menu safeguards. `git diff
+  --check`, ASCII script checks, and version/release-note checks pass.
+- **Native audio probe**: 3 of 4 Windows audio tests passed; the default-device
+  capture test received no chunks in two seconds. No native audio source
+  changed, so this is recorded as a host/device capture limitation rather than
+  a release regression, but it is not claimed as a clean 4/4 result.
+- **Packaging/runtime boundary**: the v0.7.162 directory packaging attempt
+  reached the Electron packaging stage after passing source verification, then
+  stopped advancing while copying the Electron runtime to E: after C: ran out
+  of space. The v0.7.162 Windows package was therefore not locally completed;
+  `package:win` was not run for this version. GitHub Actions is the
+  authoritative clean-clone packaging gate after the tag push. The earlier
+  v0.7.161 packaged candidate was manually smoke-tested signed in for normal
+  Discord navigation after the optional theme palette was disabled.
+- **State boundary**: commit/push/tag/publication are authorized by Diggy but
+  still pending at this checkpoint. No Discord post, notification, live-data
+  change, or canonical-worktree edit was made. Voice/screenshare, DM/media,
+  and second-PC acceptance remain unclaimed.
+- **Next action**: commit only `package.json`, this continuity update, and the
+  v0.7.162 release note; push `main` and tag `v0.7.162`, then verify the clean
+  release workflow, installer/ZIP assets, and updater manifest before calling
+  the release live.
+
+## 2026-11-26 — clean v0.7.161 performance-candidate packaging pass
+
+- **Scope**: verify the current upstream-backed performance candidate in an
+  isolated worktree, without touching the dirty canonical checkout at
+  `C:\Users\Diggy\projects\discordmaxxer`. The candidate is based on
+  `origin/main` at `97b822d`, branch
+  `codex/perf-release-candidate-20261126`, and package version `0.7.161`.
+- **Verification**: offline frozen dependency install, `pnpm test`,
+  `pnpm build`, strict `pnpm overlay:vencord`,
+  `node overlay-scripts/verify-build.mjs`, `node --test
+  packages/winaudio/test.js` (4/4), `pnpm package:dir`, and the documented
+  Windows package command all pass. The packaged x64 executable started with
+  CDP and reported `discordmaxxer/0.7.161` / Electron `45.5.0`; it was then
+  stopped cleanly. Overlay verification includes TournamentMode, DMWidget,
+  DMProfileCosmetics, DMCursor, voice safeguards, native context-menu paths,
+  and startup recovery contracts.
+- **Packaging state**: the first `package:win` attempt stopped at `ENOSPC`
+  because C: had no free space. The same package was then completed with only
+  generated packaging temp/output redirected to E:. Final artifacts are in
+  `E:\Codex-staging\discordmaxxer-perf-candidate-20261126-win`:
+  x64/arm64 ZIPs and `Discordmaxxer-Setup-0.7.161.exe` (unsigned, as
+  expected). No source files were changed; the only candidate worktree change
+  after the pass is this continuity entry.
+- **State boundary**: no commit, push, tag, deployment, install, Discord post,
+  notification, or live-data change was made. The canonical dirty checkout
+  remains untouched. No second-PC surface is attached in this session.
+- **Known limits**: a fresh packaged profile reaches the CDP-started process
+  but remains on Discord's first-launch/login surface, so signed-in renderer,
+  widget/skin visual, DM/media, voice, screenshare, and gameplay proof remain
+  open. This is an authentication/profile gate, not evidence of a source or
+  packaging failure. The benchmark still needs the same fixed harness on a
+  second/clean PC before a release decision.
+- **Next action**: run the fixed full-vs-tournament benchmark on the second
+  PC or a clean profile with the signed-in client, then perform the human
+  voice/screenshare and visual acceptance gates. Keep the release at the
+  publish gate until those results are reviewed and Diggy explicitly approves
+  a commit/tag/publish.
+
 ## 2026-11-26 — upstream drift repair landed; release gate open
 
 - **Scope**: repair the upstream Vencord drift that was breaking the automated
